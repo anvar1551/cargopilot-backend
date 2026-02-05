@@ -1,29 +1,84 @@
-import { createWarehouse, listWarehouses } from "./warehouseRepo";
+import { Request, Response } from "express";
+import {
+  createWarehouse,
+  listWarehouses,
+  getWarehouseById,
+} from "./warehouseRepo";
+import prisma from "../../config/prismaClient";
 
-export function create(req: any, res: any) {
+export const create = async (req: Request, res: Response) => {
   try {
-    const { role } = req.user;
-    if (role !== "manager")
-      return res
-        .status(403)
-        .json({ error: "Only manager can create warehouses" });
+    const { name, location, region } = req.body;
 
-    const { name, location } = req.body;
     if (!name || !location)
-      return res.status(400).json({ error: "Missing name or location" });
+      return res.status(400).json({ error: "Name and location are required" });
 
-    const warehouse = createWarehouse(name, location);
-    res.json({ success: true, warehouse });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    const warehouse = await createWarehouse(name, location, region);
+    res.status(201).json(warehouse);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to create warehouse" });
   }
-}
+};
 
-export function list(req: any, res: any) {
+export const list = async (req: Request, res: Response) => {
   try {
-    const warehouses = listWarehouses();
+    const warehouses = await listWarehouses();
     res.json(warehouses);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to fetch warehouses" });
   }
-}
+};
+
+export const getWarehouse = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const warehouse = await getWarehouseById(id);
+
+    if (!warehouse)
+      return res.status(404).json({ error: "Warehouse not found" });
+
+    res.json(warehouse);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to fetch warehouse" });
+  }
+};
+
+export const scanPackage = async (req: Request, res: Response) => {
+  try {
+    const { orderId, warehouseId, status } = req.body;
+
+    //Verify order exists
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+    });
+
+    if (!order) return res.status(404).json({ error: "Order not found" });
+
+    //Update status
+    const updatedOrder = await prisma.order.update({
+      where: { id: orderId },
+      data: {
+        status: status || "sorted",
+        currentWarehouseId: warehouseId,
+      },
+    });
+
+    await prisma.tracking.create({
+      data: {
+        orderId,
+        warehouseId,
+        status: updatedOrder.status,
+      },
+    });
+
+    res.json({
+      message: "order scanned successfully",
+      order: updatedOrder,
+    });
+  } catch (error) {
+    console.error("❌ Warehouse scan error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};

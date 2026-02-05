@@ -1,40 +1,50 @@
-import { getConnection } from "../../config/db";
-import { v4 as uuidv4 } from "uuid";
+import prisma from "../../config/prismaClient";
+import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
 
-export interface User {
-  ID: string;
-  NAME: string;
-  EMAIL: string;
-  PASSWORD_HASH: string;
-  ROLE: string;
-  CREATED_AT?: Date;
-}
+const JWT_SECRET = process.env.JWT_SECRET || "supersecret";
 
-export function createUser(
+export const registerUser = async (
   name: string,
   email: string,
-  passwordHash: string,
+  password: string,
   role: string = "customer"
-) {
-  const conn = getConnection();
-  const id = uuidv4();
+) => {
+  const hashedPassword = await bcrypt.hash(password, 10);
 
-  const sql = `INSERT INTO USERS (ID, NAME, EMAIL, PASSWORD_HASH, ROLE) VALUES (?, ?, ?, ?, ?)`;
-  const stmt = conn.prepare(sql);
-  stmt.exec([id, name, email, passwordHash, role]);
-  stmt.drop();
+  const user = await prisma.user.create({
+    data: {
+      name,
+      email,
+      password: hashedPassword,
+      role: role,
+    },
+  });
 
-  const result = conn.exec(`SELECT * FROM USERS WHERE ID = '${id}'`) as User[];
-  conn.disconnect();
+  const token = jwt.sign(
+    {
+      id: user.id,
+      role: user.role,
+    },
+    JWT_SECRET,
+    { expiresIn: "7d" }
+  );
 
-  return result[0];
-}
+  return { token, user };
+};
 
-export function findUserByEmail(email: string): User | null {
-  const conn = getConnection();
-  const result = conn.exec(`SELECT * FROM USERS WHERE EMAIL = ?`, [
-    email,
-  ]) as User[];
-  conn.disconnect();
-  return result.length > 0 ? result[0] : null;
-}
+export const loginUser = async (email: string, password: string) => {
+  const user = await prisma.user.findUnique({
+    where: { email },
+  });
+  if (!user) throw new Error("Invalid email or password");
+
+  const validPassword = await bcrypt.compare(password, user.password);
+  if (!validPassword) throw new Error("Invalid email or password");
+
+  const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, {
+    expiresIn: "7d",
+  });
+
+  return { token, user };
+};

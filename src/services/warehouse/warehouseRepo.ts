@@ -1,37 +1,29 @@
-import { getConnection } from "../../config/db";
-import { v4 as uuidv4 } from "uuid";
+import prisma from "../../config/prismaClient";
 
-export interface Warehouse {
-  ID: string;
-  NAME: string;
-  LOCATION: string;
-  CREATED_AT?: Date;
-}
+export const createWarehouse = async (
+  name: string,
+  location: string,
+  region: string
+) => {
+  const warehouse = await prisma.warehouse.create({
+    data: {
+      name,
+      location,
+      region,
+    },
+  });
+  return warehouse;
+};
 
-export function createWarehouse(name: string, location: string): Warehouse {
-  const conn = getConnection();
-  const id = uuidv4();
+export const listWarehouses = async () => {
+  return await prisma.warehouse.findMany({
+    orderBy: { createdAt: "desc" },
+  });
+};
 
-  const stmt = conn.prepare(`
-    INSERT INTO WAREHOUSES (ID, NAME, LOCATION)
-    VALUES (?, ?, ?)
-  `);
-  stmt.exec([id, name, location]);
-  stmt.drop();
-
-  const result = conn.exec(
-    `SELECT * FROM WAREHOUSES WHERE ID = '${id}'`
-  ) as Warehouse[];
-  conn.disconnect();
-
-  return result[0];
-}
-
-export function listWarehouses(): Warehouse[] {
-  const conn = getConnection();
-  const result = conn.exec(
-    `SELECT * FROM WAREHOUSES ORDER BY CREATED_AT DESC`
-  ) as Warehouse[];
-  conn.disconnect();
-  return result;
-}
+export const getWarehouseById = async (id: string) => {
+  return await prisma.warehouse.findMany({
+    where: { id },
+    include: { users: true, orders: true },
+  });
+};

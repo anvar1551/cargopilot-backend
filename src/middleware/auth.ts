@@ -1,27 +1,57 @@
+import { NextFunction, Request, Response } from "express";
 import jwt from "jsonwebtoken";
+import prisma from "../config/prismaClient";
+import { AppRole } from "@prisma/client";
 
-export function auth(requiedRoles: string[] = []) {
-  return (req: any, res: any, next: any) => {
-    const header = req.headers["authorization"];
-    if (!header) return res.status(401).json({ error: "No token provided" });
+type JwtPayload = { id: string };
 
-    const token = header.split(" ")[1];
-    if (!token) return res.status(401).json({ error: "Invalid token" });
+function getBearerToken(req: Request) {
+  const header = req.headers.authorization;
+  if (!header) return null;
+
+  const [scheme, token] = header.split(" ");
+  if (scheme !== "Bearer" || !token) return null;
+
+  return token;
+}
+
+export function auth(requiredRoles: AppRole[] = []) {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    const token = getBearerToken(req);
+    if (!token)
+      return res.status(401).json({ error: "Invalid or missing token" });
+
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+      // fail fast (especially important in prod)
+      return res.status(500).json({ error: "JWT_SECRET not configured" });
+    }
 
     try {
-      const decoded = jwt.verify(
-        token,
-        process.env.JWT_SECRET || "devsecret"
-      ) as any;
-      req.user = decoded;
+      const decoded = jwt.verify(token, secret) as JwtPayload;
 
-      if (requiedRoles.length && !requiedRoles.includes(decoded.role)) {
+      const user = await prisma.user.findUnique({
+        where: { id: decoded.id },
+        select: {
+          id: true,
+          role: true,
+          email: true,
+          name: true,
+          warehouseId: true,
+        },
+      });
+
+      if (!user) return res.status(401).json({ error: "Unauthorized" });
+
+      req.user = user;
+
+      if (requiredRoles.length > 0 && !requiredRoles.includes(user.role)) {
         return res.status(403).json({ error: "Forbidden" });
       }
 
       next();
-    } catch (err) {
-      return res.status(401).json({ error: "Unathorized" });
+    } catch (e) {
+      return res.status(401).json({ error: "Unauthorized" });
     }
   };
 }

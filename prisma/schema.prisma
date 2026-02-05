@@ -1,0 +1,188 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+// prisma/schema.prisma
+
+datasource db {
+  provider = "postgresql"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum AppRole {
+  customer
+  driver
+  warehouse
+  manager
+}
+
+enum OrderStatus {
+  pending
+  assigned
+  in_transit
+  arrived_at_warehouse
+  out_for_delivery
+  delivered
+}
+
+enum InvoiceStatus {
+  pending
+  paid
+  cancelled
+}
+
+model User {
+  id             String     @id @default(uuid()) @db.Uuid
+  name           String
+  email          String     @unique
+  password       String
+  role           AppRole    @default(customer)
+  warehouseId    String?    @db.Uuid
+  warehouse      Warehouse? @relation(fields: [warehouseId], references: [id])
+  orders         Order[]    @relation("CustomerOrders")
+  driverOrders   Order[]    @relation("DriverOrders")
+  createdAt      DateTime   @default(now())
+  invoices       Invoice[]
+  trackingEvents Tracking[] @relation("TrackingActor")
+}
+
+model Warehouse {
+  id        String     @id @default(uuid()) @db.Uuid
+  name      String
+  location  String
+  region    String?
+  users     User[]
+  orders    Order[]
+  createdAt DateTime   @default(now())
+  tracking  Tracking[]
+}
+
+model Order {
+  id String @id @default(uuid()) @db.Uuid
+
+  // ✅ human readable number like 99000021
+  orderNumber String @unique
+
+  status OrderStatus @default(pending)
+
+  // Sender / Receiver
+  senderName      String?
+  senderPhone     String?
+  senderAddress   String?
+  receiverName    String?
+  receiverPhone   String?
+  receiverAddress String?
+
+  pickupAddress   String
+  dropoffAddress  String
+  destinationCity String?
+
+  // Service/payment info (Stripe optional later)
+  serviceType String?
+  codAmount   Float?
+  currency    String?
+  weightKg    Float?
+
+  // Owner/customer
+  customerId String @db.Uuid
+  customer   User   @relation("CustomerOrders", fields: [customerId], references: [id])
+
+  // Operations
+  assignedDriverId String? @db.Uuid
+  assignedDriver   User?   @relation("DriverOrders", fields: [assignedDriverId], references: [id])
+
+  currentWarehouseId String?    @db.Uuid
+  currentWarehouse   Warehouse? @relation(fields: [currentWarehouseId], references: [id])
+
+  labelKey String?
+
+  parcels        Parcel[]
+  trackingEvents Tracking[]
+  invoice        Invoice?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Tracking {
+  id String @id @default(uuid()) @db.Uuid
+
+  orderId String @db.Uuid
+  order   Order  @relation(fields: [orderId], references: [id])
+
+  // ✅ status (optional if event is not a status-change)
+  status OrderStatus?
+
+  // event types: "created", "payment_confirmed", "parcel_scanned", "status_changed", ...
+  event String
+  note  String?
+
+  region      String?
+  warehouseId String?    @db.Uuid
+  warehouse   Warehouse? @relation(fields: [warehouseId], references: [id])
+
+  actorId   String?  @db.Uuid
+  actor     User?    @relation("TrackingActor", fields: [actorId], references: [id])
+  actorRole AppRole?
+
+  parcelId String? @db.Uuid
+  parcel   Parcel? @relation("ParcelTracking", fields: [parcelId], references: [id])
+
+  timestamp DateTime @default(now())
+
+  @@index([orderId, timestamp])
+  @@index([actorId])
+  @@index([parcelId])
+}
+
+model Invoice {
+  id         String        @id @default(uuid()) @db.Uuid
+  orderId    String        @unique @db.Uuid
+  customerId String        @db.Uuid
+  amount     Float
+  status     InvoiceStatus @default(pending) // pending, paid, cancelled
+  paymentUrl String? // Stripe link
+  createdAt  DateTime      @default(now())
+  invoiceKey String?
+
+  // Relations
+  order    Order @relation(fields: [orderId], references: [id])
+  customer User  @relation(fields: [customerId], references: [id])
+}
+
+model Parcel {
+  id String @id @default(uuid()) @db.Uuid
+
+  orderId String @db.Uuid
+  order   Order  @relation(fields: [orderId], references: [id])
+
+  pieceNo    Int
+  pieceTotal Int
+
+  weightKg Float?
+  lengthCm Float?
+  widthCm  Float?
+  heightCm Float?
+
+  // ✅ the scanned QR/barcode value
+  parcelCode String @unique
+
+  labelKey String?
+
+  trackingEvents Tracking[] @relation("ParcelTracking")
+
+  createdAt DateTime @default(now())
+
+  @@unique([orderId, pieceNo])
+}
+
+model Counter {
+  key       String   @id
+  value     Int
+  updatedAt DateTime @updatedAt
+}
