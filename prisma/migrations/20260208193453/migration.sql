@@ -1,0 +1,29 @@
+/*
+  Warnings:
+
+  - The values [arrived_at_warehouse] on the enum `OrderStatus` will be removed. If these variants are still used in the database, this will fail.
+  - You are about to drop the column `event` on the `Tracking` table. All the data in the column will be lost.
+
+*/
+-- CreateEnum
+CREATE TYPE "TrackingAction" AS ENUM ('ORDER_CREATED', 'DRIVER_ASSIGNED', 'DRIVER_REJECTED', 'PICKUP_STARTED', 'PICKUP_ATTEMPT', 'PICKUP_CONFIRMED', 'PICKUP_FAILED', 'ARRIVED_AT_WAREHOUSE', 'SORTED', 'DISPATCHED', 'DELIVERY_STARTED', 'DELIVERY_ATTEMPT', 'DELIVERED', 'DELIVERY_FAILED', 'ON_HOLD', 'CANCELLED', 'RETURN_REQUESTED', 'RETURN_DISPATCHED', 'RETURN_DELIVERED');
+
+-- CreateEnum
+CREATE TYPE "ReasonCode" AS ENUM ('BAD_SENDER_ADDRESS', 'SENDER_NOT_AVAILABLE', 'SENDER_MOBILE_OFF', 'SENDER_MOBILE_WRONG', 'SENDER_MOBILE_NO_RESPONSE', 'OUT_OF_PICKUP_AREA', 'UNABLE_TO_ACCESS_SENDER_PREMISES', 'NO_CAPACITY_PICKUP', 'PROHIBITED_ITEMS', 'INCORRECT_PACKING', 'NO_AWB_PRINTED', 'PICKUP_DELAY_LATE_BOOKING', 'BAD_WEATHER_PICKUP', 'SENDER_NAME_MISSING', 'DOCUMENTS_MISSING', 'BAD_RECIPIENT_ADDRESS', 'RECIPIENT_NOT_AVAILABLE', 'RECIPIENT_MOBILE_OFF', 'RECIPIENT_MOBILE_WRONG', 'RECIPIENT_MOBILE_NO_RESPONSE', 'OUT_OF_DELIVERY_AREA', 'UNABLE_TO_ACCESS_RECIPIENT_PREMISES', 'DELIVERY_DELAY_LATE_BOOKING', 'NO_TIME_FOR_DELIVERY', 'NO_CAPACITY_DELIVERY', 'COD_NOT_READY', 'RECIPIENT_REFUSED', 'RECIPIENT_WANTS_INSPECT', 'BAD_WEATHER_DELIVERY', 'WRONG_SHIPMENT', 'INCOMPLETE_PARCEL', 'MIS_ROUTED', 'TO_BE_RETURNED', 'RETURNED_TO_ORIGIN', 'CANCELLED_BY_CUSTOMER', 'DRIVER_CANCELLED', 'LOST', 'DAMAGED', 'LOST_OR_DAMAGED', 'DESTROYED_ON_CUSTOMER_REQUEST', 'CLEARING_CUSTOMS', 'HOLD_AT_CUSTOMS', 'REJECTED_BY_CUSTOMS', 'RELEASED_BY_CUSTOMS', 'CUSTOMER_REFUSES_CUSTOMS_FEES', 'OTHER');
+
+-- AlterEnum
+BEGIN;
+CREATE TYPE "OrderStatus_new" AS ENUM ('pending', 'assigned', 'pickup_in_progress', 'picked_up', 'at_warehouse', 'in_transit', 'out_for_delivery', 'delivered', 'exception', 'return_in_progress', 'returned', 'cancelled');
+ALTER TABLE "public"."Order" ALTER COLUMN "status" DROP DEFAULT;
+ALTER TABLE "Order" ALTER COLUMN "status" TYPE "OrderStatus_new" USING ("status"::text::"OrderStatus_new");
+ALTER TABLE "Tracking" ALTER COLUMN "status" TYPE "OrderStatus_new" USING ("status"::text::"OrderStatus_new");
+ALTER TYPE "OrderStatus" RENAME TO "OrderStatus_old";
+ALTER TYPE "OrderStatus_new" RENAME TO "OrderStatus";
+DROP TYPE "public"."OrderStatus_old";
+ALTER TABLE "Order" ALTER COLUMN "status" SET DEFAULT 'pending';
+COMMIT;
+
+-- AlterTable
+ALTER TABLE "Tracking" DROP COLUMN "event",
+ADD COLUMN     "action" "TrackingAction" NOT NULL DEFAULT 'ORDER_CREATED',
+ADD COLUMN     "reasonCode" "ReasonCode";

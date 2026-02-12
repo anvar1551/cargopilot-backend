@@ -98,7 +98,8 @@ export async function generateLabelPDF(order: OrderLabelInput) {
   const outputDir = path.resolve("labels");
   ensureDir(outputDir);
 
-  const filePath = path.join(outputDir, `${order.parcelCode}.pdf`);
+  const safeParcelCode = order.parcelCode.replace(/[\\/]/g, "-");
+  const filePath = path.join(outputDir, `${safeParcelCode}.pdf`);
 
   const doc = new PDFDocument({ size: "A6", margin: 18, layout: "portrait" });
   const stream = fs.createWriteStream(filePath);

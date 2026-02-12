@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import morgan from "morgan";
+import { auth } from "./middleware/auth";
 import { getConnection } from "./config/db";
 import userRoutes from "./services/users/userRoutes";
 import orderRoutes from "./services/orders/orderRoutes";
@@ -11,9 +12,10 @@ import driverRoutes from "./services/driver/driverRoutes";
 import invoiceRoutes from "./services/invoice/invoiceRoutes";
 import analyticsRoutes from "./services/analytics/analyticsRoutes";
 import webhookRoutes from "./services/stripe/webhookRoutes";
-import { auth } from "./middleware/auth";
 import managerRoutes from "./features/manager/managerRoutes";
 import labelRoutes from "./features/label/labelRoutes";
+import addressRoutes from "./services/addresses/addressRoutes";
+import customerEntityRoutes from "./services/customers/customerRoutes";
 
 const app = express();
 
@@ -46,6 +48,8 @@ app.use("/api/drivers", driverRoutes);
 app.use("/api/invoices", invoiceRoutes);
 app.use("/api/manager", managerRoutes);
 app.use("/api/labels", labelRoutes);
+app.use("/api/addresses", addressRoutes);
+app.use("/api/customer-entities", customerEntityRoutes);
 
 const PORT = process.env.PORT || 4000;
 app.listen(4000, "0.0.0.0", () =>

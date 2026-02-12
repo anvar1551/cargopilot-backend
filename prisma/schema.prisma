@@ -24,10 +24,104 @@ enum AppRole {
 enum OrderStatus {
   pending
   assigned
+  pickup_in_progress
+  picked_up
+  at_warehouse
   in_transit
-  arrived_at_warehouse
   out_for_delivery
   delivered
+  exception
+  return_in_progress
+  returned
+  cancelled
+}
+
+enum TrackingAction {
+  ORDER_CREATED
+  DRIVER_ASSIGNED
+  DRIVER_REJECTED
+
+  PICKUP_STARTED
+  PICKUP_ATTEMPT
+  PICKUP_CONFIRMED
+  PICKUP_FAILED
+
+  ARRIVED_AT_WAREHOUSE
+  SORTED
+  DISPATCHED
+
+  DELIVERY_STARTED
+  DELIVERY_ATTEMPT
+  DELIVERED
+  DELIVERY_FAILED
+
+  ON_HOLD
+  CANCELLED
+
+  RETURN_REQUESTED
+  RETURN_DISPATCHED
+  RETURN_DELIVERED
+}
+
+enum ReasonCode {
+  // Pickup
+  BAD_SENDER_ADDRESS
+  SENDER_NOT_AVAILABLE
+  SENDER_MOBILE_OFF
+  SENDER_MOBILE_WRONG
+  SENDER_MOBILE_NO_RESPONSE
+  OUT_OF_PICKUP_AREA
+  UNABLE_TO_ACCESS_SENDER_PREMISES
+  NO_CAPACITY_PICKUP
+  PROHIBITED_ITEMS
+  INCORRECT_PACKING
+  NO_AWB_PRINTED
+  PICKUP_DELAY_LATE_BOOKING
+  BAD_WEATHER_PICKUP
+  SENDER_NAME_MISSING
+  DOCUMENTS_MISSING
+
+  // Delivery
+  BAD_RECIPIENT_ADDRESS
+  RECIPIENT_NOT_AVAILABLE
+  RECIPIENT_MOBILE_OFF
+  RECIPIENT_MOBILE_WRONG
+  RECIPIENT_MOBILE_NO_RESPONSE
+  OUT_OF_DELIVERY_AREA
+  UNABLE_TO_ACCESS_RECIPIENT_PREMISES
+  DELIVERY_DELAY_LATE_BOOKING
+  NO_TIME_FOR_DELIVERY
+  NO_CAPACITY_DELIVERY
+  COD_NOT_READY
+  RECIPIENT_REFUSED
+  RECIPIENT_WANTS_INSPECT
+  BAD_WEATHER_DELIVERY
+
+  // Routing / ops
+  WRONG_SHIPMENT
+  INCOMPLETE_PARCEL
+  MIS_ROUTED
+
+  // Returns / closing
+  TO_BE_RETURNED
+  RETURNED_TO_ORIGIN
+  CANCELLED_BY_CUSTOMER
+  DRIVER_CANCELLED
+
+  // Loss/Damage
+  LOST
+  DAMAGED
+  LOST_OR_DAMAGED
+  DESTROYED_ON_CUSTOMER_REQUEST
+
+  // Customs (optional but future-proof)
+  CLEARING_CUSTOMS
+  HOLD_AT_CUSTOMS
+  REJECTED_BY_CUSTOMS
+  RELEASED_BY_CUSTOMS
+  CUSTOMER_REFUSES_CUSTOMS_FEES
+
+  OTHER
 }
 
 enum InvoiceStatus {
@@ -36,17 +130,65 @@ enum InvoiceStatus {
   cancelled
 }
 
+enum CustomerType {
+  PERSON
+  COMPANY
+}
+
+enum AddressType {
+  RESIDENTIAL
+  BUSINESS
+}
+
+enum PaymentType {
+  CASH
+  CARD
+  COD
+  TRANSFER
+  OTHER
+}
+
+enum PaidBy {
+  SENDER
+  RECIPIENT
+  COMPANY
+}
+
+enum PaidStatus {
+  NOT_PAID
+  PAID
+  PARTIAL
+}
+
+enum RecipientUnavailableAction {
+  DO_NOT_DELIVER
+  LEAVE_AT_DOOR
+  LEAVE_WITH_CONCIERGE
+  CALL_SENDER
+  RESCHEDULE
+  RETURN_TO_SENDER
+}
+
 model User {
-  id             String     @id @default(uuid()) @db.Uuid
-  name           String
-  email          String     @unique
-  password       String
-  role           AppRole    @default(customer)
-  warehouseId    String?    @db.Uuid
-  warehouse      Warehouse? @relation(fields: [warehouseId], references: [id])
-  orders         Order[]    @relation("CustomerOrders")
-  driverOrders   Order[]    @relation("DriverOrders")
-  createdAt      DateTime   @default(now())
+  id       String @id @default(uuid()) @db.Uuid
+  name     String
+  email    String @unique
+  password String
+
+  role AppRole @default(customer)
+
+  // ✅ link user -> customer entity (person/company)
+  customerEntityId String?         @db.Uuid
+  customerEntity   CustomerEntity? @relation("CustomerEntityUsers", fields: [customerEntityId], references: [id])
+
+  warehouseId String?    @db.Uuid
+  warehouse   Warehouse? @relation(fields: [warehouseId], references: [id])
+
+  orders       Order[] @relation("CustomerOrders")
+  driverOrders Order[] @relation("DriverOrders")
+
+  createdAt DateTime @default(now())
+
   invoices       Invoice[]
   trackingEvents Tracking[] @relation("TrackingActor")
 }
@@ -70,29 +212,41 @@ model Order {
 
   status OrderStatus @default(pending)
 
-  // Sender / Receiver
+  // ---------------- Sender / Receiver (basic quick fields - keep for now) ----------------
   senderName      String?
   senderPhone     String?
-  senderAddress   String?
+  senderAddress   String? // keep legacy text field (optional)
   receiverName    String?
   receiverPhone   String?
-  receiverAddress String?
+  receiverAddress String? // keep legacy text field (optional)
 
+  // ---------------- Legacy quick addresses (still used in UI today) ----------------
   pickupAddress   String
   dropoffAddress  String
   destinationCity String?
 
-  // Service/payment info (Stripe optional later)
+  // ---------------- Service/payment info (Stripe optional later) ----------------
   serviceType String?
   codAmount   Float?
   currency    String?
   weightKg    Float?
 
-  // Owner/customer
+  // ---------------- Owner/customer (auth user) ----------------
   customerId String @db.Uuid
   customer   User   @relation("CustomerOrders", fields: [customerId], references: [id])
 
-  // Operations
+  // ---------------- Customer master (company/person) ----------------
+  customerEntityId String?         @db.Uuid
+  customerEntity   CustomerEntity? @relation("CustomerEntityOrders", fields: [customerEntityId], references: [id])
+
+  // ---------------- Structured addresses (competitor-like) ----------------
+  senderAddressId  String?  @db.Uuid
+  senderAddressObj Address? @relation("OrderSenderAddress", fields: [senderAddressId], references: [id])
+
+  receiverAddressId  String?  @db.Uuid
+  receiverAddressObj Address? @relation("OrderReceiverAddress", fields: [receiverAddressId], references: [id])
+
+  // ---------------- Operations ----------------
   assignedDriverId String? @db.Uuid
   assignedDriver   User?   @relation("DriverOrders", fields: [assignedDriverId], references: [id])
 
@@ -101,12 +255,53 @@ model Order {
 
   labelKey String?
 
+  // ---------------- Relations ----------------
   parcels        Parcel[]
   trackingEvents Tracking[]
   invoice        Invoice?
+  attachments    OrderAttachment[]
+
+  // ---------------- Attempt counters ----------------
+  pickupAttemptCount   Int @default(0)
+  deliveryAttemptCount Int @default(0)
+
+  // ---------------- Exception snapshot ----------------
+  lastExceptionReason ReasonCode?
+  lastExceptionAt     DateTime?
+
+  // ---------------- Scheduling ----------------
+  plannedPickupAt   DateTime?
+  plannedDeliveryAt DateTime?
+
+  // ---------------- Payment (competitor) ----------------
+  paymentType             PaymentType?
+  deliveryChargePaidBy    PaidBy?
+  ifRecipientNotAvailable RecipientUnavailableAction?
+
+  codPaidStatus           PaidStatus?
+  serviceCharge           Float?
+  serviceChargePaidStatus PaidStatus?
+  itemValue               Float?
+
+  // ---------------- Additional / references (competitor-like) ----------------
+  referenceId   String?
+  shelfId       String?
+  promoCode     String?
+  numberOfCalls Int?
+  promiseDate   DateTime?
+
+  fragile           Boolean @default(false)
+  dangerousGoods    Boolean @default(false)
+  shipmentInsurance Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([customerId, createdAt])
+  @@index([assignedDriverId])
+  @@index([currentWarehouseId])
+  @@index([customerEntityId])
+  @@index([status])
 }
 
 model Tracking {
@@ -119,8 +314,10 @@ model Tracking {
   status OrderStatus?
 
   // event types: "created", "payment_confirmed", "parcel_scanned", "status_changed", ...
-  event String
-  note  String?
+  action TrackingAction @default(ORDER_CREATED)
+
+  reasonCode ReasonCode?
+  note       String?
 
   region      String?
   warehouseId String?    @db.Uuid
@@ -138,6 +335,98 @@ model Tracking {
   @@index([orderId, timestamp])
   @@index([actorId])
   @@index([parcelId])
+}
+
+model Address {
+  id String @id @default(uuid()) @db.Uuid
+
+  // ✅ Address book owner relation (named, to avoid conflict with defaultAddress)
+  customerEntityId String?         @db.Uuid
+  customerEntity   CustomerEntity? @relation("CustomerAddresses", fields: [customerEntityId], references: [id])
+
+  country      String?
+  city         String?
+  neighborhood String?
+  street       String?
+  addressLine1 String?
+  addressLine2 String?
+  building     String?
+  apartment    String?
+  floor        String?
+  landmark     String?
+  postalCode   String?
+  addressType  AddressType?
+
+  passportSeries String?
+  passportNumber String?
+
+  isSaved Boolean @default(false)
+
+  // ✅ Opposite side for default address relation (no fields here)
+  asDefaultFor CustomerEntity? @relation("CustomerDefaultAddress")
+
+  // ✅ Order relations
+  asSenderFor   Order[] @relation("OrderSenderAddress")
+  asReceiverFor Order[] @relation("OrderReceiverAddress")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([customerEntityId])
+  @@index([city])
+}
+
+model CustomerEntity {
+  id String @id @default(uuid()) @db.Uuid
+
+  type CustomerType @default(PERSON)
+
+  // for PERSON: full name, for COMPANY: company name
+  name String
+
+  email     String?
+  phone     String?
+  altPhone1 String?
+  altPhone2 String?
+
+  // company-specific
+  companyName String?
+  taxId       String?
+
+  // ✅ Default address (separate named relation)
+  defaultAddressId String?  @unique @db.Uuid
+  defaultAddress   Address? @relation("CustomerDefaultAddress", fields: [defaultAddressId], references: [id])
+
+  // ✅ Address book (separate named relation)
+  addresses Address[] @relation("CustomerAddresses")
+
+  // ✅ Orders linked to this customer master
+  orders Order[] @relation("CustomerEntityOrders")
+
+  // ✅ Users that belong to this customer entity (for companies)
+  users User[] @relation("CustomerEntityUsers")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([type])
+  @@index([name])
+}
+
+model OrderAttachment {
+  id String @id @default(uuid()) @db.Uuid
+
+  orderId String @db.Uuid
+  order   Order  @relation(fields: [orderId], references: [id])
+
+  key      String // S3 key
+  fileName String?
+  mimeType String?
+  size     Int?
+
+  createdAt DateTime @default(now())
+
+  @@index([orderId])
 }
 
 model Invoice {

@@ -3,27 +3,29 @@ import prisma from "../../config/prismaClient";
 export const createWarehouse = async (
   name: string,
   location: string,
-  region: string
+  region?: string,
 ) => {
-  const warehouse = await prisma.warehouse.create({
+  return prisma.warehouse.create({
     data: {
       name,
       location,
-      region,
+      region: region ?? null,
     },
   });
-  return warehouse;
 };
 
 export const listWarehouses = async () => {
-  return await prisma.warehouse.findMany({
+  return prisma.warehouse.findMany({
     orderBy: { createdAt: "desc" },
   });
 };
 
 export const getWarehouseById = async (id: string) => {
-  return await prisma.warehouse.findMany({
+  return prisma.warehouse.findUnique({
     where: { id },
-    include: { users: true, orders: true },
+    include: {
+      users: true,
+      orders: true,
+    },
   });
 };

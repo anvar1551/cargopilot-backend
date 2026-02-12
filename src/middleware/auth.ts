@@ -35,6 +35,7 @@ export function auth(requiredRoles: AppRole[] = []) {
         select: {
           id: true,
           role: true,
+          customerEntityId: true,
           email: true,
           name: true,
           warehouseId: true,

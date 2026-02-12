@@ -14,10 +14,11 @@ import path from "path";
 import { s3 } from "../config/s3";
 
 export async function uploadLabel(fileName: string) {
-  const filePath = path.join("labels", fileName);
+  const safeFileName = path.basename(fileName);
+  const filePath = path.join("labels", safeFileName);
   const fileContent = await fs.promises.readFile(filePath);
 
-  const key = `labels/${fileName}`;
+  const key = `labels/${safeFileName}`;
 
   await s3.send(
     new PutObjectCommand({

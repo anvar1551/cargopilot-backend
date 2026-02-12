@@ -1,17 +1,90 @@
 import { Request } from "express";
 import { Response } from "express-serve-static-core";
+import path from "path";
+
 import prisma from "../../config/prismaClient";
-import { OrderStatus, AppRole } from "@prisma/client";
+import { AppRole, TrackingAction, ReasonCode } from "@prisma/client";
 
 import { createInvoice, createStripePayment } from "../invoice/invoiceRepo";
 import { createOrder, getOrderById, listOrders } from "./orderRepo.prisma";
+import { mapCreateOrderDtoToRepoPayload } from "./orderCreate.mapper";
+
 import {
   assignOrdersToDriver,
   updateOrderStatusMany,
   updateOrderStatus,
 } from "./orderWorkFlow";
+
 import { generateLabelPDF } from "../../features/label/labelService";
 import { uploadLabel } from "../../utils/uploadLabel";
+
+// ---------------- Helpers ----------------
+
+function buildAddressText(addr: any): string {
+  // Keep deterministic + “competitor-like” single-line format
+  const parts = [
+    addr?.addressLine1,
+    addr?.addressLine2,
+    addr?.street,
+    addr?.building ? `Bldg ${addr.building}` : null,
+    addr?.floor ? `Fl. ${addr.floor}` : null,
+    addr?.apartment ? `Apt ${addr.apartment}` : null,
+    addr?.neighborhood,
+    addr?.city,
+    addr?.postalCode,
+    addr?.country,
+    addr?.landmark ? `Landmark: ${addr.landmark}` : null,
+  ].filter(Boolean);
+
+  return parts.join(", ");
+}
+
+async function resolveAddressesForOrderInput(input: any) {
+  const senderAddressId = input.senderAddressId ?? null;
+  const receiverAddressId = input.receiverAddressId ?? null;
+
+  if (!senderAddressId && !receiverAddressId) {
+    return {
+      pickupAddress: (input.pickupAddress ?? "").trim(),
+      dropoffAddress: (input.dropoffAddress ?? "").trim(),
+      destinationCity: input.destinationCity ?? null,
+    };
+  }
+
+  const [senderAddr, receiverAddr] = await Promise.all([
+    senderAddressId
+      ? prisma.address.findUnique({ where: { id: senderAddressId } })
+      : Promise.resolve(null),
+    receiverAddressId
+      ? prisma.address.findUnique({ where: { id: receiverAddressId } })
+      : Promise.resolve(null),
+  ]);
+
+  if (senderAddressId && !senderAddr) {
+    const e: any = new Error("senderAddressId not found");
+    e.statusCode = 400;
+    throw e;
+  }
+  if (receiverAddressId && !receiverAddr) {
+    const e: any = new Error("receiverAddressId not found");
+    e.statusCode = 400;
+    throw e;
+  }
+
+  const pickupAddress = senderAddr
+    ? buildAddressText(senderAddr)
+    : (input.pickupAddress ?? "").trim();
+
+  const dropoffAddress = receiverAddr
+    ? buildAddressText(receiverAddr)
+    : (input.dropoffAddress ?? "").trim();
+
+  const destinationCity = receiverAddr?.city ?? input.destinationCity ?? null;
+
+  return { pickupAddress, dropoffAddress, destinationCity };
+}
+
+// ---------------- CREATE ----------------
 
 export const create = async (req: Request, res: Response) => {
   try {
@@ -19,36 +92,90 @@ export const create = async (req: Request, res: Response) => {
 
     if (!req.user?.id) return res.status(401).json({ error: "Unauthorized" });
 
-    const { pickupAddress, dropoffAddress, amount, ...rest } = req.body;
-
-    if (!pickupAddress?.trim() || !dropoffAddress?.trim()) {
-      return res
-        .status(400)
-        .json({ error: "pickupAddress and dropoffAddress are required" });
-    }
-
     const actor = {
       id: req.user.id,
       role: req.user.role as AppRole,
       warehouseId: req.user.warehouseId ?? null,
     };
 
-    // 1) Create enterprise order + parcels
-    const order = await createOrder(
-      req.user.id,
-      { pickupAddress, dropoffAddress, ...rest },
-      actor,
-    );
+    console.log("RAW BODY:", req.body);
+    console.log("RAW.addresses:", req.body?.addresses);
+    console.log("RAW.shipment:", req.body?.shipment);
 
-    // 2) OPTION B: Generate + upload one label per parcel
-    //    - label PDF id = parcel.parcelCode (scan value)
-    //    - store labelKey on parcel
+    // ✅ 1) Validate + map incoming DTO -> repo payload
+    const mapped = await mapCreateOrderDtoToRepoPayload(req.body);
+
+    // ✅ Auto-save address-book entries if user typed manual + checked checkbox
+    const ownerCustomerEntityId =
+      mapped.customerEntityId ?? req.user.customerEntityId ?? null;
+
+    // PICKUP save
+    if (mapped.savePickupToAddressBook && !mapped.senderAddressId) {
+      if (!ownerCustomerEntityId) {
+        return res.status(400).json({
+          error: "customerEntityId is required to save pickup address",
+        });
+      }
+      if (!mapped.senderAddressSnapshot) {
+        return res.status(400).json({
+          error:
+            "senderAddress (structured) is required to save pickup address",
+        });
+      }
+
+      const created = await prisma.address.create({
+        data: {
+          customerEntityId: ownerCustomerEntityId,
+          isSaved: true,
+          ...mapped.senderAddressSnapshot,
+        },
+      });
+
+      mapped.senderAddressId = created.id;
+      mapped.pickupAddress = buildAddressText(created);
+    }
+
+    // DROPOFF save
+    if (mapped.saveDropoffToAddressBook && !mapped.receiverAddressId) {
+      if (!ownerCustomerEntityId) {
+        return res.status(400).json({
+          error: "customerEntityId is required to save dropoff address",
+        });
+      }
+      if (!mapped.receiverAddressSnapshot) {
+        return res.status(400).json({
+          error:
+            "receiverAddress (structured) is required to save dropoff address",
+        });
+      }
+
+      const created = await prisma.address.create({
+        data: {
+          customerEntityId: ownerCustomerEntityId,
+          isSaved: true,
+          ...mapped.receiverAddressSnapshot,
+        },
+      });
+
+      mapped.receiverAddressId = created.id;
+      mapped.dropoffAddress = buildAddressText(created);
+
+      if (!mapped.destinationCity && (created as any).city) {
+        mapped.destinationCity = (created as any).city;
+      }
+    }
+
+    // amount is only used when PAYMENTS_ENABLED=true
+    const { amount, ...repoPayload } = mapped;
+
+    // ✅ 2) Create order (repo handles: parcels + ORDER_CREATED tracking)
+    const order = await createOrder(req.user.id, repoPayload, actor);
+
+    // ✅ 3) Generate + upload one label per parcel (NO tracking rows)
     const labelUpdates: Array<{ parcelId: string; labelKey: string }> = [];
-    const trackingRows: any[] = [];
 
     for (const parcel of order.parcels ?? []) {
-      // Generate PDF (your generator uses `id` for barcode + QR)
-      await generateLabelPDF({
+      const labelPath = await generateLabelPDF({
         parcelCode: parcel.parcelCode,
         pieceNo: parcel.pieceNo,
         pieceTotal: parcel.pieceTotal,
@@ -65,57 +192,33 @@ export const create = async (req: Request, res: Response) => {
         receiverPhone: order.receiverPhone ?? undefined,
       });
 
-      // Upload file (must match how uploadLabel reads files)
-      // NOTE: this assumes uploadLabel expects `${filename}.pdf` from /labels folder.
-      const { key: labelKey } = await uploadLabel(`${parcel.parcelCode}.pdf`);
+      const labelFileName = path.basename(labelPath);
+      const { key: labelKey } = await uploadLabel(labelFileName);
 
       labelUpdates.push({ parcelId: parcel.id, labelKey });
-
-      trackingRows.push({
-        orderId: order.id,
-        event: "parcel_label_generated",
-        status: order.status, // OrderStatus (or null if you prefer)
-        note: `Label generated for ${parcel.parcelCode}`,
-        region: null,
-        warehouseId: actor.warehouseId ?? null,
-        actorId: actor.id,
-        actorRole: actor.role,
-        parcelId: parcel.id,
-      });
     }
 
-    // Persist parcel labelKeys + tracking in one transaction
     if (labelUpdates.length) {
-      await prisma.$transaction([
-        ...labelUpdates.map((u) =>
+      await prisma.$transaction(
+        labelUpdates.map((u) =>
           prisma.parcel.update({
             where: { id: u.parcelId },
             data: { labelKey: u.labelKey },
           }),
         ),
-        prisma.tracking.createMany({ data: trackingRows }),
-      ]);
+      );
     }
 
-    // 3) If Stripe OFF, finish here
+    // ✅ 4) Stripe OFF -> return fresh order
     if (!paymentsEnabled) {
-      const fresh = await prisma.order.findUnique({
-        where: { id: order.id },
-        include: {
-          customer: true,
-          parcels: true,
-          trackingEvents: { orderBy: { timestamp: "asc" } },
-          invoice: true,
-        },
-      });
-
+      const fresh = await getOrderById(order.id);
       return res.status(201).json({
         order: fresh,
         message: "Order created (manual payment) + parcel labels generated",
       });
     }
 
-    // 4) Stripe ON: require amount
+    // ✅ 5) Stripe ON -> require amount
     if (typeof amount !== "number" || amount <= 0) {
       return res
         .status(400)
@@ -136,15 +239,7 @@ export const create = async (req: Request, res: Response) => {
       data: { paymentUrl },
     });
 
-    const fresh = await prisma.order.findUnique({
-      where: { id: order.id },
-      include: {
-        customer: true,
-        parcels: true,
-        trackingEvents: { orderBy: { timestamp: "asc" } },
-        invoice: true,
-      },
-    });
+    const fresh = await getOrderById(order.id);
 
     return res.status(201).json({
       order: fresh,
@@ -153,10 +248,14 @@ export const create = async (req: Request, res: Response) => {
       message: "Order + parcel labels + invoice created successfully",
     });
   } catch (err: any) {
+    const code = err?.statusCode ?? 500;
     console.error("Create order failed:", err?.message || err);
-    return res.status(500).json({ error: "Failed to create order" });
+    return res
+      .status(code)
+      .json({ error: err?.message ?? "Failed to create order" });
   }
 };
+// ---------------- LIST ----------------
 
 export async function list(req: any, res: any) {
   try {
@@ -175,12 +274,15 @@ export async function list(req: any, res: any) {
   }
 }
 
+// ---------------- GET ONE ----------------
+
 export async function getOne(req: any, res: any) {
   try {
     const order = await getOrderById(req.params.id);
     if (!order) return res.status(404).json({ error: "Not found" });
 
     const { id: userId, role } = req.user as { id: string; role: AppRole };
+
     if (role === "manager" || role === "warehouse") return res.json(order);
     if (role === "customer" && order.customerId === userId)
       return res.json(order);
@@ -194,63 +296,27 @@ export async function getOne(req: any, res: any) {
   }
 }
 
-function requireUser(req: any) {
-  if (!req.user?.id || !req.user?.role) {
-    const err = new Error("Unauthorized");
-    // @ts-expect-error
-    err.statusCode = 401;
-    throw err;
-  }
-  return req.user as {
-    id: string;
-    role: AppRole;
-    warehouseId?: string | null;
-  };
-}
-
-export async function updateStatus(req: Request, res: Response) {
-  try {
-    const orderId = req.params.id;
-    const { status, region, warehouseId } = req.body;
-
-    const user = req.user;
-    if (!user) return res.status(401).json({ error: "Unauthorized" });
-
-    const actor = {
-      id: user.id,
-      role: user.role,
-      warehouseId: user.warehouseId,
-    };
-
-    const updatedOrder = await updateOrderStatus({
-      orderId,
-      status,
-      region,
-      warehouseId,
-      actor,
-    });
-
-    return res.json({
-      success: true,
-      message: "Order status updated successfully",
-      order: updatedOrder,
-    });
-  } catch (err: any) {
-    const code = err.statusCode ?? 500;
-    return res.status(code).json({ error: err.message });
-  }
-}
+// ---------------- ASSIGN DRIVER ----------------
 
 export async function assign(req: any, res: any) {
   try {
     const { driverId } = req.body;
     if (!driverId) return res.status(400).json({ error: "Missing driverId" });
 
+    if (!req.user?.id) return res.status(401).json({ error: "Unauthorized" });
+
+    const actor = {
+      id: req.user.id,
+      role: req.user.role as AppRole,
+      warehouseId: req.user.warehouseId ?? null,
+    };
+
     const orderId = req.params.id;
 
     const updatedOrders = await assignOrdersToDriver({
       orderIds: [orderId],
       driverId,
+      actor,
     });
 
     return res.json({
@@ -275,9 +341,18 @@ export async function assignBulk(req: any, res: any) {
         .json({ error: "orderIds must be a non-empty array" });
     }
 
+    if (!req.user?.id) return res.status(401).json({ error: "Unauthorized" });
+
+    const actor = {
+      id: req.user.id,
+      role: req.user.role as AppRole,
+      warehouseId: req.user.warehouseId ?? null,
+    };
+
     const updatedOrders = await assignOrdersToDriver({
       orderIds,
       driverId,
+      actor,
     });
 
     return res.json({
@@ -292,22 +367,70 @@ export async function assignBulk(req: any, res: any) {
   }
 }
 
-const ALLOWED_MANAGER_STATUSES: OrderStatus[] = [
-  "pending",
-  "assigned",
-  "in_transit",
-  "arrived_at_warehouse",
-  "out_for_delivery",
-  "delivered",
-];
+// ---------------- UPDATE STATUS ----------------
+
+export async function updateStatus(req: Request, res: Response) {
+  try {
+    const orderId = req.params.id;
+
+    const {
+      action,
+      reasonCode,
+      note,
+      region,
+      warehouseId,
+      parcelId,
+    }: {
+      action: TrackingAction;
+      reasonCode?: ReasonCode | null;
+      note?: string | null;
+      region?: string | null;
+      warehouseId?: string | null;
+      parcelId?: string | null;
+    } = req.body;
+
+    if (!action) return res.status(400).json({ error: "Missing action" });
+
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
+
+    const actor = {
+      id: user.id,
+      role: user.role as AppRole,
+      warehouseId: user.warehouseId ?? null,
+    };
+
+    const updatedOrder = await updateOrderStatus({
+      orderId,
+      action,
+      reasonCode,
+      note,
+      region,
+      warehouseId,
+      parcelId,
+      actor,
+    });
+
+    return res.json({
+      success: true,
+      message: "Order updated successfully",
+      order: updatedOrder,
+    });
+  } catch (err: any) {
+    const code = err.statusCode ?? 500;
+    return res.status(code).json({ error: err.message });
+  }
+}
+
+// ---------------- MANAGER UPDATE (action-based) ----------------
 
 export const updateStatusManager = async (req: any, res: any) => {
   try {
     const { id: orderId } = req.params;
-    const { status, region, warehouseId, note } = req.body;
+    const { action, reasonCode, note, region, warehouseId, parcelId } =
+      req.body;
 
-    assertManagerStatus(status);
-
+    if (!action) return res.status(400).json({ error: "Missing action" });
     if (!req.user?.id || !req.user?.role) {
       return res.status(401).json({ error: "Unauthorized" });
     }
@@ -320,10 +443,12 @@ export const updateStatusManager = async (req: any, res: any) => {
 
     const updatedOrder = await updateOrderStatus({
       orderId,
-      status,
-      region: region ?? null,
-      warehouseId: warehouseId ?? null,
-      note: note ?? null,
+      action,
+      reasonCode,
+      note,
+      region,
+      warehouseId,
+      parcelId,
       actor,
     });
 
@@ -334,25 +459,26 @@ export const updateStatusManager = async (req: any, res: any) => {
   }
 };
 
-function assertManagerStatus(status: any): asserts status is OrderStatus {
-  if (!ALLOWED_MANAGER_STATUSES.includes(status)) {
-    const err: any = new Error("Invalid status");
-    err.statusCode = 400;
-    throw err;
-  }
-}
+// ---------------- BULK UPDATE (manager) ----------------
 
 export const updateStatusBulk = async (req: any, res: Response) => {
   try {
-    const { orderIds, status, region, warehouseId, note } = req.body;
+    const {
+      orderIds,
+      action,
+      reasonCode,
+      note,
+      region,
+      warehouseId,
+      parcelId,
+    } = req.body;
 
     if (!Array.isArray(orderIds) || orderIds.length === 0) {
       return res
         .status(400)
         .json({ error: "orderIds must be a non-empty array" });
     }
-
-    assertManagerStatus(status);
+    if (!action) return res.status(400).json({ error: "Missing action" });
 
     if (!req.user?.id || !req.user?.role) {
       return res.status(401).json({ error: "Unauthorized" });
@@ -366,10 +492,12 @@ export const updateStatusBulk = async (req: any, res: Response) => {
 
     const orders = await updateOrderStatusMany({
       orderIds,
-      status,
-      region: region ?? null,
-      warehouseId: warehouseId ?? null,
-      note: note ?? null,
+      action,
+      reasonCode,
+      note,
+      region,
+      warehouseId,
+      parcelId,
       actor,
     });
 

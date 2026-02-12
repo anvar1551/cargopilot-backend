@@ -1,20 +1,9 @@
 import prisma from "../../config/prismaClient";
-import { OrderStatus, AppRole } from "@prisma/client";
+import { Prisma, OrderStatus, AppRole, TrackingAction } from "@prisma/client";
 import { getNextOrderNumber } from "../../utils/orderNumber";
+import { CreateOrderRepoPayload } from "./orderCreate.mapper";
 
-const userLiteSelect = {
-  id: true,
-  name: true,
-  email: true,
-  role: true,
-};
-
-type ListManagerOrdersArgs = {
-  q?: string;
-  status?: string;
-  page?: number;
-  limit?: number;
-};
+const userLiteSelect = { id: true, name: true, email: true, role: true };
 
 type Actor = {
   id: string;
@@ -22,40 +11,157 @@ type Actor = {
   warehouseId?: string | null;
 };
 
-type CreateOrderPayload = {
-  pickupAddress: string;
-  dropoffAddress: string;
+function sanitizeSnapshot(s: any) {
+  if (!s || typeof s !== "object") return null;
 
-  destinationCity?: string;
+  return {
+    country: s.country ?? null,
+    city: s.city ?? null,
+    neighborhood: s.neighborhood ?? null,
+    street: s.street ?? null,
+    addressLine1: s.addressLine1 ?? null,
+    addressLine2: s.addressLine2 ?? null,
+    building: s.building ?? null,
+    apartment: s.apartment ?? null,
+    floor: s.floor ?? null,
+    landmark: s.landmark ?? null,
+    postalCode: s.postalCode ?? null,
+    addressType: s.addressType ?? null,
+    // keep passport fields out unless you really want them
+  };
+}
 
-  senderName?: string;
-  senderPhone?: string;
-  senderAddress?: string;
+function isUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value,
+  );
+}
 
-  receiverName?: string;
-  receiverPhone?: string;
-  receiverAddress?: string;
+function looksLikeOrderNumber(value: string) {
+  return /^[0-9]{6,20}$/.test(value);
+}
 
-  serviceType?: string;
-  codAmount?: number;
-  currency?: string;
-  weightKg?: number;
+function toDateOrNull(v?: Date | string | null) {
+  if (v === undefined || v === null) return null;
+  if (v instanceof Date) return v;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
 
-  // parcels support
-  pieceTotal?: number;
-  parcels?: Array<{
-    weightKg?: number;
-    lengthCm?: number;
-    widthCm?: number;
-    heightCm?: number;
-  }>;
-};
+async function assertFkExists(payload: CreateOrderRepoPayload) {
+  // ✅ only validate when user actually provided IDs
+  if (payload.customerEntityId) {
+    const exists = await prisma.customerEntity.findUnique({
+      where: { id: payload.customerEntityId },
+      select: { id: true },
+    });
+    if (!exists) {
+      const e: any = new Error("customerEntityId not found");
+      e.statusCode = 400;
+      throw e;
+    }
+  }
+
+  if (payload.senderAddressId) {
+    const exists = await prisma.address.findUnique({
+      where: { id: payload.senderAddressId },
+      select: { id: true },
+    });
+    if (!exists) {
+      const e: any = new Error("senderAddressId not found");
+      e.statusCode = 400;
+      throw e;
+    }
+  }
+
+  if (payload.receiverAddressId) {
+    const exists = await prisma.address.findUnique({
+      where: { id: payload.receiverAddressId },
+      select: { id: true },
+    });
+    if (!exists) {
+      const e: any = new Error("receiverAddressId not found");
+      e.statusCode = 400;
+      throw e;
+    }
+  }
+}
 
 export const createOrder = async (
   customerId: string,
-  payload: CreateOrderPayload,
+  payload: CreateOrderRepoPayload,
   actor?: Actor,
 ) => {
+  // ✅ customerEntityId required only if we want to save addresses
+  const wantsSavePickup = payload.savePickupToAddressBook === true;
+  const wantsSaveDropoff = payload.saveDropoffToAddressBook === true;
+
+  if ((wantsSavePickup || wantsSaveDropoff) && !payload.customerEntityId) {
+    const e: any = new Error("customerEntityId is required to save addresses");
+    e.statusCode = 400;
+    throw e;
+  }
+
+  // ✅ if user wants save but didn't select an addressId, they must provide structured snapshot
+  if (wantsSavePickup && !payload.senderAddressId) {
+    const snap = sanitizeSnapshot(payload.senderAddressSnapshot);
+    if (!snap) {
+      const e: any = new Error(
+        "senderAddress (structured) is required to save pickup address",
+      );
+      e.statusCode = 400;
+      throw e;
+    }
+  }
+
+  if (wantsSaveDropoff && !payload.receiverAddressId) {
+    const snap = sanitizeSnapshot(payload.receiverAddressSnapshot);
+    if (!snap) {
+      const e: any = new Error(
+        "receiverAddress (structured) is required to save dropoff address",
+      );
+      e.statusCode = 400;
+      throw e;
+    }
+  }
+
+  // ✅ create Address rows (only when needed)
+  let senderAddressId = payload.senderAddressId ?? null;
+  let receiverAddressId = payload.receiverAddressId ?? null;
+
+  if (wantsSavePickup && !senderAddressId) {
+    const snap = sanitizeSnapshot(payload.senderAddressSnapshot)!;
+
+    const created = await prisma.address.create({
+      data: {
+        customerEntityId: payload.customerEntityId!,
+        ...snap,
+        isSaved: true,
+      },
+      select: { id: true },
+    });
+
+    senderAddressId = created.id;
+  }
+
+  if (wantsSaveDropoff && !receiverAddressId) {
+    const snap = sanitizeSnapshot(payload.receiverAddressSnapshot)!;
+
+    const created = await prisma.address.create({
+      data: {
+        customerEntityId: payload.customerEntityId!,
+        ...snap,
+        isSaved: true,
+      },
+      select: { id: true },
+    });
+
+    receiverAddressId = created.id;
+  }
+
+  // optional but makes errors clean
+  await assertFkExists({ ...payload, senderAddressId, receiverAddressId });
+
   const orderNumber = await getNextOrderNumber();
 
   const pieceTotal =
@@ -70,7 +176,6 @@ export const createOrder = async (
         lengthCm: p.lengthCm ?? null,
         widthCm: p.widthCm ?? null,
         heightCm: p.heightCm ?? null,
-        // ✅ Scan code based on enterprise number
         parcelCode: `${orderNumber}-${idx + 1}/${pieceTotal}`,
       }))
     : [
@@ -100,16 +205,42 @@ export const createOrder = async (
       receiverPhone: payload.receiverPhone ?? null,
       receiverAddress: payload.receiverAddress ?? null,
 
+      customerEntityId: payload.customerEntityId ?? null,
+      senderAddressId,
+      receiverAddressId,
+
       serviceType: payload.serviceType ?? null,
       codAmount: payload.codAmount ?? null,
       currency: payload.currency ?? null,
       weightKg: payload.weightKg ?? null,
 
+      paymentType: payload.paymentType ?? null,
+      deliveryChargePaidBy: payload.deliveryChargePaidBy ?? null,
+      ifRecipientNotAvailable: payload.ifRecipientNotAvailable ?? null,
+
+      codPaidStatus: payload.codPaidStatus ?? null,
+      serviceCharge: payload.serviceCharge ?? null,
+      serviceChargePaidStatus: payload.serviceChargePaidStatus ?? null,
+      itemValue: payload.itemValue ?? null,
+
+      plannedPickupAt: toDateOrNull(payload.plannedPickupAt),
+      plannedDeliveryAt: toDateOrNull(payload.plannedDeliveryAt),
+      promiseDate: toDateOrNull(payload.promiseDate),
+
+      referenceId: payload.referenceId ?? null,
+      shelfId: payload.shelfId ?? null,
+      promoCode: payload.promoCode ?? null,
+      numberOfCalls: payload.numberOfCalls ?? null,
+
+      fragile: payload.fragile ?? false,
+      dangerousGoods: payload.dangerousGoods ?? false,
+      shipmentInsurance: payload.shipmentInsurance ?? false,
+
       parcels: { create: parcelsToCreate },
 
       trackingEvents: {
         create: {
-          event: "created",
+          action: TrackingAction.ORDER_CREATED,
           status: OrderStatus.pending,
           note: "Order created",
           actorId: actor?.id ?? null,
@@ -120,8 +251,18 @@ export const createOrder = async (
       },
     },
     include: {
-      customer: true,
+      customer: { select: userLiteSelect },
+
+      customerEntity: true,
+      senderAddressObj: true,
+      receiverAddressObj: true,
+      attachments: true,
+
       parcels: true,
+      currentWarehouse: true,
+      assignedDriver: { select: userLiteSelect },
+      invoice: true,
+
       trackingEvents: {
         include: {
           actor: { select: userLiteSelect },
@@ -130,19 +271,31 @@ export const createOrder = async (
         },
         orderBy: { timestamp: "asc" },
       },
-      invoice: true,
     },
   });
 };
 
 export const getOrderById = async (id: string) => {
-  return await prisma.order.findUnique({
+  return prisma.order.findUnique({
     where: { id },
     include: {
       customer: { select: userLiteSelect },
       assignedDriver: { select: userLiteSelect },
       currentWarehouse: true,
       invoice: true,
+
+      // ✅ avoid loading full address book (scales better)
+      customerEntity: {
+        include: {
+          defaultAddress: true,
+          // addresses: true, // <-- do not load all by default
+        },
+      },
+
+      senderAddressObj: true,
+      receiverAddressObj: true,
+      attachments: true,
+
       parcels: true,
       trackingEvents: {
         include: {
@@ -159,38 +312,29 @@ export const getOrderById = async (id: string) => {
 export const listOrders = async (
   userId: string,
   role: AppRole,
-  params?: {
-    q?: string;
-    page?: number;
-    limit?: number;
-  },
+  params?: { q?: string; page?: number; limit?: number },
 ) => {
   const q = params?.q?.trim();
   const page = params?.page ?? 1;
-  const limit = Math.min(params?.limit ?? 120, 200); // safety cap
+  const limit = Math.min(params?.limit ?? 50, 200);
   const skip = (page - 1) * limit;
 
-  const where: any = {};
-  const isUuid =
-    !!q &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-      q,
-    );
+  const where: Prisma.OrderWhereInput = {};
 
   if (q) {
-    where.OR = [
-      // ✅ UUID-safe: only exact match when it’s actually a UUID
-      ...(isUuid ? [{ id: q }] : []),
+    const or: Prisma.OrderWhereInput[] = [];
 
+    if (isUuid(q)) or.push({ id: q });
+    if (looksLikeOrderNumber(q)) or.push({ orderNumber: q });
+
+    or.push(
       { pickupAddress: { contains: q, mode: "insensitive" } },
       { dropoffAddress: { contains: q, mode: "insensitive" } },
-
-      { orderNumber: { equals: q } },
       { orderNumber: { contains: q, mode: "insensitive" } },
+      { referenceId: { contains: q, mode: "insensitive" } },
+
       {
-        parcels: {
-          some: { parcelCode: { contains: q, mode: "insensitive" } },
-        },
+        parcels: { some: { parcelCode: { contains: q, mode: "insensitive" } } },
       },
 
       {
@@ -203,23 +347,48 @@ export const listOrders = async (
       },
 
       {
-        currentWarehouse: {
-          name: { contains: q, mode: "insensitive" },
+        customerEntity: {
+          OR: [
+            { name: { contains: q, mode: "insensitive" } },
+            { email: { contains: q, mode: "insensitive" } },
+            { phone: { contains: q, mode: "insensitive" } },
+            { companyName: { contains: q, mode: "insensitive" } },
+          ],
         },
       },
-    ];
+
+      {
+        senderAddressObj: {
+          OR: [
+            { city: { contains: q, mode: "insensitive" } },
+            { street: { contains: q, mode: "insensitive" } },
+            { addressLine1: { contains: q, mode: "insensitive" } },
+            { neighborhood: { contains: q, mode: "insensitive" } },
+            { postalCode: { contains: q, mode: "insensitive" } },
+          ],
+        },
+      },
+      {
+        receiverAddressObj: {
+          OR: [
+            { city: { contains: q, mode: "insensitive" } },
+            { street: { contains: q, mode: "insensitive" } },
+            { addressLine1: { contains: q, mode: "insensitive" } },
+            { neighborhood: { contains: q, mode: "insensitive" } },
+            { postalCode: { contains: q, mode: "insensitive" } },
+          ],
+        },
+      },
+
+      { currentWarehouse: { name: { contains: q, mode: "insensitive" } } },
+    );
+
+    where.OR = or;
   }
 
-  // 🔐 ROLE FILTERING
-  if (role === "customer") {
-    where.customerId = userId;
-  }
+  if (role === "customer") where.customerId = userId;
+  if (role === "driver") where.assignedDriverId = userId;
 
-  if (role === "driver") {
-    where.assignedDriverId = userId;
-  }
-
-  // 🚀 QUERY
   const [orders, total] = await prisma.$transaction([
     prisma.order.findMany({
       where,
@@ -228,6 +397,12 @@ export const listOrders = async (
         assignedDriver: { select: userLiteSelect },
         currentWarehouse: true,
         invoice: true,
+
+        customerEntity: true,
+        senderAddressObj: true,
+        receiverAddressObj: true,
+        attachments: true,
+
         parcels: true,
         trackingEvents: {
           include: {
@@ -244,6 +419,7 @@ export const listOrders = async (
     }),
     prisma.order.count({ where }),
   ]);
+
   const pageCount = Math.ceil(total / limit);
 
   return {
