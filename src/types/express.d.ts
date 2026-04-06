@@ -1,8 +1,5 @@
 import "express";
-import type { User as PrismaUser } from "@prisma/client";
-import { CustomerEntityDelegate } from "./../../node_modules/.prisma/client/index.d";
-
-type AppRole = PrismaUser["role"];
+import type { AppRole } from "@prisma/client";
 
 declare global {
   namespace Express {
@@ -11,7 +8,7 @@ declare global {
       role: AppRole;
       customerEntityId?: string | null;
       email: string;
-      name: string | null;
+      name: string;
       warehouseId: string | null;
     }
 

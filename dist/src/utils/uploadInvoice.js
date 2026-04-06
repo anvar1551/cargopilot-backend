@@ -1,0 +1,30 @@
+"use strict";
+// import { uploadToS3 } from "./uploadToS3";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.uploadInvoice = uploadInvoice;
+// export function uploadInvoice(fileName: string) {
+//   return uploadToS3({
+//     localDir: "invoices",
+//     fileName,
+//     s3Folder: "invoices",
+//   });
+// }
+const client_s3_1 = require("@aws-sdk/client-s3");
+const fs_1 = __importDefault(require("fs"));
+const path_1 = __importDefault(require("path"));
+const s3_1 = require("../config/s3");
+async function uploadInvoice(fileName) {
+    const filePath = path_1.default.join("invoices", fileName);
+    const fileContent = fs_1.default.readFileSync(filePath);
+    const key = `invoices/${fileName}`;
+    await s3_1.s3.send(new client_s3_1.PutObjectCommand({
+        Bucket: process.env.AWS_S3_BUCKET,
+        Key: key,
+        Body: fileContent,
+        ContentType: "application/pdf",
+    }));
+    return { key };
+}

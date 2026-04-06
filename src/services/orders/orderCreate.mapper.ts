@@ -7,6 +7,7 @@ import {
   PaidStatus,
   RecipientUnavailableAction,
 } from "@prisma/client";
+import { buildAddressText } from "./orderAddress.shared";
 
 /**
  * Helpers
@@ -287,25 +288,6 @@ export type CreateOrderRepoPayload = {
 
   amount?: number | undefined;
 };
-
-/** Format address to single line */
-function buildAddressText(addr: any): string {
-  const parts = [
-    addr?.addressLine1,
-    addr?.addressLine2,
-    addr?.building,
-    addr?.floor ? `Floor ${addr.floor}` : null,
-    addr?.apartment,
-    addr?.street,
-    addr?.neighborhood,
-    addr?.city,
-    addr?.postalCode,
-    addr?.country,
-    addr?.landmark ? `Landmark: ${addr.landmark}` : null,
-  ].filter(Boolean);
-
-  return parts.join(", ");
-}
 
 export async function mapCreateOrderDtoToRepoPayload(
   raw: unknown,

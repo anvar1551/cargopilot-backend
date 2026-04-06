@@ -17,7 +17,6 @@ export async function list(req: Request, res: Response) {
     const q = typeof req.query.q === "string" ? req.query.q : undefined;
     const take = req.query.take ? Number(req.query.take) : undefined;
 
-    // ✅ manager can request any customer entity
     const queryCustomerEntityId =
       typeof req.query.customerEntityId === "string"
         ? req.query.customerEntityId
@@ -25,8 +24,8 @@ export async function list(req: Request, res: Response) {
 
     const customerEntityId =
       role === AppRole.manager
-        ? queryCustomerEntityId // manager can pick
-        : (req.user.customerEntityId ?? undefined); // self mode
+        ? queryCustomerEntityId
+        : (req.user.customerEntityId ?? undefined);
 
     const rows = await listAddresses({
       customerEntityId,
@@ -43,7 +42,7 @@ export async function list(req: Request, res: Response) {
 }
 
 const addressCreateSchema = z.object({
-  customerEntityId: z.string().uuid().optional().nullable(), // manager can set; customers usually omit
+  customerEntityId: z.string().uuid().optional().nullable(),
   country: z.string().optional().nullable(),
   city: z.string().optional().nullable(),
   neighborhood: z.string().optional().nullable(),
@@ -61,11 +60,35 @@ const addressCreateSchema = z.object({
 
 export async function create(req: Request, res: Response) {
   try {
+    if (!req.user?.id || !req.user?.role) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const role = req.user.role as AppRole;
+    if (role !== AppRole.manager && role !== AppRole.customer) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
     const dto = addressCreateSchema.parse(req.body);
 
-    // ✅ determine owner
-    const ownerCustomerEntityId =
-      dto.customerEntityId ?? req.user?.customerEntityId ?? null;
+    // Managers may specify a target customer entity.
+    // Customers can only write into their own customer entity.
+    let ownerCustomerEntityId: string | null = null;
+
+    if (role === AppRole.manager) {
+      ownerCustomerEntityId =
+        dto.customerEntityId ?? req.user.customerEntityId ?? null;
+    } else {
+      const myCustomerEntityId = req.user.customerEntityId ?? null;
+
+      if (dto.customerEntityId && dto.customerEntityId !== myCustomerEntityId) {
+        return res.status(403).json({
+          error: "Customers can only create addresses for their own entity",
+        });
+      }
+
+      ownerCustomerEntityId = myCustomerEntityId;
+    }
 
     if (!ownerCustomerEntityId) {
       return res.status(400).json({

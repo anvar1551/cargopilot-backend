@@ -1,11 +1,12 @@
 import { Router } from "express";
 import { auth } from "../../middleware/auth";
-import { list } from "./customerEntityController";
+import { list, create, getOne } from "./customerEntityController";
 import { AppRole } from "@prisma/client";
 
 const router = Router();
 
-// only manager and customer can see customer entities
 router.get("/", auth([AppRole.manager, AppRole.customer]), list);
+router.get("/:id", auth([AppRole.manager, AppRole.customer]), getOne);
+router.post("/", auth([AppRole.manager]), create); // keep create manager-only
 
 export default router;

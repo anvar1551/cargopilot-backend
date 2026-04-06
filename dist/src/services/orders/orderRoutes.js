@@ -1,0 +1,17 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const client_1 = require("@prisma/client");
+const auth_1 = require("../../middleware/auth");
+const controller_1 = require("./controller");
+const router = (0, express_1.Router)();
+router.post("/", (0, auth_1.auth)([client_1.AppRole.customer, client_1.AppRole.manager]), controller_1.create);
+router.get("/", (0, auth_1.auth)([client_1.AppRole.manager, client_1.AppRole.customer, client_1.AppRole.driver, client_1.AppRole.warehouse]), controller_1.list);
+router.get("/export.csv", (0, auth_1.auth)([client_1.AppRole.manager]), controller_1.exportCsv);
+router.get("/driver-workloads", (0, auth_1.auth)([client_1.AppRole.manager, client_1.AppRole.warehouse]), controller_1.listDriverWorkload);
+router.post("/assign-driver-bulk", (0, auth_1.auth)([client_1.AppRole.manager, client_1.AppRole.warehouse]), controller_1.assignDriversBulk);
+router.post("/tasks/assign-bulk", (0, auth_1.auth)([client_1.AppRole.manager, client_1.AppRole.warehouse]), controller_1.assignTasksBulk);
+router.post("/status-bulk", (0, auth_1.auth)([client_1.AppRole.manager, client_1.AppRole.warehouse]), controller_1.updateStatusBulk);
+router.post("/driver-status", (0, auth_1.auth)([client_1.AppRole.driver]), controller_1.updateDriverStatus);
+router.get("/:id", (0, auth_1.auth)([client_1.AppRole.manager, client_1.AppRole.warehouse, client_1.AppRole.customer, client_1.AppRole.driver]), controller_1.getOne);
+exports.default = router;

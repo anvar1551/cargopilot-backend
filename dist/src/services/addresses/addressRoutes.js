@@ -1,0 +1,10 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const addressController_1 = require("./addressController");
+const auth_1 = require("../../middleware/auth");
+const client_1 = require("@prisma/client");
+const router = (0, express_1.Router)();
+router.get("/", (0, auth_1.auth)([client_1.AppRole.manager, client_1.AppRole.customer]), addressController_1.list);
+router.post("/", (0, auth_1.auth)([client_1.AppRole.manager, client_1.AppRole.customer]), addressController_1.create);
+exports.default = router;

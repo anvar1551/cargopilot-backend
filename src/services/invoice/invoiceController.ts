@@ -3,13 +3,21 @@ import prisma from "../../config/prismaClient";
 import { presignGetObject } from "../../utils/s3Presign";
 
 export async function getInvoicePdfUrl(req: Request, res: Response) {
-  const invoiceId = req.params.id;
+  const idParam = req.params.id;
   const user = req.user!; // from auth middleware
 
-  const invoice = await prisma.invoice.findUnique({
-    where: { id: invoiceId },
+  // Primary lookup by orderId because route is /orders/:id/url.
+  // Fallback to invoice id for backward compatibility.
+  let invoice = await prisma.invoice.findUnique({
+    where: { orderId: idParam },
     include: { order: true },
   });
+  if (!invoice) {
+    invoice = await prisma.invoice.findUnique({
+      where: { id: idParam },
+      include: { order: true },
+    });
+  }
 
   if (!invoice) return res.status(404).json({ error: "Invoice not found" });
   if (!invoice.invoiceKey)

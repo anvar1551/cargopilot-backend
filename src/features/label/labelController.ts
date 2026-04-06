@@ -6,26 +6,61 @@ export async function getLabelPdfUrl(req: Request, res: Response) {
   const orderId = req.params.id;
   const user = req.user!;
 
-  const order = await prisma.order.findUnique({ where: { id: orderId } });
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: {
+      id: true,
+      customerId: true,
+      assignedDriverId: true,
+      currentWarehouseId: true,
+      labelKey: true, // legacy fallback
+      parcels: {
+        select: {
+          id: true,
+          pieceNo: true,
+          pieceTotal: true,
+          parcelCode: true,
+          labelKey: true,
+        },
+        orderBy: { pieceNo: "asc" },
+      },
+    },
+  });
+
   if (!order) return res.status(404).json({ error: "Order not found" });
 
-  // use labelKey (recommended). If you currently store it in labelUrl, use that field.
-  const labelKey = (order as any).labelKey || (order as any).labelUrl;
-  if (!labelKey)
-    return res.status(404).json({ error: "Label not available yet" });
-
-  // Authorization (adjust as you like)
   if (user.role === "manager") {
-    // ok
+    // allowed
   } else if (user.role === "customer" && order.customerId !== user.id) {
     return res.status(403).json({ error: "Forbidden" });
   } else if (user.role === "driver" && order.assignedDriverId !== user.id) {
     return res.status(403).json({ error: "Forbidden" });
   } else if (user.role === "warehouse") {
-    // Optional strict check:
-    // if (order.currentWarehouseId && user.warehouseId && order.currentWarehouseId !== user.warehouseId) ...
+    // Optional strict warehouse check can be added here.
   }
 
-  const url = await presignGetObject(labelKey, 300);
-  return res.json({ url });
+  const parcelLabels = order.parcels.filter((p) => Boolean(p.labelKey));
+
+  // Backward-compatible fallback for older rows that stored order-level labelKey.
+  if (parcelLabels.length === 0 && order.labelKey) {
+    const url = await presignGetObject(order.labelKey, 300);
+    return res.json({ url });
+  }
+
+  if (parcelLabels.length === 0) {
+    return res.status(404).json({ error: "Label not available yet" });
+  }
+
+  const urls = await Promise.all(
+    parcelLabels.map(async (parcel) => ({
+      parcelId: parcel.id,
+      parcelCode: parcel.parcelCode,
+      pieceNo: parcel.pieceNo,
+      pieceTotal: parcel.pieceTotal,
+      url: await presignGetObject(parcel.labelKey!, 300),
+    })),
+  );
+
+  // Keep `url` for backward compatibility when consumers expect a single string.
+  return res.json({ url: urls[0].url, urls });
 }

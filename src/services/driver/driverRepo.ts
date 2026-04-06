@@ -1,5 +1,4 @@
 import prisma from "../../config/prismaClient";
-import { TrackingAction } from "@prisma/client";
 
 export const listAllDrivers = async () => {
   return await prisma.user.findMany({

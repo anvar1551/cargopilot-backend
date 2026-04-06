@@ -1,48 +1,40 @@
-import * as orderRepo from "../src/services/orders/orderRepo";
-import * as db from "../src/config/db";
+import { mapCreateOrderDtoToRepoPayload } from "../src/services/orders/orderCreate.mapper";
 
-describe("Order Repository (mocked DB)", () => {
-  // mock connection object with fake methods
-  const mockConn = {
-    prepare: jest.fn().mockReturnThis(),
-    exec: jest.fn(),
-    drop: jest.fn(),
-    disconnect: jest.fn(),
-  };
+describe("mapCreateOrderDtoToRepoPayload", () => {
+  it("maps a basic order payload without address-book lookups", async () => {
+    const payload = await mapCreateOrderDtoToRepoPayload({
+      customerEntityId: null,
+      sender: { name: "Alice", phone: "+49111" },
+      receiver: { name: "Bob", phone: "+49222" },
+      addresses: {
+        senderAddressId: null,
+        receiverAddressId: null,
+        pickupAddress: "Hamburg Warehouse Street 1",
+        dropoffAddress: "Berlin Delivery Street 2",
+        destinationCity: "Berlin",
+        savePickupToAddressBook: false,
+        saveDropoffToAddressBook: false,
+      },
+      shipment: {
+        serviceType: "DOOR_TO_DOOR",
+        weightKg: 2.5,
+        codEnabled: false,
+        codAmount: 50,
+        currency: "EUR",
+      },
+      payment: null,
+      schedule: null,
+      reference: null,
+      amount: 19.99,
+    });
 
-  beforeEach(() => {
-    jest.clearAllMocks();
-    jest.spyOn(db, "getConnection").mockReturnValue(mockConn as any);
-  });
-
-  it("should create a new order and return it", () => {
-    const fakeOrder = {
-      ID: "abc123",
-      CUSTOMER_ID: "cust001",
-      PICKUP_ADDRESS: "Hamburg",
-      DROPOFF_ADDRESS: "Berlin",
-      STATUS: "pending",
-    };
-
-    // Simulate first exec = insert (no return)
-    // and second exec = select (returns array)
-    mockConn.exec
-      .mockReturnValueOnce(undefined) // first call (insert)
-      .mockReturnValueOnce([fakeOrder]); // second call (select)
-
-    const result = orderRepo.createOrder("cust001", "Hamburg", "Berlin");
-
-    expect(mockConn.prepare).toHaveBeenCalledTimes(1);
-    expect(mockConn.exec).toHaveBeenCalledTimes(2);
-    expect(result).toEqual(fakeOrder);
-  });
-
-  it("should return null if no order found", () => {
-    mockConn.prepare.mockReturnThis();
-    mockConn.exec.mockReturnValueOnce([]);
-
-    const result = orderRepo.getOrderById("nope");
-
-    expect(result).toBeNull();
+    expect(payload.pickupAddress).toBe("Hamburg Warehouse Street 1");
+    expect(payload.dropoffAddress).toBe("Berlin Delivery Street 2");
+    expect(payload.destinationCity).toBe("Berlin");
+    expect(payload.senderName).toBe("Alice");
+    expect(payload.receiverName).toBe("Bob");
+    expect(payload.codAmount).toBeNull();
+    expect(payload.currency).toBeNull();
+    expect(payload.amount).toBe(19.99);
   });
 });

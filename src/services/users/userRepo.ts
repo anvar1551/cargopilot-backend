@@ -2,8 +2,13 @@ import prisma from "../../config/prismaClient";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import { AppRole, CustomerType } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 
-const JWT_SECRET = process.env.JWT_SECRET || "supersecret";
+function getJwtSecret() {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) throw new Error("JWT_SECRET not configured");
+  return secret;
+}
 
 function signToken(payload: {
   id: string;
@@ -11,14 +16,17 @@ function signToken(payload: {
   warehouseId?: string | null;
   customerEntityId?: string | null;
 }) {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: "7d" });
+  return jwt.sign(payload, getJwtSecret(), { expiresIn: "7d" });
 }
 
 function safeUser(user: any) {
-  // never return password hash
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { password, ...rest } = user;
-  return rest;
+
+  return {
+    ...rest,
+    warehouseId: rest.warehouseId ?? rest.warehouse?.id ?? null,
+    customerEntityId: rest.customerEntityId ?? rest.customerEntity?.id ?? null,
+  };
 }
 
 export const registerUser = async (args: {
@@ -82,7 +90,7 @@ export const registerUser = async (args: {
   const token = signToken({
     id: user.id,
     role: user.role,
-    warehouseId: user.warehouseId ?? null,
+    warehouseId: user.warehouse?.id ?? null,
     customerEntityId: user.customerEntity?.id ?? null,
   });
 
@@ -111,9 +119,185 @@ export const loginUser = async (emailRaw: string, password: string) => {
   const token = signToken({
     id: user.id,
     role: user.role,
-    warehouseId: user.warehouseId ?? null,
+    warehouseId: user.warehouse?.id ?? null,
     customerEntityId: user.customerEntity?.id ?? null,
   });
 
   return { token, user: safeUser(user) };
+};
+
+export const createUserAsManager = async (args: {
+  name: string;
+  email: string;
+  password: string;
+  role: AppRole;
+
+  // optional links
+  warehouseId?: string | null;
+
+  // for CUSTOMER only
+  customerEntityId?: string | null; // link to existing (usually COMPANY)
+  phone?: string | null; // optional for auto PERSON entity
+}) => {
+  const name = args.name?.trim();
+  const email = args.email?.trim().toLowerCase();
+  const password = args.password;
+
+  if (!name) throw new Error("Name is required");
+  if (!email) throw new Error("Email is required");
+  if (!password || password.length < 6)
+    throw new Error("Password must be at least 6 characters");
+  if (!args.role) throw new Error("Role is required");
+
+  // prevent duplicate
+  const existing = await prisma.user.findUnique({ where: { email } });
+  if (existing) throw new Error("Email already registered");
+
+  const hashedPassword = await bcrypt.hash(password, 10);
+
+  return prisma.$transaction(async (tx) => {
+    // ✅ only customers may have customerEntity
+    const isCustomer = args.role === AppRole.customer;
+
+    let customerEntityConnectId: string | null = isCustomer
+      ? (args.customerEntityId ?? null)
+      : null;
+
+    // ✅ validate provided customerEntityId (if any)
+    if (isCustomer && customerEntityConnectId) {
+      const entity = await tx.customerEntity.findUnique({
+        where: { id: customerEntityConnectId },
+        select: { id: true, type: true },
+      });
+
+      if (!entity) {
+        const e: any = new Error("customerEntityId not found");
+        e.statusCode = 400;
+        throw e;
+      }
+
+      // Optional strict rule (recommended): only link customers to COMPANY entities
+      // If you want to allow linking to PERSON too, delete this block.
+      if (entity.type !== CustomerType.COMPANY) {
+        const e: any = new Error(
+          "Only COMPANY customer entities can be linked",
+        );
+        e.statusCode = 400;
+        throw e;
+      }
+    }
+
+    // ✅ auto-create PERSON entity when customerEntityId missing
+    if (isCustomer && !customerEntityConnectId) {
+      const createdEntity = await tx.customerEntity.create({
+        data: {
+          type: CustomerType.PERSON,
+          name,
+          email,
+          phone: args.phone ?? null,
+        },
+        select: { id: true },
+      });
+
+      customerEntityConnectId = createdEntity.id;
+    }
+
+    // ✅ validate warehouseId only when role=warehouse (optional but clean)
+    if (
+      (args.role === AppRole.warehouse || args.role === AppRole.driver) &&
+      args.warehouseId
+    ) {
+      const wh = await tx.warehouse.findUnique({
+        where: { id: args.warehouseId },
+        select: { id: true },
+      });
+      if (!wh) {
+        const e: any = new Error("warehouseId not found");
+        e.statusCode = 400;
+        throw e;
+      }
+    }
+
+    const createData: any = {
+      name,
+      email,
+      password: hashedPassword,
+      role: args.role,
+    };
+
+    // ✅ attach warehouse ONLY when role=warehouse and warehouseId provided
+    if (
+      (args.role === AppRole.warehouse || args.role === AppRole.driver) &&
+      args.warehouseId
+    ) {
+      createData.warehouse = { connect: { id: args.warehouseId } };
+    }
+
+    if (isCustomer && customerEntityConnectId) {
+      createData.customerEntity = { connect: { id: customerEntityConnectId } };
+    }
+
+    const user = await tx.user.create({
+      data: createData,
+      include: {
+        warehouse: true,
+        customerEntity: true,
+      },
+    });
+
+    return safeUser(user);
+  });
+};
+
+export type ListUsersParams = {
+  q?: string;
+  role?: AppRole;
+  page?: number;
+  limit?: number;
+};
+
+export const listUsers = async (params?: ListUsersParams) => {
+  const q = params?.q?.trim();
+  const role = params?.role;
+  const page = params?.page ?? 1;
+  const limit = Math.min(params?.limit ?? 20, 100);
+  const skip = (page - 1) * limit;
+
+  const where: Prisma.UserWhereInput = {};
+
+  if (role) {
+    where.role = role;
+  }
+
+  if (q) {
+    where.OR = [
+      { name: { contains: q, mode: "insensitive" } },
+      { email: { contains: q, mode: "insensitive" } },
+    ];
+  }
+
+  const [rows, total] = await prisma.$transaction([
+    prisma.user.findMany({
+      where,
+      include: {
+        warehouse: true,
+        customerEntity: true,
+      },
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.user.count({ where }),
+  ]);
+
+  return {
+    data: rows.map((u) => {
+      const { password, ...rest } = u;
+      return rest;
+    }),
+    total,
+    page,
+    limit,
+    pageCount: Math.ceil(total / limit),
+  };
 };
