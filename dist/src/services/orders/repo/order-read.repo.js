@@ -169,9 +169,13 @@ function buildDateWhere(field, from, to) {
         range.lt = lt;
     return { [field]: range };
 }
-function buildRoleScopeWhere(userId, role) {
-    if (role === "customer")
+function buildRoleScopeWhere(userId, role, customerEntityId) {
+    if (role === "customer") {
+        if (customerEntityId) {
+            return { customerEntityId };
+        }
         return { customerId: userId };
+    }
     if (role === "driver")
         return { assignedDriverId: userId };
     return {};
@@ -313,10 +317,10 @@ function buildStructuredFiltersWhere(params) {
         return {};
     return { AND: and };
 }
-function buildOrderWhere(userId, role, params) {
+function buildOrderWhere(userId, role, customerEntityId, params) {
     const scope = params?.scope === "deep" ? "deep" : "fast";
     const q = params?.q?.trim() ?? "";
-    const roleWhere = buildRoleScopeWhere(userId, role);
+    const roleWhere = buildRoleScopeWhere(userId, role, customerEntityId);
     const searchWhere = q ? buildSearchWhere(q, scope) : {};
     const filterWhere = buildStructuredFiltersWhere(params);
     const and = [roleWhere, searchWhere, filterWhere].filter((item) => !isEmptyWhere(item));
@@ -357,13 +361,13 @@ const getOrderById = async (id) => {
 };
 exports.getOrderById = getOrderById;
 /** Lists orders with search + pagination and role-based scope restrictions. */
-const listOrders = async (userId, role, params) => {
+const listOrders = async (userId, role, customerEntityId, params) => {
     const page = Math.max(1, params?.page ?? 1);
     const limit = Math.min(Math.max(params?.limit ?? 50, 1), 200);
     const mode = params?.mode === "cursor" ? "cursor" : "page";
     const cursor = decodeCursor(params?.cursor);
     const skip = (page - 1) * limit;
-    const where = buildOrderWhere(userId, role, params);
+    const where = buildOrderWhere(userId, role, customerEntityId, params);
     if (mode === "cursor") {
         const whereWithCursor = cursor
             ? {
@@ -428,8 +432,8 @@ const listOrders = async (userId, role, params) => {
 };
 exports.listOrders = listOrders;
 /** Returns detailed rows for CSV export using the same filters as the manager list. */
-const listOrdersForExport = async (userId, role, params) => {
-    const where = buildOrderWhere(userId, role, params);
+const listOrdersForExport = async (userId, role, customerEntityId, params) => {
+    const where = buildOrderWhere(userId, role, customerEntityId, params);
     return prismaClient_1.default.order.findMany({
         where,
         select: orderExportSelect,

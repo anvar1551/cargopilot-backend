@@ -1,5 +1,5 @@
 import prisma from "../../config/prismaClient";
-import { stripe } from "../../config/stripe";
+import { requireStripe } from "../../config/stripe";
 
 export const createStripePayment = async (
   orderId: string,
@@ -7,6 +7,8 @@ export const createStripePayment = async (
   amount: number,
   email: string
 ) => {
+  const stripe = requireStripe();
+
   const session = await stripe.checkout.sessions.create({
     mode: "payment",
     payment_method_types: ["card"],

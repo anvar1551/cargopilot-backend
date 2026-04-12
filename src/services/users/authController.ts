@@ -4,6 +4,8 @@ import { AppRole, CustomerType } from "@prisma/client";
 import { registerUser, loginUser } from "./userRepo";
 import { createUserAsManager } from "./userRepo";
 import { listUsers } from "./userRepo";
+import { changeUserPassword } from "./userRepo";
+import { deleteUserAsManager } from "./userRepo";
 
 export const listUsersController = async (req: Request, res: Response) => {
   try {
@@ -92,6 +94,50 @@ export const login = async (req: Request, res: Response) => {
   }
 };
 
+const changePasswordSchema = z
+  .object({
+    currentPassword: z.string().min(1, "Current password is required"),
+    newPassword: z.string().min(6, "New password must be at least 6 characters"),
+  })
+  .superRefine((value, ctx) => {
+    if (value.currentPassword === value.newPassword) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["newPassword"],
+        message: "New password must be different from current password",
+      });
+    }
+  });
+
+export const changePassword = async (req: Request, res: Response) => {
+  try {
+    if (!req.user?.id) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const dto = changePasswordSchema.parse(req.body);
+    await changeUserPassword({
+      userId: req.user.id,
+      currentPassword: dto.currentPassword,
+      newPassword: dto.newPassword,
+    });
+
+    return res.json({ message: "Password updated successfully" });
+  } catch (err: any) {
+    const message = err?.message ?? "Failed to update password";
+    const status =
+      message === "Unauthorized"
+        ? 401
+        : message === "Current password is incorrect"
+          ? 400
+          : err instanceof z.ZodError
+            ? 400
+            : 400;
+
+    return res.status(status).json({ error: message });
+  }
+};
+
 const createUserByManagerSchema = z
   .object({
     name: z.string().min(2),
@@ -152,5 +198,25 @@ export const createByManager = async (req: Request, res: Response) => {
   } catch (err: any) {
     const code = err?.statusCode ?? 400;
     return res.status(code).json({ error: err?.message ?? "Bad request" });
+  }
+};
+
+export const deleteByManager = async (req: Request, res: Response) => {
+  try {
+    if (!req.user?.id) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const userId = typeof req.params.id === "string" ? req.params.id : "";
+    await deleteUserAsManager({
+      targetUserId: userId,
+      actorUserId: req.user.id,
+    });
+
+    return res.json({ message: "User deleted successfully" });
+  } catch (err: any) {
+    return res.status(400).json({
+      error: err?.message ?? "Failed to delete user",
+    });
   }
 };

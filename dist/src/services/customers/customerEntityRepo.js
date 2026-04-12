@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.listCustomerEntities = listCustomerEntities;
 exports.createCustomerEntity = createCustomerEntity;
+exports.getCustomerEntityById = getCustomerEntityById;
 const prismaClient_1 = __importDefault(require("../../config/prismaClient"));
 async function listCustomerEntities(params) {
     const q = params?.q?.trim();
@@ -66,6 +67,26 @@ async function createCustomerEntity(dto) {
         },
         include: {
             defaultAddress: true,
+            _count: {
+                select: {
+                    orders: true,
+                    users: true,
+                    addresses: true,
+                },
+            },
+        },
+    });
+}
+async function getCustomerEntityById(id) {
+    return prismaClient_1.default.customerEntity.findUnique({
+        where: { id },
+        include: {
+            defaultAddress: true,
+            addresses: {
+                where: { isSaved: true },
+                orderBy: { createdAt: "desc" },
+                take: 8,
+            },
             _count: {
                 select: {
                     orders: true,

@@ -1,5 +1,5 @@
 import { Router, raw } from "express";
-import { stripe } from "../../config/stripe";
+import { requireStripe } from "../../config/stripe";
 import prisma from "../../config/prismaClient";
 import { generateInvoicePDF } from "../../utils/pdfGenerator";
 import { uploadInvoice } from "../../utils/uploadInvoice";
@@ -11,6 +11,7 @@ router.post("/stripe", raw({ type: "application/json" }), async (req, res) => {
   const sig = req.headers["stripe-signature"] as string;
 
   try {
+    const stripe = requireStripe();
     const event = stripe.webhooks.constructEvent(
       req.body,
       sig,

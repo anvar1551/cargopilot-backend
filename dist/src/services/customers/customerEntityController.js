@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.list = list;
 exports.create = create;
+exports.getOne = getOne;
 const client_1 = require("@prisma/client");
 const zod_1 = require("zod");
 const customerEntityRepo_1 = require("./customerEntityRepo");
@@ -81,5 +82,26 @@ async function create(req, res) {
         return res
             .status(400)
             .json({ error: err.message ?? "Failed to create customer" });
+    }
+}
+async function getOne(req, res) {
+    try {
+        if (!req.user?.id) {
+            return res.status(401).json({ error: "Unauthorized" });
+        }
+        if (req.user.role !== client_1.AppRole.manager &&
+            req.user.role !== client_1.AppRole.customer) {
+            return res.status(403).json({ error: "Forbidden" });
+        }
+        const customer = await (0, customerEntityRepo_1.getCustomerEntityById)(req.params.id);
+        if (!customer) {
+            return res.status(404).json({ error: "Not found" });
+        }
+        return res.json(customer);
+    }
+    catch (err) {
+        return res
+            .status(500)
+            .json({ error: err.message ?? "Failed to fetch customer" });
     }
 }

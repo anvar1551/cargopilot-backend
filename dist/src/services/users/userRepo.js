@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.listUsers = exports.createUserAsManager = exports.loginUser = exports.registerUser = void 0;
+exports.deleteUserAsManager = exports.listUsers = exports.createUserAsManager = exports.changeUserPassword = exports.loginUser = exports.registerUser = void 0;
 const prismaClient_1 = __importDefault(require("../../config/prismaClient"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
@@ -105,6 +105,37 @@ const loginUser = async (emailRaw, password) => {
     return { token, user: safeUser(user) };
 };
 exports.loginUser = loginUser;
+const changeUserPassword = async (args) => {
+    const userId = args.userId?.trim();
+    const currentPassword = args.currentPassword;
+    const newPassword = args.newPassword;
+    if (!userId)
+        throw new Error("User id is required");
+    if (!currentPassword)
+        throw new Error("Current password is required");
+    if (!newPassword || newPassword.length < 6) {
+        throw new Error("New password must be at least 6 characters");
+    }
+    if (currentPassword === newPassword) {
+        throw new Error("New password must be different from current password");
+    }
+    const user = await prismaClient_1.default.user.findUnique({
+        where: { id: userId },
+        select: { id: true, password: true },
+    });
+    if (!user)
+        throw new Error("User not found");
+    const validPassword = await bcryptjs_1.default.compare(currentPassword, user.password);
+    if (!validPassword)
+        throw new Error("Current password is incorrect");
+    const hashedPassword = await bcryptjs_1.default.hash(newPassword, 10);
+    await prismaClient_1.default.user.update({
+        where: { id: userId },
+        data: { password: hashedPassword },
+    });
+    return { success: true };
+};
+exports.changeUserPassword = changeUserPassword;
 const createUserAsManager = async (args) => {
     const name = args.name?.trim();
     const email = args.email?.trim().toLowerCase();
@@ -239,3 +270,35 @@ const listUsers = async (params) => {
     };
 };
 exports.listUsers = listUsers;
+const deleteUserAsManager = async (args) => {
+    const targetUserId = args.targetUserId?.trim();
+    const actorUserId = args.actorUserId?.trim();
+    if (!targetUserId)
+        throw new Error("User id is required");
+    if (!actorUserId)
+        throw new Error("Actor id is required");
+    if (targetUserId === actorUserId) {
+        throw new Error("You cannot delete your own account");
+    }
+    const user = await prismaClient_1.default.user.findUnique({
+        where: { id: targetUserId },
+        select: { id: true, email: true, role: true },
+    });
+    if (!user)
+        throw new Error("User not found");
+    const [customerOrders, driverOrders, invoices, trackingEvents] = await prismaClient_1.default.$transaction([
+        prismaClient_1.default.order.count({ where: { customerId: targetUserId } }),
+        prismaClient_1.default.order.count({ where: { assignedDriverId: targetUserId } }),
+        prismaClient_1.default.invoice.count({ where: { customerId: targetUserId } }),
+        prismaClient_1.default.tracking.count({ where: { actorId: targetUserId } }),
+    ]);
+    const references = customerOrders + driverOrders + invoices + trackingEvents;
+    if (references > 0) {
+        throw new Error("User cannot be deleted because linked operational records already exist");
+    }
+    await prismaClient_1.default.user.delete({
+        where: { id: targetUserId },
+    });
+    return { success: true };
+};
+exports.deleteUserAsManager = deleteUserAsManager;

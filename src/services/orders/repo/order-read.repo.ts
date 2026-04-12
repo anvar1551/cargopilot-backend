@@ -209,8 +209,14 @@ function buildDateWhere(
 function buildRoleScopeWhere(
   userId: string,
   role: AppRole,
+  customerEntityId?: string | null,
 ): Prisma.OrderWhereInput {
-  if (role === "customer") return { customerId: userId };
+  if (role === "customer") {
+    if (customerEntityId) {
+      return { customerEntityId };
+    }
+    return { customerId: userId };
+  }
   if (role === "driver") return { assignedDriverId: userId };
   return {};
 }
@@ -376,11 +382,12 @@ function buildStructuredFiltersWhere(
 function buildOrderWhere(
   userId: string,
   role: AppRole,
+  customerEntityId?: string | null,
   params?: ListOrdersParams,
 ): Prisma.OrderWhereInput {
   const scope: SearchScope = params?.scope === "deep" ? "deep" : "fast";
   const q = params?.q?.trim() ?? "";
-  const roleWhere = buildRoleScopeWhere(userId, role);
+  const roleWhere = buildRoleScopeWhere(userId, role, customerEntityId);
   const searchWhere = q ? buildSearchWhere(q, scope) : {};
   const filterWhere = buildStructuredFiltersWhere(params);
   const and = [roleWhere, searchWhere, filterWhere].filter(
@@ -426,6 +433,7 @@ export const getOrderById = async (id: string) => {
 export const listOrders = async (
   userId: string,
   role: AppRole,
+  customerEntityId?: string | null,
   params?: ListOrdersParams,
 ) => {
   const page = Math.max(1, params?.page ?? 1);
@@ -433,7 +441,7 @@ export const listOrders = async (
   const mode: ListMode = params?.mode === "cursor" ? "cursor" : "page";
   const cursor = decodeCursor(params?.cursor);
   const skip = (page - 1) * limit;
-  const where = buildOrderWhere(userId, role, params);
+  const where = buildOrderWhere(userId, role, customerEntityId, params);
 
   if (mode === "cursor") {
     const whereWithCursor: Prisma.OrderWhereInput = cursor
@@ -509,9 +517,10 @@ export const listOrders = async (
 export const listOrdersForExport = async (
   userId: string,
   role: AppRole,
+  customerEntityId?: string | null,
   params?: ListOrdersParams,
 ) => {
-  const where = buildOrderWhere(userId, role, params);
+  const where = buildOrderWhere(userId, role, customerEntityId, params);
   return prisma.order.findMany({
     where,
     select: orderExportSelect,

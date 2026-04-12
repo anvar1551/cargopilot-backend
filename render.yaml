@@ -1,0 +1,96 @@
+previews:
+  generation: off
+
+services:
+  - type: web
+    runtime: docker
+    name: cargopilot-api
+    region: frankfurt
+    plan: starter
+    dockerContext: .
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "4000"
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CLIENT_URL
+        sync: false
+      - key: PAYMENTS_ENABLED
+        value: "false"
+      - key: PAYMENT_PROVIDER
+        value: stripe
+      - key: AWS_REGION
+        value: us-east-1
+      - key: AWS_S3_BUCKET
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: ORDER_BULK_MAX_IDS
+        value: "100"
+      - key: ORDER_LABEL_SECOND_CODE_MODE
+        value: barcode
+
+  - type: worker
+    runtime: docker
+    name: cargopilot-label-worker
+    region: frankfurt
+    plan: starter
+    dockerContext: .
+    dockerfilePath: ./Dockerfile
+    dockerCommand: node dist/src/workers/order-label.worker.js
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: RUN_PRISMA_MIGRATIONS
+        value: "false"
+      - key: DATABASE_URL
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: DATABASE_URL
+      - key: AWS_REGION
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: AWS_REGION
+      - key: AWS_S3_BUCKET
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: AWS_S3_BUCKET
+      - key: AWS_ACCESS_KEY_ID
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: AWS_ACCESS_KEY_ID
+      - key: AWS_SECRET_ACCESS_KEY
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: AWS_SECRET_ACCESS_KEY
+      - key: ORDER_LABEL_WORKER_POLL_MS
+        value: "2000"
+      - key: ORDER_LABEL_WORKER_BATCH_SIZE
+        value: "10"
+      - key: ORDER_LABEL_MAX_ATTEMPTS
+        value: "5"
+      - key: ORDER_LABEL_RETRY_BASE_MS
+        value: "15000"
+      - key: ORDER_LABEL_RETRY_CAP_MS
+        value: "300000"
+      - key: ORDER_LABEL_SECOND_CODE_MODE
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: ORDER_LABEL_SECOND_CODE_MODE
+

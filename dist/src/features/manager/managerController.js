@@ -35,8 +35,17 @@ async function getManagerOverview(req, res) {
 }
 async function listDrivers(req, res) {
     try {
+        const role = req.user?.role;
+        const warehouseId = req.user?.warehouseId ?? null;
         const drivers = await prismaClient_1.default.user.findMany({
-            where: { role: "driver" },
+            where: {
+                role: "driver",
+                ...(role === "warehouse"
+                    ? warehouseId
+                        ? { warehouseId }
+                        : { id: "__no_matching_driver__" }
+                    : {}),
+            },
             select: { id: true, name: true, email: true, warehouseId: true },
             orderBy: { createdAt: "desc" },
         });

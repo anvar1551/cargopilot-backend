@@ -13,7 +13,8 @@ const router = (0, express_1.Router)();
 router.post("/stripe", (0, express_1.raw)({ type: "application/json" }), async (req, res) => {
     const sig = req.headers["stripe-signature"];
     try {
-        const event = stripe_1.stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+        const stripe = (0, stripe_1.requireStripe)();
+        const event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
         console.log("Stripe event received:", { id: event.id, type: event.type });
         // Respond quickly to Stripe no matter what.
         // We'll still await processing, but keep code efficient.

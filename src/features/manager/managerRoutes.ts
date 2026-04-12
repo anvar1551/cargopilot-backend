@@ -6,6 +6,6 @@ import { listDrivers } from "./managerController";
 const router = Router();
 
 router.get("/overview", auth(["manager"]), getManagerOverview);
-router.get("/drivers", auth(["manager"]), listDrivers);
+router.get("/drivers", auth(["manager", "warehouse"]), listDrivers);
 
 export default router;

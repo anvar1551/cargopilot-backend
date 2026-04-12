@@ -1,11 +1,75 @@
-version: "3.8"
 services:
-  api:
-    build: .
-    ports:
-      - "4000:4000"
-    env_file:
-      - .env
-    environment:
-      - NODE_ENV=production
+  postgres:
+    image: postgres:16-alpine
+    container_name: cargopilot-postgres
     restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cargopilot}
+      POSTGRES_USER: ${POSTGRES_USER:-cargopilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cargopilot}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cargopilot} -d ${POSTGRES_DB:-cargopilot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: prod
+    container_name: cargopilot-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ${DOCKER_ENV_FILE:-.env.docker}
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cargopilot}:${POSTGRES_PASSWORD:-cargopilot}@postgres:5432/${POSTGRES_DB:-cargopilot}?schema=public
+    ports:
+      - "${API_PORT:-4000}:4000"
+    volumes:
+      - labels_data:/app/labels
+      - invoices_data:/app/invoices
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  label-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: prod
+    container_name: cargopilot-label-worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    env_file:
+      - ${DOCKER_ENV_FILE:-.env.docker}
+    environment:
+      NODE_ENV: production
+      RUN_PRISMA_MIGRATIONS: "false"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cargopilot}:${POSTGRES_PASSWORD:-cargopilot}@postgres:5432/${POSTGRES_DB:-cargopilot}?schema=public
+    command: ["node", "dist/src/workers/order-label.worker.js"]
+    volumes:
+      - labels_data:/app/labels
+      - invoices_data:/app/invoices
+
+volumes:
+  postgres_data:
+  labels_data:
+  invoices_data:

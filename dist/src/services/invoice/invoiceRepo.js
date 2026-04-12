@@ -7,7 +7,8 @@ exports.markAsPaid = exports.listInvoice = exports.getInvoiceByOrder = exports.c
 const prismaClient_1 = __importDefault(require("../../config/prismaClient"));
 const stripe_1 = require("../../config/stripe");
 const createStripePayment = async (orderId, invoiceId, amount, email) => {
-    const session = await stripe_1.stripe.checkout.sessions.create({
+    const stripe = (0, stripe_1.requireStripe)();
+    const session = await stripe.checkout.sessions.create({
         mode: "payment",
         payment_method_types: ["card"],
         customer_email: email,

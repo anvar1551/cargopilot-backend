@@ -14,6 +14,7 @@ async function getLabelPdfUrl(req, res) {
         select: {
             id: true,
             customerId: true,
+            customerEntityId: true,
             assignedDriverId: true,
             currentWarehouseId: true,
             labelKey: true, // legacy fallback
@@ -34,7 +35,9 @@ async function getLabelPdfUrl(req, res) {
     if (user.role === "manager") {
         // allowed
     }
-    else if (user.role === "customer" && order.customerId !== user.id) {
+    else if (user.role === "customer" &&
+        !((user.customerEntityId && order.customerEntityId === user.customerEntityId) ||
+            order.customerId === user.id)) {
         return res.status(403).json({ error: "Forbidden" });
     }
     else if (user.role === "driver" && order.assignedDriverId !== user.id) {

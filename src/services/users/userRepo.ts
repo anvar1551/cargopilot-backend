@@ -126,6 +126,44 @@ export const loginUser = async (emailRaw: string, password: string) => {
   return { token, user: safeUser(user) };
 };
 
+export const changeUserPassword = async (args: {
+  userId: string;
+  currentPassword: string;
+  newPassword: string;
+}) => {
+  const userId = args.userId?.trim();
+  const currentPassword = args.currentPassword;
+  const newPassword = args.newPassword;
+
+  if (!userId) throw new Error("User id is required");
+  if (!currentPassword) throw new Error("Current password is required");
+  if (!newPassword || newPassword.length < 6) {
+    throw new Error("New password must be at least 6 characters");
+  }
+  if (currentPassword === newPassword) {
+    throw new Error("New password must be different from current password");
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, password: true },
+  });
+
+  if (!user) throw new Error("User not found");
+
+  const validPassword = await bcrypt.compare(currentPassword, user.password);
+  if (!validPassword) throw new Error("Current password is incorrect");
+
+  const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+  await prisma.user.update({
+    where: { id: userId },
+    data: { password: hashedPassword },
+  });
+
+  return { success: true };
+};
+
 export const createUserAsManager = async (args: {
   name: string;
   email: string;
@@ -300,4 +338,46 @@ export const listUsers = async (params?: ListUsersParams) => {
     limit,
     pageCount: Math.ceil(total / limit),
   };
+};
+
+export const deleteUserAsManager = async (args: {
+  targetUserId: string;
+  actorUserId: string;
+}) => {
+  const targetUserId = args.targetUserId?.trim();
+  const actorUserId = args.actorUserId?.trim();
+
+  if (!targetUserId) throw new Error("User id is required");
+  if (!actorUserId) throw new Error("Actor id is required");
+  if (targetUserId === actorUserId) {
+    throw new Error("You cannot delete your own account");
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: targetUserId },
+    select: { id: true, email: true, role: true },
+  });
+
+  if (!user) throw new Error("User not found");
+
+  const [customerOrders, driverOrders, invoices, trackingEvents] =
+    await prisma.$transaction([
+      prisma.order.count({ where: { customerId: targetUserId } }),
+      prisma.order.count({ where: { assignedDriverId: targetUserId } }),
+      prisma.invoice.count({ where: { customerId: targetUserId } }),
+      prisma.tracking.count({ where: { actorId: targetUserId } }),
+    ]);
+
+  const references = customerOrders + driverOrders + invoices + trackingEvents;
+  if (references > 0) {
+    throw new Error(
+      "User cannot be deleted because linked operational records already exist",
+    );
+  }
+
+  await prisma.user.delete({
+    where: { id: targetUserId },
+  });
+
+  return { success: true };
 };

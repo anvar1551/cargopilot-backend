@@ -7,6 +7,8 @@ const auth_1 = require("../../middleware/auth");
 const router = (0, express_1.Router)();
 router.post("/register", authController_1.register);
 router.post("/login", authController_1.login);
+router.post("/change-password", (0, auth_1.auth)(), authController_1.changePassword);
 router.post("/", (0, auth_1.auth)([client_1.AppRole.manager]), authController_1.createByManager);
 router.get("/", (0, auth_1.auth)([client_1.AppRole.manager]), authController_1.listUsersController);
+router.delete("/:id", (0, auth_1.auth)([client_1.AppRole.manager]), authController_1.deleteByManager);
 exports.default = router;

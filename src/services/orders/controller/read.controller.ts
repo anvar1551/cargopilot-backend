@@ -24,7 +24,7 @@ function toStringArray(value: unknown) {
   return [];
 }
 
-function parseOrderListParams(query: any): Parameters<typeof listOrders>[2] {
+function parseOrderListParams(query: any): Parameters<typeof listOrders>[3] {
   const mode = query.mode === "cursor" ? "cursor" : "page";
   const scope = query.scope === "deep" ? "deep" : "fast";
 
@@ -74,8 +74,17 @@ function buildCsv(rows: Array<Record<string, unknown>>) {
 /** Lists orders with pagination and role-aware visibility rules. */
 export async function list(req: any, res: any) {
   try {
-    const { id, role } = req.user as { id: string; role: AppRole };
-    const result = await listOrders(id, role, parseOrderListParams(req.query));
+    const { id, role, customerEntityId } = req.user as {
+      id: string;
+      role: AppRole;
+      customerEntityId?: string | null;
+    };
+    const result = await listOrders(
+      id,
+      role,
+      customerEntityId ?? undefined,
+      parseOrderListParams(req.query),
+    );
 
     res.json(result);
   } catch (err: any) {
@@ -89,10 +98,24 @@ export async function getOne(req: any, res: any) {
     const order = await getOrderById(req.params.id);
     if (!order) return res.status(404).json({ error: "Not found" });
 
-    const { id: userId, role } = req.user as { id: string; role: AppRole };
+    const {
+      id: userId,
+      role,
+      customerEntityId,
+    } = req.user as {
+      id: string;
+      role: AppRole;
+      customerEntityId?: string | null;
+    };
 
     if (role === "manager" || role === "warehouse") return res.json(order);
-    if (role === "customer" && order.customerId === userId) return res.json(order);
+    if (
+      role === "customer" &&
+      ((customerEntityId && order.customerEntityId === customerEntityId) ||
+        order.customerId === userId)
+    ) {
+      return res.json(order);
+    }
     if (role === "driver" && order.assignedDriverId === userId)
       return res.json(order);
 
@@ -121,12 +144,16 @@ export async function listDriverWorkload(req: any, res: any) {
 /** Exports manager-visible orders into a finance-friendly CSV using current filters. */
 export async function exportCsv(req: any, res: any) {
   try {
-    const { id, role } = req.user as { id: string; role: AppRole };
+    const { id, role, customerEntityId } = req.user as {
+      id: string;
+      role: AppRole;
+      customerEntityId?: string | null;
+    };
     if (role !== "manager") {
       return res.status(403).json({ error: "Forbidden" });
     }
 
-    const orders = await listOrdersForExport(id, role, {
+    const orders = await listOrdersForExport(id, role, customerEntityId ?? undefined, {
       ...parseOrderListParams(req.query),
       mode: "page",
       cursor: undefined,

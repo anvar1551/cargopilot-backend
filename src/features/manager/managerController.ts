@@ -33,8 +33,18 @@ export async function getManagerOverview(req: Request, res: Response) {
 
 export async function listDrivers(req: Request, res: Response) {
   try {
+    const role = req.user?.role;
+    const warehouseId = req.user?.warehouseId ?? null;
+
     const drivers = await prisma.user.findMany({
-      where: { role: "driver" },
+      where: {
+        role: "driver",
+        ...(role === "warehouse"
+          ? warehouseId
+            ? { warehouseId }
+            : { id: "__no_matching_driver__" }
+          : {}),
+      },
       select: { id: true, name: true, email: true, warehouseId: true },
       orderBy: { createdAt: "desc" },
     });

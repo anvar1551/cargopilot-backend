@@ -1,11 +1,13 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.createByManager = exports.login = exports.register = exports.listUsersController = void 0;
+exports.deleteByManager = exports.createByManager = exports.changePassword = exports.login = exports.register = exports.listUsersController = void 0;
 const zod_1 = require("zod");
 const client_1 = require("@prisma/client");
 const userRepo_1 = require("./userRepo");
 const userRepo_2 = require("./userRepo");
 const userRepo_3 = require("./userRepo");
+const userRepo_4 = require("./userRepo");
+const userRepo_5 = require("./userRepo");
 const listUsersController = async (req, res) => {
     try {
         const q = typeof req.query.q === "string" ? req.query.q : undefined;
@@ -75,6 +77,46 @@ const login = async (req, res) => {
     }
 };
 exports.login = login;
+const changePasswordSchema = zod_1.z
+    .object({
+    currentPassword: zod_1.z.string().min(1, "Current password is required"),
+    newPassword: zod_1.z.string().min(6, "New password must be at least 6 characters"),
+})
+    .superRefine((value, ctx) => {
+    if (value.currentPassword === value.newPassword) {
+        ctx.addIssue({
+            code: "custom",
+            path: ["newPassword"],
+            message: "New password must be different from current password",
+        });
+    }
+});
+const changePassword = async (req, res) => {
+    try {
+        if (!req.user?.id) {
+            return res.status(401).json({ error: "Unauthorized" });
+        }
+        const dto = changePasswordSchema.parse(req.body);
+        await (0, userRepo_4.changeUserPassword)({
+            userId: req.user.id,
+            currentPassword: dto.currentPassword,
+            newPassword: dto.newPassword,
+        });
+        return res.json({ message: "Password updated successfully" });
+    }
+    catch (err) {
+        const message = err?.message ?? "Failed to update password";
+        const status = message === "Unauthorized"
+            ? 401
+            : message === "Current password is incorrect"
+                ? 400
+                : err instanceof zod_1.z.ZodError
+                    ? 400
+                    : 400;
+        return res.status(status).json({ error: message });
+    }
+};
+exports.changePassword = changePassword;
 const createUserByManagerSchema = zod_1.z
     .object({
     name: zod_1.z.string().min(2),
@@ -132,3 +174,22 @@ const createByManager = async (req, res) => {
     }
 };
 exports.createByManager = createByManager;
+const deleteByManager = async (req, res) => {
+    try {
+        if (!req.user?.id) {
+            return res.status(401).json({ error: "Unauthorized" });
+        }
+        const userId = typeof req.params.id === "string" ? req.params.id : "";
+        await (0, userRepo_5.deleteUserAsManager)({
+            targetUserId: userId,
+            actorUserId: req.user.id,
+        });
+        return res.json({ message: "User deleted successfully" });
+    }
+    catch (err) {
+        return res.status(400).json({
+            error: err?.message ?? "Failed to delete user",
+        });
+    }
+};
+exports.deleteByManager = deleteByManager;

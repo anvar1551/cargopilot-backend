@@ -1,6 +1,9 @@
 node_modules
 # Keep environment variables out of version control
 .env
+.env.docker
+labels/*.pdf
+invoices/*.pdf
 rootkey.csv
 
 /src/generated/prisma
