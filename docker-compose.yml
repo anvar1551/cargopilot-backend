@@ -33,7 +33,9 @@ services:
     environment:
       NODE_ENV: production
       PORT: 4000
-      DATABASE_URL: postgresql://${POSTGRES_USER:-cargopilot}:${POSTGRES_PASSWORD:-cargopilot}@postgres:5432/${POSTGRES_DB:-cargopilot}?schema=public
+      # Prefer DATABASE_URL from env_file for production/external databases.
+      # Fallback keeps local Docker Postgres working for local-only setups.
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-cargopilot}:${POSTGRES_PASSWORD:-cargopilot}@postgres:5432/${POSTGRES_DB:-cargopilot}?schema=public}
     ports:
       - "${API_PORT:-4000}:4000"
     volumes:
@@ -63,7 +65,8 @@ services:
     environment:
       NODE_ENV: production
       RUN_PRISMA_MIGRATIONS: "false"
-      DATABASE_URL: postgresql://${POSTGRES_USER:-cargopilot}:${POSTGRES_PASSWORD:-cargopilot}@postgres:5432/${POSTGRES_DB:-cargopilot}?schema=public
+      # Match API database selection so labels are generated against the same DB.
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-cargopilot}:${POSTGRES_PASSWORD:-cargopilot}@postgres:5432/${POSTGRES_DB:-cargopilot}?schema=public}
     command: ["node", "dist/src/workers/order-label.worker.js"]
     volumes:
       - labels_data:/app/labels

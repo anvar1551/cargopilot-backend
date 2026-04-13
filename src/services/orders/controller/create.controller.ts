@@ -117,26 +117,38 @@ export const create = async (req: Request, res: Response) => {
 
     const order = await createOrder(req.user.id, repoPayload, actor);
 
-    if (labelMode === "queue") {
-      await enqueueOrderLabelJob(order.id);
-    } else if (labelMode === "async") {
-      void generateAndAttachParcelLabelsForOrder(order.id).catch((labelErr) => {
-        console.error(`Label generation failed for order ${order.id}:`, labelErr);
-      });
-    } else {
-      await generateAndAttachParcelLabelsForOrder(order.id);
+    let labelWarning: string | null = null;
+
+    try {
+      if (labelMode === "queue") {
+        await enqueueOrderLabelJob(order.id);
+      } else if (labelMode === "async") {
+        void generateAndAttachParcelLabelsForOrder(order.id).catch((labelErr) => {
+          console.error(`Label generation failed for order ${order.id}:`, labelErr);
+        });
+      } else {
+        await generateAndAttachParcelLabelsForOrder(order.id);
+      }
+    } catch (labelErr: any) {
+      labelWarning =
+        labelErr?.message ??
+        "Order created, but parcel label generation failed";
+      console.error(`Label generation failed for order ${order.id}:`, labelErr);
     }
 
     if (!paymentsEnabled) {
       const fresh = await getOrderById(order.id);
       return res.status(201).json({
         order: fresh,
+        warning: labelWarning,
         message:
           labelMode === "async"
             ? "Order created (manual payment) + parcel labels scheduled"
             : labelMode === "queue"
               ? "Order created (manual payment) + parcel labels queued"
-            : "Order created (manual payment) + parcel labels generated",
+            : labelWarning
+              ? "Order created (manual payment) + parcel labels pending retry"
+              : "Order created (manual payment) + parcel labels generated",
       });
     }
 
@@ -166,12 +178,15 @@ export const create = async (req: Request, res: Response) => {
       order: fresh,
       invoice,
       paymentUrl,
+      warning: labelWarning,
       message:
         labelMode === "async"
           ? "Order + invoice created successfully (parcel labels scheduled)"
           : labelMode === "queue"
             ? "Order + invoice created successfully (parcel labels queued)"
-          : "Order + parcel labels + invoice created successfully",
+            : labelWarning
+              ? "Order + invoice created successfully (parcel labels pending retry)"
+              : "Order + parcel labels + invoice created successfully",
     });
   } catch (err: any) {
     const code = err?.statusCode ?? 500;
