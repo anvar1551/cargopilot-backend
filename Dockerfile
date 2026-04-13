@@ -1,6 +1,6 @@
 FROM node:22-slim AS base
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates gosu && rm -rf /var/lib/apt/lists/*
 
 FROM base AS deps
 COPY package.json package-lock.json ./
@@ -29,7 +29,6 @@ COPY --from=build /app/dist ./dist
 COPY docker-entrypoint.sh ./docker-entrypoint.sh
 RUN sed -i 's/\r$//' ./docker-entrypoint.sh && chmod +x ./docker-entrypoint.sh && chown -R appuser:nodejs /app
 
-USER appuser
 EXPOSE 4000
 ENTRYPOINT ["./docker-entrypoint.sh"]
 CMD ["node", "dist/src/index.js"]
