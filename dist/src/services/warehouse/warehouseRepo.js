@@ -5,10 +5,11 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getWarehouseById = exports.listWarehouses = exports.createWarehouse = void 0;
 const prismaClient_1 = __importDefault(require("../../config/prismaClient"));
-const createWarehouse = async (name, location, region) => {
+const createWarehouse = async (name, type, location, region) => {
     return prismaClient_1.default.warehouse.create({
         data: {
             name,
+            type,
             location,
             region: region ?? null,
         },

@@ -15,6 +15,7 @@ import managerRoutes from "./features/manager/managerRoutes";
 import labelRoutes from "./features/label/labelRoutes";
 import addressRoutes from "./services/addresses/addressRoutes";
 import customerEntityRoutes from "./services/customers/customerRoutes";
+import pricingRoutes from "./services/pricing/pricingRoutes";
 
 const app = express();
 
@@ -47,6 +48,7 @@ app.use("/api/manager", managerRoutes);
 app.use("/api/labels", labelRoutes);
 app.use("/api/addresses", addressRoutes);
 app.use("/api/customers", customerEntityRoutes);
+app.use("/api/pricing", pricingRoutes);
 
 const portFromEnv = Number(process.env.PORT);
 const PORT =

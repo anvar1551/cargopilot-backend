@@ -1,0 +1,172 @@
+import { Request, Response } from "express";
+import { ZodError } from "zod";
+import {
+  createPricingRegion,
+  createTariffPlan,
+  getTariffPlanById,
+  listPricingRegions,
+  listTariffPlans,
+  listZoneMatrix,
+  quoteTariff,
+  updatePricingRegion,
+  updateTariffPlan,
+  upsertZoneMatrix,
+} from "./pricingRepo";
+import {
+  createPricingRegionSchema,
+  createTariffPlanSchema,
+  listPricingRegionsQuerySchema,
+  listTariffPlansQuerySchema,
+  listZoneMatrixQuerySchema,
+  pricingRegionIdParamSchema,
+  quoteTariffSchema,
+  tariffPlanIdParamSchema,
+  updatePricingRegionSchema,
+  updateTariffPlanSchema,
+  upsertZoneMatrixSchema,
+} from "./pricing.shared";
+
+function sendError(res: Response, error: unknown, fallback: string) {
+  if (error instanceof ZodError) {
+    return res.status(400).json({
+      error: "Validation failed",
+      issues: error.flatten(),
+    });
+  }
+
+  const candidate = error as { status?: number; message?: string };
+  return res
+    .status(candidate?.status ?? 500)
+    .json({ error: candidate?.message ?? fallback });
+}
+
+export async function createRegion(req: Request, res: Response) {
+  try {
+    const input = createPricingRegionSchema.parse(req.body);
+    const region = await createPricingRegion(input);
+    return res.status(201).json(region);
+  } catch (error) {
+    console.error("createRegion error:", error);
+    return sendError(res, error, "Failed to create pricing region");
+  }
+}
+
+export async function getRegions(req: Request, res: Response) {
+  try {
+    const query = listPricingRegionsQuerySchema.parse(req.query);
+    const effectiveQuery =
+      req.user?.role === "customer"
+        ? {
+            ...query,
+            isActive: true,
+          }
+        : query;
+    const regions = await listPricingRegions(effectiveQuery);
+    return res.json(regions);
+  } catch (error) {
+    console.error("getRegions error:", error);
+    return sendError(res, error, "Failed to fetch pricing regions");
+  }
+}
+
+export async function updateRegion(req: Request, res: Response) {
+  try {
+    const { id } = pricingRegionIdParamSchema.parse(req.params);
+    const input = updatePricingRegionSchema.parse(req.body);
+    const region = await updatePricingRegion(id, input);
+    return res.json(region);
+  } catch (error) {
+    console.error("updateRegion error:", error);
+    return sendError(res, error, "Failed to update pricing region");
+  }
+}
+
+export async function saveZoneMatrix(req: Request, res: Response) {
+  try {
+    const input = upsertZoneMatrixSchema.parse(req.body);
+    const zones = await upsertZoneMatrix(input);
+    return res.status(201).json(zones);
+  } catch (error) {
+    console.error("saveZoneMatrix error:", error);
+    return sendError(res, error, "Failed to save zone matrix");
+  }
+}
+
+export async function getZoneMatrix(req: Request, res: Response) {
+  try {
+    const query = listZoneMatrixQuerySchema.parse(req.query);
+    const zones = await listZoneMatrix(query);
+    return res.json(zones);
+  } catch (error) {
+    console.error("getZoneMatrix error:", error);
+    return sendError(res, error, "Failed to fetch zone matrix");
+  }
+}
+
+export async function createPlan(req: Request, res: Response) {
+  try {
+    const input = createTariffPlanSchema.parse(req.body);
+    const plan = await createTariffPlan(input);
+    return res.status(201).json(plan);
+  } catch (error) {
+    console.error("createPlan error:", error);
+    return sendError(res, error, "Failed to create tariff plan");
+  }
+}
+
+export async function getPlans(req: Request, res: Response) {
+  try {
+    const query = listTariffPlansQuerySchema.parse(req.query);
+    const plans = await listTariffPlans(query);
+    return res.json(plans);
+  } catch (error) {
+    console.error("getPlans error:", error);
+    return sendError(res, error, "Failed to fetch tariff plans");
+  }
+}
+
+export async function getPlan(req: Request, res: Response) {
+  try {
+    const { id } = tariffPlanIdParamSchema.parse(req.params);
+    const plan = await getTariffPlanById(id);
+
+    if (!plan) {
+      return res.status(404).json({ error: "Tariff plan not found" });
+    }
+
+    return res.json(plan);
+  } catch (error) {
+    console.error("getPlan error:", error);
+    return sendError(res, error, "Failed to fetch tariff plan");
+  }
+}
+
+export async function updatePlan(req: Request, res: Response) {
+  try {
+    const { id } = tariffPlanIdParamSchema.parse(req.params);
+    const input = updateTariffPlanSchema.parse(req.body);
+    const plan = await updateTariffPlan(id, input);
+    return res.json(plan);
+  } catch (error) {
+    console.error("updatePlan error:", error);
+    return sendError(res, error, "Failed to update tariff plan");
+  }
+}
+
+export async function quotePlan(req: Request, res: Response) {
+  try {
+    const parsed = quoteTariffSchema.parse(req.body);
+    const input =
+      req.user?.role === "customer"
+        ? {
+            ...parsed,
+            customerEntityId: req.user.customerEntityId ?? null,
+          }
+        : parsed;
+    const quote = await quoteTariff(input);
+    return res.json(quote);
+  } catch (error) {
+    console.error("quotePlan error:", error);
+    return sendError(res, error, "Failed to quote tariff plan");
+  }
+}

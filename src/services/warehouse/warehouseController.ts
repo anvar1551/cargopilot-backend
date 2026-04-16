@@ -5,16 +5,22 @@ import {
   listWarehouses,
   getWarehouseById,
 } from "./warehouseRepo";
+import { normalizeWarehouseType } from "./warehouse.shared";
 
 export const create = async (req: Request, res: Response) => {
   try {
-    const { name, location, region } = req.body;
+    const { name, type, location, region } = req.body;
 
     if (!name || !location) {
       return res.status(400).json({ error: "Name and location are required" });
     }
 
-    const warehouse = await createWarehouse(name, location, region);
+    const warehouse = await createWarehouse(
+      name,
+      normalizeWarehouseType(type),
+      location,
+      region,
+    );
     return res.status(201).json(warehouse);
   } catch (error) {
     console.error("createWarehouse error:", error);

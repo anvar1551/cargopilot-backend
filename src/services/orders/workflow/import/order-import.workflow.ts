@@ -1,4 +1,5 @@
 import { AppRole } from "@prisma/client";
+import { DEFAULT_SERVICE_TYPE, normalizeServiceTypeInput } from "../../order.constants";
 
 import {
   CreateOrderRepoPayload,
@@ -172,7 +173,7 @@ function mapCsvRowToCreateOrderDto(
       saveDropoffToAddressBook: false,
     },
     shipment: {
-      serviceType: v.serviceType || "DOOR_TO_DOOR",
+      serviceType: normalizeServiceTypeInput(v.serviceType || DEFAULT_SERVICE_TYPE),
       weightKg: v.weightKg || undefined,
       codEnabled: parseBoolean(v.codEnabled),
       codAmount: v.codAmount || undefined,
@@ -352,7 +353,7 @@ export function getOrderImportTemplateCsv() {
     "Hamburg",
     "Cargo Green",
     "+998946430090",
-    "DOOR_TO_DOOR",
+    DEFAULT_SERVICE_TYPE,
     "2.5",
     "false",
     "",

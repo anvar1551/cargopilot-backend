@@ -9,6 +9,7 @@ exports.mapCreateOrderDtoToRepoPayload = mapCreateOrderDtoToRepoPayload;
 const prismaClient_1 = __importDefault(require("../../config/prismaClient"));
 const zod_1 = require("zod");
 const orderAddress_shared_1 = require("./orderAddress.shared");
+const order_constants_1 = require("./order.constants");
 /**
  * Helpers
  */
@@ -60,6 +61,8 @@ exports.createOrderPayloadSchema = zod_1.z
         .object({
         name: zod_1.z.string().optional().nullable(),
         phone: zod_1.z.string().optional().nullable(),
+        phone2: zod_1.z.string().optional().nullable(),
+        phone3: zod_1.z.string().optional().nullable(),
     })
         .optional()
         .nullable(),
@@ -67,6 +70,8 @@ exports.createOrderPayloadSchema = zod_1.z
         .object({
         name: zod_1.z.string().optional().nullable(),
         phone: zod_1.z.string().optional().nullable(),
+        phone2: zod_1.z.string().optional().nullable(),
+        phone3: zod_1.z.string().optional().nullable(),
     })
         .optional()
         .nullable(),
@@ -85,7 +90,13 @@ exports.createOrderPayloadSchema = zod_1.z
         saveDropoffToAddressBook: zod_1.z.boolean().optional().default(false),
     }),
     shipment: zod_1.z.object({
-        serviceType: zod_1.z.string().optional().nullable(),
+        serviceType: zod_1.z
+            .string()
+            .optional()
+            .nullable()
+            .transform((value) => (0, order_constants_1.normalizeServiceTypeInput)(value))
+            .pipe(zod_1.z.enum(order_constants_1.SERVICE_TYPES))
+            .default(order_constants_1.DEFAULT_SERVICE_TYPE),
         weightKg: optionalNumber().refine((v) => v == null || v > 0, "Weight must be > 0"),
         // ✅ critical: stable boolean flag
         codEnabled: zod_1.z.boolean().default(false),
@@ -182,7 +193,7 @@ async function mapCreateOrderDtoToRepoPayload(raw) {
     const receiverAddressId = dto.addresses.receiverAddressId ?? null;
     let pickupAddress = dto.addresses.pickupAddress;
     let dropoffAddress = dto.addresses.dropoffAddress;
-    let destinationCity = dto.addresses.destinationCity ?? null;
+    let destinationCity = dto.addresses.destinationCity ?? dto.addresses.receiverAddress?.city ?? null;
     // ✅ optional resolve from address book IDs
     if (senderAddressId || receiverAddressId) {
         const [senderAddr, receiverAddr] = await Promise.all([
@@ -224,14 +235,18 @@ async function mapCreateOrderDtoToRepoPayload(raw) {
         receiverAddressSnapshot: dto.addresses.receiverAddress ?? null,
         senderName: dto.sender?.name ?? null,
         senderPhone: dto.sender?.phone ?? null,
+        senderPhone2: dto.sender?.phone2 ?? null,
+        senderPhone3: dto.sender?.phone3 ?? null,
         receiverName: dto.receiver?.name ?? null,
         receiverPhone: dto.receiver?.phone ?? null,
+        receiverPhone2: dto.receiver?.phone2 ?? null,
+        receiverPhone3: dto.receiver?.phone3 ?? null,
         senderAddress: null,
         receiverAddress: null,
         customerEntityId: dto.customerEntityId ?? null,
         senderAddressId,
         receiverAddressId,
-        serviceType: dto.shipment?.serviceType ?? null,
+        serviceType: dto.shipment?.serviceType ?? order_constants_1.DEFAULT_SERVICE_TYPE,
         weightKg: dto.shipment?.weightKg ?? null,
         codAmount: dto.shipment?.codEnabled
             ? (dto.shipment?.codAmount ?? null)

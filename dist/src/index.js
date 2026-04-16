@@ -20,6 +20,7 @@ const managerRoutes_1 = __importDefault(require("./features/manager/managerRoute
 const labelRoutes_1 = __importDefault(require("./features/label/labelRoutes"));
 const addressRoutes_1 = __importDefault(require("./services/addresses/addressRoutes"));
 const customerRoutes_1 = __importDefault(require("./services/customers/customerRoutes"));
+const pricingRoutes_1 = __importDefault(require("./services/pricing/pricingRoutes"));
 const app = (0, express_1.default)();
 // Stripe webhook must come before JSON body parsing middleware.
 app.use("/api/webhooks", webhookRoutes_1.default);
@@ -48,6 +49,7 @@ app.use("/api/manager", managerRoutes_1.default);
 app.use("/api/labels", labelRoutes_1.default);
 app.use("/api/addresses", addressRoutes_1.default);
 app.use("/api/customers", customerRoutes_1.default);
+app.use("/api/pricing", pricingRoutes_1.default);
 const portFromEnv = Number(process.env.PORT);
 const PORT = Number.isFinite(portFromEnv) && portFromEnv > 0 ? portFromEnv : 4000;
 app.listen(PORT, "0.0.0.0", () => {

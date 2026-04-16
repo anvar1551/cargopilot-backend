@@ -8,6 +8,12 @@ import {
   RecipientUnavailableAction,
 } from "@prisma/client";
 import { buildAddressText } from "./orderAddress.shared";
+import {
+  DEFAULT_SERVICE_TYPE,
+  SERVICE_TYPES,
+  type ServiceTypeValue,
+  normalizeServiceTypeInput,
+} from "./order.constants";
 
 /**
  * Helpers
@@ -67,6 +73,8 @@ export const createOrderPayloadSchema = z
       .object({
         name: z.string().optional().nullable(),
         phone: z.string().optional().nullable(),
+        phone2: z.string().optional().nullable(),
+        phone3: z.string().optional().nullable(),
       })
       .optional()
       .nullable(),
@@ -75,6 +83,8 @@ export const createOrderPayloadSchema = z
       .object({
         name: z.string().optional().nullable(),
         phone: z.string().optional().nullable(),
+        phone2: z.string().optional().nullable(),
+        phone3: z.string().optional().nullable(),
       })
       .optional()
       .nullable(),
@@ -98,7 +108,13 @@ export const createOrderPayloadSchema = z
     }),
 
     shipment: z.object({
-      serviceType: z.string().optional().nullable(),
+      serviceType: z
+        .string()
+        .optional()
+        .nullable()
+        .transform((value) => normalizeServiceTypeInput(value))
+        .pipe(z.enum(SERVICE_TYPES))
+        .default(DEFAULT_SERVICE_TYPE),
 
       weightKg: optionalNumber().refine(
         (v) => v == null || v > 0,
@@ -241,8 +257,12 @@ export type CreateOrderRepoPayload = {
 
   senderName?: string | null;
   senderPhone?: string | null;
+  senderPhone2?: string | null;
+  senderPhone3?: string | null;
   receiverName?: string | null;
   receiverPhone?: string | null;
+  receiverPhone2?: string | null;
+  receiverPhone3?: string | null;
 
   senderAddress?: string | null;
   receiverAddress?: string | null;
@@ -251,7 +271,7 @@ export type CreateOrderRepoPayload = {
   senderAddressId?: string | null;
   receiverAddressId?: string | null;
 
-  serviceType?: string | null;
+  serviceType?: ServiceTypeValue | null;
   weightKg?: number | null;
   codAmount?: number | null;
   currency?: string | null;
@@ -299,7 +319,8 @@ export async function mapCreateOrderDtoToRepoPayload(
 
   let pickupAddress = dto.addresses.pickupAddress;
   let dropoffAddress = dto.addresses.dropoffAddress;
-  let destinationCity = dto.addresses.destinationCity ?? null;
+  let destinationCity =
+    dto.addresses.destinationCity ?? dto.addresses.receiverAddress?.city ?? null;
 
   // ✅ optional resolve from address book IDs
   if (senderAddressId || receiverAddressId) {
@@ -345,8 +366,12 @@ export async function mapCreateOrderDtoToRepoPayload(
 
     senderName: dto.sender?.name ?? null,
     senderPhone: dto.sender?.phone ?? null,
+    senderPhone2: dto.sender?.phone2 ?? null,
+    senderPhone3: dto.sender?.phone3 ?? null,
     receiverName: dto.receiver?.name ?? null,
     receiverPhone: dto.receiver?.phone ?? null,
+    receiverPhone2: dto.receiver?.phone2 ?? null,
+    receiverPhone3: dto.receiver?.phone3 ?? null,
 
     senderAddress: null,
     receiverAddress: null,
@@ -355,7 +380,7 @@ export async function mapCreateOrderDtoToRepoPayload(
     senderAddressId,
     receiverAddressId,
 
-    serviceType: dto.shipment?.serviceType ?? null,
+    serviceType: dto.shipment?.serviceType ?? DEFAULT_SERVICE_TYPE,
     weightKg: dto.shipment?.weightKg ?? null,
 
     codAmount: dto.shipment?.codEnabled

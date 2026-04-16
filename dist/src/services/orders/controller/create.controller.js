@@ -81,26 +81,38 @@ const create = async (req, res) => {
         }
         const { amount, ...repoPayload } = mapped;
         const order = await (0, repo_1.createOrder)(req.user.id, repoPayload, actor);
-        if (labelMode === "queue") {
-            await (0, workflow_1.enqueueOrderLabelJob)(order.id);
+        let labelWarning = null;
+        try {
+            if (labelMode === "queue") {
+                await (0, workflow_1.enqueueOrderLabelJob)(order.id);
+            }
+            else if (labelMode === "async") {
+                void (0, workflow_1.generateAndAttachParcelLabelsForOrder)(order.id).catch((labelErr) => {
+                    console.error(`Label generation failed for order ${order.id}:`, labelErr);
+                });
+            }
+            else {
+                await (0, workflow_1.generateAndAttachParcelLabelsForOrder)(order.id);
+            }
         }
-        else if (labelMode === "async") {
-            void (0, workflow_1.generateAndAttachParcelLabelsForOrder)(order.id).catch((labelErr) => {
-                console.error(`Label generation failed for order ${order.id}:`, labelErr);
-            });
-        }
-        else {
-            await (0, workflow_1.generateAndAttachParcelLabelsForOrder)(order.id);
+        catch (labelErr) {
+            labelWarning =
+                labelErr?.message ??
+                    "Order created, but parcel label generation failed";
+            console.error(`Label generation failed for order ${order.id}:`, labelErr);
         }
         if (!paymentsEnabled) {
             const fresh = await (0, repo_1.getOrderById)(order.id);
             return res.status(201).json({
                 order: fresh,
+                warning: labelWarning,
                 message: labelMode === "async"
                     ? "Order created (manual payment) + parcel labels scheduled"
                     : labelMode === "queue"
                         ? "Order created (manual payment) + parcel labels queued"
-                        : "Order created (manual payment) + parcel labels generated",
+                        : labelWarning
+                            ? "Order created (manual payment) + parcel labels pending retry"
+                            : "Order created (manual payment) + parcel labels generated",
             });
         }
         if (typeof amount !== "number" || amount <= 0) {
@@ -119,11 +131,14 @@ const create = async (req, res) => {
             order: fresh,
             invoice,
             paymentUrl,
+            warning: labelWarning,
             message: labelMode === "async"
                 ? "Order + invoice created successfully (parcel labels scheduled)"
                 : labelMode === "queue"
                     ? "Order + invoice created successfully (parcel labels queued)"
-                    : "Order + parcel labels + invoice created successfully",
+                    : labelWarning
+                        ? "Order + invoice created successfully (parcel labels pending retry)"
+                        : "Order + parcel labels + invoice created successfully",
         });
     }
     catch (err) {

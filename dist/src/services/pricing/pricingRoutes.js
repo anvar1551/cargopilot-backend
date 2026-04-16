@@ -1,0 +1,18 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const client_1 = require("@prisma/client");
+const auth_1 = require("../../middleware/auth");
+const pricingController_1 = require("./pricingController");
+const router = (0, express_1.Router)();
+router.get("/regions", (0, auth_1.auth)([client_1.AppRole.manager, client_1.AppRole.customer]), pricingController_1.getRegions);
+router.post("/regions", (0, auth_1.auth)([client_1.AppRole.manager]), pricingController_1.createRegion);
+router.put("/regions/:id", (0, auth_1.auth)([client_1.AppRole.manager]), pricingController_1.updateRegion);
+router.get("/zones", (0, auth_1.auth)([client_1.AppRole.manager]), pricingController_1.getZoneMatrix);
+router.post("/zones/bulk", (0, auth_1.auth)([client_1.AppRole.manager]), pricingController_1.saveZoneMatrix);
+router.get("/tariff-plans", (0, auth_1.auth)([client_1.AppRole.manager]), pricingController_1.getPlans);
+router.get("/tariff-plans/:id", (0, auth_1.auth)([client_1.AppRole.manager]), pricingController_1.getPlan);
+router.post("/tariff-plans", (0, auth_1.auth)([client_1.AppRole.manager]), pricingController_1.createPlan);
+router.put("/tariff-plans/:id", (0, auth_1.auth)([client_1.AppRole.manager]), pricingController_1.updatePlan);
+router.post("/quote", (0, auth_1.auth)([client_1.AppRole.manager, client_1.AppRole.customer]), pricingController_1.quotePlan);
+exports.default = router;

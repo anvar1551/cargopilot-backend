@@ -2,13 +2,14 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getWarehouse = exports.list = exports.create = void 0;
 const warehouseRepo_1 = require("./warehouseRepo");
+const warehouse_shared_1 = require("./warehouse.shared");
 const create = async (req, res) => {
     try {
-        const { name, location, region } = req.body;
+        const { name, type, location, region } = req.body;
         if (!name || !location) {
             return res.status(400).json({ error: "Name and location are required" });
         }
-        const warehouse = await (0, warehouseRepo_1.createWarehouse)(name, location, region);
+        const warehouse = await (0, warehouseRepo_1.createWarehouse)(name, (0, warehouse_shared_1.normalizeWarehouseType)(type), location, region);
         return res.status(201).json(warehouse);
     }
     catch (error) {

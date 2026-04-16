@@ -4,6 +4,7 @@ exports.previewOrderImport = previewOrderImport;
 exports.importOrdersFromCsv = importOrdersFromCsv;
 exports.getOrderImportTemplateCsv = getOrderImportTemplateCsv;
 const client_1 = require("@prisma/client");
+const order_constants_1 = require("../../order.constants");
 const orderCreate_mapper_1 = require("../../orderCreate.mapper");
 const repo_1 = require("../../repo");
 const orderService_shared_1 = require("../../orderService.shared");
@@ -114,7 +115,7 @@ function mapCsvRowToCreateOrderDto(row, customerEntityId) {
             saveDropoffToAddressBook: false,
         },
         shipment: {
-            serviceType: v.serviceType || "DOOR_TO_DOOR",
+            serviceType: (0, order_constants_1.normalizeServiceTypeInput)(v.serviceType || order_constants_1.DEFAULT_SERVICE_TYPE),
             weightKg: v.weightKg || undefined,
             codEnabled: parseBoolean(v.codEnabled),
             codAmount: v.codAmount || undefined,
@@ -260,7 +261,7 @@ function getOrderImportTemplateCsv() {
         "Hamburg",
         "Cargo Green",
         "+998946430090",
-        "DOOR_TO_DOOR",
+        order_constants_1.DEFAULT_SERVICE_TYPE,
         "2.5",
         "false",
         "",

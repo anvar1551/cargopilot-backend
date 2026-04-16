@@ -1,13 +1,16 @@
 import prisma from "../../config/prismaClient";
+import type { WarehouseTypeValue } from "./warehouse.shared";
 
 export const createWarehouse = async (
   name: string,
+  type: WarehouseTypeValue,
   location: string,
   region?: string,
 ) => {
   return prisma.warehouse.create({
     data: {
       name,
+      type,
       location,
       region: region ?? null,
     },
