@@ -11,4 +11,5 @@ router.post("/", (0, auth_1.auth)([client_1.AppRole.manager]), warehouseControll
 router.get("/", (0, auth_1.auth)([client_1.AppRole.manager, client_1.AppRole.warehouse]), warehouseController_1.list);
 // Get specific warehouse info (manager only)
 router.get("/:id", (0, auth_1.auth)([client_1.AppRole.manager]), warehouseController_1.getWarehouse);
+router.put("/:id", (0, auth_1.auth)([client_1.AppRole.manager]), warehouseController_1.update);
 exports.default = router;

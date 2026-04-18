@@ -59,8 +59,8 @@ function buildCsv(rows) {
 /** Lists orders with pagination and role-aware visibility rules. */
 async function list(req, res) {
     try {
-        const { id, role, customerEntityId } = req.user;
-        const result = await (0, repo_1.listOrders)(id, role, customerEntityId ?? undefined, parseOrderListParams(req.query));
+        const { id, role, customerEntityId, warehouseId } = req.user;
+        const result = await (0, repo_1.listOrders)(id, role, customerEntityId ?? undefined, warehouseId ?? undefined, parseOrderListParams(req.query));
         res.json(result);
     }
     catch (err) {
@@ -73,9 +73,15 @@ async function getOne(req, res) {
         const order = await (0, repo_1.getOrderById)(req.params.id);
         if (!order)
             return res.status(404).json({ error: "Not found" });
-        const { id: userId, role, customerEntityId, } = req.user;
-        if (role === "manager" || role === "warehouse")
+        const { id: userId, role, customerEntityId, warehouseId, } = req.user;
+        if (role === "manager")
             return res.json(order);
+        if (role === "warehouse") {
+            if (!warehouseId || order.currentWarehouseId !== warehouseId) {
+                return res.status(403).json({ error: "Forbidden" });
+            }
+            return res.json(order);
+        }
         if (role === "customer" &&
             ((customerEntityId && order.customerEntityId === customerEntityId) ||
                 order.customerId === userId)) {
@@ -107,17 +113,25 @@ async function listDriverWorkload(req, res) {
 /** Exports manager-visible orders into a finance-friendly CSV using current filters. */
 async function exportCsv(req, res) {
     try {
-        const { id, role, customerEntityId } = req.user;
+        const { id, role, customerEntityId, warehouseId } = req.user;
         if (role !== "manager") {
             return res.status(403).json({ error: "Forbidden" });
         }
-        const orders = await (0, repo_1.listOrdersForExport)(id, role, customerEntityId ?? undefined, {
+        const exportParams = {
             ...parseOrderListParams(req.query),
             mode: "page",
             cursor: undefined,
             page: undefined,
             limit: undefined,
-        });
+        };
+        const maxExportRows = Math.min(Math.max(Number(process.env.MAX_EXPORT_ROWS || 20000), 1000), 200000);
+        const totalExportRows = await (0, repo_1.countOrdersForExport)(id, role, customerEntityId ?? undefined, warehouseId ?? undefined, exportParams);
+        if (totalExportRows > maxExportRows) {
+            return res.status(413).json({
+                error: `Export is too large (${totalExportRows} rows). Narrow filters or raise MAX_EXPORT_ROWS.`,
+            });
+        }
+        const orders = await (0, repo_1.listOrdersForExport)(id, role, customerEntityId ?? undefined, warehouseId ?? undefined, exportParams);
         const csvRows = orders.map((order) => ({
             orderId: order.id,
             orderNumber: order.orderNumber ?? "",

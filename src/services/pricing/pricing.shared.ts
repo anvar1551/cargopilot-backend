@@ -70,7 +70,7 @@ export const tariffRateInputSchema = z
   .superRefine((value, ctx) => {
     if (value.weightToKg <= value.weightFromKg) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         message: "weightToKg must be greater than weightFromKg",
         path: ["weightToKg"],
       });
@@ -97,7 +97,7 @@ export const createTariffPlanSchema = z
       const key = `${rate.zone}:${rate.weightFromKg}:${rate.weightToKg}`;
       if (seen.has(key)) {
         ctx.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           message: "Duplicate zone/weight range in tariff rates",
           path: ["rates", index],
         });
@@ -133,12 +133,80 @@ export const quoteTariffSchema = z.object({
   destinationQuery: z.string().trim().optional().nullable(),
 });
 
-export type CreatePricingRegionInput = z.infer<typeof createPricingRegionSchema>;
-export type UpdatePricingRegionInput = z.infer<typeof updatePricingRegionSchema>;
+export const createDeliverySlaRuleSchema = z
+  .object({
+    name: z.string().trim().min(1).max(160),
+    description: z.string().trim().max(500).optional().nullable(),
+    serviceType: z.enum(SERVICE_TYPES),
+    originRegionId: z.string().uuid().optional().nullable(),
+    destinationRegionId: z.string().uuid().optional().nullable(),
+    zone: z.coerce.number().int().min(0).max(99).optional().nullable(),
+    deliveryDays: z.coerce.number().int().min(1).max(365),
+    priority: z.coerce.number().int().min(0).default(0),
+    isActive: booleanish.optional().default(true),
+  })
+  .superRefine((value, ctx) => {
+    const hasOrigin = Boolean(value.originRegionId);
+    const hasDestination = Boolean(value.destinationRegionId);
+    const hasZone = value.zone !== null && value.zone !== undefined;
+
+    if (hasOrigin !== hasDestination) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "originRegionId and destinationRegionId must be provided together",
+        path: hasOrigin ? ["destinationRegionId"] : ["originRegionId"],
+      });
+    }
+
+    if (hasZone && (hasOrigin || hasDestination)) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Zone rule cannot also specify origin/destination regions",
+        path: ["zone"],
+      });
+    }
+  });
+
+export const updateDeliverySlaRuleSchema = createDeliverySlaRuleSchema;
+
+export const deliverySlaRuleIdParamSchema = z.object({
+  id: z.uuid(),
+});
+
+export const listDeliverySlaRulesQuerySchema = z.object({
+  q: z.string().trim().optional(),
+  serviceType: z.enum(SERVICE_TYPES).optional(),
+  isActive: booleanish.optional(),
+});
+
+export const getOperationalSlaPolicySchema = z.object({});
+
+export const updateOperationalSlaPolicySchema = z.object({
+  staleHours: z.coerce.number().int().min(6).max(720),
+  dueSoonHours: z.coerce.number().int().min(1).max(168),
+  overdueGraceHours: z.coerce.number().int().min(0).max(168),
+});
+
+export type CreatePricingRegionInput = z.infer<
+  typeof createPricingRegionSchema
+>;
+export type UpdatePricingRegionInput = z.infer<
+  typeof updatePricingRegionSchema
+>;
 export type UpsertZoneMatrixInput = z.infer<typeof upsertZoneMatrixSchema>;
 export type CreateTariffPlanInput = z.infer<typeof createTariffPlanSchema>;
 export type UpdateTariffPlanInput = z.infer<typeof updateTariffPlanSchema>;
 export type QuoteTariffInput = z.infer<typeof quoteTariffSchema>;
+export type CreateDeliverySlaRuleInput = z.infer<
+  typeof createDeliverySlaRuleSchema
+>;
+export type UpdateDeliverySlaRuleInput = z.infer<
+  typeof updateDeliverySlaRuleSchema
+>;
+export type UpdateOperationalSlaPolicyInput = z.infer<
+  typeof updateOperationalSlaPolicySchema
+>;
 
 export function normalizeTariffCode(value?: string | null) {
   const normalized = normalizeCode(String(value || ""));

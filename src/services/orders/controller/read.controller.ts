@@ -1,6 +1,7 @@
 import { AppRole } from "@prisma/client";
 
 import {
+  countOrdersForExport,
   getOrderById,
   listDriverWorkloads,
   listOrders,
@@ -24,7 +25,7 @@ function toStringArray(value: unknown) {
   return [];
 }
 
-function parseOrderListParams(query: any): Parameters<typeof listOrders>[3] {
+function parseOrderListParams(query: any): Parameters<typeof listOrders>[4] {
   const mode = query.mode === "cursor" ? "cursor" : "page";
   const scope = query.scope === "deep" ? "deep" : "fast";
 
@@ -74,15 +75,17 @@ function buildCsv(rows: Array<Record<string, unknown>>) {
 /** Lists orders with pagination and role-aware visibility rules. */
 export async function list(req: any, res: any) {
   try {
-    const { id, role, customerEntityId } = req.user as {
+    const { id, role, customerEntityId, warehouseId } = req.user as {
       id: string;
       role: AppRole;
       customerEntityId?: string | null;
+      warehouseId?: string | null;
     };
     const result = await listOrders(
       id,
       role,
       customerEntityId ?? undefined,
+      warehouseId ?? undefined,
       parseOrderListParams(req.query),
     );
 
@@ -102,13 +105,21 @@ export async function getOne(req: any, res: any) {
       id: userId,
       role,
       customerEntityId,
+      warehouseId,
     } = req.user as {
       id: string;
       role: AppRole;
       customerEntityId?: string | null;
+      warehouseId?: string | null;
     };
 
-    if (role === "manager" || role === "warehouse") return res.json(order);
+    if (role === "manager") return res.json(order);
+    if (role === "warehouse") {
+      if (!warehouseId || order.currentWarehouseId !== warehouseId) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+      return res.json(order);
+    }
     if (
       role === "customer" &&
       ((customerEntityId && order.customerEntityId === customerEntityId) ||
@@ -144,22 +155,50 @@ export async function listDriverWorkload(req: any, res: any) {
 /** Exports manager-visible orders into a finance-friendly CSV using current filters. */
 export async function exportCsv(req: any, res: any) {
   try {
-    const { id, role, customerEntityId } = req.user as {
+    const { id, role, customerEntityId, warehouseId } = req.user as {
       id: string;
       role: AppRole;
       customerEntityId?: string | null;
+      warehouseId?: string | null;
     };
     if (role !== "manager") {
       return res.status(403).json({ error: "Forbidden" });
     }
 
-    const orders = await listOrdersForExport(id, role, customerEntityId ?? undefined, {
+    const exportParams = {
       ...parseOrderListParams(req.query),
-      mode: "page",
+      mode: "page" as const,
       cursor: undefined,
       page: undefined,
       limit: undefined,
-    });
+    };
+
+    const maxExportRows = Math.min(
+      Math.max(Number(process.env.MAX_EXPORT_ROWS || 20000), 1000),
+      200000,
+    );
+
+    const totalExportRows = await countOrdersForExport(
+      id,
+      role,
+      customerEntityId ?? undefined,
+      warehouseId ?? undefined,
+      exportParams,
+    );
+
+    if (totalExportRows > maxExportRows) {
+      return res.status(413).json({
+        error: `Export is too large (${totalExportRows} rows). Narrow filters or raise MAX_EXPORT_ROWS.`,
+      });
+    }
+
+    const orders = await listOrdersForExport(
+      id,
+      role,
+      customerEntityId ?? undefined,
+      warehouseId ?? undefined,
+      exportParams,
+    );
 
     const csvRows = orders.map((order: any) => ({
       orderId: order.id,

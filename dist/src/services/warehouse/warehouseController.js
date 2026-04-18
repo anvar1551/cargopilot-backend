@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getWarehouse = exports.list = exports.create = void 0;
+exports.update = exports.getWarehouse = exports.list = exports.create = void 0;
 const warehouseRepo_1 = require("./warehouseRepo");
 const warehouse_shared_1 = require("./warehouse.shared");
 const create = async (req, res) => {
@@ -43,3 +43,32 @@ const getWarehouse = async (req, res) => {
     }
 };
 exports.getWarehouse = getWarehouse;
+const update = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { name, type, location, region } = req.body;
+        if (!id) {
+            return res.status(400).json({ error: "Warehouse id is required" });
+        }
+        if (!name || !location) {
+            return res.status(400).json({ error: "Name and location are required" });
+        }
+        const warehouse = await (0, warehouseRepo_1.updateWarehouse)(id, {
+            name: String(name).trim(),
+            type: (0, warehouse_shared_1.normalizeWarehouseType)(type),
+            location: String(location).trim(),
+            region: typeof region === "string" && region.trim().length > 0
+                ? region.trim()
+                : null,
+        });
+        return res.json(warehouse);
+    }
+    catch (error) {
+        if (error?.code === "P2025") {
+            return res.status(404).json({ error: "Warehouse not found" });
+        }
+        console.error("updateWarehouse error:", error);
+        return res.status(500).json({ error: "Failed to update warehouse" });
+    }
+};
+exports.update = update;

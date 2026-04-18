@@ -15,12 +15,22 @@ const FINAL_ORDER_STATUSES = [
     client_1.OrderStatus.returned,
     client_1.OrderStatus.cancelled,
 ];
-const WAREHOUSE_ALLOWED_MANUAL_STATUSES = new Set([
-    client_1.OrderStatus.at_warehouse,
-    client_1.OrderStatus.in_transit,
-    client_1.OrderStatus.out_for_delivery,
-    client_1.OrderStatus.exception,
-]);
+const WAREHOUSE_ALLOWED_MANUAL_STATUSES = {
+    [client_1.WarehouseType.warehouse]: new Set([
+        client_1.OrderStatus.at_warehouse,
+        client_1.OrderStatus.in_transit,
+        client_1.OrderStatus.out_for_delivery,
+        client_1.OrderStatus.exception,
+    ]),
+    [client_1.WarehouseType.pickup_point]: new Set([
+        client_1.OrderStatus.at_warehouse,
+        client_1.OrderStatus.in_transit,
+        client_1.OrderStatus.out_for_delivery,
+        client_1.OrderStatus.delivered,
+        client_1.OrderStatus.exception,
+        client_1.OrderStatus.return_in_progress,
+    ]),
+};
 const ASSIGNABLE_ORDER_STATUSES = {
     pickup: [client_1.OrderStatus.pending, client_1.OrderStatus.assigned, client_1.OrderStatus.exception],
     delivery: [
@@ -97,6 +107,21 @@ function assertManagerOrWarehouse(actor) {
         throw (0, orderService_shared_1.orderError)("Only manager or warehouse can perform this action", 403);
     }
 }
+async function resolveActorWarehouseType(actor) {
+    if (actor.role !== client_1.AppRole.warehouse)
+        return null;
+    if (!actor.warehouseId) {
+        throw (0, orderService_shared_1.orderError)("Warehouse user has no warehouse assigned", 403);
+    }
+    const warehouse = await prismaClient_1.default.warehouse.findUnique({
+        where: { id: actor.warehouseId },
+        select: { type: true },
+    });
+    if (!warehouse) {
+        throw (0, orderService_shared_1.orderError)("Attached warehouse not found", 403);
+    }
+    return warehouse.type;
+}
 function assertWarehouseScope(actor, orders) {
     if (actor.role !== client_1.AppRole.warehouse)
         return;
@@ -115,6 +140,39 @@ function resolveWarehouseId(actor, provided) {
 }
 function formatStatus(status) {
     return status.replace(/_/g, " ");
+}
+function hasPositiveAmount(value) {
+    const amount = Number(value ?? 0);
+    return Number.isFinite(amount) && amount > 0;
+}
+function isPendingPaidStatus(value) {
+    return value !== client_1.PaidStatus.PAID;
+}
+function hasCashDueForStage(order) {
+    const collectionRows = Array.isArray(order.cashCollections)
+        ? order.cashCollections
+        : [];
+    const pendingCollections = collectionRows.filter((collection) => collection.status === client_1.CashCollectionStatus.expected &&
+        hasPositiveAmount(collection.expectedAmount));
+    const hasPendingCodCollection = pendingCollections.some((collection) => collection.kind === client_1.CashCollectionKind.cod);
+    const hasPendingServiceChargeCollection = pendingCollections.some((collection) => collection.kind === client_1.CashCollectionKind.service_charge);
+    const hasCodCollectionRow = collectionRows.some((collection) => collection.kind === client_1.CashCollectionKind.cod);
+    const hasServiceChargeCollectionRow = collectionRows.some((collection) => collection.kind === client_1.CashCollectionKind.service_charge);
+    // Fallback to paid-status fields only when no collection row exists yet for that kind.
+    const fallbackCodPending = !hasCodCollectionRow &&
+        hasPositiveAmount(order.codAmount) &&
+        isPendingPaidStatus(order.codPaidStatus);
+    const fallbackServiceChargePending = !hasServiceChargeCollectionRow &&
+        hasPositiveAmount(order.serviceCharge) &&
+        isPendingPaidStatus(order.serviceChargePaidStatus);
+    const hasPickupCashDue = (hasPendingServiceChargeCollection || fallbackServiceChargePending) &&
+        order.deliveryChargePaidBy === client_1.PaidBy.SENDER;
+    const hasDeliveryCashDue = hasPendingCodCollection ||
+        fallbackCodPending ||
+        ((hasPendingServiceChargeCollection || fallbackServiceChargePending) &&
+            (order.deliveryChargePaidBy === client_1.PaidBy.RECIPIENT ||
+                order.deliveryChargePaidBy == null));
+    return { hasPickupCashDue, hasDeliveryCashDue };
 }
 async function loadAssignedOrdersForResponse(orderIds, includeFull) {
     if (includeFull) {
@@ -229,12 +287,14 @@ async function assignOrderTasksBulk(args) {
 async function updateOrdersStatusBulk(args) {
     const { orderIds, status, reasonCode, warehouseId, note, region, actor, includeFull, } = args;
     assertManagerOrWarehouse(actor);
+    const actorWarehouseType = await resolveActorWarehouseType(actor);
     if (!Array.isArray(orderIds) || orderIds.length === 0) {
         throw (0, orderService_shared_1.orderError)("orderIds must be a non-empty array", 400);
     }
     if (actor.role === client_1.AppRole.warehouse) {
-        if (!WAREHOUSE_ALLOWED_MANUAL_STATUSES.has(status)) {
-            throw (0, orderService_shared_1.orderError)(`Warehouse role can set only: ${Array.from(WAREHOUSE_ALLOWED_MANUAL_STATUSES).join(", ")}`, 403);
+        const allowedStatuses = WAREHOUSE_ALLOWED_MANUAL_STATUSES[actorWarehouseType ?? client_1.WarehouseType.warehouse];
+        if (!allowedStatuses.has(status)) {
+            throw (0, orderService_shared_1.orderError)(`Warehouse role can set only: ${Array.from(allowedStatuses).join(", ")}`, 403);
         }
     }
     if (REASON_REQUIRED_STATUSES.has(status) && !reasonCode) {
@@ -242,7 +302,23 @@ async function updateOrdersStatusBulk(args) {
     }
     const orders = await prismaClient_1.default.order.findMany({
         where: { id: { in: orderIds } },
-        select: { id: true, status: true, currentWarehouseId: true },
+        select: {
+            id: true,
+            status: true,
+            currentWarehouseId: true,
+            codAmount: true,
+            codPaidStatus: true,
+            serviceCharge: true,
+            serviceChargePaidStatus: true,
+            deliveryChargePaidBy: true,
+            cashCollections: {
+                select: {
+                    kind: true,
+                    status: true,
+                    expectedAmount: true,
+                },
+            },
+        },
     });
     if (orders.length !== orderIds.length) {
         throw (0, orderService_shared_1.orderError)("Some orders were not found", 400);
@@ -254,6 +330,21 @@ async function updateOrdersStatusBulk(args) {
         status === client_1.OrderStatus.out_for_delivery;
     if (requiresWarehouseContext && !effectiveWarehouseId) {
         throw (0, orderService_shared_1.orderError)("warehouseId is required for this update", 400);
+    }
+    if (status === client_1.OrderStatus.picked_up || status === client_1.OrderStatus.delivered) {
+        const blocked = orders.filter((order) => {
+            const { hasPickupCashDue, hasDeliveryCashDue } = hasCashDueForStage(order);
+            if (status === client_1.OrderStatus.picked_up)
+                return hasPickupCashDue;
+            return hasDeliveryCashDue;
+        });
+        if (blocked.length > 0) {
+            const ids = blocked.map((order) => order.id).join(", ");
+            if (status === client_1.OrderStatus.picked_up) {
+                throw (0, orderService_shared_1.orderError)(`Cannot complete pickup while sender-side service charge is still expected. Blocked order(s): ${ids}`, 400);
+            }
+            throw (0, orderService_shared_1.orderError)(`Cannot complete delivery while COD/service charge is still expected. Blocked order(s): ${ids}`, 400);
+        }
     }
     const updateData = { status };
     if (status === client_1.OrderStatus.at_warehouse && effectiveWarehouseId) {
@@ -331,6 +422,18 @@ async function updateDriverOrderStatus(args) {
             lastExceptionReason: true,
             assignedDriverId: true,
             currentWarehouseId: true,
+            codAmount: true,
+            codPaidStatus: true,
+            serviceCharge: true,
+            serviceChargePaidStatus: true,
+            deliveryChargePaidBy: true,
+            cashCollections: {
+                select: {
+                    kind: true,
+                    status: true,
+                    expectedAmount: true,
+                },
+            },
         },
     });
     if (!order) {
@@ -351,6 +454,13 @@ async function updateDriverOrderStatus(args) {
     }
     if (REASON_REQUIRED_STATUSES.has(status) && !reasonCode) {
         throw (0, orderService_shared_1.orderError)(`reasonCode is required when status is ${status}`, 400);
+    }
+    const { hasPickupCashDue, hasDeliveryCashDue } = hasCashDueForStage(order);
+    if (status === client_1.OrderStatus.picked_up && hasPickupCashDue) {
+        throw (0, orderService_shared_1.orderError)("Cannot complete pickup while sender-side service charge is still expected. Collect cash first.", 400);
+    }
+    if (status === client_1.OrderStatus.delivered && hasDeliveryCashDue) {
+        throw (0, orderService_shared_1.orderError)("Cannot complete delivery while COD/service charge is still expected. Collect cash first.", 400);
     }
     const updateData = { status };
     if (status === client_1.OrderStatus.at_warehouse) {

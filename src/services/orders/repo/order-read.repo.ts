@@ -65,6 +65,12 @@ const orderListSelect = {
   destinationCity: true,
   createdAt: true,
   updatedAt: true,
+  currency: true,
+  codAmount: true,
+  codPaidStatus: true,
+  serviceCharge: true,
+  serviceChargePaidStatus: true,
+  deliveryChargePaidBy: true,
   labelKey: true,
   assignedDriverId: true,
   currentWarehouseId: true,
@@ -83,6 +89,20 @@ const orderListSelect = {
       labelKey: true,
       pieceNo: true,
       pieceTotal: true,
+    },
+  },
+  cashCollections: {
+    select: {
+      id: true,
+      kind: true,
+      status: true,
+      expectedAmount: true,
+      collectedAmount: true,
+      currency: true,
+      currentHolderType: true,
+      currentHolderLabel: true,
+      collectedAt: true,
+      settledAt: true,
     },
   },
 } satisfies Prisma.OrderSelect;
@@ -214,6 +234,7 @@ function buildRoleScopeWhere(
   userId: string,
   role: AppRole,
   customerEntityId?: string | null,
+  warehouseId?: string | null,
 ): Prisma.OrderWhereInput {
   if (role === "customer") {
     if (customerEntityId) {
@@ -222,6 +243,13 @@ function buildRoleScopeWhere(
     return { customerId: userId };
   }
   if (role === "driver") return { assignedDriverId: userId };
+  if (role === "warehouse") {
+    if (!warehouseId) {
+      // no attached location -> no visibility
+      return { id: "__no_access__" };
+    }
+    return { currentWarehouseId: warehouseId };
+  }
   return {};
 }
 
@@ -387,11 +415,17 @@ function buildOrderWhere(
   userId: string,
   role: AppRole,
   customerEntityId?: string | null,
+  warehouseId?: string | null,
   params?: ListOrdersParams,
 ): Prisma.OrderWhereInput {
   const scope: SearchScope = params?.scope === "deep" ? "deep" : "fast";
   const q = params?.q?.trim() ?? "";
-  const roleWhere = buildRoleScopeWhere(userId, role, customerEntityId);
+  const roleWhere = buildRoleScopeWhere(
+    userId,
+    role,
+    customerEntityId,
+    warehouseId,
+  );
   const searchWhere = q ? buildSearchWhere(q, scope) : {};
   const filterWhere = buildStructuredFiltersWhere(params);
   const and = [roleWhere, searchWhere, filterWhere].filter(
@@ -421,6 +455,18 @@ export const getOrderById = async (id: string) => {
       receiverAddressObj: true,
       attachments: true,
       parcels: true,
+      cashCollections: {
+        include: {
+          currentHolderUser: { select: userLiteSelect },
+          currentHolderWarehouse: true,
+          events: {
+            include: {
+              actor: { select: userLiteSelect },
+            },
+            orderBy: { createdAt: "asc" },
+          },
+        },
+      },
       trackingEvents: {
         include: {
           warehouse: true,
@@ -438,6 +484,7 @@ export const listOrders = async (
   userId: string,
   role: AppRole,
   customerEntityId?: string | null,
+  warehouseId?: string | null,
   params?: ListOrdersParams,
 ) => {
   const page = Math.max(1, params?.page ?? 1);
@@ -445,7 +492,13 @@ export const listOrders = async (
   const mode: ListMode = params?.mode === "cursor" ? "cursor" : "page";
   const cursor = decodeCursor(params?.cursor);
   const skip = (page - 1) * limit;
-  const where = buildOrderWhere(userId, role, customerEntityId, params);
+  const where = buildOrderWhere(
+    userId,
+    role,
+    customerEntityId,
+    warehouseId,
+    params,
+  );
 
   if (mode === "cursor") {
     const whereWithCursor: Prisma.OrderWhereInput = cursor
@@ -522,14 +575,39 @@ export const listOrdersForExport = async (
   userId: string,
   role: AppRole,
   customerEntityId?: string | null,
+  warehouseId?: string | null,
   params?: ListOrdersParams,
 ) => {
-  const where = buildOrderWhere(userId, role, customerEntityId, params);
+  const where = buildOrderWhere(
+    userId,
+    role,
+    customerEntityId,
+    warehouseId,
+    params,
+  );
   return prisma.order.findMany({
     where,
     select: orderExportSelect,
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
   });
+};
+
+/** Returns exact count for current export filters to guard large synchronous CSV exports. */
+export const countOrdersForExport = async (
+  userId: string,
+  role: AppRole,
+  customerEntityId?: string | null,
+  warehouseId?: string | null,
+  params?: ListOrdersParams,
+) => {
+  const where = buildOrderWhere(
+    userId,
+    role,
+    customerEntityId,
+    warehouseId,
+    params,
+  );
+  return prisma.order.count({ where });
 };
 
 type DriverWorkload = {

@@ -1,5 +1,14 @@
 import prisma from "../../../../config/prismaClient";
-import { AppRole, OrderStatus, ReasonCode } from "@prisma/client";
+import {
+  AppRole,
+  CashCollectionKind,
+  CashCollectionStatus,
+  OrderStatus,
+  PaidBy,
+  PaidStatus,
+  ReasonCode,
+  WarehouseType,
+} from "@prisma/client";
 import { OrderActor, orderError } from "../../orderService.shared";
 
 type AssignmentType = "pickup" | "delivery" | "linehaul";
@@ -10,12 +19,23 @@ const FINAL_ORDER_STATUSES: OrderStatus[] = [
   OrderStatus.cancelled,
 ];
 
-const WAREHOUSE_ALLOWED_MANUAL_STATUSES = new Set<OrderStatus>([
-  OrderStatus.at_warehouse,
-  OrderStatus.in_transit,
-  OrderStatus.out_for_delivery,
-  OrderStatus.exception,
-]);
+const WAREHOUSE_ALLOWED_MANUAL_STATUSES: Record<WarehouseType, Set<OrderStatus>> =
+  {
+    [WarehouseType.warehouse]: new Set<OrderStatus>([
+      OrderStatus.at_warehouse,
+      OrderStatus.in_transit,
+      OrderStatus.out_for_delivery,
+      OrderStatus.exception,
+    ]),
+    [WarehouseType.pickup_point]: new Set<OrderStatus>([
+      OrderStatus.at_warehouse,
+      OrderStatus.in_transit,
+      OrderStatus.out_for_delivery,
+      OrderStatus.delivered,
+      OrderStatus.exception,
+      OrderStatus.return_in_progress,
+    ]),
+  };
 
 const ASSIGNABLE_ORDER_STATUSES: Record<AssignmentType, OrderStatus[]> = {
   pickup: [OrderStatus.pending, OrderStatus.assigned, OrderStatus.exception],
@@ -107,6 +127,23 @@ function assertManagerOrWarehouse(actor: OrderActor) {
   }
 }
 
+async function resolveActorWarehouseType(
+  actor: OrderActor,
+): Promise<WarehouseType | null> {
+  if (actor.role !== AppRole.warehouse) return null;
+  if (!actor.warehouseId) {
+    throw orderError("Warehouse user has no warehouse assigned", 403);
+  }
+  const warehouse = await prisma.warehouse.findUnique({
+    where: { id: actor.warehouseId },
+    select: { type: true },
+  });
+  if (!warehouse) {
+    throw orderError("Attached warehouse not found", 403);
+  }
+  return warehouse.type;
+}
+
 function assertWarehouseScope(
   actor: OrderActor,
   orders: Array<{ id: string; currentWarehouseId: string | null }>,
@@ -133,6 +170,75 @@ function resolveWarehouseId(actor: OrderActor, provided?: string | null) {
 
 function formatStatus(status: OrderStatus) {
   return status.replace(/_/g, " ");
+}
+
+function hasPositiveAmount(value: unknown) {
+  const amount = Number(value ?? 0);
+  return Number.isFinite(amount) && amount > 0;
+}
+
+function isPendingPaidStatus(value: PaidStatus | null | undefined) {
+  return value !== PaidStatus.PAID;
+}
+
+function hasCashDueForStage(order: {
+  codAmount: number | null;
+  codPaidStatus: PaidStatus | null;
+  serviceCharge: number | null;
+  serviceChargePaidStatus: PaidStatus | null;
+  deliveryChargePaidBy: PaidBy | null;
+  cashCollections?: Array<{
+    kind: CashCollectionKind;
+    status: CashCollectionStatus;
+    expectedAmount: number | null;
+  }>;
+}) {
+  const collectionRows = Array.isArray(order.cashCollections)
+    ? order.cashCollections
+    : [];
+
+  const pendingCollections = collectionRows.filter(
+    (collection) =>
+      collection.status === CashCollectionStatus.expected &&
+      hasPositiveAmount(collection.expectedAmount),
+  );
+
+  const hasPendingCodCollection = pendingCollections.some(
+    (collection) => collection.kind === CashCollectionKind.cod,
+  );
+  const hasPendingServiceChargeCollection = pendingCollections.some(
+    (collection) => collection.kind === CashCollectionKind.service_charge,
+  );
+
+  const hasCodCollectionRow = collectionRows.some(
+    (collection) => collection.kind === CashCollectionKind.cod,
+  );
+  const hasServiceChargeCollectionRow = collectionRows.some(
+    (collection) => collection.kind === CashCollectionKind.service_charge,
+  );
+
+  // Fallback to paid-status fields only when no collection row exists yet for that kind.
+  const fallbackCodPending =
+    !hasCodCollectionRow &&
+    hasPositiveAmount(order.codAmount) &&
+    isPendingPaidStatus(order.codPaidStatus);
+  const fallbackServiceChargePending =
+    !hasServiceChargeCollectionRow &&
+    hasPositiveAmount(order.serviceCharge) &&
+    isPendingPaidStatus(order.serviceChargePaidStatus);
+
+  const hasPickupCashDue =
+    (hasPendingServiceChargeCollection || fallbackServiceChargePending) &&
+    order.deliveryChargePaidBy === PaidBy.SENDER;
+
+  const hasDeliveryCashDue =
+    hasPendingCodCollection ||
+    fallbackCodPending ||
+    ((hasPendingServiceChargeCollection || fallbackServiceChargePending) &&
+      (order.deliveryChargePaidBy === PaidBy.RECIPIENT ||
+        order.deliveryChargePaidBy == null));
+
+  return { hasPickupCashDue, hasDeliveryCashDue };
 }
 
 async function loadAssignedOrdersForResponse(
@@ -314,14 +420,20 @@ export async function updateOrdersStatusBulk(args: {
 
   assertManagerOrWarehouse(actor);
 
+  const actorWarehouseType = await resolveActorWarehouseType(actor);
+
   if (!Array.isArray(orderIds) || orderIds.length === 0) {
     throw orderError("orderIds must be a non-empty array", 400);
   }
 
   if (actor.role === AppRole.warehouse) {
-    if (!WAREHOUSE_ALLOWED_MANUAL_STATUSES.has(status)) {
+    const allowedStatuses =
+      WAREHOUSE_ALLOWED_MANUAL_STATUSES[
+        actorWarehouseType ?? WarehouseType.warehouse
+      ];
+    if (!allowedStatuses.has(status)) {
       throw orderError(
-        `Warehouse role can set only: ${Array.from(WAREHOUSE_ALLOWED_MANUAL_STATUSES).join(", ")}`,
+        `Warehouse role can set only: ${Array.from(allowedStatuses).join(", ")}`,
         403,
       );
     }
@@ -333,7 +445,23 @@ export async function updateOrdersStatusBulk(args: {
 
   const orders = await prisma.order.findMany({
     where: { id: { in: orderIds } },
-    select: { id: true, status: true, currentWarehouseId: true },
+    select: {
+      id: true,
+      status: true,
+      currentWarehouseId: true,
+      codAmount: true,
+      codPaidStatus: true,
+      serviceCharge: true,
+      serviceChargePaidStatus: true,
+      deliveryChargePaidBy: true,
+      cashCollections: {
+        select: {
+          kind: true,
+          status: true,
+          expectedAmount: true,
+        },
+      },
+    },
   });
   if (orders.length !== orderIds.length) {
     throw orderError("Some orders were not found", 400);
@@ -349,6 +477,29 @@ export async function updateOrdersStatusBulk(args: {
 
   if (requiresWarehouseContext && !effectiveWarehouseId) {
     throw orderError("warehouseId is required for this update", 400);
+  }
+
+  if (status === OrderStatus.picked_up || status === OrderStatus.delivered) {
+    const blocked = orders.filter((order) => {
+      const { hasPickupCashDue, hasDeliveryCashDue } = hasCashDueForStage(order);
+
+      if (status === OrderStatus.picked_up) return hasPickupCashDue;
+      return hasDeliveryCashDue;
+    });
+
+    if (blocked.length > 0) {
+      const ids = blocked.map((order) => order.id).join(", ");
+      if (status === OrderStatus.picked_up) {
+        throw orderError(
+          `Cannot complete pickup while sender-side service charge is still expected. Blocked order(s): ${ids}`,
+          400,
+        );
+      }
+      throw orderError(
+        `Cannot complete delivery while COD/service charge is still expected. Blocked order(s): ${ids}`,
+        400,
+      );
+    }
   }
 
   const updateData: any = { status };
@@ -441,6 +592,18 @@ export async function updateDriverOrderStatus(args: {
       lastExceptionReason: true,
       assignedDriverId: true,
       currentWarehouseId: true,
+      codAmount: true,
+      codPaidStatus: true,
+      serviceCharge: true,
+      serviceChargePaidStatus: true,
+      deliveryChargePaidBy: true,
+      cashCollections: {
+        select: {
+          kind: true,
+          status: true,
+          expectedAmount: true,
+        },
+      },
     },
   });
   if (!order) {
@@ -466,6 +629,22 @@ export async function updateDriverOrderStatus(args: {
 
   if (REASON_REQUIRED_STATUSES.has(status) && !reasonCode) {
     throw orderError(`reasonCode is required when status is ${status}`, 400);
+  }
+
+  const { hasPickupCashDue, hasDeliveryCashDue } = hasCashDueForStage(order);
+
+  if (status === OrderStatus.picked_up && hasPickupCashDue) {
+    throw orderError(
+      "Cannot complete pickup while sender-side service charge is still expected. Collect cash first.",
+      400,
+    );
+  }
+
+  if (status === OrderStatus.delivered && hasDeliveryCashDue) {
+    throw orderError(
+      "Cannot complete delivery while COD/service charge is still expected. Collect cash first.",
+      400,
+    );
   }
 
   const updateData: any = { status };

@@ -6,7 +6,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.createOrder = void 0;
 const prismaClient_1 = __importDefault(require("../../../config/prismaClient"));
 const client_1 = require("@prisma/client");
+const cashCollection_shared_1 = require("../../../features/cash/cashCollection.shared");
 const orderNumber_1 = require("../../../utils/orderNumber");
+const pricingRepo_1 = require("../../pricing/pricingRepo");
 const orderService_shared_1 = require("../orderService.shared");
 const order_repo_shared_1 = require("./order-repo.shared");
 function sanitizeSnapshot(s) {
@@ -111,7 +113,32 @@ const createOrder = async (customerId, payload, actor) => {
         receiverAddressId = created.id;
     }
     await assertFkExists({ ...payload, senderAddressId, receiverAddressId });
+    const [senderAddressRecord, receiverAddressRecord] = await Promise.all([
+        senderAddressId
+            ? prismaClient_1.default.address.findUnique({
+                where: { id: senderAddressId },
+                select: { city: true },
+            })
+            : Promise.resolve(null),
+        receiverAddressId
+            ? prismaClient_1.default.address.findUnique({
+                where: { id: receiverAddressId },
+                select: { city: true },
+            })
+            : Promise.resolve(null),
+    ]);
     const orderNumber = await (0, orderNumber_1.getNextOrderNumber)();
+    const createdAt = new Date();
+    const slaSnapshot = await (0, pricingRepo_1.resolveOrderSlaSnapshot)({
+        serviceType: payload.serviceType ?? null,
+        originQuery: payload.senderAddressSnapshot?.city ?? senderAddressRecord?.city ?? null,
+        destinationQuery: payload.destinationCity ??
+            payload.receiverAddressSnapshot?.city ??
+            receiverAddressRecord?.city ??
+            null,
+        promiseDate: payload.promiseDate ?? null,
+        createdAt,
+    });
     const pieceTotal = payload.pieceTotal ??
         (payload.parcels?.length ? payload.parcels.length : 1);
     const parcelsToCreate = payload.parcels?.length
@@ -131,6 +158,14 @@ const createOrder = async (customerId, payload, actor) => {
                 parcelCode: `${orderNumber}-1/${pieceTotal}`,
             },
         ];
+    const cashCollectionsToCreate = (0, cashCollection_shared_1.buildInitialOrderCashCollections)({
+        codAmount: payload.codAmount ?? null,
+        codPaidStatus: payload.codPaidStatus ?? null,
+        serviceCharge: payload.serviceCharge ?? null,
+        serviceChargePaidStatus: payload.serviceChargePaidStatus ?? null,
+        deliveryChargePaidBy: payload.deliveryChargePaidBy ?? null,
+        currency: payload.currency ?? null,
+    }, actor);
     return prismaClient_1.default.order.create({
         data: {
             customerId,
@@ -166,6 +201,10 @@ const createOrder = async (customerId, payload, actor) => {
             plannedPickupAt: toDateOrNull(payload.plannedPickupAt),
             plannedDeliveryAt: toDateOrNull(payload.plannedDeliveryAt),
             promiseDate: toDateOrNull(payload.promiseDate),
+            expectedDeliveryAt: slaSnapshot.expectedDeliveryAt,
+            slaSource: slaSnapshot.slaSource,
+            slaRuleId: slaSnapshot.slaRuleId,
+            slaTargetDays: slaSnapshot.slaTargetDays,
             referenceId: payload.referenceId ?? null,
             shelfId: payload.shelfId ?? null,
             promoCode: payload.promoCode ?? null,
@@ -173,7 +212,11 @@ const createOrder = async (customerId, payload, actor) => {
             fragile: payload.fragile ?? false,
             dangerousGoods: payload.dangerousGoods ?? false,
             shipmentInsurance: payload.shipmentInsurance ?? false,
+            createdAt,
             parcels: { create: parcelsToCreate },
+            ...(cashCollectionsToCreate.length > 0
+                ? { cashCollections: { create: cashCollectionsToCreate } }
+                : {}),
             trackingEvents: {
                 create: {
                     status: client_1.OrderStatus.pending,
@@ -192,6 +235,18 @@ const createOrder = async (customerId, payload, actor) => {
             receiverAddressObj: true,
             attachments: true,
             parcels: true,
+            cashCollections: {
+                include: {
+                    currentHolderUser: { select: order_repo_shared_1.userLiteSelect },
+                    currentHolderWarehouse: true,
+                    events: {
+                        include: {
+                            actor: { select: order_repo_shared_1.userLiteSelect },
+                        },
+                        orderBy: { createdAt: "asc" },
+                    },
+                },
+            },
             currentWarehouse: true,
             assignedDriver: { select: order_repo_shared_1.userLiteSelect },
             invoice: true,

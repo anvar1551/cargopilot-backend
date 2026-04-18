@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.quoteTariffSchema = exports.listTariffPlansQuerySchema = exports.updateTariffPlanSchema = exports.tariffPlanIdParamSchema = exports.createTariffPlanSchema = exports.tariffRateInputSchema = exports.listZoneMatrixQuerySchema = exports.upsertZoneMatrixSchema = exports.zoneMatrixEntryInputSchema = exports.listPricingRegionsQuerySchema = exports.updatePricingRegionSchema = exports.pricingRegionIdParamSchema = exports.createPricingRegionSchema = exports.TARIFF_PRICE_TYPES = exports.PRICING_PLAN_STATUSES = void 0;
+exports.updateOperationalSlaPolicySchema = exports.getOperationalSlaPolicySchema = exports.listDeliverySlaRulesQuerySchema = exports.deliverySlaRuleIdParamSchema = exports.updateDeliverySlaRuleSchema = exports.createDeliverySlaRuleSchema = exports.quoteTariffSchema = exports.listTariffPlansQuerySchema = exports.updateTariffPlanSchema = exports.tariffPlanIdParamSchema = exports.createTariffPlanSchema = exports.tariffRateInputSchema = exports.listZoneMatrixQuerySchema = exports.upsertZoneMatrixSchema = exports.zoneMatrixEntryInputSchema = exports.listPricingRegionsQuerySchema = exports.updatePricingRegionSchema = exports.pricingRegionIdParamSchema = exports.createPricingRegionSchema = exports.TARIFF_PRICE_TYPES = exports.PRICING_PLAN_STATUSES = void 0;
 exports.normalizeTariffCode = normalizeTariffCode;
 const zod_1 = require("zod");
 const order_constants_1 = require("../orders/order.constants");
@@ -62,7 +62,7 @@ exports.tariffRateInputSchema = zod_1.z
     .superRefine((value, ctx) => {
     if (value.weightToKg <= value.weightFromKg) {
         ctx.addIssue({
-            code: zod_1.z.ZodIssueCode.custom,
+            code: "custom",
             message: "weightToKg must be greater than weightFromKg",
             path: ["weightToKg"],
         });
@@ -88,7 +88,7 @@ exports.createTariffPlanSchema = zod_1.z
         const key = `${rate.zone}:${rate.weightFromKg}:${rate.weightToKg}`;
         if (seen.has(key)) {
             ctx.addIssue({
-                code: zod_1.z.ZodIssueCode.custom,
+                code: "custom",
                 message: "Duplicate zone/weight range in tariff rates",
                 path: ["rates", index],
             });
@@ -118,6 +118,52 @@ exports.quoteTariffSchema = zod_1.z.object({
     weightKg: zod_1.z.coerce.number().positive().optional().nullable(),
     originQuery: zod_1.z.string().trim().optional().nullable(),
     destinationQuery: zod_1.z.string().trim().optional().nullable(),
+});
+exports.createDeliverySlaRuleSchema = zod_1.z
+    .object({
+    name: zod_1.z.string().trim().min(1).max(160),
+    description: zod_1.z.string().trim().max(500).optional().nullable(),
+    serviceType: zod_1.z.enum(order_constants_1.SERVICE_TYPES),
+    originRegionId: zod_1.z.string().uuid().optional().nullable(),
+    destinationRegionId: zod_1.z.string().uuid().optional().nullable(),
+    zone: zod_1.z.coerce.number().int().min(0).max(99).optional().nullable(),
+    deliveryDays: zod_1.z.coerce.number().int().min(1).max(365),
+    priority: zod_1.z.coerce.number().int().min(0).default(0),
+    isActive: booleanish.optional().default(true),
+})
+    .superRefine((value, ctx) => {
+    const hasOrigin = Boolean(value.originRegionId);
+    const hasDestination = Boolean(value.destinationRegionId);
+    const hasZone = value.zone !== null && value.zone !== undefined;
+    if (hasOrigin !== hasDestination) {
+        ctx.addIssue({
+            code: "custom",
+            message: "originRegionId and destinationRegionId must be provided together",
+            path: hasOrigin ? ["destinationRegionId"] : ["originRegionId"],
+        });
+    }
+    if (hasZone && (hasOrigin || hasDestination)) {
+        ctx.addIssue({
+            code: "custom",
+            message: "Zone rule cannot also specify origin/destination regions",
+            path: ["zone"],
+        });
+    }
+});
+exports.updateDeliverySlaRuleSchema = exports.createDeliverySlaRuleSchema;
+exports.deliverySlaRuleIdParamSchema = zod_1.z.object({
+    id: zod_1.z.uuid(),
+});
+exports.listDeliverySlaRulesQuerySchema = zod_1.z.object({
+    q: zod_1.z.string().trim().optional(),
+    serviceType: zod_1.z.enum(order_constants_1.SERVICE_TYPES).optional(),
+    isActive: booleanish.optional(),
+});
+exports.getOperationalSlaPolicySchema = zod_1.z.object({});
+exports.updateOperationalSlaPolicySchema = zod_1.z.object({
+    staleHours: zod_1.z.coerce.number().int().min(6).max(720),
+    dueSoonHours: zod_1.z.coerce.number().int().min(1).max(168),
+    overdueGraceHours: zod_1.z.coerce.number().int().min(0).max(168),
 });
 function normalizeTariffCode(value) {
     const normalized = normalizeCode(String(value || ""));

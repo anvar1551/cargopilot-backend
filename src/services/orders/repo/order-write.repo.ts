@@ -1,7 +1,9 @@
 import prisma from "../../../config/prismaClient";
 import { OrderStatus } from "@prisma/client";
 
+import { buildInitialOrderCashCollections } from "../../../features/cash/cashCollection.shared";
 import { getNextOrderNumber } from "../../../utils/orderNumber";
+import { resolveOrderSlaSnapshot } from "../../pricing/pricingRepo";
 import { CreateOrderRepoPayload } from "../orderCreate.mapper";
 import { OrderActor, orderError } from "../orderService.shared";
 import { userLiteSelect } from "./order-repo.shared";
@@ -133,7 +135,35 @@ export const createOrder = async (
 
   await assertFkExists({ ...payload, senderAddressId, receiverAddressId });
 
+  const [senderAddressRecord, receiverAddressRecord] = await Promise.all([
+    senderAddressId
+      ? prisma.address.findUnique({
+          where: { id: senderAddressId },
+          select: { city: true },
+        })
+      : Promise.resolve(null),
+    receiverAddressId
+      ? prisma.address.findUnique({
+          where: { id: receiverAddressId },
+          select: { city: true },
+        })
+      : Promise.resolve(null),
+  ]);
+
   const orderNumber = await getNextOrderNumber();
+  const createdAt = new Date();
+  const slaSnapshot = await resolveOrderSlaSnapshot({
+    serviceType: payload.serviceType ?? null,
+    originQuery:
+      payload.senderAddressSnapshot?.city ?? senderAddressRecord?.city ?? null,
+    destinationQuery:
+      payload.destinationCity ??
+      payload.receiverAddressSnapshot?.city ??
+      receiverAddressRecord?.city ??
+      null,
+    promiseDate: payload.promiseDate ?? null,
+    createdAt,
+  });
 
   const pieceTotal =
     payload.pieceTotal ??
@@ -156,6 +186,18 @@ export const createOrder = async (
           parcelCode: `${orderNumber}-1/${pieceTotal}`,
         },
       ];
+
+  const cashCollectionsToCreate = buildInitialOrderCashCollections(
+    {
+      codAmount: payload.codAmount ?? null,
+      codPaidStatus: payload.codPaidStatus ?? null,
+      serviceCharge: payload.serviceCharge ?? null,
+      serviceChargePaidStatus: payload.serviceChargePaidStatus ?? null,
+      deliveryChargePaidBy: payload.deliveryChargePaidBy ?? null,
+      currency: payload.currency ?? null,
+    },
+    actor,
+  );
 
   return prisma.order.create({
     data: {
@@ -192,6 +234,10 @@ export const createOrder = async (
       plannedPickupAt: toDateOrNull(payload.plannedPickupAt),
       plannedDeliveryAt: toDateOrNull(payload.plannedDeliveryAt),
       promiseDate: toDateOrNull(payload.promiseDate),
+      expectedDeliveryAt: slaSnapshot.expectedDeliveryAt,
+      slaSource: slaSnapshot.slaSource,
+      slaRuleId: slaSnapshot.slaRuleId,
+      slaTargetDays: slaSnapshot.slaTargetDays,
       referenceId: payload.referenceId ?? null,
       shelfId: payload.shelfId ?? null,
       promoCode: payload.promoCode ?? null,
@@ -199,7 +245,11 @@ export const createOrder = async (
       fragile: payload.fragile ?? false,
       dangerousGoods: payload.dangerousGoods ?? false,
       shipmentInsurance: payload.shipmentInsurance ?? false,
+      createdAt,
       parcels: { create: parcelsToCreate },
+      ...(cashCollectionsToCreate.length > 0
+        ? { cashCollections: { create: cashCollectionsToCreate } }
+        : {}),
       trackingEvents: {
         create: {
           status: OrderStatus.pending,
@@ -218,6 +268,18 @@ export const createOrder = async (
       receiverAddressObj: true,
       attachments: true,
       parcels: true,
+      cashCollections: {
+        include: {
+          currentHolderUser: { select: userLiteSelect },
+          currentHolderWarehouse: true,
+          events: {
+            include: {
+              actor: { select: userLiteSelect },
+            },
+            orderBy: { createdAt: "asc" },
+          },
+        },
+      },
       currentWarehouse: true,
       assignedDriver: { select: userLiteSelect },
       invoice: true,

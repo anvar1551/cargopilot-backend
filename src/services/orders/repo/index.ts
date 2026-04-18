@@ -3,5 +3,6 @@ export {
   getOrderById,
   listOrders,
   listOrdersForExport,
+  countOrdersForExport,
   listDriverWorkloads,
 } from "./order-read.repo";

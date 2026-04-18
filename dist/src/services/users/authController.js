@@ -8,6 +8,21 @@ const userRepo_2 = require("./userRepo");
 const userRepo_3 = require("./userRepo");
 const userRepo_4 = require("./userRepo");
 const userRepo_5 = require("./userRepo");
+function isDatabaseUnavailableError(err) {
+    const code = String(err?.code ?? "").toUpperCase();
+    const message = String(err?.message ?? "").toLowerCase();
+    if (code === "ETIMEDOUT" ||
+        code === "ECONNREFUSED" ||
+        code === "EHOSTUNREACH" ||
+        code === "ENETUNREACH" ||
+        code === "P1001" ||
+        code === "P1002") {
+        return true;
+    }
+    return (message.includes("timed out") ||
+        message.includes("can't reach database server") ||
+        message.includes("cannot reach database server"));
+}
 const listUsersController = async (req, res) => {
     try {
         const q = typeof req.query.q === "string" ? req.query.q : undefined;
@@ -66,6 +81,11 @@ const login = async (req, res) => {
     }
     catch (err) {
         console.error("login error:", err?.message || err);
+        if (isDatabaseUnavailableError(err)) {
+            return res.status(503).json({
+                error: "Database is temporarily unreachable. Please try another network or try again later.",
+            });
+        }
         // invalid login should be 401, not 500
         const msg = err?.message || "Login failed";
         const code = msg.includes("Invalid email or password")

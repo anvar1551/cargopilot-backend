@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.listDriverWorkloads = exports.listOrdersForExport = exports.listOrders = exports.getOrderById = void 0;
+exports.listDriverWorkloads = exports.countOrdersForExport = exports.listOrdersForExport = exports.listOrders = exports.getOrderById = void 0;
 const prismaClient_1 = __importDefault(require("../../../config/prismaClient"));
 const client_1 = require("@prisma/client");
 const order_repo_shared_1 = require("./order-repo.shared");
@@ -38,6 +38,12 @@ const orderListSelect = {
     destinationCity: true,
     createdAt: true,
     updatedAt: true,
+    currency: true,
+    codAmount: true,
+    codPaidStatus: true,
+    serviceCharge: true,
+    serviceChargePaidStatus: true,
+    deliveryChargePaidBy: true,
     labelKey: true,
     assignedDriverId: true,
     currentWarehouseId: true,
@@ -56,6 +62,20 @@ const orderListSelect = {
             labelKey: true,
             pieceNo: true,
             pieceTotal: true,
+        },
+    },
+    cashCollections: {
+        select: {
+            id: true,
+            kind: true,
+            status: true,
+            expectedAmount: true,
+            collectedAmount: true,
+            currency: true,
+            currentHolderType: true,
+            currentHolderLabel: true,
+            collectedAt: true,
+            settledAt: true,
         },
     },
 };
@@ -173,7 +193,7 @@ function buildDateWhere(field, from, to) {
         range.lt = lt;
     return { [field]: range };
 }
-function buildRoleScopeWhere(userId, role, customerEntityId) {
+function buildRoleScopeWhere(userId, role, customerEntityId, warehouseId) {
     if (role === "customer") {
         if (customerEntityId) {
             return { customerEntityId };
@@ -182,6 +202,13 @@ function buildRoleScopeWhere(userId, role, customerEntityId) {
     }
     if (role === "driver")
         return { assignedDriverId: userId };
+    if (role === "warehouse") {
+        if (!warehouseId) {
+            // no attached location -> no visibility
+            return { id: "__no_access__" };
+        }
+        return { currentWarehouseId: warehouseId };
+    }
     return {};
 }
 function buildSearchWhere(qRaw, scope) {
@@ -321,10 +348,10 @@ function buildStructuredFiltersWhere(params) {
         return {};
     return { AND: and };
 }
-function buildOrderWhere(userId, role, customerEntityId, params) {
+function buildOrderWhere(userId, role, customerEntityId, warehouseId, params) {
     const scope = params?.scope === "deep" ? "deep" : "fast";
     const q = params?.q?.trim() ?? "";
-    const roleWhere = buildRoleScopeWhere(userId, role, customerEntityId);
+    const roleWhere = buildRoleScopeWhere(userId, role, customerEntityId, warehouseId);
     const searchWhere = q ? buildSearchWhere(q, scope) : {};
     const filterWhere = buildStructuredFiltersWhere(params);
     const and = [roleWhere, searchWhere, filterWhere].filter((item) => !isEmptyWhere(item));
@@ -352,6 +379,18 @@ const getOrderById = async (id) => {
             receiverAddressObj: true,
             attachments: true,
             parcels: true,
+            cashCollections: {
+                include: {
+                    currentHolderUser: { select: order_repo_shared_1.userLiteSelect },
+                    currentHolderWarehouse: true,
+                    events: {
+                        include: {
+                            actor: { select: order_repo_shared_1.userLiteSelect },
+                        },
+                        orderBy: { createdAt: "asc" },
+                    },
+                },
+            },
             trackingEvents: {
                 include: {
                     warehouse: true,
@@ -365,13 +404,13 @@ const getOrderById = async (id) => {
 };
 exports.getOrderById = getOrderById;
 /** Lists orders with search + pagination and role-based scope restrictions. */
-const listOrders = async (userId, role, customerEntityId, params) => {
+const listOrders = async (userId, role, customerEntityId, warehouseId, params) => {
     const page = Math.max(1, params?.page ?? 1);
     const limit = Math.min(Math.max(params?.limit ?? 50, 1), 200);
     const mode = params?.mode === "cursor" ? "cursor" : "page";
     const cursor = decodeCursor(params?.cursor);
     const skip = (page - 1) * limit;
-    const where = buildOrderWhere(userId, role, customerEntityId, params);
+    const where = buildOrderWhere(userId, role, customerEntityId, warehouseId, params);
     if (mode === "cursor") {
         const whereWithCursor = cursor
             ? {
@@ -436,8 +475,8 @@ const listOrders = async (userId, role, customerEntityId, params) => {
 };
 exports.listOrders = listOrders;
 /** Returns detailed rows for CSV export using the same filters as the manager list. */
-const listOrdersForExport = async (userId, role, customerEntityId, params) => {
-    const where = buildOrderWhere(userId, role, customerEntityId, params);
+const listOrdersForExport = async (userId, role, customerEntityId, warehouseId, params) => {
+    const where = buildOrderWhere(userId, role, customerEntityId, warehouseId, params);
     return prismaClient_1.default.order.findMany({
         where,
         select: orderExportSelect,
@@ -445,6 +484,12 @@ const listOrdersForExport = async (userId, role, customerEntityId, params) => {
     });
 };
 exports.listOrdersForExport = listOrdersForExport;
+/** Returns exact count for current export filters to guard large synchronous CSV exports. */
+const countOrdersForExport = async (userId, role, customerEntityId, warehouseId, params) => {
+    const where = buildOrderWhere(userId, role, customerEntityId, warehouseId, params);
+    return prismaClient_1.default.order.count({ where });
+};
+exports.countOrdersForExport = countOrdersForExport;
 const FINAL_STATUSES = new Set([
     client_1.OrderStatus.delivered,
     client_1.OrderStatus.returned,

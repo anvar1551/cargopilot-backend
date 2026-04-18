@@ -140,6 +140,35 @@ enum ServiceType {
   POINT_TO_POINT
 }
 
+enum CashCollectionKind {
+  cod
+  service_charge
+}
+
+enum CashCollectionStatus {
+  expected
+  held
+  settled
+  cancelled
+}
+
+enum CashHolderType {
+  none
+  driver
+  warehouse
+  pickup_point
+  finance
+}
+
+enum CashCollectionEventType {
+  expected
+  collected
+  handoff
+  settled
+  adjusted
+  cancelled
+}
+
 enum WarehouseType {
   warehouse
   pickup_point
@@ -154,6 +183,12 @@ enum PricingPlanStatus {
 enum TariffPriceType {
   bucket
   linear
+}
+
+enum OrderSlaSource {
+  PROMISE_DATE
+  SLA_RULE
+  NONE
 }
 
 enum RecipientUnavailableAction {
@@ -194,6 +229,8 @@ model User {
 
   invoices       Invoice[]
   trackingEvents Tracking[] @relation("TrackingActor")
+  heldCashCollections CashCollection[]     @relation("CashCollectionHolderUser")
+  cashCollectionActorEvents CashCollectionEvent[] @relation("CashCollectionEventActor")
 }
 
 model Warehouse {
@@ -206,6 +243,7 @@ model Warehouse {
   orders    Order[]
   createdAt DateTime      @default(now())
   tracking  Tracking[]
+  heldCashCollections CashCollection[] @relation("CashCollectionHolderWarehouse")
 }
 
 model Order {
@@ -269,6 +307,7 @@ model Order {
   labelJob       OrderLabelJob?
   invoice        Invoice?
   attachments    OrderAttachment[]
+  cashCollections CashCollection[]
 
   // ---------------- Attempt counters ----------------
   pickupAttemptCount   Int @default(0)
@@ -281,6 +320,11 @@ model Order {
   // ---------------- Scheduling ----------------
   plannedPickupAt   DateTime?
   plannedDeliveryAt DateTime?
+  expectedDeliveryAt DateTime?
+  slaSource          OrderSlaSource?
+  slaRuleId          String?         @db.Uuid
+  slaRule            DeliverySlaRule? @relation(fields: [slaRuleId], references: [id])
+  slaTargetDays      Int?
 
   // ---------------- Payment (competitor) ----------------
   paymentType             PaymentType?
@@ -313,6 +357,10 @@ model Order {
   @@index([customerEntityId])
   @@index([status])
   @@index([status, createdAt])
+  @@index([status, updatedAt])
+  @@index([status, expectedDeliveryAt])
+  @@index([expectedDeliveryAt])
+  @@index([slaRuleId])
   @@index([currentWarehouseId, status, createdAt])
   @@index([assignedDriverId, status, createdAt])
   @@index([referenceId])
@@ -329,6 +377,8 @@ model PricingRegion {
   updatedAt              DateTime          @updatedAt
   originZoneEntries      ZoneMatrixEntry[] @relation("ZoneMatrixOrigin")
   destinationZoneEntries ZoneMatrixEntry[] @relation("ZoneMatrixDestination")
+  originSlaRules         DeliverySlaRule[] @relation("DeliverySlaOriginRegion")
+  destinationSlaRules    DeliverySlaRule[] @relation("DeliverySlaDestinationRegion")
 
   @@index([isActive, sortOrder])
   @@index([name])
@@ -382,6 +432,102 @@ model TariffRate {
 
   @@unique([tariffPlanId, zone, weightFromKg, weightToKg])
   @@index([tariffPlanId, zone])
+}
+
+model DeliverySlaRule {
+  id                  String         @id @default(uuid()) @db.Uuid
+  name                String
+  description         String?
+  serviceType         ServiceType
+  originRegionId      String?        @db.Uuid
+  originRegion        PricingRegion? @relation("DeliverySlaOriginRegion", fields: [originRegionId], references: [id])
+  destinationRegionId String?        @db.Uuid
+  destinationRegion   PricingRegion? @relation("DeliverySlaDestinationRegion", fields: [destinationRegionId], references: [id])
+  zone                Int?
+  deliveryDays        Int
+  priority            Int            @default(0)
+  isActive            Boolean        @default(true)
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+  orders              Order[]
+
+  @@index([serviceType, isActive, priority])
+  @@index([originRegionId, destinationRegionId])
+  @@index([zone])
+}
+
+model OperationalSlaPolicy {
+  id                String   @id @default(uuid()) @db.Uuid
+  singletonKey      String   @unique @default("global")
+  staleHours        Int      @default(48)
+  dueSoonHours      Int      @default(24)
+  overdueGraceHours Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model CashCollection {
+  id String @id @default(uuid()) @db.Uuid
+
+  orderId String @db.Uuid
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  kind   CashCollectionKind
+  status CashCollectionStatus @default(expected)
+
+  expectedAmount  Float
+  collectedAmount Float?
+  currency        String?
+
+  currentHolderType        CashHolderType @default(none)
+  currentHolderUserId      String?        @db.Uuid
+  currentHolderUser        User?          @relation("CashCollectionHolderUser", fields: [currentHolderUserId], references: [id])
+  currentHolderWarehouseId String?        @db.Uuid
+  currentHolderWarehouse   Warehouse?     @relation("CashCollectionHolderWarehouse", fields: [currentHolderWarehouseId], references: [id])
+  currentHolderLabel       String?
+
+  collectedAt DateTime?
+  settledAt   DateTime?
+  note        String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  events CashCollectionEvent[]
+
+  @@unique([orderId, kind])
+  @@index([status])
+  @@index([currentHolderType, status])
+  @@index([currentHolderUserId, status])
+  @@index([currentHolderWarehouseId, status])
+}
+
+model CashCollectionEvent {
+  id String @id @default(uuid()) @db.Uuid
+
+  cashCollectionId String         @db.Uuid
+  cashCollection   CashCollection @relation(fields: [cashCollectionId], references: [id], onDelete: Cascade)
+
+  eventType CashCollectionEventType
+  amount    Float?
+  note      String?
+
+  fromHolderType CashHolderType?
+  fromHolderId   String?
+  fromHolderName String?
+
+  toHolderType CashHolderType?
+  toHolderId   String?
+  toHolderName String?
+
+  actorId   String?  @db.Uuid
+  actor     User?    @relation("CashCollectionEventActor", fields: [actorId], references: [id])
+  actorRole AppRole?
+
+  createdAt DateTime @default(now())
+
+  @@index([cashCollectionId, createdAt])
+  @@index([actorId, createdAt])
 }
 
 model OrderLabelJob {
@@ -542,6 +688,8 @@ model Invoice {
   // Relations
   order    Order @relation(fields: [orderId], references: [id])
   customer User  @relation(fields: [customerId], references: [id])
+
+  @@index([status, createdAt])
 }
 
 model Parcel {

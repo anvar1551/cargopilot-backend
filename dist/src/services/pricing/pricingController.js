@@ -3,6 +3,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.createRegion = createRegion;
 exports.getRegions = getRegions;
 exports.updateRegion = updateRegion;
+exports.createSlaRule = createSlaRule;
+exports.getSlaRules = getSlaRules;
+exports.updateSlaRule = updateSlaRule;
+exports.getSlaPolicy = getSlaPolicy;
+exports.updateSlaPolicy = updateSlaPolicy;
 exports.saveZoneMatrix = saveZoneMatrix;
 exports.getZoneMatrix = getZoneMatrix;
 exports.createPlan = createPlan;
@@ -63,6 +68,61 @@ async function updateRegion(req, res) {
     catch (error) {
         console.error("updateRegion error:", error);
         return sendError(res, error, "Failed to update pricing region");
+    }
+}
+async function createSlaRule(req, res) {
+    try {
+        const input = pricing_shared_1.createDeliverySlaRuleSchema.parse(req.body);
+        const rule = await (0, pricingRepo_1.createDeliverySlaRule)(input);
+        return res.status(201).json(rule);
+    }
+    catch (error) {
+        console.error("createSlaRule error:", error);
+        return sendError(res, error, "Failed to create delivery SLA rule");
+    }
+}
+async function getSlaRules(req, res) {
+    try {
+        const query = pricing_shared_1.listDeliverySlaRulesQuerySchema.parse(req.query);
+        const rules = await (0, pricingRepo_1.listDeliverySlaRules)(query);
+        return res.json(rules);
+    }
+    catch (error) {
+        console.error("getSlaRules error:", error);
+        return sendError(res, error, "Failed to fetch delivery SLA rules");
+    }
+}
+async function updateSlaRule(req, res) {
+    try {
+        const { id } = pricing_shared_1.deliverySlaRuleIdParamSchema.parse(req.params);
+        const input = pricing_shared_1.updateDeliverySlaRuleSchema.parse(req.body);
+        const rule = await (0, pricingRepo_1.updateDeliverySlaRule)(id, input);
+        return res.json(rule);
+    }
+    catch (error) {
+        console.error("updateSlaRule error:", error);
+        return sendError(res, error, "Failed to update delivery SLA rule");
+    }
+}
+async function getSlaPolicy(req, res) {
+    try {
+        const policy = await (0, pricingRepo_1.getOperationalSlaPolicy)();
+        return res.json(policy);
+    }
+    catch (error) {
+        console.error("getSlaPolicy error:", error);
+        return sendError(res, error, "Failed to fetch operational SLA policy");
+    }
+}
+async function updateSlaPolicy(req, res) {
+    try {
+        const input = pricing_shared_1.updateOperationalSlaPolicySchema.parse(req.body);
+        const policy = await (0, pricingRepo_1.updateOperationalSlaPolicy)(input);
+        return res.json(policy);
+    }
+    catch (error) {
+        console.error("updateSlaPolicy error:", error);
+        return sendError(res, error, "Failed to update operational SLA policy");
     }
 }
 async function saveZoneMatrix(req, res) {

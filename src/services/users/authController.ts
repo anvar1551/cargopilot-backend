@@ -7,6 +7,28 @@ import { listUsers } from "./userRepo";
 import { changeUserPassword } from "./userRepo";
 import { deleteUserAsManager } from "./userRepo";
 
+function isDatabaseUnavailableError(err: any) {
+  const code = String(err?.code ?? "").toUpperCase();
+  const message = String(err?.message ?? "").toLowerCase();
+
+  if (
+    code === "ETIMEDOUT" ||
+    code === "ECONNREFUSED" ||
+    code === "EHOSTUNREACH" ||
+    code === "ENETUNREACH" ||
+    code === "P1001" ||
+    code === "P1002"
+  ) {
+    return true;
+  }
+
+  return (
+    message.includes("timed out") ||
+    message.includes("can't reach database server") ||
+    message.includes("cannot reach database server")
+  );
+}
+
 export const listUsersController = async (req: Request, res: Response) => {
   try {
     const q = typeof req.query.q === "string" ? req.query.q : undefined;
@@ -81,6 +103,13 @@ export const login = async (req: Request, res: Response) => {
     return res.json(result);
   } catch (err: any) {
     console.error("login error:", err?.message || err);
+
+    if (isDatabaseUnavailableError(err)) {
+      return res.status(503).json({
+        error:
+          "Database is temporarily unreachable. Please try another network or try again later.",
+      });
+    }
 
     // invalid login should be 401, not 500
     const msg = err?.message || "Login failed";

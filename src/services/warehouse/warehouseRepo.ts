@@ -17,6 +17,26 @@ export const createWarehouse = async (
   });
 };
 
+export const updateWarehouse = async (
+  id: string,
+  args: {
+    name: string;
+    type: WarehouseTypeValue;
+    location: string;
+    region?: string | null;
+  },
+) => {
+  return prisma.warehouse.update({
+    where: { id },
+    data: {
+      name: args.name,
+      type: args.type,
+      location: args.location,
+      region: args.region ?? null,
+    },
+  });
+};
+
 export const listWarehouses = async () => {
   return prisma.warehouse.findMany({
     orderBy: { createdAt: "desc" },

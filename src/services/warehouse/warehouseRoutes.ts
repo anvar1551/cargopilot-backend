@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { create, list, getWarehouse } from "./warehouseController";
+import { create, list, getWarehouse, update } from "./warehouseController";
 import { auth } from "../../middleware/auth";
 import { AppRole } from "@prisma/client";
 
@@ -13,5 +13,6 @@ router.get("/", auth([AppRole.manager, AppRole.warehouse]), list);
 
 // Get specific warehouse info (manager only)
 router.get("/:id", auth([AppRole.manager]), getWarehouse);
+router.put("/:id", auth([AppRole.manager]), update);
 
 export default router;
