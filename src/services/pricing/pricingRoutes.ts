@@ -12,6 +12,7 @@ import {
   getSlaRules,
   getZoneMatrix,
   quotePlan,
+  runSlaBackfill,
   saveZoneMatrix,
   updatePlan,
   updateRegion,
@@ -29,6 +30,7 @@ router.post("/sla-rules", auth([AppRole.manager]), createSlaRule);
 router.put("/sla-rules/:id", auth([AppRole.manager]), updateSlaRule);
 router.get("/sla-policy", auth([AppRole.manager]), getSlaPolicy);
 router.put("/sla-policy", auth([AppRole.manager]), updateSlaPolicy);
+router.post("/sla/backfill", auth([AppRole.manager]), runSlaBackfill);
 
 router.get("/zones", auth([AppRole.manager]), getZoneMatrix);
 router.post("/zones/bulk", auth([AppRole.manager]), saveZoneMatrix);

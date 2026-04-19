@@ -24,6 +24,7 @@ const DEFAULT_SLA_POLICY = {
     dueSoonHours: 24,
     overdueGraceHours: 0,
 };
+const UNPAID_PAID_STATUSES = ["NOT_PAID", "PARTIAL"];
 function clampInt(value, min, max, fallback) {
     const parsed = Number(value);
     if (!Number.isFinite(parsed))
@@ -123,6 +124,82 @@ async function getManagerAnalyticsSummary(params) {
       GROUP BY DATE_TRUNC('day', "updatedAt")
       ORDER BY day ASC
     `);
+    const overdueWarningOrdersPromise = prismaClient_1.default.order.findMany({
+        where: {
+            status: { in: [...ACTIVE_ORDER_STATUSES] },
+            expectedDeliveryAt: { lt: overdueBefore },
+        },
+        select: {
+            id: true,
+            orderNumber: true,
+            status: true,
+            expectedDeliveryAt: true,
+            updatedAt: true,
+        },
+        orderBy: [{ expectedDeliveryAt: "asc" }, { updatedAt: "asc" }],
+        take: 20,
+    });
+    const staleWarningOrdersPromise = prismaClient_1.default.order.findMany({
+        where: {
+            status: { in: [...ACTIVE_ORDER_STATUSES] },
+            updatedAt: { lt: staleBefore },
+        },
+        select: {
+            id: true,
+            orderNumber: true,
+            status: true,
+            expectedDeliveryAt: true,
+            updatedAt: true,
+        },
+        orderBy: [{ updatedAt: "asc" }],
+        take: 20,
+    });
+    const financeExposureWhere = {
+        createdAt: { gte: rangeStart, lte: rangeEnd },
+        OR: [
+            {
+                serviceCharge: { gt: 0 },
+                serviceChargePaidStatus: { in: UNPAID_PAID_STATUSES },
+            },
+            {
+                codAmount: { gt: 0 },
+                codPaidStatus: { in: UNPAID_PAID_STATUSES },
+            },
+        ],
+    };
+    const financeExposureOrdersTotalPromise = prismaClient_1.default.order.count({
+        where: financeExposureWhere,
+    });
+    const financeExposureWarningOrdersPromise = prismaClient_1.default.order.findMany({
+        where: financeExposureWhere,
+        select: {
+            id: true,
+            orderNumber: true,
+            status: true,
+            codAmount: true,
+            codPaidStatus: true,
+            serviceCharge: true,
+            serviceChargePaidStatus: true,
+            updatedAt: true,
+        },
+        orderBy: [{ updatedAt: "desc" }],
+        take: 20,
+    });
+    const driverHeldWarningOrdersPromise = prismaClient_1.default.$queryRaw(client_1.Prisma.sql `
+      SELECT
+        o.id AS "orderId",
+        o."orderNumber",
+        o.status::text AS "orderStatus",
+        COALESCE(SUM(COALESCE(cc."collectedAmount", cc."expectedAmount")), 0)::double precision AS amount,
+        MAX(cc.currency) AS currency
+      FROM "CashCollection" cc
+      INNER JOIN "Order" o ON o.id = cc."orderId"
+      WHERE cc.status = 'held'
+        AND cc."currentHolderType" = 'driver'
+      GROUP BY o.id, o."orderNumber", o.status
+      ORDER BY amount DESC
+      LIMIT 20
+    `);
     const cashCustodySnapshotPromise = prismaClient_1.default.$queryRaw(client_1.Prisma.sql `
       SELECT
         COALESCE(SUM(CASE
@@ -215,7 +292,7 @@ async function getManagerAnalyticsSummary(params) {
       LIMIT ${queuePageSize}
       OFFSET ${queueOffset}
     `);
-    const [totalOrders, createdInRange, openOrders, overdueOpenOrders, dueTodayOpenOrders, staleOpenOrders, promiseBackedOrders, pendingOrders, atWarehouseOrders, inTransitOrders, outForDeliveryOrders, exceptionOpenOrders, warehouseAtWarehouseOrders, pickupPointAtWarehouseOrders, warehouseOutForDeliveryOrders, pickupPointOutForDeliveryOrders, warehouseActiveOrders, pickupPointActiveOrders, deliveredInRange, warehouseDeliveredInRange, pickupPointDeliveredInRange, returnedInRange, serviceChargeExpected, codExpected, unpaidServiceCount, unpaidCodCount, paidInvoices, pendingInvoicesCount, statusDistribution, serviceTypeDistribution, createdTrendRows, deliveredTrendRows, cashCustodySnapshotRows, cashHolderBreakdownRows, cashOpenQueueTotalRows, cashOpenQueueRows,] = await Promise.all([
+    const [totalOrders, createdInRange, openOrders, overdueOpenOrders, dueTodayOpenOrders, staleOpenOrders, promiseBackedOrders, ruleBackedOrders, fallbackBackedOrders, untrackedOpenOrders, pendingOrders, atWarehouseOrders, inTransitOrders, outForDeliveryOrders, exceptionOpenOrders, warehouseAtWarehouseOrders, pickupPointAtWarehouseOrders, warehouseOutForDeliveryOrders, pickupPointOutForDeliveryOrders, warehouseActiveOrders, pickupPointActiveOrders, deliveredInRange, warehouseDeliveredInRange, pickupPointDeliveredInRange, returnedInRange, financeExposureOrdersTotal, serviceChargeExpected, codExpected, unpaidServiceCount, unpaidCodCount, paidInvoices, pendingInvoicesCount, statusDistribution, serviceTypeDistribution, createdTrendRows, deliveredTrendRows, overdueWarningOrders, staleWarningOrders, financeExposureWarningOrders, driverHeldWarningOrders, cashCustodySnapshotRows, cashHolderBreakdownRows, cashOpenQueueTotalRows, cashOpenQueueRows,] = await Promise.all([
         prismaClient_1.default.order.count(),
         prismaClient_1.default.order.count({
             where: { createdAt: { gte: rangeStart, lte: rangeEnd } },
@@ -243,6 +320,27 @@ async function getManagerAnalyticsSummary(params) {
         }),
         prismaClient_1.default.order.count({
             where: { slaSource: "PROMISE_DATE" },
+        }),
+        prismaClient_1.default.order.count({
+            where: { slaSource: "SLA_RULE", slaRuleId: { not: null } },
+        }),
+        prismaClient_1.default.order.count({
+            where: {
+                slaSource: "SLA_RULE",
+                slaRule: {
+                    is: {
+                        zone: null,
+                        originRegionId: null,
+                        destinationRegionId: null,
+                    },
+                },
+            },
+        }),
+        prismaClient_1.default.order.count({
+            where: {
+                status: { in: [...ACTIVE_ORDER_STATUSES] },
+                expectedDeliveryAt: null,
+            },
         }),
         prismaClient_1.default.order.count({ where: { status: "pending" } }),
         prismaClient_1.default.order.count({ where: { status: "at_warehouse" } }),
@@ -313,6 +411,7 @@ async function getManagerAnalyticsSummary(params) {
                 updatedAt: { gte: rangeStart, lte: rangeEnd },
             },
         }),
+        financeExposureOrdersTotalPromise,
         prismaClient_1.default.order.aggregate({
             _sum: { serviceCharge: true },
             where: {
@@ -368,6 +467,10 @@ async function getManagerAnalyticsSummary(params) {
         }),
         createdTrendPromise,
         deliveredTrendPromise,
+        overdueWarningOrdersPromise,
+        staleWarningOrdersPromise,
+        financeExposureWarningOrdersPromise,
+        driverHeldWarningOrdersPromise,
         cashCustodySnapshotPromise,
         cashHolderBreakdownPromise,
         cashOpenQueueTotalPromise,
@@ -421,6 +524,10 @@ async function getManagerAnalyticsSummary(params) {
             dueTodayOpenOrders,
             dueSoonOpenOrders: dueTodayOpenOrders,
             promiseBackedOrders,
+            ruleBackedOrders,
+            fallbackBackedOrders,
+            trackedOpenOrders: Math.max(openOrders - untrackedOpenOrders, 0),
+            untrackedOpenOrders,
         },
         slaPolicy: {
             staleHours: policy.staleHours,
@@ -488,6 +595,49 @@ async function getManagerAnalyticsSummary(params) {
                 .map((row) => ({
                 serviceType: row.serviceType,
                 count: row._count._all,
+            })),
+        },
+        warnings: {
+            overdueTotal: overdueOpenOrders,
+            staleTotal: staleOpenOrders,
+            financeExposureTotal: financeExposureOrdersTotal,
+            overdueOrders: overdueWarningOrders.map((order) => ({
+                id: order.id,
+                orderNumber: order.orderNumber,
+                status: String(order.status),
+                expectedDeliveryAt: order.expectedDeliveryAt
+                    ? order.expectedDeliveryAt.toISOString()
+                    : null,
+                updatedAt: order.updatedAt.toISOString(),
+            })),
+            staleOrders: staleWarningOrders.map((order) => ({
+                id: order.id,
+                orderNumber: order.orderNumber,
+                status: String(order.status),
+                expectedDeliveryAt: order.expectedDeliveryAt
+                    ? order.expectedDeliveryAt.toISOString()
+                    : null,
+                updatedAt: order.updatedAt.toISOString(),
+            })),
+            financeExposureOrders: financeExposureWarningOrders.map((order) => ({
+                id: order.id,
+                orderNumber: order.orderNumber,
+                status: String(order.status),
+                codDue: order.codAmount && ["NOT_PAID", "PARTIAL"].includes(String(order.codPaidStatus))
+                    ? order.codAmount
+                    : 0,
+                serviceChargeDue: order.serviceCharge &&
+                    ["NOT_PAID", "PARTIAL"].includes(String(order.serviceChargePaidStatus))
+                    ? order.serviceCharge
+                    : 0,
+                updatedAt: order.updatedAt.toISOString(),
+            })),
+            driverHeldOrders: driverHeldWarningOrders.map((row) => ({
+                orderId: row.orderId,
+                orderNumber: row.orderNumber,
+                status: row.orderStatus,
+                amount: row.amount ?? 0,
+                currency: row.currency ?? null,
             })),
         },
         trend: {

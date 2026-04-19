@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.updateOperationalSlaPolicySchema = exports.getOperationalSlaPolicySchema = exports.listDeliverySlaRulesQuerySchema = exports.deliverySlaRuleIdParamSchema = exports.updateDeliverySlaRuleSchema = exports.createDeliverySlaRuleSchema = exports.quoteTariffSchema = exports.listTariffPlansQuerySchema = exports.updateTariffPlanSchema = exports.tariffPlanIdParamSchema = exports.createTariffPlanSchema = exports.tariffRateInputSchema = exports.listZoneMatrixQuerySchema = exports.upsertZoneMatrixSchema = exports.zoneMatrixEntryInputSchema = exports.listPricingRegionsQuerySchema = exports.updatePricingRegionSchema = exports.pricingRegionIdParamSchema = exports.createPricingRegionSchema = exports.TARIFF_PRICE_TYPES = exports.PRICING_PLAN_STATUSES = void 0;
+exports.backfillOrderSlaSchema = exports.updateOperationalSlaPolicySchema = exports.getOperationalSlaPolicySchema = exports.listDeliverySlaRulesQuerySchema = exports.deliverySlaRuleIdParamSchema = exports.updateDeliverySlaRuleSchema = exports.createDeliverySlaRuleSchema = exports.quoteTariffSchema = exports.listTariffPlansQuerySchema = exports.updateTariffPlanSchema = exports.tariffPlanIdParamSchema = exports.createTariffPlanSchema = exports.tariffRateInputSchema = exports.listZoneMatrixQuerySchema = exports.upsertZoneMatrixSchema = exports.zoneMatrixEntryInputSchema = exports.listPricingRegionsQuerySchema = exports.updatePricingRegionSchema = exports.pricingRegionIdParamSchema = exports.createPricingRegionSchema = exports.TARIFF_PRICE_TYPES = exports.PRICING_PLAN_STATUSES = void 0;
 exports.normalizeTariffCode = normalizeTariffCode;
 const zod_1 = require("zod");
 const order_constants_1 = require("../orders/order.constants");
@@ -164,6 +164,10 @@ exports.updateOperationalSlaPolicySchema = zod_1.z.object({
     staleHours: zod_1.z.coerce.number().int().min(6).max(720),
     dueSoonHours: zod_1.z.coerce.number().int().min(1).max(168),
     overdueGraceHours: zod_1.z.coerce.number().int().min(0).max(168),
+});
+exports.backfillOrderSlaSchema = zod_1.z.object({
+    limit: zod_1.z.coerce.number().int().min(1).max(5000).default(500),
+    dryRun: booleanish.optional().default(true),
 });
 function normalizeTariffCode(value) {
     const normalized = normalizeCode(String(value || ""));

@@ -188,6 +188,11 @@ export const updateOperationalSlaPolicySchema = z.object({
   overdueGraceHours: z.coerce.number().int().min(0).max(168),
 });
 
+export const backfillOrderSlaSchema = z.object({
+  limit: z.coerce.number().int().min(1).max(5000).default(500),
+  dryRun: booleanish.optional().default(true),
+});
+
 export type CreatePricingRegionInput = z.infer<
   typeof createPricingRegionSchema
 >;
@@ -207,6 +212,7 @@ export type UpdateDeliverySlaRuleInput = z.infer<
 export type UpdateOperationalSlaPolicyInput = z.infer<
   typeof updateOperationalSlaPolicySchema
 >;
+export type BackfillOrderSlaInput = z.infer<typeof backfillOrderSlaSchema>;
 
 export function normalizeTariffCode(value?: string | null) {
   const normalized = normalizeCode(String(value || ""));

@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { ZodError } from "zod";
 import {
+  backfillOrderSlaSnapshots,
   createDeliverySlaRule,
   createPricingRegion,
   createTariffPlan,
@@ -18,6 +19,7 @@ import {
   upsertZoneMatrix,
 } from "./pricingRepo";
 import {
+  backfillOrderSlaSchema,
   createDeliverySlaRuleSchema,
   createPricingRegionSchema,
   createTariffPlanSchema,
@@ -143,6 +145,17 @@ export async function updateSlaPolicy(req: Request, res: Response) {
   } catch (error) {
     console.error("updateSlaPolicy error:", error);
     return sendError(res, error, "Failed to update operational SLA policy");
+  }
+}
+
+export async function runSlaBackfill(req: Request, res: Response) {
+  try {
+    const input = backfillOrderSlaSchema.parse(req.body ?? {});
+    const result = await backfillOrderSlaSnapshots(input);
+    return res.json(result);
+  } catch (error) {
+    console.error("runSlaBackfill error:", error);
+    return sendError(res, error, "Failed to run SLA backfill");
   }
 }
 

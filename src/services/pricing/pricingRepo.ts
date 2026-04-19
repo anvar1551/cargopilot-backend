@@ -1,5 +1,5 @@
 import prisma from "../../config/prismaClient";
-import { OrderSlaSource, ServiceType } from "@prisma/client";
+import { OrderSlaSource, OrderStatus, ServiceType } from "@prisma/client";
 import { orderError } from "../orders/orderService.shared";
 import {
   CreateDeliverySlaRuleInput,
@@ -16,6 +16,18 @@ import {
 
 const db = prisma as any;
 const OPERATIONAL_SLA_POLICY_KEY = "global";
+
+const ACTIVE_ORDER_STATUSES_FOR_SLA_BACKFILL: OrderStatus[] = [
+  OrderStatus.pending,
+  OrderStatus.assigned,
+  OrderStatus.pickup_in_progress,
+  OrderStatus.picked_up,
+  OrderStatus.at_warehouse,
+  OrderStatus.in_transit,
+  OrderStatus.out_for_delivery,
+  OrderStatus.exception,
+  OrderStatus.return_in_progress,
+];
 
 function normalizeRegionQuery(value?: string | null) {
   return String(value || "")
@@ -755,35 +767,34 @@ export async function resolveOrderSlaSnapshot(input: {
     destinationQuery: input.destinationQuery,
   });
 
-  if (routeContext.reason || !routeContext.zoneEntry) {
-    return {
-      expectedDeliveryAt: null,
-      slaSource: OrderSlaSource.NONE,
-      slaRuleId: null,
-      slaTargetDays: null,
-    } as const;
+  const ruleOrClauses: Array<any> = [
+    {
+      zone: null,
+      originRegionId: null,
+      destinationRegionId: null,
+    },
+  ];
+
+  if (routeContext.originRegion?.id && routeContext.destinationRegion?.id) {
+    ruleOrClauses.push({
+      originRegionId: routeContext.originRegion.id,
+      destinationRegionId: routeContext.destinationRegion.id,
+    });
+  }
+
+  if (routeContext.zoneEntry?.zone !== undefined) {
+    ruleOrClauses.push({
+      zone: routeContext.zoneEntry.zone,
+      originRegionId: null,
+      destinationRegionId: null,
+    });
   }
 
   const rules = await db.deliverySlaRule.findMany({
     where: {
       isActive: true,
       serviceType: input.serviceType as ServiceType,
-      OR: [
-        {
-          originRegionId: routeContext.originRegion?.id ?? undefined,
-          destinationRegionId: routeContext.destinationRegion?.id ?? undefined,
-        },
-        {
-          zone: routeContext.zoneEntry.zone,
-          originRegionId: null,
-          destinationRegionId: null,
-        },
-        {
-          zone: null,
-          originRegionId: null,
-          destinationRegionId: null,
-        },
-      ],
+      OR: ruleOrClauses,
     },
     select: {
       id: true,
@@ -813,6 +824,102 @@ export async function resolveOrderSlaSnapshot(input: {
     slaRuleId: matchedRule.id,
     slaTargetDays: matchedRule.deliveryDays,
   } as const;
+}
+
+export async function backfillOrderSlaSnapshots(input?: {
+  limit?: number;
+  dryRun?: boolean;
+}) {
+  const limit = Math.min(Math.max(Number(input?.limit ?? 500), 1), 5000);
+  const dryRun = input?.dryRun !== false;
+
+  const candidates = await db.order.findMany({
+    where: {
+      status: { in: ACTIVE_ORDER_STATUSES_FOR_SLA_BACKFILL },
+      serviceType: { not: null },
+      expectedDeliveryAt: null,
+    },
+    select: {
+      id: true,
+      createdAt: true,
+      promiseDate: true,
+      serviceType: true,
+      destinationCity: true,
+      senderAddressObj: {
+        select: { city: true },
+      },
+      receiverAddressObj: {
+        select: { city: true },
+      },
+    },
+    orderBy: { createdAt: "asc" },
+    take: limit,
+  });
+
+  let updated = 0;
+  let skipped = 0;
+  let promiseBacked = 0;
+  let ruleBacked = 0;
+  let defaultBacked = 0;
+
+  for (const order of candidates) {
+    const snapshot = await resolveOrderSlaSnapshot({
+      serviceType: order.serviceType,
+      originQuery: order.senderAddressObj?.city ?? null,
+      destinationQuery:
+        order.destinationCity ?? order.receiverAddressObj?.city ?? null,
+      promiseDate: order.promiseDate,
+      createdAt: order.createdAt,
+    });
+
+    if (!snapshot.expectedDeliveryAt) {
+      skipped += 1;
+      continue;
+    }
+
+    if (snapshot.slaSource === OrderSlaSource.PROMISE_DATE) promiseBacked += 1;
+    else if (snapshot.slaRuleId) {
+      ruleBacked += 1;
+    } else {
+      defaultBacked += 1;
+    }
+
+    if (!dryRun) {
+      await db.order.update({
+        where: { id: order.id },
+        data: {
+          expectedDeliveryAt: snapshot.expectedDeliveryAt,
+          slaSource: snapshot.slaSource,
+          slaRuleId: snapshot.slaRuleId,
+          slaTargetDays: snapshot.slaTargetDays,
+        },
+      });
+    }
+
+    updated += 1;
+  }
+
+  const remaining = await db.order.count({
+    where: {
+      status: { in: ACTIVE_ORDER_STATUSES_FOR_SLA_BACKFILL },
+      serviceType: { not: null },
+      expectedDeliveryAt: null,
+    },
+  });
+
+  return {
+    dryRun,
+    limit,
+    scanned: candidates.length,
+    updated,
+    skipped,
+    remaining,
+    sources: {
+      promiseBacked,
+      ruleBacked,
+      defaultBacked,
+    },
+  };
 }
 
 export async function quoteTariff(input: QuoteTariffInput) {

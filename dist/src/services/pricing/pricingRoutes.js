@@ -13,6 +13,7 @@ router.post("/sla-rules", (0, auth_1.auth)([client_1.AppRole.manager]), pricingC
 router.put("/sla-rules/:id", (0, auth_1.auth)([client_1.AppRole.manager]), pricingController_1.updateSlaRule);
 router.get("/sla-policy", (0, auth_1.auth)([client_1.AppRole.manager]), pricingController_1.getSlaPolicy);
 router.put("/sla-policy", (0, auth_1.auth)([client_1.AppRole.manager]), pricingController_1.updateSlaPolicy);
+router.post("/sla/backfill", (0, auth_1.auth)([client_1.AppRole.manager]), pricingController_1.runSlaBackfill);
 router.get("/zones", (0, auth_1.auth)([client_1.AppRole.manager]), pricingController_1.getZoneMatrix);
 router.post("/zones/bulk", (0, auth_1.auth)([client_1.AppRole.manager]), pricingController_1.saveZoneMatrix);
 router.get("/tariff-plans", (0, auth_1.auth)([client_1.AppRole.manager]), pricingController_1.getPlans);

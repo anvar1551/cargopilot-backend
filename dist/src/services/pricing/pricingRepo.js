@@ -18,6 +18,7 @@ exports.updateTariffPlan = updateTariffPlan;
 exports.listTariffPlans = listTariffPlans;
 exports.getTariffPlanById = getTariffPlanById;
 exports.resolveOrderSlaSnapshot = resolveOrderSlaSnapshot;
+exports.backfillOrderSlaSnapshots = backfillOrderSlaSnapshots;
 exports.quoteTariff = quoteTariff;
 const prismaClient_1 = __importDefault(require("../../config/prismaClient"));
 const client_1 = require("@prisma/client");
@@ -25,6 +26,17 @@ const orderService_shared_1 = require("../orders/orderService.shared");
 const pricing_shared_1 = require("./pricing.shared");
 const db = prismaClient_1.default;
 const OPERATIONAL_SLA_POLICY_KEY = "global";
+const ACTIVE_ORDER_STATUSES_FOR_SLA_BACKFILL = [
+    client_1.OrderStatus.pending,
+    client_1.OrderStatus.assigned,
+    client_1.OrderStatus.pickup_in_progress,
+    client_1.OrderStatus.picked_up,
+    client_1.OrderStatus.at_warehouse,
+    client_1.OrderStatus.in_transit,
+    client_1.OrderStatus.out_for_delivery,
+    client_1.OrderStatus.exception,
+    client_1.OrderStatus.return_in_progress,
+];
 function normalizeRegionQuery(value) {
     return String(value || "")
         .trim()
@@ -582,34 +594,31 @@ async function resolveOrderSlaSnapshot(input) {
         originQuery: input.originQuery,
         destinationQuery: input.destinationQuery,
     });
-    if (routeContext.reason || !routeContext.zoneEntry) {
-        return {
-            expectedDeliveryAt: null,
-            slaSource: client_1.OrderSlaSource.NONE,
-            slaRuleId: null,
-            slaTargetDays: null,
-        };
+    const ruleOrClauses = [
+        {
+            zone: null,
+            originRegionId: null,
+            destinationRegionId: null,
+        },
+    ];
+    if (routeContext.originRegion?.id && routeContext.destinationRegion?.id) {
+        ruleOrClauses.push({
+            originRegionId: routeContext.originRegion.id,
+            destinationRegionId: routeContext.destinationRegion.id,
+        });
+    }
+    if (routeContext.zoneEntry?.zone !== undefined) {
+        ruleOrClauses.push({
+            zone: routeContext.zoneEntry.zone,
+            originRegionId: null,
+            destinationRegionId: null,
+        });
     }
     const rules = await db.deliverySlaRule.findMany({
         where: {
             isActive: true,
             serviceType: input.serviceType,
-            OR: [
-                {
-                    originRegionId: routeContext.originRegion?.id ?? undefined,
-                    destinationRegionId: routeContext.destinationRegion?.id ?? undefined,
-                },
-                {
-                    zone: routeContext.zoneEntry.zone,
-                    originRegionId: null,
-                    destinationRegionId: null,
-                },
-                {
-                    zone: null,
-                    originRegionId: null,
-                    destinationRegionId: null,
-                },
-            ],
+            OR: ruleOrClauses,
         },
         select: {
             id: true,
@@ -635,6 +644,90 @@ async function resolveOrderSlaSnapshot(input) {
         slaSource: client_1.OrderSlaSource.SLA_RULE,
         slaRuleId: matchedRule.id,
         slaTargetDays: matchedRule.deliveryDays,
+    };
+}
+async function backfillOrderSlaSnapshots(input) {
+    const limit = Math.min(Math.max(Number(input?.limit ?? 500), 1), 5000);
+    const dryRun = input?.dryRun !== false;
+    const candidates = await db.order.findMany({
+        where: {
+            status: { in: ACTIVE_ORDER_STATUSES_FOR_SLA_BACKFILL },
+            serviceType: { not: null },
+            expectedDeliveryAt: null,
+        },
+        select: {
+            id: true,
+            createdAt: true,
+            promiseDate: true,
+            serviceType: true,
+            destinationCity: true,
+            senderAddressObj: {
+                select: { city: true },
+            },
+            receiverAddressObj: {
+                select: { city: true },
+            },
+        },
+        orderBy: { createdAt: "asc" },
+        take: limit,
+    });
+    let updated = 0;
+    let skipped = 0;
+    let promiseBacked = 0;
+    let ruleBacked = 0;
+    let defaultBacked = 0;
+    for (const order of candidates) {
+        const snapshot = await resolveOrderSlaSnapshot({
+            serviceType: order.serviceType,
+            originQuery: order.senderAddressObj?.city ?? null,
+            destinationQuery: order.destinationCity ?? order.receiverAddressObj?.city ?? null,
+            promiseDate: order.promiseDate,
+            createdAt: order.createdAt,
+        });
+        if (!snapshot.expectedDeliveryAt) {
+            skipped += 1;
+            continue;
+        }
+        if (snapshot.slaSource === client_1.OrderSlaSource.PROMISE_DATE)
+            promiseBacked += 1;
+        else if (snapshot.slaRuleId) {
+            ruleBacked += 1;
+        }
+        else {
+            defaultBacked += 1;
+        }
+        if (!dryRun) {
+            await db.order.update({
+                where: { id: order.id },
+                data: {
+                    expectedDeliveryAt: snapshot.expectedDeliveryAt,
+                    slaSource: snapshot.slaSource,
+                    slaRuleId: snapshot.slaRuleId,
+                    slaTargetDays: snapshot.slaTargetDays,
+                },
+            });
+        }
+        updated += 1;
+    }
+    const remaining = await db.order.count({
+        where: {
+            status: { in: ACTIVE_ORDER_STATUSES_FOR_SLA_BACKFILL },
+            serviceType: { not: null },
+            expectedDeliveryAt: null,
+        },
+    });
+    return {
+        dryRun,
+        limit,
+        scanned: candidates.length,
+        updated,
+        skipped,
+        remaining,
+        sources: {
+            promiseBacked,
+            ruleBacked,
+            defaultBacked,
+        },
     };
 }
 async function quoteTariff(input) {

@@ -8,6 +8,7 @@ exports.getSlaRules = getSlaRules;
 exports.updateSlaRule = updateSlaRule;
 exports.getSlaPolicy = getSlaPolicy;
 exports.updateSlaPolicy = updateSlaPolicy;
+exports.runSlaBackfill = runSlaBackfill;
 exports.saveZoneMatrix = saveZoneMatrix;
 exports.getZoneMatrix = getZoneMatrix;
 exports.createPlan = createPlan;
@@ -123,6 +124,17 @@ async function updateSlaPolicy(req, res) {
     catch (error) {
         console.error("updateSlaPolicy error:", error);
         return sendError(res, error, "Failed to update operational SLA policy");
+    }
+}
+async function runSlaBackfill(req, res) {
+    try {
+        const input = pricing_shared_1.backfillOrderSlaSchema.parse(req.body ?? {});
+        const result = await (0, pricingRepo_1.backfillOrderSlaSnapshots)(input);
+        return res.json(result);
+    }
+    catch (error) {
+        console.error("runSlaBackfill error:", error);
+        return sendError(res, error, "Failed to run SLA backfill");
     }
 }
 async function saveZoneMatrix(req, res) {
