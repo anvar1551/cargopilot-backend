@@ -8,9 +8,19 @@ import {
 } from "./warehouseRepo";
 import { normalizeWarehouseType } from "./warehouse.shared";
 
+function parseCoordinate(value: unknown, axis: "lat" | "lng") {
+  if (value == null || value === "") return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  if (axis === "lat") {
+    return parsed >= -90 && parsed <= 90 ? parsed : null;
+  }
+  return parsed >= -180 && parsed <= 180 ? parsed : null;
+}
+
 export const create = async (req: Request, res: Response) => {
   try {
-    const { name, type, location, region } = req.body;
+    const { name, type, location, region, latitude, longitude } = req.body;
 
     if (!name || !location) {
       return res.status(400).json({ error: "Name and location are required" });
@@ -21,6 +31,8 @@ export const create = async (req: Request, res: Response) => {
       normalizeWarehouseType(type),
       location,
       region,
+      parseCoordinate(latitude, "lat"),
+      parseCoordinate(longitude, "lng"),
     );
     return res.status(201).json(warehouse);
   } catch (error) {
@@ -57,7 +69,7 @@ export const getWarehouse = async (req: Request, res: Response) => {
 export const update = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { name, type, location, region } = req.body;
+    const { name, type, location, region, latitude, longitude } = req.body;
 
     if (!id) {
       return res.status(400).json({ error: "Warehouse id is required" });
@@ -74,6 +86,8 @@ export const update = async (req: Request, res: Response) => {
         typeof region === "string" && region.trim().length > 0
           ? region.trim()
           : null,
+      latitude: parseCoordinate(latitude, "lat"),
+      longitude: parseCoordinate(longitude, "lng"),
     });
 
     return res.json(warehouse);

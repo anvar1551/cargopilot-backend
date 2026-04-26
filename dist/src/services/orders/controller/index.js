@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.settleCashBulk = exports.handoffCashBulk = exports.settleCash = exports.handoffCash = exports.collectCashBulk = exports.collectCash = exports.listCashQueue = exports.getCashQueueSummary = exports.updateStatusBulk = exports.updateDriverStatus = exports.assignTasksBulk = exports.assignDriversBulk = exports.exportCsv = exports.listDriverWorkload = exports.getOne = exports.list = exports.previewImport = exports.downloadImportTemplate = exports.confirmImport = exports.create = void 0;
+exports.settleCashBulk = exports.handoffCashBulk = exports.settleCash = exports.handoffCash = exports.collectCashBulk = exports.collectCash = exports.listCashQueue = exports.getCashQueueSummary = exports.uploadDeliveryProofFiles = exports.submitOrderProof = exports.submitDeliveryProof = exports.getOrderProofLinks = exports.updateStatusBulk = exports.updateDriverStatus = exports.assignTasksBulk = exports.assignDriversBulk = exports.exportCsv = exports.listDriverWorkload = exports.getOne = exports.list = exports.previewImport = exports.downloadImportTemplate = exports.confirmImport = exports.create = void 0;
 var create_controller_1 = require("./create.controller");
 Object.defineProperty(exports, "create", { enumerable: true, get: function () { return create_controller_1.create; } });
 Object.defineProperty(exports, "confirmImport", { enumerable: true, get: function () { return create_controller_1.confirmImport; } });
@@ -16,6 +16,11 @@ Object.defineProperty(exports, "assignDriversBulk", { enumerable: true, get: fun
 Object.defineProperty(exports, "assignTasksBulk", { enumerable: true, get: function () { return tasks_controller_1.assignTasksBulk; } });
 Object.defineProperty(exports, "updateDriverStatus", { enumerable: true, get: function () { return tasks_controller_1.updateDriverStatus; } });
 Object.defineProperty(exports, "updateStatusBulk", { enumerable: true, get: function () { return tasks_controller_1.updateStatusBulk; } });
+var proof_controller_1 = require("./proof.controller");
+Object.defineProperty(exports, "getOrderProofLinks", { enumerable: true, get: function () { return proof_controller_1.getOrderProofLinks; } });
+Object.defineProperty(exports, "submitDeliveryProof", { enumerable: true, get: function () { return proof_controller_1.submitDeliveryProof; } });
+Object.defineProperty(exports, "submitOrderProof", { enumerable: true, get: function () { return proof_controller_1.submitOrderProof; } });
+Object.defineProperty(exports, "uploadDeliveryProofFiles", { enumerable: true, get: function () { return proof_controller_1.uploadDeliveryProofFiles; } });
 var cash_controller_1 = require("./cash.controller");
 Object.defineProperty(exports, "getCashQueueSummary", { enumerable: true, get: function () { return cash_controller_1.getCashQueueSummary; } });
 Object.defineProperty(exports, "listCashQueue", { enumerable: true, get: function () { return cash_controller_1.listCashQueue; } });

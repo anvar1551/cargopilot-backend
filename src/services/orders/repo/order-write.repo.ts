@@ -16,6 +16,14 @@ function sanitizeSnapshot(s: any) {
     city: s.city ?? null,
     neighborhood: s.neighborhood ?? null,
     street: s.street ?? null,
+    latitude:
+      typeof s.latitude === "number" && Number.isFinite(s.latitude)
+        ? s.latitude
+        : null,
+    longitude:
+      typeof s.longitude === "number" && Number.isFinite(s.longitude)
+        ? s.longitude
+        : null,
     addressLine1: s.addressLine1 ?? null,
     addressLine2: s.addressLine2 ?? null,
     building: s.building ?? null,
@@ -108,7 +116,9 @@ export const createOrder = async (
 
     const created = await prisma.address.create({
       data: {
-        customerEntityId: payload.customerEntityId!,
+        customerEntity: {
+          connect: { id: payload.customerEntityId! },
+        },
         ...snap,
         isSaved: true,
       },
@@ -123,7 +133,9 @@ export const createOrder = async (
 
     const created = await prisma.address.create({
       data: {
-        customerEntityId: payload.customerEntityId!,
+        customerEntity: {
+          connect: { id: payload.customerEntityId! },
+        },
         ...snap,
         isSaved: true,
       },
@@ -207,6 +219,10 @@ export const createOrder = async (
       pickupAddress: payload.pickupAddress,
       dropoffAddress: payload.dropoffAddress,
       destinationCity: payload.destinationCity ?? null,
+      pickupLat: payload.pickupLat ?? null,
+      pickupLng: payload.pickupLng ?? null,
+      dropoffLat: payload.dropoffLat ?? null,
+      dropoffLng: payload.dropoffLng ?? null,
       senderName: payload.senderName ?? null,
       senderPhone: payload.senderPhone ?? null,
       senderPhone2: payload.senderPhone2 ?? null,

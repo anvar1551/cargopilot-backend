@@ -23,6 +23,9 @@ function safeUser(user) {
         ...rest,
         warehouseId: rest.warehouseId ?? rest.warehouse?.id ?? null,
         customerEntityId: rest.customerEntityId ?? rest.customerEntity?.id ?? null,
+        driverType: rest.role === client_1.AppRole.driver
+            ? (rest.driverType ?? client_1.DriverType.local)
+            : null,
     };
 }
 const registerUser = async (args) => {
@@ -209,6 +212,13 @@ const createUserAsManager = async (args) => {
             email,
             password: hashedPassword,
             role: args.role,
+            ...(args.role === client_1.AppRole.driver
+                ? {
+                    driverType: args.driverType === "linehaul"
+                        ? client_1.DriverType.linehaul
+                        : client_1.DriverType.local,
+                }
+                : {}),
         };
         // ✅ attach warehouse ONLY when role=warehouse and warehouseId provided
         if ((args.role === client_1.AppRole.warehouse || args.role === client_1.AppRole.driver) &&

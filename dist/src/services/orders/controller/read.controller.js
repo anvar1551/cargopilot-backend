@@ -1,9 +1,14 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.list = list;
 exports.getOne = getOne;
 exports.listDriverWorkload = listDriverWorkload;
 exports.exportCsv = exportCsv;
+const client_1 = require("@prisma/client");
+const prismaClient_1 = __importDefault(require("../../../config/prismaClient"));
 const repo_1 = require("../repo");
 function toStringArray(value) {
     if (Array.isArray(value)) {
@@ -56,6 +61,25 @@ function buildCsv(rows) {
     const bodyRows = rows.map((row) => headers.map((header) => csvEscape(row[header])).join(","));
     return [headerRow, ...bodyRows].join("\n");
 }
+async function canWarehouseAccessOrder(args) {
+    const { warehouseId, order } = args;
+    if (order.currentWarehouseId === warehouseId)
+        return true;
+    if (!order.assignedDriverId)
+        return false;
+    const assignedDriver = await prismaClient_1.default.user.findFirst({
+        where: {
+            id: order.assignedDriverId,
+            role: client_1.AppRole.driver,
+            OR: [
+                { warehouseId },
+                { warehouseAccesses: { some: { warehouseId } } },
+            ],
+        },
+        select: { id: true },
+    });
+    return Boolean(assignedDriver);
+}
 /** Lists orders with pagination and role-aware visibility rules. */
 async function list(req, res) {
     try {
@@ -77,9 +101,18 @@ async function getOne(req, res) {
         if (role === "manager")
             return res.json(order);
         if (role === "warehouse") {
-            if (!warehouseId || order.currentWarehouseId !== warehouseId) {
+            if (!warehouseId) {
                 return res.status(403).json({ error: "Forbidden" });
             }
+            const allowed = await canWarehouseAccessOrder({
+                warehouseId,
+                order: {
+                    currentWarehouseId: order.currentWarehouseId,
+                    assignedDriverId: order.assignedDriverId,
+                },
+            });
+            if (!allowed)
+                return res.status(403).json({ error: "Forbidden" });
             return res.json(order);
         }
         if (role === "customer" &&
@@ -165,6 +198,10 @@ async function exportCsv(req, res) {
             pickupAddress: order.pickupAddress ?? "",
             dropoffAddress: order.dropoffAddress ?? "",
             destinationCity: order.destinationCity ?? "",
+            pickupLat: order.pickupLat ?? "",
+            pickupLng: order.pickupLng ?? "",
+            dropoffLat: order.dropoffLat ?? "",
+            dropoffLng: order.dropoffLng ?? "",
             assignedDriverName: order.assignedDriver?.name ?? "",
             assignedDriverEmail: order.assignedDriver?.email ?? "",
             currentWarehouseName: order.currentWarehouse?.name ?? "",

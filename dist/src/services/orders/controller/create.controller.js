@@ -11,6 +11,32 @@ const orderCreate_mapper_1 = require("../orderCreate.mapper");
 const orderAddress_shared_1 = require("../orderAddress.shared");
 const orderService_shared_1 = require("../orderService.shared");
 const workflow_1 = require("../workflow");
+function sanitizeAddressSnapshot(snapshot) {
+    if (!snapshot || typeof snapshot !== "object")
+        return null;
+    return {
+        country: snapshot.country ?? null,
+        city: snapshot.city ?? null,
+        neighborhood: snapshot.neighborhood ?? null,
+        street: snapshot.street ?? null,
+        latitude: typeof snapshot.latitude === "number" && Number.isFinite(snapshot.latitude)
+            ? snapshot.latitude
+            : null,
+        longitude: typeof snapshot.longitude === "number" && Number.isFinite(snapshot.longitude)
+            ? snapshot.longitude
+            : null,
+        addressLine1: snapshot.addressLine1 ?? null,
+        addressLine2: snapshot.addressLine2 ?? null,
+        building: snapshot.building ?? null,
+        apartment: snapshot.apartment ?? null,
+        floor: snapshot.floor ?? null,
+        landmark: snapshot.landmark ?? null,
+        postalCode: snapshot.postalCode ?? null,
+        addressType: snapshot.addressType === "RESIDENTIAL" || snapshot.addressType === "BUSINESS"
+            ? snapshot.addressType
+            : null,
+    };
+}
 async function saveAddressToBookIfRequested(args) {
     if (!args.enabled || args.existingAddressId)
         return null;
@@ -20,11 +46,17 @@ async function saveAddressToBookIfRequested(args) {
     if (!args.snapshot) {
         throw new Error(args.missingSnapshotError);
     }
+    const sanitized = sanitizeAddressSnapshot(args.snapshot);
+    if (!sanitized) {
+        throw new Error(args.missingSnapshotError);
+    }
     const created = await prismaClient_1.default.address.create({
         data: {
-            customerEntityId: args.ownerCustomerEntityId,
+            customerEntity: {
+                connect: { id: args.ownerCustomerEntityId },
+            },
             isSaved: true,
-            ...args.snapshot,
+            ...sanitized,
         },
     });
     return {

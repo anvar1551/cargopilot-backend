@@ -174,6 +174,17 @@ enum WarehouseType {
   pickup_point
 }
 
+enum DriverType {
+  local
+  linehaul
+}
+
+enum NotificationType {
+  order
+  cash
+  system
+}
+
 enum PricingPlanStatus {
   draft
   active
@@ -214,6 +225,9 @@ model User {
   password String
 
   role AppRole @default(customer)
+  driverType DriverType?
+  liveLocationEnabled   Boolean  @default(true)
+  liveLocationUpdatedAt DateTime @default(now())
 
   // ✅ link user -> customer entity (person/company)
   customerEntityId String?         @db.Uuid
@@ -221,6 +235,7 @@ model User {
 
   warehouseId String?    @db.Uuid
   warehouse   Warehouse? @relation(fields: [warehouseId], references: [id])
+  warehouseAccesses DriverWarehouseAccess[]
 
   orders       Order[] @relation("CustomerOrders")
   driverOrders Order[] @relation("DriverOrders")
@@ -231,6 +246,7 @@ model User {
   trackingEvents Tracking[] @relation("TrackingActor")
   heldCashCollections CashCollection[]     @relation("CashCollectionHolderUser")
   cashCollectionActorEvents CashCollectionEvent[] @relation("CashCollectionEventActor")
+  notifications UserNotification[]
 }
 
 model Warehouse {
@@ -239,11 +255,28 @@ model Warehouse {
   type      WarehouseType @default(warehouse)
   location  String
   region    String?
+  latitude  Float?
+  longitude Float?
   users     User[]
+  driverAccesses DriverWarehouseAccess[]
   orders    Order[]
   createdAt DateTime      @default(now())
   tracking  Tracking[]
   heldCashCollections CashCollection[] @relation("CashCollectionHolderWarehouse")
+}
+
+model DriverWarehouseAccess {
+  id          String    @id @default(uuid()) @db.Uuid
+  driverId    String    @db.Uuid
+  warehouseId String    @db.Uuid
+  createdAt   DateTime  @default(now())
+
+  driver      User      @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+
+  @@unique([driverId, warehouseId])
+  @@index([driverId])
+  @@index([warehouseId])
 }
 
 model Order {
@@ -270,6 +303,10 @@ model Order {
   pickupAddress   String
   dropoffAddress  String
   destinationCity String?
+  pickupLat       Float?
+  pickupLng       Float?
+  dropoffLat      Float?
+  dropoffLng      Float?
 
   // ---------------- Service/payment info (Stripe optional later) ----------------
   serviceType ServiceType?
@@ -592,6 +629,8 @@ model Address {
   city         String?
   neighborhood String?
   street       String?
+  latitude     Float?
+  longitude    Float?
   addressLine1 String?
   addressLine2 String?
   building     String?
@@ -716,6 +755,26 @@ model Parcel {
   createdAt DateTime @default(now())
 
   @@unique([orderId, pieceNo])
+}
+
+model UserNotification {
+  id String @id @default(uuid()) @db.Uuid
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type  NotificationType
+  title String
+  body  String
+  orderId String? @db.Uuid
+  data Json?
+
+  createdAt DateTime @default(now())
+  readAt    DateTime?
+
+  @@index([userId, createdAt])
+  @@index([userId, readAt])
+  @@index([userId, type, createdAt])
 }
 
 model Counter {

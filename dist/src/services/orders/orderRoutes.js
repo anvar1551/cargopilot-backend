@@ -29,6 +29,9 @@ router.post("/assign-driver-bulk", (0, auth_1.auth)([client_1.AppRole.manager, c
 router.post("/tasks/assign-bulk", (0, auth_1.auth)([client_1.AppRole.manager, client_1.AppRole.warehouse]), controller_1.assignTasksBulk);
 router.post("/status-bulk", (0, auth_1.auth)([client_1.AppRole.manager, client_1.AppRole.warehouse]), controller_1.updateStatusBulk);
 router.post("/driver-status", (0, auth_1.auth)([client_1.AppRole.driver]), controller_1.updateDriverStatus);
+router.post("/:id/proofs", (0, auth_1.auth)([client_1.AppRole.driver]), controller_1.uploadDeliveryProofFiles, controller_1.submitOrderProof);
+router.get("/:id/proofs", (0, auth_1.auth)([client_1.AppRole.manager, client_1.AppRole.warehouse, client_1.AppRole.customer, client_1.AppRole.driver]), controller_1.getOrderProofLinks);
+router.post("/:id/delivery-proof", (0, auth_1.auth)([client_1.AppRole.driver]), controller_1.uploadDeliveryProofFiles, controller_1.submitDeliveryProof);
 router.post("/cash/collect-bulk", (0, auth_1.auth)([client_1.AppRole.manager, client_1.AppRole.warehouse, client_1.AppRole.driver]), controller_1.collectCashBulk);
 router.post("/cash/handoff-bulk", (0, auth_1.auth)([client_1.AppRole.manager, client_1.AppRole.warehouse]), controller_1.handoffCashBulk);
 router.post("/cash/settle-bulk", (0, auth_1.auth)([client_1.AppRole.manager]), controller_1.settleCashBulk);

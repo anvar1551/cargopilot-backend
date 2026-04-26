@@ -1,9 +1,13 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.isRedisEnabled = isRedisEnabled;
 exports.getRedisPrefix = getRedisPrefix;
 exports.getRedisClient = getRedisClient;
-const redis_1 = require("redis");
+// Modernized: ioredis + Hash storage + Redis Streams
+const ioredis_1 = __importDefault(require("ioredis"));
 let redisClient = null;
 let connectPromise = null;
 let hasLoggedDisabled = false;
@@ -13,16 +17,37 @@ function isRedisEnabled() {
 function getRedisPrefix() {
     return process.env.REDIS_PREFIX?.trim() || "cargopilot";
 }
+function parseRedisConfig(redisUrl) {
+    try {
+        const parsed = new URL(redisUrl);
+        const host = parsed.hostname || "127.0.0.1";
+        const port = Number(parsed.port || "6379");
+        const password = parsed.password ? parsed.password : undefined;
+        return {
+            host,
+            port: Number.isFinite(port) && port > 0 ? port : 6379,
+            password,
+        };
+    }
+    catch {
+        return {
+            host: "127.0.0.1",
+            port: 6379,
+            password: undefined,
+        };
+    }
+}
 function buildRedisClient() {
     const url = process.env.REDIS_URL;
     if (!url)
         return null;
-    const client = (0, redis_1.createClient)({
-        url,
-        socket: {
-            connectTimeout: 3000,
-            reconnectStrategy: (retries) => Math.min(retries * 200, 2000),
-        },
+    const { host, port, password } = parseRedisConfig(url);
+    const client = new ioredis_1.default({
+        host,
+        port,
+        password,
+        connectTimeout: 3000,
+        retryStrategy: (t) => Math.min(t * 200, 2000),
     });
     client.on("ready", () => {
         console.log("[redis] ready");
@@ -43,7 +68,7 @@ async function getRedisClient() {
         }
         return null;
     }
-    if (redisClient?.isOpen)
+    if (redisClient)
         return redisClient;
     if (connectPromise)
         return connectPromise;
@@ -54,13 +79,10 @@ async function getRedisClient() {
             }
             if (!redisClient)
                 return null;
-            if (!redisClient.isOpen) {
-                await redisClient.connect();
-            }
             return redisClient;
         }
         catch (err) {
-            console.error(`[redis] connect failed, using in-memory fallback: ${err?.message || "unknown"}`);
+            console.error(`[redis] init failed, using in-memory fallback: ${err?.message || "unknown"}`);
             return null;
         }
         finally {

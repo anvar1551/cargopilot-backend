@@ -4,6 +4,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
+const http_1 = require("http");
 const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
 const compression_1 = __importDefault(require("compression"));
@@ -26,6 +27,9 @@ const labelRoutes_1 = __importDefault(require("./features/label/labelRoutes"));
 const addressRoutes_1 = __importDefault(require("./services/addresses/addressRoutes"));
 const customerRoutes_1 = __importDefault(require("./services/customers/customerRoutes"));
 const pricingRoutes_1 = __importDefault(require("./services/pricing/pricingRoutes"));
+const realtimeHub_1 = require("./features/realtime/realtimeHub");
+const notificationRoutes_1 = __importDefault(require("./services/notifications/notificationRoutes"));
+const notificationRetention_1 = require("./services/notifications/notificationRetention");
 const app = (0, express_1.default)();
 app.set("trust proxy", process.env.TRUST_PROXY === "false" ? false : 1);
 void (0, redis_1.getRedisClient)();
@@ -101,6 +105,7 @@ app.use("/api/labels", labelRoutes_1.default);
 app.use("/api/addresses", addressRoutes_1.default);
 app.use("/api/customers", customerRoutes_1.default);
 app.use("/api/pricing", pricingRoutes_1.default);
+app.use("/api/notifications", notificationRoutes_1.default);
 app.use((err, _req, res, next) => {
     if (err?.message === "Origin not allowed by CORS") {
         return res.status(403).json({ error: "CORS origin blocked" });
@@ -109,6 +114,9 @@ app.use((err, _req, res, next) => {
 });
 const portFromEnv = Number(process.env.PORT);
 const PORT = Number.isFinite(portFromEnv) && portFromEnv > 0 ? portFromEnv : 4000;
-app.listen(PORT, "0.0.0.0", () => {
+const server = (0, http_1.createServer)(app);
+(0, realtimeHub_1.initRealtimeHub)(server, Array.from(allowedOrigins));
+(0, notificationRetention_1.startNotificationRetentionWorker)();
+server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on port ${PORT}`);
 });

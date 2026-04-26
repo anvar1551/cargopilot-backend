@@ -5,13 +5,15 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getWarehouseById = exports.listWarehouses = exports.updateWarehouse = exports.createWarehouse = void 0;
 const prismaClient_1 = __importDefault(require("../../config/prismaClient"));
-const createWarehouse = async (name, type, location, region) => {
+const createWarehouse = async (name, type, location, region, latitude, longitude) => {
     return prismaClient_1.default.warehouse.create({
         data: {
             name,
             type,
             location,
             region: region ?? null,
+            latitude: latitude ?? null,
+            longitude: longitude ?? null,
         },
     });
 };
@@ -24,6 +26,8 @@ const updateWarehouse = async (id, args) => {
             type: args.type,
             location: args.location,
             region: args.region ?? null,
+            latitude: args.latitude ?? null,
+            longitude: args.longitude ?? null,
         },
     });
 };

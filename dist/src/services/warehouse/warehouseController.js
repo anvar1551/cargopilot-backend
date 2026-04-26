@@ -3,13 +3,24 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.update = exports.getWarehouse = exports.list = exports.create = void 0;
 const warehouseRepo_1 = require("./warehouseRepo");
 const warehouse_shared_1 = require("./warehouse.shared");
+function parseCoordinate(value, axis) {
+    if (value == null || value === "")
+        return null;
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed))
+        return null;
+    if (axis === "lat") {
+        return parsed >= -90 && parsed <= 90 ? parsed : null;
+    }
+    return parsed >= -180 && parsed <= 180 ? parsed : null;
+}
 const create = async (req, res) => {
     try {
-        const { name, type, location, region } = req.body;
+        const { name, type, location, region, latitude, longitude } = req.body;
         if (!name || !location) {
             return res.status(400).json({ error: "Name and location are required" });
         }
-        const warehouse = await (0, warehouseRepo_1.createWarehouse)(name, (0, warehouse_shared_1.normalizeWarehouseType)(type), location, region);
+        const warehouse = await (0, warehouseRepo_1.createWarehouse)(name, (0, warehouse_shared_1.normalizeWarehouseType)(type), location, region, parseCoordinate(latitude, "lat"), parseCoordinate(longitude, "lng"));
         return res.status(201).json(warehouse);
     }
     catch (error) {
@@ -46,7 +57,7 @@ exports.getWarehouse = getWarehouse;
 const update = async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, type, location, region } = req.body;
+        const { name, type, location, region, latitude, longitude } = req.body;
         if (!id) {
             return res.status(400).json({ error: "Warehouse id is required" });
         }
@@ -60,6 +71,8 @@ const update = async (req, res) => {
             region: typeof region === "string" && region.trim().length > 0
                 ? region.trim()
                 : null,
+            latitude: parseCoordinate(latitude, "lat"),
+            longitude: parseCoordinate(longitude, "lng"),
         });
         return res.json(warehouse);
     }

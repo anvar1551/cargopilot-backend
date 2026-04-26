@@ -11,7 +11,7 @@ FROM deps AS build
 COPY package.json package-lock.json tsconfig.json prisma.config.ts ./
 COPY prisma ./prisma
 COPY src ./src
-RUN npm run build && npm prune --omit=dev && npm cache clean --force
+RUN NODE_OPTIONS=--max-old-space-size=3072 npm run build && npm prune --omit=dev && npm cache clean --force
 
 FROM base AS prod
 WORKDIR /app

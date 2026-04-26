@@ -44,6 +44,8 @@ const addressCreateSchema = zod_1.z.object({
     city: zod_1.z.string().optional().nullable(),
     neighborhood: zod_1.z.string().optional().nullable(),
     street: zod_1.z.string().optional().nullable(),
+    latitude: zod_1.z.number().optional().nullable(),
+    longitude: zod_1.z.number().optional().nullable(),
     addressLine1: zod_1.z.string().optional().nullable(),
     addressLine2: zod_1.z.string().optional().nullable(),
     building: zod_1.z.string().optional().nullable(),
@@ -87,11 +89,15 @@ async function create(req, res) {
         }
         const created = await prismaClient_1.default.address.create({
             data: {
-                customerEntityId: ownerCustomerEntityId,
+                customerEntity: {
+                    connect: { id: ownerCustomerEntityId },
+                },
                 country: dto.country ?? null,
                 city: dto.city ?? null,
                 neighborhood: dto.neighborhood ?? null,
                 street: dto.street ?? null,
+                latitude: dto.latitude ?? null,
+                longitude: dto.longitude ?? null,
                 addressLine1: dto.addressLine1 ?? null,
                 addressLine2: dto.addressLine2 ?? null,
                 building: dto.building ?? null,

@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { createServer } from "http";
 import express from "express";
 import cors from "cors";
 import compression from "compression";
@@ -21,6 +22,9 @@ import labelRoutes from "./features/label/labelRoutes";
 import addressRoutes from "./services/addresses/addressRoutes";
 import customerEntityRoutes from "./services/customers/customerRoutes";
 import pricingRoutes from "./services/pricing/pricingRoutes";
+import { initRealtimeHub } from "./features/realtime/realtimeHub";
+import notificationRoutes from "./services/notifications/notificationRoutes";
+import { startNotificationRetentionWorker } from "./services/notifications/notificationRetention";
 
 const app = express();
 app.set("trust proxy", process.env.TRUST_PROXY === "false" ? false : 1);
@@ -109,6 +113,7 @@ app.use("/api/labels", labelRoutes);
 app.use("/api/addresses", addressRoutes);
 app.use("/api/customers", customerEntityRoutes);
 app.use("/api/pricing", pricingRoutes);
+app.use("/api/notifications", notificationRoutes);
 
 app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
   if (err?.message === "Origin not allowed by CORS") {
@@ -121,6 +126,10 @@ const portFromEnv = Number(process.env.PORT);
 const PORT =
   Number.isFinite(portFromEnv) && portFromEnv > 0 ? portFromEnv : 4000;
 
-app.listen(PORT, "0.0.0.0", () => {
+const server = createServer(app);
+initRealtimeHub(server, Array.from(allowedOrigins));
+startNotificationRetentionWorker();
+
+server.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on port ${PORT}`);
 });

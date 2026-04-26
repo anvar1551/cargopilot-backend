@@ -1,4 +1,5 @@
 import { CashCollectionKind, CashCollectionStatus } from "@prisma/client";
+import { emitDriverNotification, emitDriverOrderUpdate } from "../../../features/realtime/realtimeHub";
 
 import {
   collectOrderCash,
@@ -165,6 +166,31 @@ function uniqueOrders(orders: any[]) {
   return rows;
 }
 
+function pushDriverCashRealtime(order: any, kind: CashCollectionKind, title: string, body: string) {
+  const assignedDriverId = String(order?.assignedDriverId ?? "").trim();
+  if (!assignedDriverId) return;
+
+  const orderId = String(order?.id ?? "").trim();
+  const orderNumber = String(order?.orderNumber ?? "").trim();
+  const status = String(order?.status ?? "").trim();
+  const updatedAt = new Date().toISOString();
+
+  emitDriverOrderUpdate(assignedDriverId, {
+    orderId,
+    orderNumber: orderNumber || null,
+    status,
+    updatedAt,
+  });
+
+  void emitDriverNotification(assignedDriverId, {
+    type: "cash",
+    orderId,
+    title,
+    body: `${body} (${kind === CashCollectionKind.cod ? "COD" : "Service charge"})`,
+    at: updatedAt,
+  }).catch(() => undefined);
+}
+
 /** Lists cash queue items scoped for current actor (manager or warehouse). */
 export async function listCashQueue(req: any, res: any) {
   try {
@@ -229,6 +255,14 @@ export async function collectCash(req: any, res: any) {
       actor,
     });
 
+    const kind = parseKind(req.body?.kind);
+    pushDriverCashRealtime(
+      order,
+      kind,
+      `Cash collected for order ${order?.orderNumber ?? order?.id}`,
+      "Cash custody has been updated.",
+    );
+
     return res.json({
       success: true,
       message: "Cash collection updated",
@@ -272,6 +306,14 @@ export async function handoffCash(req: any, res: any) {
       actor,
     });
 
+    const kind = parseKind(req.body?.kind);
+    pushDriverCashRealtime(
+      order,
+      kind,
+      `Cash handoff for order ${order?.orderNumber ?? order?.id}`,
+      "Cash holder has been changed.",
+    );
+
     return res.json({
       success: true,
       message: "Cash handoff recorded",
@@ -294,6 +336,14 @@ export async function settleCash(req: any, res: any) {
       note: typeof req.body?.note === "string" ? req.body.note : null,
       actor,
     });
+
+    const kind = parseKind(req.body?.kind);
+    pushDriverCashRealtime(
+      order,
+      kind,
+      `Cash settled for order ${order?.orderNumber ?? order?.id}`,
+      "Cash was settled to finance.",
+    );
 
     return res.json({
       success: true,
@@ -339,6 +389,16 @@ export async function collectCashBulk(req: any, res: any) {
 
     const orders = uniqueOrders(updatedOrders);
     const status = failed.length ? 207 : 200;
+    for (const order of orders) {
+      const matched = items.find((item) => item.orderId === order?.id);
+      if (!matched) continue;
+      pushDriverCashRealtime(
+        order,
+        matched.kind,
+        `Cash collected for order ${order?.orderNumber ?? order?.id}`,
+        "Cash custody has been updated.",
+      );
+    }
     return res.status(status).json({
       success: failed.length === 0,
       count: orders.length,
@@ -403,6 +463,16 @@ export async function handoffCashBulk(req: any, res: any) {
 
     const orders = uniqueOrders(updatedOrders);
     const status = failed.length ? 207 : 200;
+    for (const order of orders) {
+      const matched = items.find((item) => item.orderId === order?.id);
+      if (!matched) continue;
+      pushDriverCashRealtime(
+        order,
+        matched.kind,
+        `Cash handoff for order ${order?.orderNumber ?? order?.id}`,
+        "Cash holder has been changed.",
+      );
+    }
     return res.status(status).json({
       success: failed.length === 0,
       count: orders.length,
@@ -447,6 +517,16 @@ export async function settleCashBulk(req: any, res: any) {
 
     const orders = uniqueOrders(updatedOrders);
     const status = failed.length ? 207 : 200;
+    for (const order of orders) {
+      const matched = items.find((item) => item.orderId === order?.id);
+      if (!matched) continue;
+      pushDriverCashRealtime(
+        order,
+        matched.kind,
+        `Cash settled for order ${order?.orderNumber ?? order?.id}`,
+        "Cash was settled to finance.",
+      );
+    }
     return res.status(status).json({
       success: failed.length === 0,
       count: orders.length,

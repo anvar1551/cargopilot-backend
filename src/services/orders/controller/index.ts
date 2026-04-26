@@ -12,6 +12,12 @@ export {
   updateStatusBulk,
 } from "./tasks.controller";
 export {
+  getOrderProofLinks,
+  submitDeliveryProof,
+  submitOrderProof,
+  uploadDeliveryProofFiles,
+} from "./proof.controller";
+export {
   getCashQueueSummary,
   listCashQueue,
   collectCash,

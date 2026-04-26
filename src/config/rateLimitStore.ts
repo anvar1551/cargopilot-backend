@@ -9,13 +9,12 @@ export function createRateLimitStore(namespace: string) {
 
   return new RedisStore({
     prefix: `${prefixRoot}:${namespace}:`,
-    sendCommand: async (...args: string[]) => {
+    sendCommand: (async (...args: string[]) => {
       const client = await getRedisClient();
       if (!client) {
         throw new Error("Redis client unavailable");
       }
-      return client.sendCommand(args);
-    },
+      return (client as any).call(...args);
+    }) as any,
   });
 }
-

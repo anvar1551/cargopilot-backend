@@ -1,0 +1,12 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const client_1 = require("@prisma/client");
+const auth_1 = require("../../middleware/auth");
+const notificationController_1 = require("./notificationController");
+const router = (0, express_1.Router)();
+router.get("/", (0, auth_1.auth)([client_1.AppRole.driver, client_1.AppRole.manager]), notificationController_1.listNotifications);
+router.get("/unread-count", (0, auth_1.auth)([client_1.AppRole.driver, client_1.AppRole.manager]), notificationController_1.getUnreadCount);
+router.post("/:id/read", (0, auth_1.auth)([client_1.AppRole.driver, client_1.AppRole.manager]), notificationController_1.markNotificationRead);
+router.post("/read-all", (0, auth_1.auth)([client_1.AppRole.driver, client_1.AppRole.manager]), notificationController_1.markAllNotificationsRead);
+exports.default = router;

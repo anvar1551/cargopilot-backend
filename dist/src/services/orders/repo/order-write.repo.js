@@ -19,6 +19,12 @@ function sanitizeSnapshot(s) {
         city: s.city ?? null,
         neighborhood: s.neighborhood ?? null,
         street: s.street ?? null,
+        latitude: typeof s.latitude === "number" && Number.isFinite(s.latitude)
+            ? s.latitude
+            : null,
+        longitude: typeof s.longitude === "number" && Number.isFinite(s.longitude)
+            ? s.longitude
+            : null,
         addressLine1: s.addressLine1 ?? null,
         addressLine2: s.addressLine2 ?? null,
         building: s.building ?? null,
@@ -92,7 +98,9 @@ const createOrder = async (customerId, payload, actor) => {
         const snap = sanitizeSnapshot(payload.senderAddressSnapshot);
         const created = await prismaClient_1.default.address.create({
             data: {
-                customerEntityId: payload.customerEntityId,
+                customerEntity: {
+                    connect: { id: payload.customerEntityId },
+                },
                 ...snap,
                 isSaved: true,
             },
@@ -104,7 +112,9 @@ const createOrder = async (customerId, payload, actor) => {
         const snap = sanitizeSnapshot(payload.receiverAddressSnapshot);
         const created = await prismaClient_1.default.address.create({
             data: {
-                customerEntityId: payload.customerEntityId,
+                customerEntity: {
+                    connect: { id: payload.customerEntityId },
+                },
                 ...snap,
                 isSaved: true,
             },
@@ -174,6 +184,10 @@ const createOrder = async (customerId, payload, actor) => {
             pickupAddress: payload.pickupAddress,
             dropoffAddress: payload.dropoffAddress,
             destinationCity: payload.destinationCity ?? null,
+            pickupLat: payload.pickupLat ?? null,
+            pickupLng: payload.pickupLng ?? null,
+            dropoffLat: payload.dropoffLat ?? null,
+            dropoffLng: payload.dropoffLng ?? null,
             senderName: payload.senderName ?? null,
             senderPhone: payload.senderPhone ?? null,
             senderPhone2: payload.senderPhone2 ?? null,

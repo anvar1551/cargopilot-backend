@@ -6,6 +6,8 @@ export const createWarehouse = async (
   type: WarehouseTypeValue,
   location: string,
   region?: string,
+  latitude?: number | null,
+  longitude?: number | null,
 ) => {
   return prisma.warehouse.create({
     data: {
@@ -13,6 +15,8 @@ export const createWarehouse = async (
       type,
       location,
       region: region ?? null,
+      latitude: latitude ?? null,
+      longitude: longitude ?? null,
     },
   });
 };
@@ -24,6 +28,8 @@ export const updateWarehouse = async (
     type: WarehouseTypeValue;
     location: string;
     region?: string | null;
+    latitude?: number | null;
+    longitude?: number | null;
   },
 ) => {
   return prisma.warehouse.update({
@@ -33,6 +39,8 @@ export const updateWarehouse = async (
       type: args.type,
       location: args.location,
       region: args.region ?? null,
+      latitude: args.latitude ?? null,
+      longitude: args.longitude ?? null,
     },
   });
 };

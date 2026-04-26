@@ -21,7 +21,11 @@ import {
   settleCashBulk,
   assignDriversBulk,
   assignTasksBulk,
+  getOrderProofLinks,
+  submitOrderProof,
   updateDriverStatus,
+  submitDeliveryProof,
+  uploadDeliveryProofFiles,
   updateStatusBulk,
   listDriverWorkload,
 } from "./controller";
@@ -67,6 +71,23 @@ router.post(
   updateStatusBulk,
 );
 router.post("/driver-status", auth([AppRole.driver]), updateDriverStatus);
+router.post(
+  "/:id/proofs",
+  auth([AppRole.driver]),
+  uploadDeliveryProofFiles,
+  submitOrderProof,
+);
+router.get(
+  "/:id/proofs",
+  auth([AppRole.manager, AppRole.warehouse, AppRole.customer, AppRole.driver]),
+  getOrderProofLinks,
+);
+router.post(
+  "/:id/delivery-proof",
+  auth([AppRole.driver]),
+  uploadDeliveryProofFiles,
+  submitDeliveryProof,
+);
 router.post(
   "/cash/collect-bulk",
   auth([AppRole.manager, AppRole.warehouse, AppRole.driver]),

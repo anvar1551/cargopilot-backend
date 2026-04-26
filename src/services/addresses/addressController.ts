@@ -47,6 +47,8 @@ const addressCreateSchema = z.object({
   city: z.string().optional().nullable(),
   neighborhood: z.string().optional().nullable(),
   street: z.string().optional().nullable(),
+  latitude: z.number().optional().nullable(),
+  longitude: z.number().optional().nullable(),
   addressLine1: z.string().optional().nullable(),
   addressLine2: z.string().optional().nullable(),
   building: z.string().optional().nullable(),
@@ -98,11 +100,15 @@ export async function create(req: Request, res: Response) {
 
     const created = await prisma.address.create({
       data: {
-        customerEntityId: ownerCustomerEntityId,
+        customerEntity: {
+          connect: { id: ownerCustomerEntityId },
+        },
         country: dto.country ?? null,
         city: dto.city ?? null,
         neighborhood: dto.neighborhood ?? null,
         street: dto.street ?? null,
+        latitude: dto.latitude ?? null,
+        longitude: dto.longitude ?? null,
         addressLine1: dto.addressLine1 ?? null,
         addressLine2: dto.addressLine2 ?? null,
         building: dto.building ?? null,

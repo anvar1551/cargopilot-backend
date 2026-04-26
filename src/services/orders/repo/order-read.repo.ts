@@ -63,6 +63,10 @@ const orderListSelect = {
   pickupAddress: true,
   dropoffAddress: true,
   destinationCity: true,
+  pickupLat: true,
+  pickupLng: true,
+  dropoffLat: true,
+  dropoffLng: true,
   createdAt: true,
   updatedAt: true,
   currency: true,
@@ -127,6 +131,10 @@ const orderExportSelect = {
   pickupAddress: true,
   dropoffAddress: true,
   destinationCity: true,
+  pickupLat: true,
+  pickupLng: true,
+  dropoffLat: true,
+  dropoffLng: true,
   serviceType: true,
   weightKg: true,
   codAmount: true,
@@ -248,7 +256,19 @@ function buildRoleScopeWhere(
       // no attached location -> no visibility
       return { id: "__no_access__" };
     }
-    return { currentWarehouseId: warehouseId };
+    return {
+      OR: [
+        { currentWarehouseId: warehouseId },
+        {
+          assignedDriver: {
+            OR: [
+              { warehouseId },
+              { warehouseAccesses: { some: { warehouseId } } },
+            ],
+          },
+        },
+      ],
+    };
   }
   return {};
 }
@@ -420,6 +440,10 @@ function buildOrderWhere(
 ): Prisma.OrderWhereInput {
   const scope: SearchScope = params?.scope === "deep" ? "deep" : "fast";
   const q = params?.q?.trim() ?? "";
+  const effectiveParams =
+    role === "warehouse" && params
+      ? { ...params, warehouseId: undefined }
+      : params;
   const roleWhere = buildRoleScopeWhere(
     userId,
     role,
@@ -427,7 +451,7 @@ function buildOrderWhere(
     warehouseId,
   );
   const searchWhere = q ? buildSearchWhere(q, scope) : {};
-  const filterWhere = buildStructuredFiltersWhere(params);
+  const filterWhere = buildStructuredFiltersWhere(effectiveParams);
   const and = [roleWhere, searchWhere, filterWhere].filter(
     (item) => !isEmptyWhere(item),
   );

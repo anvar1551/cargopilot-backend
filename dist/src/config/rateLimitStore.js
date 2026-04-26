@@ -9,12 +9,12 @@ function createRateLimitStore(namespace) {
     const prefixRoot = process.env.REDIS_RATE_LIMIT_PREFIX?.trim() || `${(0, redis_1.getRedisPrefix)()}:ratelimit`;
     return new rate_limit_redis_1.RedisStore({
         prefix: `${prefixRoot}:${namespace}:`,
-        sendCommand: async (...args) => {
+        sendCommand: (async (...args) => {
             const client = await (0, redis_1.getRedisClient)();
             if (!client) {
                 throw new Error("Redis client unavailable");
             }
-            return client.sendCommand(args);
-        },
+            return client.call(...args);
+        }),
     });
 }

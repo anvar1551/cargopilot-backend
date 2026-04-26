@@ -143,6 +143,7 @@ const createUserByManagerSchema = zod_1.z
     email: zod_1.z.email(),
     password: zod_1.z.string().min(6),
     role: zod_1.z.enum(Object.values(client_1.AppRole)),
+    driverType: zod_1.z.enum(["local", "linehaul"]).optional(),
     warehouseId: zod_1.z.uuid().optional().nullable(),
     customerEntityId: zod_1.z.uuid().optional().nullable(),
     phone: zod_1.z.string().optional().nullable(),
@@ -173,6 +174,13 @@ const createUserByManagerSchema = zod_1.z
             message: "customerEntityId is only allowed when role is CUSTOMER",
         });
     }
+    if (v.driverType && v.role !== client_1.AppRole.driver) {
+        ctx.addIssue({
+            code: "custom",
+            path: ["driverType"],
+            message: "driverType is only allowed when role is DRIVER",
+        });
+    }
 });
 const createByManager = async (req, res) => {
     try {
@@ -182,6 +190,7 @@ const createByManager = async (req, res) => {
             email: dto.email,
             password: dto.password,
             role: dto.role,
+            driverType: dto.driverType,
             warehouseId: dto.warehouseId ?? null,
             customerEntityId: dto.customerEntityId ?? null,
             phone: dto.phone ?? null,

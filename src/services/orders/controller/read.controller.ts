@@ -1,4 +1,5 @@
 import { AppRole } from "@prisma/client";
+import prisma from "../../../config/prismaClient";
 
 import {
   countOrdersForExport,
@@ -72,6 +73,32 @@ function buildCsv(rows: Array<Record<string, unknown>>) {
   return [headerRow, ...bodyRows].join("\n");
 }
 
+async function canWarehouseAccessOrder(args: {
+  warehouseId: string;
+  order: {
+    currentWarehouseId?: string | null;
+    assignedDriverId?: string | null;
+  };
+}) {
+  const { warehouseId, order } = args;
+  if (order.currentWarehouseId === warehouseId) return true;
+  if (!order.assignedDriverId) return false;
+
+  const assignedDriver = await prisma.user.findFirst({
+    where: {
+      id: order.assignedDriverId,
+      role: AppRole.driver,
+      OR: [
+        { warehouseId },
+        { warehouseAccesses: { some: { warehouseId } } },
+      ],
+    },
+    select: { id: true },
+  });
+
+  return Boolean(assignedDriver);
+}
+
 /** Lists orders with pagination and role-aware visibility rules. */
 export async function list(req: any, res: any) {
   try {
@@ -115,9 +142,17 @@ export async function getOne(req: any, res: any) {
 
     if (role === "manager") return res.json(order);
     if (role === "warehouse") {
-      if (!warehouseId || order.currentWarehouseId !== warehouseId) {
+      if (!warehouseId) {
         return res.status(403).json({ error: "Forbidden" });
       }
+      const allowed = await canWarehouseAccessOrder({
+        warehouseId,
+        order: {
+          currentWarehouseId: order.currentWarehouseId,
+          assignedDriverId: order.assignedDriverId,
+        },
+      });
+      if (!allowed) return res.status(403).json({ error: "Forbidden" });
       return res.json(order);
     }
     if (
@@ -233,6 +268,10 @@ export async function exportCsv(req: any, res: any) {
       pickupAddress: order.pickupAddress ?? "",
       dropoffAddress: order.dropoffAddress ?? "",
       destinationCity: order.destinationCity ?? "",
+      pickupLat: order.pickupLat ?? "",
+      pickupLng: order.pickupLng ?? "",
+      dropoffLat: order.dropoffLat ?? "",
+      dropoffLng: order.dropoffLng ?? "",
       assignedDriverName: order.assignedDriver?.name ?? "",
       assignedDriverEmail: order.assignedDriver?.email ?? "",
       currentWarehouseName: order.currentWarehouse?.name ?? "",

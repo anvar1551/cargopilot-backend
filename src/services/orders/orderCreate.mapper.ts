@@ -37,6 +37,28 @@ const optionalIsoDateString = () =>
     .optional()
     .nullable();
 
+function normalizeLatitude(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  if (value < -90 || value > 90) return null;
+  return value;
+}
+
+function normalizeLongitude(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  if (value < -180 || value > 180) return null;
+  return value;
+}
+
+function coordsEqual(
+  aLat: number | null,
+  aLng: number | null,
+  bLat: number | null,
+  bLng: number | null,
+) {
+  if (aLat == null || aLng == null || bLat == null || bLng == null) return false;
+  return Math.abs(aLat - bLat) < 0.000001 && Math.abs(aLng - bLng) < 0.000001;
+}
+
 /**
  * Schemas
  */
@@ -46,6 +68,8 @@ export const addressSchema = z.object({
   city: z.string().optional().nullable(),
   neighborhood: z.string().optional().nullable(),
   street: z.string().optional().nullable(),
+  latitude: z.number().optional().nullable(),
+  longitude: z.number().optional().nullable(),
   addressLine1: z.string().optional().nullable(),
   addressLine2: z.string().optional().nullable(),
   building: z.string().optional().nullable(),
@@ -250,6 +274,10 @@ export type CreateOrderRepoPayload = {
   pickupAddress: string;
   dropoffAddress: string;
   destinationCity?: string | null;
+  pickupLat?: number | null;
+  pickupLng?: number | null;
+  dropoffLat?: number | null;
+  dropoffLng?: number | null;
   savePickupToAddressBook?: boolean;
   saveDropoffToAddressBook?: boolean;
   senderAddressSnapshot?: any | null;
@@ -321,10 +349,20 @@ export async function mapCreateOrderDtoToRepoPayload(
   let dropoffAddress = dto.addresses.dropoffAddress;
   let destinationCity =
     dto.addresses.destinationCity ?? dto.addresses.receiverAddress?.city ?? null;
+  let senderAddr: {
+    latitude?: number | null;
+    longitude?: number | null;
+    city?: string | null;
+  } | null = null;
+  let receiverAddr: {
+    latitude?: number | null;
+    longitude?: number | null;
+    city?: string | null;
+  } | null = null;
 
   // ✅ optional resolve from address book IDs
   if (senderAddressId || receiverAddressId) {
-    const [senderAddr, receiverAddr] = await Promise.all([
+    const [resolvedSenderAddr, resolvedReceiverAddr] = await Promise.all([
       senderAddressId
         ? prisma.address.findFirst({
             where: {
@@ -338,26 +376,101 @@ export async function mapCreateOrderDtoToRepoPayload(
         : Promise.resolve(null),
     ]);
 
-    if (senderAddressId && !senderAddr) {
+    if (senderAddressId && !resolvedSenderAddr) {
       const e: any = new Error("senderAddressId not found");
       e.statusCode = 400;
       throw e;
     }
-    if (receiverAddressId && !receiverAddr) {
+    if (receiverAddressId && !resolvedReceiverAddr) {
       const e: any = new Error("receiverAddressId not found");
       e.statusCode = 400;
       throw e;
     }
+
+    senderAddr = resolvedSenderAddr;
+    receiverAddr = resolvedReceiverAddr;
 
     if (senderAddr) pickupAddress = buildAddressText(senderAddr);
     if (receiverAddr) dropoffAddress = buildAddressText(receiverAddr);
     destinationCity = receiverAddr?.city ?? destinationCity;
   }
 
+  const pickupLatFromSnapshot = normalizeLatitude(
+    dto.addresses.senderAddress?.latitude,
+  );
+  const pickupLngFromSnapshot = normalizeLongitude(
+    dto.addresses.senderAddress?.longitude,
+  );
+  const dropoffLatFromSnapshot = normalizeLatitude(
+    dto.addresses.receiverAddress?.latitude,
+  );
+  const dropoffLngFromSnapshot = normalizeLongitude(
+    dto.addresses.receiverAddress?.longitude,
+  );
+
+  const pickupLatFromAddressBook = normalizeLatitude(senderAddr?.latitude);
+  const pickupLngFromAddressBook = normalizeLongitude(senderAddr?.longitude);
+  const dropoffLatFromAddressBook = normalizeLatitude(receiverAddr?.latitude);
+  const dropoffLngFromAddressBook = normalizeLongitude(receiverAddr?.longitude);
+
+  let pickupLat =
+    senderAddressId && pickupLatFromAddressBook != null
+      ? pickupLatFromAddressBook
+      : pickupLatFromSnapshot;
+  let pickupLng =
+    senderAddressId && pickupLngFromAddressBook != null
+      ? pickupLngFromAddressBook
+      : pickupLngFromSnapshot;
+  let dropoffLat =
+    receiverAddressId && dropoffLatFromAddressBook != null
+      ? dropoffLatFromAddressBook
+      : dropoffLatFromSnapshot;
+  let dropoffLng =
+    receiverAddressId && dropoffLngFromAddressBook != null
+      ? dropoffLngFromAddressBook
+      : dropoffLngFromSnapshot;
+
+  if (
+    coordsEqual(pickupLat, pickupLng, dropoffLat, dropoffLng) &&
+    pickupAddress.trim() !== dropoffAddress.trim()
+  ) {
+    const receiverPreferredLat =
+      dropoffLatFromAddressBook ?? dropoffLatFromSnapshot;
+    const receiverPreferredLng =
+      dropoffLngFromAddressBook ?? dropoffLngFromSnapshot;
+
+    if (
+      receiverPreferredLat != null &&
+      receiverPreferredLng != null &&
+      !coordsEqual(pickupLat, pickupLng, receiverPreferredLat, receiverPreferredLng)
+    ) {
+      dropoffLat = receiverPreferredLat;
+      dropoffLng = receiverPreferredLng;
+    } else {
+      console.warn(
+        "[orders] pickup/dropoff coordinates are identical while addresses differ",
+        {
+          pickupAddress,
+          dropoffAddress,
+          senderAddressId,
+          receiverAddressId,
+          pickupLat,
+          pickupLng,
+          dropoffLat,
+          dropoffLng,
+        },
+      );
+    }
+  }
+
   return {
     pickupAddress,
     dropoffAddress,
     destinationCity,
+    pickupLat,
+    pickupLng,
+    dropoffLat,
+    dropoffLng,
 
     savePickupToAddressBook: dto.addresses.savePickupToAddressBook ?? false,
     saveDropoffToAddressBook: dto.addresses.saveDropoffToAddressBook ?? false,

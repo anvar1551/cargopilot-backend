@@ -1,5 +1,6 @@
 import { Request } from "express";
 import { Response } from "express-serve-static-core";
+import { AddressType } from "@prisma/client";
 
 import prisma from "../../../config/prismaClient";
 import { createInvoice, createStripePayment } from "../../invoice/invoiceRepo";
@@ -27,6 +28,36 @@ type SaveAddressToBookArgs = {
   missingSnapshotError: string;
 };
 
+function sanitizeAddressSnapshot(snapshot?: Record<string, unknown> | null) {
+  if (!snapshot || typeof snapshot !== "object") return null;
+
+  return {
+    country: (snapshot.country as string | null | undefined) ?? null,
+    city: (snapshot.city as string | null | undefined) ?? null,
+    neighborhood: (snapshot.neighborhood as string | null | undefined) ?? null,
+    street: (snapshot.street as string | null | undefined) ?? null,
+    latitude:
+      typeof snapshot.latitude === "number" && Number.isFinite(snapshot.latitude)
+        ? snapshot.latitude
+        : null,
+    longitude:
+      typeof snapshot.longitude === "number" && Number.isFinite(snapshot.longitude)
+        ? snapshot.longitude
+        : null,
+    addressLine1: (snapshot.addressLine1 as string | null | undefined) ?? null,
+    addressLine2: (snapshot.addressLine2 as string | null | undefined) ?? null,
+    building: (snapshot.building as string | null | undefined) ?? null,
+    apartment: (snapshot.apartment as string | null | undefined) ?? null,
+    floor: (snapshot.floor as string | null | undefined) ?? null,
+    landmark: (snapshot.landmark as string | null | undefined) ?? null,
+    postalCode: (snapshot.postalCode as string | null | undefined) ?? null,
+    addressType:
+      snapshot.addressType === "RESIDENTIAL" || snapshot.addressType === "BUSINESS"
+        ? (snapshot.addressType as AddressType)
+        : null,
+  };
+}
+
 async function saveAddressToBookIfRequested(
   args: SaveAddressToBookArgs,
 ): Promise<{ id: string; addressText: string; city: string | null } | null> {
@@ -38,12 +69,18 @@ async function saveAddressToBookIfRequested(
   if (!args.snapshot) {
     throw new Error(args.missingSnapshotError);
   }
+  const sanitized = sanitizeAddressSnapshot(args.snapshot);
+  if (!sanitized) {
+    throw new Error(args.missingSnapshotError);
+  }
 
   const created = await prisma.address.create({
     data: {
-      customerEntityId: args.ownerCustomerEntityId,
+      customerEntity: {
+        connect: { id: args.ownerCustomerEntityId },
+      },
       isSaved: true,
-      ...args.snapshot,
+      ...sanitized,
     },
   });
 

@@ -1,7 +1,7 @@
 import prisma from "../../config/prismaClient";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
-import { AppRole, CustomerType } from "@prisma/client";
+import { AppRole, CustomerType, DriverType } from "@prisma/client";
 import { Prisma } from "@prisma/client";
 
 function getJwtSecret() {
@@ -26,6 +26,10 @@ function safeUser(user: any) {
     ...rest,
     warehouseId: rest.warehouseId ?? rest.warehouse?.id ?? null,
     customerEntityId: rest.customerEntityId ?? rest.customerEntity?.id ?? null,
+    driverType:
+      rest.role === AppRole.driver
+        ? (rest.driverType ?? DriverType.local)
+        : null,
   };
 }
 
@@ -169,6 +173,7 @@ export const createUserAsManager = async (args: {
   email: string;
   password: string;
   role: AppRole;
+  driverType?: "local" | "linehaul";
 
   // optional links
   warehouseId?: string | null;
@@ -261,6 +266,14 @@ export const createUserAsManager = async (args: {
       email,
       password: hashedPassword,
       role: args.role,
+      ...(args.role === AppRole.driver
+        ? {
+            driverType:
+              args.driverType === "linehaul"
+                ? DriverType.linehaul
+                : DriverType.local,
+          }
+        : {}),
     };
 
     // ✅ attach warehouse ONLY when role=warehouse and warehouseId provided
