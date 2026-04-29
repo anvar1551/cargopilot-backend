@@ -2,7 +2,15 @@ import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import { auth } from "../../middleware/auth";
 import { createRateLimitStore } from "../../config/rateLimitStore";
-import { getAnalyticsSummary, getManagerOverview, listDrivers } from "./managerController";
+import { getManagerOverview, listDrivers } from "./managerController";
+import {
+  forceInvalidateAnalyticsV2Controller,
+  getAnalyticsFinanceQueueV2Controller,
+  getAnalyticsSummaryV2Controller,
+  getAnalyticsTrendV2Controller,
+  getAnalyticsWarningsV2Controller,
+  streamAnalyticsV2Controller,
+} from "./analyticsV2Controller";
 import {
   getLiveMapSnapshotController,
   streamLiveMapController,
@@ -33,9 +41,47 @@ const liveMapStreamLimiter = rateLimit({
   legacyHeaders: false,
   passOnStoreError: true,
 });
+const analyticsStreamLimiter = rateLimit({
+  windowMs: Number(process.env.ANALYTICS_V2_STREAM_RATE_LIMIT_WINDOW_MS || 60 * 1000),
+  max: Number(process.env.ANALYTICS_V2_STREAM_RATE_LIMIT_MAX || 120),
+  store: createRateLimitStore("manager-analytics-v2-stream"),
+  standardHeaders: true,
+  legacyHeaders: false,
+  passOnStoreError: true,
+});
 
 router.get("/overview", auth(["manager"]), getManagerOverview);
-router.get("/analytics/summary", analyticsLimiter, auth(["manager"]), getAnalyticsSummary);
+router.get(
+  "/analytics/summary",
+  analyticsLimiter,
+  auth(["manager"]),
+  getAnalyticsSummaryV2Controller,
+);
+router.get("/analytics/trend", analyticsLimiter, auth(["manager"]), getAnalyticsTrendV2Controller);
+router.get(
+  "/analytics/warnings",
+  analyticsLimiter,
+  auth(["manager"]),
+  getAnalyticsWarningsV2Controller,
+);
+router.get(
+  "/analytics/finance-queue",
+  analyticsLimiter,
+  auth(["manager"]),
+  getAnalyticsFinanceQueueV2Controller,
+);
+router.get(
+  "/analytics/stream",
+  analyticsStreamLimiter,
+  auth(["manager"]),
+  streamAnalyticsV2Controller,
+);
+router.post(
+  "/analytics/refresh",
+  analyticsLimiter,
+  auth(["manager"]),
+  forceInvalidateAnalyticsV2Controller,
+);
 router.get("/drivers", auth(["manager", "warehouse"]), listDrivers);
 router.get(
   "/live-map/snapshot",

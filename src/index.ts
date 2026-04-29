@@ -25,6 +25,8 @@ import pricingRoutes from "./services/pricing/pricingRoutes";
 import { initRealtimeHub } from "./features/realtime/realtimeHub";
 import notificationRoutes from "./services/notifications/notificationRoutes";
 import { startNotificationRetentionWorker } from "./services/notifications/notificationRetention";
+import { analyticsInvalidateOnSuccess } from "./middleware/analyticsInvalidate";
+import { ensureAnalyticsInvalidationConsumer } from "./features/manager/analyticsV2Realtime";
 
 const app = express();
 app.set("trust proxy", process.env.TRUST_PROXY === "false" ? false : 1);
@@ -103,11 +105,19 @@ app.use("/api/auth", authLimiter, userRoutes);
 app.get("/api/protected", auth(["manager", "customer"]), (req, res) => {
   res.json({ msg: "You are allowed here", user: req.user });
 });
-app.use("/api/orders", orderRoutes);
+app.use(
+  "/api/orders",
+  analyticsInvalidateOnSuccess((req) =>
+    req.path.includes("/cash/") || req.path.endsWith("/cash")
+      ? "cash_mutation"
+      : "order_mutation",
+  ),
+  orderRoutes,
+);
 app.use("/api/tracking", trackingRoutes);
 app.use("/api/warehouses", warehouseRoutes);
 app.use("/api/drivers", driverRoutes);
-app.use("/api/invoices", invoiceRoutes);
+app.use("/api/invoices", analyticsInvalidateOnSuccess("invoice_mutation"), invoiceRoutes);
 app.use("/api/manager", managerRoutes);
 app.use("/api/labels", labelRoutes);
 app.use("/api/addresses", addressRoutes);
@@ -129,6 +139,7 @@ const PORT =
 const server = createServer(app);
 initRealtimeHub(server, Array.from(allowedOrigins));
 startNotificationRetentionWorker();
+ensureAnalyticsInvalidationConsumer();
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on port ${PORT}`);

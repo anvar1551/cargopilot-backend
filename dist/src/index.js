@@ -30,6 +30,8 @@ const pricingRoutes_1 = __importDefault(require("./services/pricing/pricingRoute
 const realtimeHub_1 = require("./features/realtime/realtimeHub");
 const notificationRoutes_1 = __importDefault(require("./services/notifications/notificationRoutes"));
 const notificationRetention_1 = require("./services/notifications/notificationRetention");
+const analyticsInvalidate_1 = require("./middleware/analyticsInvalidate");
+const analyticsV2Realtime_1 = require("./features/manager/analyticsV2Realtime");
 const app = (0, express_1.default)();
 app.set("trust proxy", process.env.TRUST_PROXY === "false" ? false : 1);
 void (0, redis_1.getRedisClient)();
@@ -95,11 +97,13 @@ app.use("/api/auth", authLimiter, userRoutes_1.default);
 app.get("/api/protected", (0, auth_1.auth)(["manager", "customer"]), (req, res) => {
     res.json({ msg: "You are allowed here", user: req.user });
 });
-app.use("/api/orders", orderRoutes_1.default);
+app.use("/api/orders", (0, analyticsInvalidate_1.analyticsInvalidateOnSuccess)((req) => req.path.includes("/cash/") || req.path.endsWith("/cash")
+    ? "cash_mutation"
+    : "order_mutation"), orderRoutes_1.default);
 app.use("/api/tracking", trackingRoutes_1.default);
 app.use("/api/warehouses", warehouseRoutes_1.default);
 app.use("/api/drivers", driverRoutes_1.default);
-app.use("/api/invoices", invoiceRoutes_1.default);
+app.use("/api/invoices", (0, analyticsInvalidate_1.analyticsInvalidateOnSuccess)("invoice_mutation"), invoiceRoutes_1.default);
 app.use("/api/manager", managerRoutes_1.default);
 app.use("/api/labels", labelRoutes_1.default);
 app.use("/api/addresses", addressRoutes_1.default);
@@ -117,6 +121,7 @@ const PORT = Number.isFinite(portFromEnv) && portFromEnv > 0 ? portFromEnv : 400
 const server = (0, http_1.createServer)(app);
 (0, realtimeHub_1.initRealtimeHub)(server, Array.from(allowedOrigins));
 (0, notificationRetention_1.startNotificationRetentionWorker)();
+(0, analyticsV2Realtime_1.ensureAnalyticsInvalidationConsumer)();
 server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on port ${PORT}`);
 });
