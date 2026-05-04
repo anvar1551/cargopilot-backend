@@ -247,6 +247,7 @@ model User {
   heldCashCollections CashCollection[]     @relation("CashCollectionHolderUser")
   cashCollectionActorEvents CashCollectionEvent[] @relation("CashCollectionEventActor")
   notifications UserNotification[]
+  refreshSessions UserRefreshSession[]
 }
 
 model Warehouse {
@@ -775,6 +776,31 @@ model UserNotification {
   @@index([userId, createdAt])
   @@index([userId, readAt])
   @@index([userId, type, createdAt])
+}
+
+model UserRefreshSession {
+  id String @id @db.Uuid
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  tokenHash String @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+
+  replacedBySessionId String?             @db.Uuid
+  replacedBySession   UserRefreshSession? @relation("RefreshSessionReplacement", fields: [replacedBySessionId], references: [id])
+  replacedSessions    UserRefreshSession[] @relation("RefreshSessionReplacement")
+
+  userAgent String?
+  ipAddress String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([expiresAt])
+  @@index([userId, revokedAt, expiresAt])
 }
 
 model Counter {

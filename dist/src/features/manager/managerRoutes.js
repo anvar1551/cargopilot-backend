@@ -10,6 +10,7 @@ const rateLimitStore_1 = require("../../config/rateLimitStore");
 const managerController_1 = require("./managerController");
 const analyticsV2Controller_1 = require("./analyticsV2Controller");
 const liveMapController_1 = require("../liveMap/liveMapController");
+const opsMetricsController_1 = require("./opsMetricsController");
 const router = (0, express_1.Router)();
 const analyticsLimiter = (0, express_rate_limit_1.default)({
     windowMs: Number(process.env.ANALYTICS_RATE_LIMIT_WINDOW_MS || 60 * 1000),
@@ -44,6 +45,7 @@ const analyticsStreamLimiter = (0, express_rate_limit_1.default)({
     passOnStoreError: true,
 });
 router.get("/overview", (0, auth_1.auth)(["manager"]), managerController_1.getManagerOverview);
+router.get("/ops/metrics", (0, auth_1.auth)(["manager"]), opsMetricsController_1.getManagerOpsMetricsController);
 router.get("/analytics/summary", analyticsLimiter, (0, auth_1.auth)(["manager"]), analyticsV2Controller_1.getAnalyticsSummaryV2Controller);
 router.get("/analytics/trend", analyticsLimiter, (0, auth_1.auth)(["manager"]), analyticsV2Controller_1.getAnalyticsTrendV2Controller);
 router.get("/analytics/warnings", analyticsLimiter, (0, auth_1.auth)(["manager"]), analyticsV2Controller_1.getAnalyticsWarningsV2Controller);

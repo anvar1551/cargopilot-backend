@@ -2,6 +2,8 @@ import { Router } from "express";
 import {
   register,
   login,
+  refreshSession,
+  logoutSession,
   changePassword,
   createByManager,
   listUsersController,
@@ -14,6 +16,8 @@ const router = Router();
 
 router.post("/register", register);
 router.post("/login", login);
+router.post("/refresh", refreshSession);
+router.post("/logout", logoutSession);
 router.post("/change-password", auth(), changePassword);
 router.post("/", auth([AppRole.manager]), createByManager);
 router.get("/", auth([AppRole.manager]), listUsersController);

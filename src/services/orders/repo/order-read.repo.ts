@@ -35,6 +35,46 @@ type OrderCursor = {
   createdAt: Date;
 };
 
+const orderListCache = new Map<string, { expiresAt: number; payload: OrderListResult }>();
+const orderListCacheMaxEntries = Math.max(
+  50,
+  Number(process.env.ORDER_LIST_CACHE_MAX_ENTRIES ?? 500),
+);
+const orderListCacheGc = setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of orderListCache.entries()) {
+    if (now >= entry.expiresAt) orderListCache.delete(key);
+  }
+}, 60_000);
+orderListCacheGc.unref();
+
+function getOrderListCacheTtlMs() {
+  return Math.min(
+    Math.max(Number(process.env.ORDER_LIST_CACHE_TTL_MS ?? 5000), 500),
+    60_000,
+  );
+}
+
+function setOrderListCacheEntry(
+  key: string,
+  payload: OrderListResult,
+  ttlMs: number,
+) {
+  if (orderListCache.has(key)) {
+    orderListCache.delete(key);
+  }
+  orderListCache.set(key, {
+    expiresAt: Date.now() + ttlMs,
+    payload,
+  });
+
+  while (orderListCache.size > orderListCacheMaxEntries) {
+    const oldestKey = orderListCache.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    orderListCache.delete(oldestKey);
+  }
+}
+
 const ORDER_STATUS_VALUES = new Set<string>(Object.values(OrderStatus));
 
 function encodeCursor(value: OrderCursor) {
@@ -110,6 +150,20 @@ const orderListSelect = {
     },
   },
 } satisfies Prisma.OrderSelect;
+
+type OrderListRow = Prisma.OrderGetPayload<{ select: typeof orderListSelect }>;
+
+type OrderListResult = {
+  orders: OrderListRow[];
+  total: number;
+  page: number;
+  limit: number;
+  pageCount: number;
+  hasMore: boolean;
+  nextCursor: string | null;
+  mode: "page" | "cursor";
+  totalExact: boolean;
+};
 
 const orderExportSelect = {
   id: true,
@@ -510,12 +564,28 @@ export const listOrders = async (
   customerEntityId?: string | null,
   warehouseId?: string | null,
   params?: ListOrdersParams,
-) => {
+): Promise<OrderListResult> => {
   const page = Math.max(1, params?.page ?? 1);
   const limit = Math.min(Math.max(params?.limit ?? 50, 1), 200);
   const mode: ListMode = params?.mode === "cursor" ? "cursor" : "page";
   const cursor = decodeCursor(params?.cursor);
   const skip = (page - 1) * limit;
+
+  const cacheKey = JSON.stringify({
+    userId,
+    role,
+    customerEntityId,
+    warehouseId,
+    params,
+  });
+  const cacheEntry = orderListCache.get(cacheKey);
+  if (cacheEntry && Date.now() < cacheEntry.expiresAt) {
+    return cacheEntry.payload;
+  }
+  if (cacheEntry) {
+    orderListCache.delete(cacheKey);
+  }
+
   const where = buildOrderWhere(
     userId,
     role,
@@ -551,8 +621,7 @@ export const listOrders = async (
     const hasMore = rows.length > limit;
     const orders = hasMore ? rows.slice(0, limit) : rows;
     const tail = orders[orders.length - 1];
-
-    return {
+    const result: OrderListResult = {
       orders,
       total: orders.length,
       page: 1,
@@ -563,9 +632,13 @@ export const listOrders = async (
         hasMore && tail
           ? encodeCursor({ id: tail.id, createdAt: tail.createdAt })
           : null,
-      mode: "cursor" as const,
-      totalExact: false as const,
+      mode: "cursor",
+      totalExact: false,
     };
+
+    setOrderListCacheEntry(cacheKey, result, getOrderListCacheTtlMs());
+
+    return result;
   }
 
   const [orders, total] = await prisma.$transaction([
@@ -580,8 +653,7 @@ export const listOrders = async (
   ]);
 
   const pageCount = Math.ceil(total / limit);
-
-  return {
+  const result: OrderListResult = {
     orders,
     total,
     page,
@@ -589,9 +661,13 @@ export const listOrders = async (
     pageCount,
     hasMore: skip + orders.length < total,
     nextCursor: null,
-    mode: "page" as const,
-    totalExact: true as const,
+    mode: "page",
+    totalExact: true,
   };
+
+  setOrderListCacheEntry(cacheKey, result, getOrderListCacheTtlMs());
+
+  return result;
 };
 
 /** Returns detailed rows for CSV export using the same filters as the manager list. */

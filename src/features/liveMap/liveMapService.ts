@@ -3,6 +3,7 @@ import { z } from "zod";
 import prisma from "../../config/prismaClient";
 import {
   publishLiveMapEvent,
+  readDriverLocation,
   readDriverLocations,
   readDriverPresences,
   touchDriverPresenceHeartbeat,
@@ -14,6 +15,7 @@ import type {
   DriverPresenceRecord,
   LiveMapActor,
   LiveMapDriverStatus,
+  LiveMapViewport,
   ManagerLiveMapDriver,
   ManagerLiveMapOrder,
   ManagerLiveMapSnapshot,
@@ -37,6 +39,71 @@ const DRIVER_STATUS_STALE_SEC = Math.max(
   DRIVER_STATUS_IDLE_SEC,
   Math.min(Math.max(Number(process.env.LIVE_MAP_DRIVER_STALE_SEC || 600), 90), 60 * 60 * 24),
 );
+const LIVE_MAP_DELTA_MIN_DISTANCE_M = Math.max(
+  1,
+  Number(process.env.LIVE_MAP_DELTA_MIN_DISTANCE_M || 25),
+);
+const LIVE_MAP_DELTA_MAX_INTERVAL_SEC = Math.max(
+  1,
+  Number(process.env.LIVE_MAP_DELTA_MAX_INTERVAL_SEC || 10),
+);
+const DRIVER_PROFILE_CACHE_TTL_MS = Math.min(
+  Math.max(Number(process.env.LIVE_MAP_DRIVER_PROFILE_CACHE_TTL_MS || 60_000), 5_000),
+  10 * 60_000,
+);
+
+type DriverProfile = {
+  id: string;
+  role: AppRole;
+  warehouseId: string | null;
+  liveLocationEnabled: boolean;
+  liveLocationUpdatedAt: Date;
+};
+
+const driverProfileCache = new Map<string, { expiresAt: number; profile: DriverProfile }>();
+const driverProfileCacheGcTimer = setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of driverProfileCache.entries()) {
+    if (now >= entry.expiresAt) driverProfileCache.delete(key);
+  }
+}, 60_000);
+driverProfileCacheGcTimer.unref();
+
+function readCachedDriverProfile(driverId: string) {
+  const hit = driverProfileCache.get(driverId);
+  if (!hit) return null;
+  if (Date.now() >= hit.expiresAt) {
+    driverProfileCache.delete(driverId);
+    return null;
+  }
+  return hit.profile;
+}
+
+function writeCachedDriverProfile(profile: DriverProfile) {
+  driverProfileCache.set(profile.id, {
+    profile,
+    expiresAt: Date.now() + DRIVER_PROFILE_CACHE_TTL_MS,
+  });
+}
+
+async function getDriverProfile(driverId: string) {
+  const cached = readCachedDriverProfile(driverId);
+  if (cached) return cached;
+
+  const profile = await prisma.user.findUnique({
+    where: { id: driverId },
+    select: {
+      id: true,
+      role: true,
+      warehouseId: true,
+      liveLocationEnabled: true,
+      liveLocationUpdatedAt: true,
+    },
+  });
+  if (!profile) return null;
+  writeCachedDriverProfile(profile);
+  return profile;
+}
 
 const liveMapOrderStatuses: OrderStatus[] = [
   OrderStatus.pending,
@@ -126,6 +193,52 @@ function deriveDriverStatus(lastSeenAtIso: string | null | undefined, liveEnable
   return "offline";
 }
 
+function isInViewport(lat: number, lng: number, viewport?: LiveMapViewport | null) {
+  if (!viewport) return true;
+  return (
+    lat >= viewport.minLat &&
+    lat <= viewport.maxLat &&
+    lng >= viewport.minLng &&
+    lng <= viewport.maxLng
+  );
+}
+
+function haversineMeters(aLat: number, aLng: number, bLat: number, bLng: number) {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const earthRadiusM = 6371000;
+  const dLat = toRad(bLat - aLat);
+  const dLng = toRad(bLng - aLng);
+  const lat1 = toRad(aLat);
+  const lat2 = toRad(bLat);
+  const h =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  return 2 * earthRadiusM * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+}
+
+function shouldBroadcastLocationDelta(args: {
+  previous: DriverLocationRecord | null;
+  current: DriverLocationRecord;
+}) {
+  const { previous, current } = args;
+  if (!previous) return true;
+  if (previous.orderId !== current.orderId) return true;
+  if (previous.warehouseId !== current.warehouseId) return true;
+
+  const prevTs = new Date(previous.recordedAt).getTime();
+  const nextTs = new Date(current.recordedAt).getTime();
+  const elapsedSec =
+    Number.isFinite(prevTs) && Number.isFinite(nextTs)
+      ? Math.max(0, (nextTs - prevTs) / 1000)
+      : LIVE_MAP_DELTA_MAX_INTERVAL_SEC;
+  if (elapsedSec >= LIVE_MAP_DELTA_MAX_INTERVAL_SEC) return true;
+
+  const movedMeters = haversineMeters(previous.lat, previous.lng, current.lat, current.lng);
+  if (movedMeters >= LIVE_MAP_DELTA_MIN_DISTANCE_M) return true;
+
+  return false;
+}
+
 function mapOrderRecord(order: {
   id: string;
   orderNumber: string;
@@ -170,7 +283,12 @@ function resolveTargetDriverId(args: {
   return actor.userId;
 }
 
-export async function getLiveMapSnapshot(actor: LiveMapActor): Promise<ManagerLiveMapSnapshot> {
+export async function getLiveMapSnapshot(args: {
+  actor: LiveMapActor;
+  viewport?: LiveMapViewport | null;
+}): Promise<ManagerLiveMapSnapshot> {
+  const actor = args.actor;
+  const viewport = args.viewport ?? null;
   const maxOrders = Math.min(
     Math.max(Number(process.env.LIVE_MAP_SNAPSHOT_ORDER_LIMIT || 300), 20),
     1000,
@@ -392,11 +510,38 @@ export async function getLiveMapSnapshot(actor: LiveMapActor): Promise<ManagerLi
     };
   });
 
+  const viewportFilteredOrders = viewport
+    ? orders.filter((order) => {
+        const pickupVisible =
+          order.pickupLat != null &&
+          order.pickupLng != null &&
+          isInViewport(order.pickupLat, order.pickupLng, viewport);
+        const dropoffVisible =
+          order.dropoffLat != null &&
+          order.dropoffLng != null &&
+          isInViewport(order.dropoffLat, order.dropoffLng, viewport);
+        return pickupVisible || dropoffVisible;
+      })
+    : orders;
+
+  const viewportFilteredDrivers = viewport
+    ? drivers.filter((driver) => isInViewport(driver.lat, driver.lng, viewport))
+    : drivers;
+
+  const viewportFilteredWarehouses = viewport
+    ? warehouses.filter(
+        (warehouse) =>
+          warehouse.lat != null &&
+          warehouse.lng != null &&
+          isInViewport(warehouse.lat, warehouse.lng, viewport),
+      )
+    : warehouses;
+
   return {
     generatedAt: new Date().toISOString(),
-    drivers,
-    orders,
-    warehouses,
+    drivers: viewportFilteredDrivers,
+    orders: viewportFilteredOrders,
+    warehouses: viewportFilteredWarehouses,
     isMock: false,
   };
 }
@@ -421,14 +566,12 @@ export async function ingestDriverLocation(args: {
     throw new Error("Invalid recordedAt timestamp");
   }
 
-  const targetDriver = await prisma.user.findUnique({
-    where: { id: targetDriverId },
-    select: { id: true, role: true, warehouseId: true, liveLocationEnabled: true },
-  });
+  const targetDriver = await getDriverProfile(targetDriverId);
   if (!targetDriver || targetDriver.role !== AppRole.driver) {
     throw new Error("Target driver not found");
   }
 
+  const previousLocation = await readDriverLocation(targetDriver.id);
   const location: DriverLocationRecord = {
     driverId: targetDriver.id,
     warehouseId: targetDriver.warehouseId ?? null,
@@ -448,22 +591,31 @@ export async function ingestDriverLocation(args: {
   });
   const status = deriveDriverStatus(presence.heartbeatAt ?? location.recordedAt, targetDriver.liveLocationEnabled);
 
-  await publishLiveMapEvent({
-    type: "driver_location_upsert",
-    at: new Date().toISOString(),
-    payload: {
-      ...location,
-      status,
-      liveEnabled: targetDriver.liveLocationEnabled,
-      heartbeatAt: presence.heartbeatAt,
-    },
+  const shouldBroadcast = shouldBroadcastLocationDelta({
+    previous: previousLocation,
+    current: location,
   });
+
+  if (shouldBroadcast) {
+    await publishLiveMapEvent({
+      type: "driver_location_upsert",
+      at: new Date().toISOString(),
+      payload: {
+        ...location,
+        status,
+        liveEnabled: targetDriver.liveLocationEnabled,
+        heartbeatAt: presence.heartbeatAt,
+        seq: Date.now(),
+      },
+    });
+  }
 
   return {
     ok: true,
     location,
     status,
     liveEnabled: targetDriver.liveLocationEnabled,
+    broadcasted: shouldBroadcast,
   };
 }
 
@@ -477,15 +629,7 @@ export async function getDriverPresence(args: {
     requestedDriverId: parsedQuery.driverId,
   });
 
-  const targetDriver = await prisma.user.findUnique({
-    where: { id: targetDriverId },
-    select: {
-      id: true,
-      role: true,
-      liveLocationEnabled: true,
-      liveLocationUpdatedAt: true,
-    },
-  });
+  const targetDriver = await getDriverProfile(targetDriverId);
   if (!targetDriver || targetDriver.role !== AppRole.driver) {
     throw new Error("Target driver not found");
   }
@@ -517,13 +661,7 @@ export async function setDriverPresence(args: {
     requestedDriverId: parsed.driverId,
   });
 
-  const targetDriver = await prisma.user.findUnique({
-    where: { id: targetDriverId },
-    select: {
-      id: true,
-      role: true,
-    },
-  });
+  const targetDriver = await getDriverProfile(targetDriverId);
   if (!targetDriver || targetDriver.role !== AppRole.driver) {
     throw new Error("Target driver not found");
   }
@@ -537,10 +675,13 @@ export async function setDriverPresence(args: {
     },
     select: {
       id: true,
+      role: true,
+      warehouseId: true,
       liveLocationEnabled: true,
       liveLocationUpdatedAt: true,
     },
   });
+  writeCachedDriverProfile(updatedDriver);
 
   const presences = await readDriverPresences([updatedDriver.id]);
   const currentPresence = presences.get(updatedDriver.id) ?? null;
@@ -578,14 +719,7 @@ export async function heartbeatDriverPresence(args: {
     requestedDriverId: parsed.driverId,
   });
 
-  const targetDriver = await prisma.user.findUnique({
-    where: { id: targetDriverId },
-    select: {
-      id: true,
-      role: true,
-      liveLocationEnabled: true,
-    },
-  });
+  const targetDriver = await getDriverProfile(targetDriverId);
   if (!targetDriver || targetDriver.role !== AppRole.driver) {
     throw new Error("Target driver not found");
   }

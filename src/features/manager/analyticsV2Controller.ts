@@ -9,6 +9,12 @@ import {
   publishAnalyticsInvalidation,
   subscribeAnalyticsInvalidation,
 } from "./analyticsV2Realtime";
+import { publishCargoPilotDomainEvent } from "./analyticsEvents";
+import {
+  recordAnalyticsRequest,
+  recordSseConnected,
+  recordSseDisconnected,
+} from "../observability/opsMetrics";
 
 function asStringArray(value: unknown): string[] {
   if (!value) return [];
@@ -58,6 +64,7 @@ function getScope(req: Request) {
 }
 
 export async function getAnalyticsSummaryV2Controller(req: Request, res: Response) {
+  const startedAt = Date.now();
   try {
     const rangeDays = Number(req.query.rangeDays);
     const staleHours = Number(req.query.staleHours);
@@ -67,13 +74,29 @@ export async function getAnalyticsSummaryV2Controller(req: Request, res: Respons
       scope: getScope(req),
     });
     res.setHeader("X-Analytics-V2-Cache", result.cacheHit ? "HIT" : "MISS");
+    const durationMs = Date.now() - startedAt;
+    res.setHeader("X-Analytics-V2-Time-Ms", String(durationMs));
+    recordAnalyticsRequest({
+      endpoint: "analytics.summary",
+      cacheHit: result.cacheHit,
+      durationMs,
+    });
     return res.json(result.payload);
   } catch (err: any) {
+    const durationMs = Date.now() - startedAt;
+    res.setHeader("X-Analytics-V2-Time-Ms", String(durationMs));
+    recordAnalyticsRequest({
+      endpoint: "analytics.summary",
+      cacheHit: false,
+      durationMs,
+      isError: true,
+    });
     return res.status(500).json({ error: err?.message || "Failed to load summary" });
   }
 }
 
 export async function getAnalyticsTrendV2Controller(req: Request, res: Response) {
+  const startedAt = Date.now();
   try {
     const rangeDays = Number(req.query.rangeDays);
     const result = await getAnalyticsTrendV2({
@@ -81,13 +104,29 @@ export async function getAnalyticsTrendV2Controller(req: Request, res: Response)
       scope: getScope(req),
     });
     res.setHeader("X-Analytics-V2-Cache", result.cacheHit ? "HIT" : "MISS");
+    const durationMs = Date.now() - startedAt;
+    res.setHeader("X-Analytics-V2-Time-Ms", String(durationMs));
+    recordAnalyticsRequest({
+      endpoint: "analytics.trend",
+      cacheHit: result.cacheHit,
+      durationMs,
+    });
     return res.json(result.payload);
   } catch (err: any) {
+    const durationMs = Date.now() - startedAt;
+    res.setHeader("X-Analytics-V2-Time-Ms", String(durationMs));
+    recordAnalyticsRequest({
+      endpoint: "analytics.trend",
+      cacheHit: false,
+      durationMs,
+      isError: true,
+    });
     return res.status(500).json({ error: err?.message || "Failed to load trend" });
   }
 }
 
 export async function getAnalyticsWarningsV2Controller(req: Request, res: Response) {
+  const startedAt = Date.now();
   try {
     const rangeDays = Number(req.query.rangeDays);
     const staleHours = Number(req.query.staleHours);
@@ -97,13 +136,29 @@ export async function getAnalyticsWarningsV2Controller(req: Request, res: Respon
       scope: getScope(req),
     });
     res.setHeader("X-Analytics-V2-Cache", result.cacheHit ? "HIT" : "MISS");
+    const durationMs = Date.now() - startedAt;
+    res.setHeader("X-Analytics-V2-Time-Ms", String(durationMs));
+    recordAnalyticsRequest({
+      endpoint: "analytics.warnings",
+      cacheHit: result.cacheHit,
+      durationMs,
+    });
     return res.json(result.payload);
   } catch (err: any) {
+    const durationMs = Date.now() - startedAt;
+    res.setHeader("X-Analytics-V2-Time-Ms", String(durationMs));
+    recordAnalyticsRequest({
+      endpoint: "analytics.warnings",
+      cacheHit: false,
+      durationMs,
+      isError: true,
+    });
     return res.status(500).json({ error: err?.message || "Failed to load warnings" });
   }
 }
 
 export async function getAnalyticsFinanceQueueV2Controller(req: Request, res: Response) {
+  const startedAt = Date.now();
   try {
     const queuePage = Number(req.query.queuePage);
     const queuePageSize = Number(req.query.queuePageSize);
@@ -122,8 +177,23 @@ export async function getAnalyticsFinanceQueueV2Controller(req: Request, res: Re
       scope: getScope(req),
     });
     res.setHeader("X-Analytics-V2-Cache", result.cacheHit ? "HIT" : "MISS");
+    const durationMs = Date.now() - startedAt;
+    res.setHeader("X-Analytics-V2-Time-Ms", String(durationMs));
+    recordAnalyticsRequest({
+      endpoint: "analytics.finance-queue",
+      cacheHit: result.cacheHit,
+      durationMs,
+    });
     return res.json(result.payload);
   } catch (err: any) {
+    const durationMs = Date.now() - startedAt;
+    res.setHeader("X-Analytics-V2-Time-Ms", String(durationMs));
+    recordAnalyticsRequest({
+      endpoint: "analytics.finance-queue",
+      cacheHit: false,
+      durationMs,
+      isError: true,
+    });
     return res.status(500).json({ error: err?.message || "Failed to load finance queue" });
   }
 }
@@ -131,6 +201,12 @@ export async function getAnalyticsFinanceQueueV2Controller(req: Request, res: Re
 export async function forceInvalidateAnalyticsV2Controller(_req: Request, res: Response) {
   try {
     await publishAnalyticsInvalidation("manual_refresh");
+    await publishCargoPilotDomainEvent({
+      type: "manual_refresh",
+      tenantScope: "role:manager",
+      entityId: null,
+      payload: { source: "manager.analytics.refresh" },
+    });
     return res.json({ ok: true });
   } catch (err: any) {
     return res.status(500).json({ error: err?.message || "Failed to refresh analytics" });
@@ -144,6 +220,8 @@ export async function streamAnalyticsV2Controller(req: Request, res: Response) {
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders?.();
 
+  const clientKey = `${req.user?.id || "anon"}:${req.ip || "ip"}`;
+  recordSseConnected({ stream: "analytics", clientKey });
   let closed = false;
 
   const send = (event: string, payload: unknown) => {
@@ -158,34 +236,43 @@ export async function streamAnalyticsV2Controller(req: Request, res: Response) {
     10_000,
     Number(process.env.ANALYTICS_V2_STREAM_HEARTBEAT_MS || 25_000),
   );
-  const refreshEveryMs = Math.max(
-    30_000,
-    Number(process.env.ANALYTICS_V2_STREAM_REFRESH_MS || 60_000),
-  );
+  const configuredRefreshMs = Number(process.env.ANALYTICS_V2_STREAM_REFRESH_MS || 0);
+  const refreshEveryMs = Number.isFinite(configuredRefreshMs) && configuredRefreshMs > 0
+    ? Math.max(30_000, configuredRefreshMs)
+    : 0;
 
   const heartbeat = setInterval(() => {
     if (!closed) res.write(`: ping ${Date.now()}\n\n`);
   }, heartbeatMs);
 
-  const scheduledRefresh = setInterval(() => {
-    send("analytics-refresh", {
-      at: new Date().toISOString(),
-      reason: "scheduled",
-    });
-  }, refreshEveryMs);
+  const scheduledRefresh =
+    refreshEveryMs > 0
+      ? setInterval(() => {
+          send("analytics-refresh", {
+            at: new Date().toISOString(),
+            reason: "scheduled",
+            scope: "global",
+            keys: ["summary", "trend"],
+            source: "api",
+          });
+        }, refreshEveryMs)
+      : null;
 
   const unsubscribe = subscribeAnalyticsInvalidation((event) => {
     send("analytics-refresh", {
       at: event.at,
       reason: event.reason,
+      scope: event.scope,
+      keys: event.keys,
+      source: event.source || "api",
     });
   });
 
   req.on("close", () => {
     closed = true;
+    recordSseDisconnected("analytics");
     clearInterval(heartbeat);
-    clearInterval(scheduledRefresh);
+    if (scheduledRefresh) clearInterval(scheduledRefresh);
     unsubscribe();
   });
 }
-

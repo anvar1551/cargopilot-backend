@@ -79,6 +79,7 @@ export type LiveMapEvent =
         status?: LiveMapDriverStatus;
         liveEnabled?: boolean;
         heartbeatAt?: string | null;
+        seq?: number;
       };
     }
   | {
@@ -98,4 +99,11 @@ export type LiveMapEvent =
 export type LiveMapActor = {
   role: AppRole;
   warehouseId: string | null;
+};
+
+export type LiveMapViewport = {
+  minLat: number;
+  minLng: number;
+  maxLat: number;
+  maxLng: number;
 };

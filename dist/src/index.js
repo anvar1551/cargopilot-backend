@@ -32,6 +32,8 @@ const notificationRoutes_1 = __importDefault(require("./services/notifications/n
 const notificationRetention_1 = require("./services/notifications/notificationRetention");
 const analyticsInvalidate_1 = require("./middleware/analyticsInvalidate");
 const analyticsV2Realtime_1 = require("./features/manager/analyticsV2Realtime");
+const analytics_worker_1 = require("./workers/analytics.worker");
+const analyticsWarmup_1 = require("./features/manager/analyticsWarmup");
 const app = (0, express_1.default)();
 app.set("trust proxy", process.env.TRUST_PROXY === "false" ? false : 1);
 void (0, redis_1.getRedisClient)();
@@ -122,6 +124,10 @@ const server = (0, http_1.createServer)(app);
 (0, realtimeHub_1.initRealtimeHub)(server, Array.from(allowedOrigins));
 (0, notificationRetention_1.startNotificationRetentionWorker)();
 (0, analyticsV2Realtime_1.ensureAnalyticsInvalidationConsumer)();
+(0, analyticsWarmup_1.startAnalyticsWarmupLoop)();
+if (process.env.ANALYTICS_WORKER_IN_PROCESS === "true") {
+    void (0, analytics_worker_1.startAnalyticsWorker)({ leaderLock: true });
+}
 server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on port ${PORT}`);
 });

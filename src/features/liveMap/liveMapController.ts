@@ -4,6 +4,7 @@ import type { Request, Response } from "express";
 import { ZodError } from "zod";
 import { getRedisClient, getRedisPrefix } from "../../config/redis";
 import { subscribeLiveMapEvents } from "./liveMapStore";
+import { recordSseConnected, recordSseDisconnected } from "../observability/opsMetrics";
 import {
   getDriverPresence,
   getLiveMapSnapshot,
@@ -11,7 +12,7 @@ import {
   ingestDriverLocation,
   setDriverPresence,
 } from "./liveMapService";
-import type { ManagerLiveMapSnapshot } from "./liveMap.types";
+import type { LiveMapViewport, ManagerLiveMapSnapshot } from "./liveMap.types";
 
 function getActor(req: Request) {
   const role = req.user?.role;
@@ -58,6 +59,28 @@ liveMapCacheGcTimer.unref();
 
 function getSnapshotCacheKey(role: AppRole, warehouseId: string | null) {
   return `${role}:${warehouseId ?? "all"}`;
+}
+
+function parseViewportFromRequest(req: Request): LiveMapViewport | null {
+  const minLat = Number(req.query.minLat);
+  const minLng = Number(req.query.minLng);
+  const maxLat = Number(req.query.maxLat);
+  const maxLng = Number(req.query.maxLng);
+  const values = [minLat, minLng, maxLat, maxLng];
+  if (values.some((value) => !Number.isFinite(value))) return null;
+  if (minLat < -90 || maxLat > 90 || minLng < -180 || maxLng > 180) return null;
+  if (minLat >= maxLat || minLng >= maxLng) return null;
+  return { minLat, minLng, maxLat, maxLng };
+}
+
+function isInViewport(lat: number, lng: number, viewport?: LiveMapViewport | null) {
+  if (!viewport) return true;
+  return (
+    lat >= viewport.minLat &&
+    lat <= viewport.maxLat &&
+    lng >= viewport.minLng &&
+    lng <= viewport.maxLng
+  );
 }
 
 function getSnapshotRedisKey(rawKey: string) {
@@ -107,9 +130,15 @@ export async function getLiveMapSnapshotController(req: Request, res: Response) 
   try {
     const actor = getActor(req);
     if (!actor) return res.status(401).json({ error: "Unauthorized" });
-    const cacheKey = getSnapshotCacheKey(actor.role, actor.warehouseId);
+    const viewport = parseViewportFromRequest(req);
+    const viewportKey = viewport
+      ? `:${viewport.minLat.toFixed(4)},${viewport.minLng.toFixed(4)},${viewport.maxLat.toFixed(
+          4,
+        )},${viewport.maxLng.toFixed(4)}`
+      : ":all";
+    const cacheKey = `${getSnapshotCacheKey(actor.role, actor.warehouseId)}${viewportKey}`;
     const cacheTtlMs = Math.min(
-      Math.max(Number(process.env.LIVE_MAP_SNAPSHOT_CACHE_TTL_MS || 5000), 1000),
+      Math.max(Number(process.env.LIVE_MAP_SNAPSHOT_CACHE_TTL_MS || 20_000), 1_000),
       60_000,
     );
 
@@ -121,8 +150,11 @@ export async function getLiveMapSnapshotController(req: Request, res: Response) 
     }
 
     const snapshot = await getLiveMapSnapshot({
-      role: actor.role,
-      warehouseId: actor.warehouseId,
+      actor: {
+        role: actor.role,
+        warehouseId: actor.warehouseId,
+      },
+      viewport,
     });
 
     await writeSnapshotCache(cacheKey, snapshot, cacheTtlMs);
@@ -229,11 +261,14 @@ export async function heartbeatDriverPresenceController(req: Request, res: Respo
 export async function streamLiveMapController(req: Request, res: Response) {
   const actor = getActor(req);
   if (!actor) return res.status(401).json({ error: "Unauthorized" });
+  const viewport = parseViewportFromRequest(req);
+  const clientKey = `${req.user?.id || "anon"}:${req.ip || "ip"}`;
 
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders?.();
+  recordSseConnected({ stream: "live-map", clientKey });
 
   res.write(`event: ready\ndata: ${JSON.stringify({ connectedAt: new Date().toISOString() })}\n\n`);
 
@@ -250,10 +285,14 @@ export async function streamLiveMapController(req: Request, res: Response) {
         if (eventWarehouseId && eventWarehouseId !== actor.warehouseId) return;
       }
     }
+    if (viewport && event.type === "driver_location_upsert") {
+      if (!isInViewport(event.payload.lat, event.payload.lng, viewport)) return;
+    }
     res.write(`event: live-map\ndata: ${JSON.stringify(event)}\n\n`);
   });
 
   req.on("close", () => {
+    recordSseDisconnected("live-map");
     clearInterval(heartbeat);
     unsubscribe();
     res.end();

@@ -87,6 +87,27 @@ services:
       - labels_data:/app/labels
       - invoices_data:/app/invoices
 
+  analytics-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: prod
+    container_name: cargopilot-analytics-worker
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    env_file:
+      - ${DOCKER_ENV_FILE:-.env.docker}
+    environment:
+      NODE_ENV: production
+      RUN_PRISMA_MIGRATIONS: "false"
+    command: ["node", "dist/src/workers/analytics.worker.js"]
+
 volumes:
   redis_data:
   postgres_data:

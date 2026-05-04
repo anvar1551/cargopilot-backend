@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.deleteByManager = exports.createByManager = exports.changePassword = exports.login = exports.register = exports.listUsersController = void 0;
+exports.deleteByManager = exports.createByManager = exports.changePassword = exports.logoutSession = exports.refreshSession = exports.login = exports.register = exports.listUsersController = void 0;
 const zod_1 = require("zod");
 const client_1 = require("@prisma/client");
 const userRepo_1 = require("./userRepo");
@@ -22,6 +22,14 @@ function isDatabaseUnavailableError(err) {
     return (message.includes("timed out") ||
         message.includes("can't reach database server") ||
         message.includes("cannot reach database server"));
+}
+function isMissingRefreshSessionTableError(err) {
+    const code = String(err?.code ?? "").toUpperCase();
+    const message = String(err?.message ?? "").toLowerCase();
+    if (code === "P2021")
+        return true;
+    return (message.includes("userrefreshsession") &&
+        (message.includes("does not exist") || message.includes("table")));
 }
 const listUsersController = async (req, res) => {
     try {
@@ -62,11 +70,18 @@ const register = async (req, res) => {
             customerType: parsedCustomerType,
             companyName: companyName ?? null,
             phone: phone ?? null,
+            userAgent: req.headers["user-agent"] ?? null,
+            ipAddress: extractClientIp(req),
         });
         return res.status(201).json(result);
     }
     catch (err) {
         console.error("register error:", err?.message || err);
+        if (isMissingRefreshSessionTableError(err)) {
+            return res.status(503).json({
+                error: "Auth session storage is not initialized. Run Prisma migrations and restart backend.",
+            });
+        }
         const msg = err?.message || "Registration failed";
         const code = msg.includes("JWT_SECRET not configured") ? 500 : 400;
         return res.status(code).json({ error: msg });
@@ -76,11 +91,19 @@ exports.register = register;
 const login = async (req, res) => {
     try {
         const { email, password } = req.body;
-        const result = await (0, userRepo_1.loginUser)(email, password);
+        const result = await (0, userRepo_1.loginUser)(email, password, {
+            userAgent: req.headers["user-agent"] ?? null,
+            ipAddress: extractClientIp(req),
+        });
         return res.json(result);
     }
     catch (err) {
         console.error("login error:", err?.message || err);
+        if (isMissingRefreshSessionTableError(err)) {
+            return res.status(503).json({
+                error: "Auth session storage is not initialized. Run Prisma migrations and restart backend.",
+            });
+        }
         if (isDatabaseUnavailableError(err)) {
             return res.status(503).json({
                 error: "Database is temporarily unreachable. Please try another network or try again later.",
@@ -97,6 +120,58 @@ const login = async (req, res) => {
     }
 };
 exports.login = login;
+const refreshSchema = zod_1.z.object({
+    refreshToken: zod_1.z.string().min(20, "Refresh token is required"),
+});
+const refreshSession = async (req, res) => {
+    try {
+        const dto = refreshSchema.parse(req.body ?? {});
+        const result = await (0, userRepo_1.refreshUserSession)({
+            refreshToken: dto.refreshToken,
+            userAgent: req.headers["user-agent"] ?? null,
+            ipAddress: extractClientIp(req),
+        });
+        return res.json(result);
+    }
+    catch (err) {
+        const message = err?.message ?? "Failed to refresh session";
+        const status = message.includes("refresh token") ||
+            message.includes("token")
+            ? 401
+            : err instanceof zod_1.z.ZodError
+                ? 400
+                : 400;
+        return res.status(status).json({ error: message });
+    }
+};
+exports.refreshSession = refreshSession;
+const logoutSchema = zod_1.z.object({
+    refreshToken: zod_1.z.string().min(20, "Refresh token is required"),
+});
+const logoutSession = async (req, res) => {
+    try {
+        const dto = logoutSchema.parse(req.body ?? {});
+        await (0, userRepo_1.revokeRefreshSession)(dto.refreshToken);
+        return res.json({ ok: true });
+    }
+    catch (err) {
+        const message = err?.message ?? "Failed to logout";
+        const status = err instanceof zod_1.z.ZodError ? 400 : 400;
+        return res.status(status).json({ error: message });
+    }
+};
+exports.logoutSession = logoutSession;
+function extractClientIp(req) {
+    const forwarded = req.headers["x-forwarded-for"];
+    if (typeof forwarded === "string" && forwarded.trim()) {
+        return forwarded.split(",")[0]?.trim() || null;
+    }
+    if (Array.isArray(forwarded) && forwarded.length > 0) {
+        return String(forwarded[0] ?? "").trim() || null;
+    }
+    const remote = req.socket?.remoteAddress;
+    return remote ? String(remote) : null;
+}
 const changePasswordSchema = zod_1.z
     .object({
     currentPassword: zod_1.z.string().min(1, "Current password is required"),

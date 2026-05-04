@@ -14,6 +14,19 @@ const cleanupTimer = setInterval(() => {
     }
 }, 60000);
 cleanupTimer.unref();
+async function deleteByPatternScan(pattern) {
+    const redis = await (0, redis_1.getRedisClient)();
+    if (!redis)
+        return;
+    let cursor = "0";
+    do {
+        const [nextCursor, keys] = (await redis.scan(cursor, "MATCH", pattern, "COUNT", 200));
+        cursor = nextCursor;
+        if (Array.isArray(keys) && keys.length > 0) {
+            await redis.del(...keys);
+        }
+    } while (cursor !== "0");
+}
 function digestKey(input) {
     return (0, crypto_1.createHash)("sha1").update(input).digest("hex");
 }
@@ -51,14 +64,8 @@ function makeScopeKey(args) {
 }
 async function invalidateNamespaceCaches(namespace) {
     try {
-        const redis = await (0, redis_1.getRedisClient)();
-        if (!redis)
-            return;
         const pattern = `${(0, redis_1.getRedisPrefix)()}:analytics:v2:${namespace}:*`;
-        const keys = await redis.keys(pattern);
-        if (keys.length > 0) {
-            await redis.del(...keys);
-        }
+        await deleteByPatternScan(pattern);
     }
     catch (err) {
         console.error(`[analytics-v2] invalidate ${namespace} failed: ${err?.message || "unknown"}`);
@@ -109,10 +116,11 @@ async function getOrComputeCached(args) {
                 }
             }
         }
-        const waitMaxMs = Math.min(3000, lockMs);
+        const configuredWaitMs = Math.max(100, Number(process.env.ANALYTICS_V2_CACHE_LOCK_WAIT_MS || 800));
+        const waitMaxMs = Math.min(configuredWaitMs, lockMs);
         const started = Date.now();
         while (Date.now() - started < waitMaxMs) {
-            await new Promise((resolve) => setTimeout(resolve, 80));
+            await new Promise((resolve) => setTimeout(resolve, 60));
             const retryHit = await redis.get(redisDataKey);
             if (retryHit) {
                 const payload = JSON.parse(retryHit);

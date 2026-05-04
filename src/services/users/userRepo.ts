@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import { AppRole, CustomerType, DriverType } from "@prisma/client";
 import { Prisma } from "@prisma/client";
+import { createHash, randomUUID } from "crypto";
 
 function getJwtSecret() {
   const secret = process.env.JWT_SECRET;
@@ -10,13 +11,65 @@ function getJwtSecret() {
   return secret;
 }
 
+function getRefreshTokenSecret() {
+  return process.env.REFRESH_TOKEN_SECRET || getJwtSecret();
+}
+
+function getAccessTokenTtl() {
+  return process.env.ACCESS_TOKEN_TTL || "30m";
+}
+
+function getRefreshTokenTtl() {
+  return process.env.REFRESH_TOKEN_TTL || "30d";
+}
+
 function signToken(payload: {
   id: string;
   role: AppRole;
+  email?: string | null;
+  name?: string | null;
   warehouseId?: string | null;
   customerEntityId?: string | null;
 }) {
-  return jwt.sign(payload, getJwtSecret(), { expiresIn: "7d" });
+  return jwt.sign(
+    {
+      ...payload,
+      tokenType: "access",
+    },
+    getJwtSecret(),
+    { expiresIn: getAccessTokenTtl() as jwt.SignOptions["expiresIn"] },
+  );
+}
+
+type RefreshTokenPayload = {
+  id: string;
+  sid: string;
+  tokenType: "refresh";
+};
+
+function signRefreshToken(payload: RefreshTokenPayload) {
+  return jwt.sign(payload, getRefreshTokenSecret(), {
+    expiresIn: getRefreshTokenTtl() as jwt.SignOptions["expiresIn"],
+  });
+}
+
+function hashToken(token: string) {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+function getTokenExpiryDate(token: string) {
+  const decoded = jwt.decode(token) as { exp?: number } | null;
+  if (!decoded?.exp) {
+    throw new Error("Unable to read token expiry");
+  }
+  return new Date(decoded.exp * 1000);
+}
+
+function getTokenLifetimeSec(token: string) {
+  const decoded = jwt.decode(token) as { iat?: number; exp?: number } | null;
+  if (!decoded?.exp || !decoded?.iat) return 0;
+  const ttl = decoded.exp - decoded.iat;
+  return ttl > 0 ? ttl : 0;
 }
 
 function safeUser(user: any) {
@@ -33,6 +86,66 @@ function safeUser(user: any) {
   };
 }
 
+async function createRefreshSession(args: {
+  userId: string;
+  userAgent?: string | null;
+  ipAddress?: string | null;
+}) {
+  const sessionId = randomUUID();
+  const refreshToken = signRefreshToken({
+    id: args.userId,
+    sid: sessionId,
+    tokenType: "refresh",
+  });
+
+  await prisma.userRefreshSession.create({
+    data: {
+      id: sessionId,
+      userId: args.userId,
+      tokenHash: hashToken(refreshToken),
+      expiresAt: getTokenExpiryDate(refreshToken),
+      userAgent: args.userAgent ?? null,
+      ipAddress: args.ipAddress ?? null,
+    },
+  });
+
+  return refreshToken;
+}
+
+async function issueAuthSession(args: {
+  user: {
+    id: string;
+    role: AppRole;
+    email: string;
+    name: string;
+    warehouse?: { id: string } | null;
+    customerEntity?: { id: string } | null;
+  };
+  userAgent?: string | null;
+  ipAddress?: string | null;
+}) {
+  const token = signToken({
+    id: args.user.id,
+    role: args.user.role,
+    email: args.user.email,
+    name: args.user.name,
+    warehouseId: args.user.warehouse?.id ?? null,
+    customerEntityId: args.user.customerEntity?.id ?? null,
+  });
+
+  const refreshToken = await createRefreshSession({
+    userId: args.user.id,
+    userAgent: args.userAgent ?? null,
+    ipAddress: args.ipAddress ?? null,
+  });
+
+  return {
+    token,
+    refreshToken,
+    accessTokenExpiresInSec: getTokenLifetimeSec(token),
+  };
+}
+
 export const registerUser = async (args: {
   name: string;
   email: string;
@@ -42,6 +155,8 @@ export const registerUser = async (args: {
   customerType?: CustomerType; // PERSON | COMPANY
   companyName?: string | null;
   phone?: string | null;
+  userAgent?: string | null;
+  ipAddress?: string | null;
 }) => {
   const name = args.name?.trim();
   const email = args.email?.trim().toLowerCase();
@@ -91,17 +206,23 @@ export const registerUser = async (args: {
     },
   });
 
-  const token = signToken({
-    id: user.id,
-    role: user.role,
-    warehouseId: user.warehouse?.id ?? null,
-    customerEntityId: user.customerEntity?.id ?? null,
+  const session = await issueAuthSession({
+    user,
+    userAgent: args.userAgent ?? null,
+    ipAddress: args.ipAddress ?? null,
   });
 
-  return { token, user: safeUser(user) };
+  return { ...session, user: safeUser(user) };
 };
 
-export const loginUser = async (emailRaw: string, password: string) => {
+export const loginUser = async (
+  emailRaw: string,
+  password: string,
+  meta?: {
+    userAgent?: string | null;
+    ipAddress?: string | null;
+  },
+) => {
   const email = emailRaw?.trim().toLowerCase();
 
   if (!email) throw new Error("Email is required");
@@ -120,14 +241,146 @@ export const loginUser = async (emailRaw: string, password: string) => {
   const validPassword = await bcrypt.compare(password, user.password);
   if (!validPassword) throw new Error("Invalid email or password");
 
-  const token = signToken({
-    id: user.id,
-    role: user.role,
-    warehouseId: user.warehouse?.id ?? null,
-    customerEntityId: user.customerEntity?.id ?? null,
+  const session = await issueAuthSession({
+    user,
+    userAgent: meta?.userAgent ?? null,
+    ipAddress: meta?.ipAddress ?? null,
   });
 
-  return { token, user: safeUser(user) };
+  return { ...session, user: safeUser(user) };
+};
+
+export const refreshUserSession = async (args: {
+  refreshToken: string;
+  userAgent?: string | null;
+  ipAddress?: string | null;
+}) => {
+  const rawToken = String(args.refreshToken ?? "").trim();
+  if (!rawToken) throw new Error("Refresh token is required");
+
+  let decoded: RefreshTokenPayload;
+  try {
+    decoded = jwt.verify(rawToken, getRefreshTokenSecret()) as RefreshTokenPayload;
+  } catch {
+    throw new Error("Invalid refresh token");
+  }
+
+  if (!decoded?.id || !decoded?.sid) {
+    throw new Error("Invalid refresh token");
+  }
+
+  if (decoded.tokenType && decoded.tokenType !== "refresh") {
+    throw new Error("Invalid refresh token type");
+  }
+
+  const now = new Date();
+  const tokenHash = hashToken(rawToken);
+
+  const currentSession = await prisma.userRefreshSession.findUnique({
+    where: { id: decoded.sid },
+    include: {
+      user: {
+        include: {
+          warehouse: true,
+          customerEntity: true,
+        },
+      },
+    },
+  });
+
+  if (!currentSession || currentSession.userId !== decoded.id) {
+    throw new Error("Invalid refresh token");
+  }
+
+  if (currentSession.revokedAt) {
+    throw new Error("Refresh token revoked");
+  }
+
+  if (currentSession.expiresAt <= now) {
+    throw new Error("Refresh token expired");
+  }
+
+  if (currentSession.tokenHash !== tokenHash) {
+    throw new Error("Refresh token mismatch");
+  }
+
+  const nextSessionId = randomUUID();
+  const nextRefreshToken = signRefreshToken({
+    id: currentSession.user.id,
+    sid: nextSessionId,
+    tokenType: "refresh",
+  });
+
+  const nextRefreshHash = hashToken(nextRefreshToken);
+  const nextRefreshExpiresAt = getTokenExpiryDate(nextRefreshToken);
+
+  await prisma.$transaction(async (tx) => {
+    await tx.userRefreshSession.update({
+      where: { id: currentSession.id },
+      data: {
+        revokedAt: now,
+        replacedBySessionId: nextSessionId,
+      },
+    });
+
+    await tx.userRefreshSession.create({
+      data: {
+        id: nextSessionId,
+        userId: currentSession.user.id,
+        tokenHash: nextRefreshHash,
+        expiresAt: nextRefreshExpiresAt,
+        userAgent: args.userAgent ?? currentSession.userAgent ?? null,
+        ipAddress: args.ipAddress ?? currentSession.ipAddress ?? null,
+      },
+    });
+
+    await tx.userRefreshSession.deleteMany({
+      where: {
+        userId: currentSession.user.id,
+        OR: [{ expiresAt: { lt: now } }, { revokedAt: { not: null } }],
+      },
+    });
+  });
+
+  const token = signToken({
+    id: currentSession.user.id,
+    role: currentSession.user.role,
+    email: currentSession.user.email,
+    name: currentSession.user.name,
+    warehouseId: currentSession.user.warehouse?.id ?? null,
+    customerEntityId: currentSession.user.customerEntity?.id ?? null,
+  });
+
+  return {
+    token,
+    refreshToken: nextRefreshToken,
+    accessTokenExpiresInSec: getTokenLifetimeSec(token),
+    user: safeUser(currentSession.user),
+  };
+};
+
+export const revokeRefreshSession = async (refreshTokenRaw: string) => {
+  const token = String(refreshTokenRaw ?? "").trim();
+  if (!token) return;
+
+  let decoded: RefreshTokenPayload;
+  try {
+    decoded = jwt.verify(token, getRefreshTokenSecret()) as RefreshTokenPayload;
+  } catch {
+    return;
+  }
+
+  if (!decoded?.sid) return;
+
+  await prisma.userRefreshSession.updateMany({
+    where: {
+      id: decoded.sid,
+      revokedAt: null,
+    },
+    data: {
+      revokedAt: new Date(),
+    },
+  });
 };
 
 export const changeUserPassword = async (args: {

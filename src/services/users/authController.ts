@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
 import { z } from "zod";
 import { AppRole, CustomerType } from "@prisma/client";
-import { registerUser, loginUser } from "./userRepo";
+import { registerUser, loginUser, refreshUserSession, revokeRefreshSession } from "./userRepo";
 import { createUserAsManager } from "./userRepo";
 import { listUsers } from "./userRepo";
 import { changeUserPassword } from "./userRepo";
@@ -26,6 +26,17 @@ function isDatabaseUnavailableError(err: any) {
     message.includes("timed out") ||
     message.includes("can't reach database server") ||
     message.includes("cannot reach database server")
+  );
+}
+
+function isMissingRefreshSessionTableError(err: any) {
+  const code = String(err?.code ?? "").toUpperCase();
+  const message = String(err?.message ?? "").toLowerCase();
+
+  if (code === "P2021") return true;
+  return (
+    message.includes("userrefreshsession") &&
+    (message.includes("does not exist") || message.includes("table"))
   );
 }
 
@@ -84,11 +95,21 @@ export const register = async (req: Request, res: Response) => {
       customerType: parsedCustomerType,
       companyName: companyName ?? null,
       phone: phone ?? null,
+      userAgent: req.headers["user-agent"] ?? null,
+      ipAddress: extractClientIp(req),
     });
 
     return res.status(201).json(result);
   } catch (err: any) {
     console.error("register error:", err?.message || err);
+
+    if (isMissingRefreshSessionTableError(err)) {
+      return res.status(503).json({
+        error:
+          "Auth session storage is not initialized. Run Prisma migrations and restart backend.",
+      });
+    }
+
     const msg = err?.message || "Registration failed";
     const code = msg.includes("JWT_SECRET not configured") ? 500 : 400;
     return res.status(code).json({ error: msg });
@@ -99,10 +120,20 @@ export const login = async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
 
-    const result = await loginUser(email, password);
+    const result = await loginUser(email, password, {
+      userAgent: req.headers["user-agent"] ?? null,
+      ipAddress: extractClientIp(req),
+    });
     return res.json(result);
   } catch (err: any) {
     console.error("login error:", err?.message || err);
+
+    if (isMissingRefreshSessionTableError(err)) {
+      return res.status(503).json({
+        error:
+          "Auth session storage is not initialized. Run Prisma migrations and restart backend.",
+      });
+    }
 
     if (isDatabaseUnavailableError(err)) {
       return res.status(503).json({
@@ -122,6 +153,61 @@ export const login = async (req: Request, res: Response) => {
     return res.status(code).json({ error: msg });
   }
 };
+
+const refreshSchema = z.object({
+  refreshToken: z.string().min(20, "Refresh token is required"),
+});
+
+export const refreshSession = async (req: Request, res: Response) => {
+  try {
+    const dto = refreshSchema.parse(req.body ?? {});
+    const result = await refreshUserSession({
+      refreshToken: dto.refreshToken,
+      userAgent: req.headers["user-agent"] ?? null,
+      ipAddress: extractClientIp(req),
+    });
+    return res.json(result);
+  } catch (err: any) {
+    const message = err?.message ?? "Failed to refresh session";
+    const status =
+      message.includes("refresh token") ||
+      message.includes("token")
+        ? 401
+        : err instanceof z.ZodError
+          ? 400
+          : 400;
+
+    return res.status(status).json({ error: message });
+  }
+};
+
+const logoutSchema = z.object({
+  refreshToken: z.string().min(20, "Refresh token is required"),
+});
+
+export const logoutSession = async (req: Request, res: Response) => {
+  try {
+    const dto = logoutSchema.parse(req.body ?? {});
+    await revokeRefreshSession(dto.refreshToken);
+    return res.json({ ok: true });
+  } catch (err: any) {
+    const message = err?.message ?? "Failed to logout";
+    const status = err instanceof z.ZodError ? 400 : 400;
+    return res.status(status).json({ error: message });
+  }
+};
+
+function extractClientIp(req: Request) {
+  const forwarded = req.headers["x-forwarded-for"];
+  if (typeof forwarded === "string" && forwarded.trim()) {
+    return forwarded.split(",")[0]?.trim() || null;
+  }
+  if (Array.isArray(forwarded) && forwarded.length > 0) {
+    return String(forwarded[0] ?? "").trim() || null;
+  }
+  const remote = req.socket?.remoteAddress;
+  return remote ? String(remote) : null;
+}
 
 const changePasswordSchema = z
   .object({

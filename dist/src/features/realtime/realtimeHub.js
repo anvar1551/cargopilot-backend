@@ -60,6 +60,9 @@ function initRealtimeHub(server, corsOrigins) {
             if (!secret)
                 return next(new Error("JWT_SECRET not configured"));
             const decoded = jsonwebtoken_1.default.verify(token, secret);
+            if (decoded?.tokenType && decoded.tokenType !== "access") {
+                return next(new Error("Unauthorized"));
+            }
             const user = await prismaClient_1.default.user.findUnique({
                 where: { id: decoded.id },
                 select: {

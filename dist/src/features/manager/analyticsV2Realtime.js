@@ -17,7 +17,16 @@ function safeParseEvent(raw) {
         const parsed = JSON.parse(raw);
         if (parsed?.type !== "analytics.invalidate")
             return null;
-        return parsed;
+        return {
+            type: "analytics.invalidate",
+            at: String(parsed.at || new Date().toISOString()),
+            reason: parsed.reason || "manual_refresh",
+            scope: String(parsed.scope || "global"),
+            keys: Array.isArray(parsed.keys) && parsed.keys.length > 0
+                ? parsed.keys
+                : ["summary", "trend", "warnings", "finance-queue"],
+            source: parsed.source === "worker" ? "worker" : "api",
+        };
     }
     catch {
         return null;
@@ -59,19 +68,23 @@ function ensureAnalyticsInvalidationConsumer() {
     consumerStarted = true;
     void startStreamConsumer();
 }
-async function publishAnalyticsInvalidation(reason) {
+async function publishAnalyticsInvalidation(reason, options) {
     const event = {
         type: "analytics.invalidate",
         at: new Date().toISOString(),
         reason,
-        scope: "global",
+        scope: options?.scope || "global",
+        keys: options?.keys?.length
+            ? options.keys
+            : ["summary", "trend", "warnings", "finance-queue"],
+        source: options?.source || "api",
     };
     emitter.emit("analytics.invalidate", event);
     try {
         const redis = await (0, redis_1.getRedisClient)();
         if (!redis)
             return;
-        await redis.xadd(getAnalyticsEventsStream(), "MAXLEN", "~", String(STREAM_MAX_LEN), "*", "type", event.type, "reason", event.reason, "scope", event.scope, "data", JSON.stringify(event));
+        await redis.xadd(getAnalyticsEventsStream(), "MAXLEN", "~", String(STREAM_MAX_LEN), "*", "type", event.type, "reason", event.reason, "scope", event.scope, "keys", JSON.stringify(event.keys), "source", event.source || "api", "data", JSON.stringify(event));
     }
     catch (err) {
         console.error(`[analytics-v2] stream publish failed: ${err?.message || "unknown"}`);

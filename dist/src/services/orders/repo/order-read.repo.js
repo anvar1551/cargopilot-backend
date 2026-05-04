@@ -7,6 +7,34 @@ exports.listDriverWorkloads = exports.countOrdersForExport = exports.listOrdersF
 const prismaClient_1 = __importDefault(require("../../../config/prismaClient"));
 const client_1 = require("@prisma/client");
 const order_repo_shared_1 = require("./order-repo.shared");
+const orderListCache = new Map();
+const orderListCacheMaxEntries = Math.max(50, Number(process.env.ORDER_LIST_CACHE_MAX_ENTRIES ?? 500));
+const orderListCacheGc = setInterval(() => {
+    const now = Date.now();
+    for (const [key, entry] of orderListCache.entries()) {
+        if (now >= entry.expiresAt)
+            orderListCache.delete(key);
+    }
+}, 60000);
+orderListCacheGc.unref();
+function getOrderListCacheTtlMs() {
+    return Math.min(Math.max(Number(process.env.ORDER_LIST_CACHE_TTL_MS ?? 5000), 500), 60000);
+}
+function setOrderListCacheEntry(key, payload, ttlMs) {
+    if (orderListCache.has(key)) {
+        orderListCache.delete(key);
+    }
+    orderListCache.set(key, {
+        expiresAt: Date.now() + ttlMs,
+        payload,
+    });
+    while (orderListCache.size > orderListCacheMaxEntries) {
+        const oldestKey = orderListCache.keys().next().value;
+        if (!oldestKey)
+            break;
+        orderListCache.delete(oldestKey);
+    }
+}
 const ORDER_STATUS_VALUES = new Set(Object.values(client_1.OrderStatus));
 function encodeCursor(value) {
     const raw = `${value.createdAt.toISOString()}|${value.id}`;
@@ -433,6 +461,20 @@ const listOrders = async (userId, role, customerEntityId, warehouseId, params) =
     const mode = params?.mode === "cursor" ? "cursor" : "page";
     const cursor = decodeCursor(params?.cursor);
     const skip = (page - 1) * limit;
+    const cacheKey = JSON.stringify({
+        userId,
+        role,
+        customerEntityId,
+        warehouseId,
+        params,
+    });
+    const cacheEntry = orderListCache.get(cacheKey);
+    if (cacheEntry && Date.now() < cacheEntry.expiresAt) {
+        return cacheEntry.payload;
+    }
+    if (cacheEntry) {
+        orderListCache.delete(cacheKey);
+    }
     const where = buildOrderWhere(userId, role, customerEntityId, warehouseId, params);
     if (mode === "cursor") {
         const whereWithCursor = cursor
@@ -459,7 +501,7 @@ const listOrders = async (userId, role, customerEntityId, warehouseId, params) =
         const hasMore = rows.length > limit;
         const orders = hasMore ? rows.slice(0, limit) : rows;
         const tail = orders[orders.length - 1];
-        return {
+        const result = {
             orders,
             total: orders.length,
             page: 1,
@@ -472,6 +514,8 @@ const listOrders = async (userId, role, customerEntityId, warehouseId, params) =
             mode: "cursor",
             totalExact: false,
         };
+        setOrderListCacheEntry(cacheKey, result, getOrderListCacheTtlMs());
+        return result;
     }
     const [orders, total] = await prismaClient_1.default.$transaction([
         prismaClient_1.default.order.findMany({
@@ -484,7 +528,7 @@ const listOrders = async (userId, role, customerEntityId, warehouseId, params) =
         prismaClient_1.default.order.count({ where }),
     ]);
     const pageCount = Math.ceil(total / limit);
-    return {
+    const result = {
         orders,
         total,
         page,
@@ -495,6 +539,8 @@ const listOrders = async (userId, role, customerEntityId, warehouseId, params) =
         mode: "page",
         totalExact: true,
     };
+    setOrderListCacheEntry(cacheKey, result, getOrderListCacheTtlMs());
+    return result;
 };
 exports.listOrders = listOrders;
 /** Returns detailed rows for CSV export using the same filters as the manager list. */

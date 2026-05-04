@@ -3,19 +3,54 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.deleteUserAsManager = exports.listUsers = exports.createUserAsManager = exports.changeUserPassword = exports.loginUser = exports.registerUser = void 0;
+exports.deleteUserAsManager = exports.listUsers = exports.createUserAsManager = exports.changeUserPassword = exports.revokeRefreshSession = exports.refreshUserSession = exports.loginUser = exports.registerUser = void 0;
 const prismaClient_1 = __importDefault(require("../../config/prismaClient"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const client_1 = require("@prisma/client");
+const crypto_1 = require("crypto");
 function getJwtSecret() {
     const secret = process.env.JWT_SECRET;
     if (!secret)
         throw new Error("JWT_SECRET not configured");
     return secret;
 }
+function getRefreshTokenSecret() {
+    return process.env.REFRESH_TOKEN_SECRET || getJwtSecret();
+}
+function getAccessTokenTtl() {
+    return process.env.ACCESS_TOKEN_TTL || "30m";
+}
+function getRefreshTokenTtl() {
+    return process.env.REFRESH_TOKEN_TTL || "30d";
+}
 function signToken(payload) {
-    return jsonwebtoken_1.default.sign(payload, getJwtSecret(), { expiresIn: "7d" });
+    return jsonwebtoken_1.default.sign({
+        ...payload,
+        tokenType: "access",
+    }, getJwtSecret(), { expiresIn: getAccessTokenTtl() });
+}
+function signRefreshToken(payload) {
+    return jsonwebtoken_1.default.sign(payload, getRefreshTokenSecret(), {
+        expiresIn: getRefreshTokenTtl(),
+    });
+}
+function hashToken(token) {
+    return (0, crypto_1.createHash)("sha256").update(token).digest("hex");
+}
+function getTokenExpiryDate(token) {
+    const decoded = jsonwebtoken_1.default.decode(token);
+    if (!decoded?.exp) {
+        throw new Error("Unable to read token expiry");
+    }
+    return new Date(decoded.exp * 1000);
+}
+function getTokenLifetimeSec(token) {
+    const decoded = jsonwebtoken_1.default.decode(token);
+    if (!decoded?.exp || !decoded?.iat)
+        return 0;
+    const ttl = decoded.exp - decoded.iat;
+    return ttl > 0 ? ttl : 0;
 }
 function safeUser(user) {
     const { password, ...rest } = user;
@@ -26,6 +61,45 @@ function safeUser(user) {
         driverType: rest.role === client_1.AppRole.driver
             ? (rest.driverType ?? client_1.DriverType.local)
             : null,
+    };
+}
+async function createRefreshSession(args) {
+    const sessionId = (0, crypto_1.randomUUID)();
+    const refreshToken = signRefreshToken({
+        id: args.userId,
+        sid: sessionId,
+        tokenType: "refresh",
+    });
+    await prismaClient_1.default.userRefreshSession.create({
+        data: {
+            id: sessionId,
+            userId: args.userId,
+            tokenHash: hashToken(refreshToken),
+            expiresAt: getTokenExpiryDate(refreshToken),
+            userAgent: args.userAgent ?? null,
+            ipAddress: args.ipAddress ?? null,
+        },
+    });
+    return refreshToken;
+}
+async function issueAuthSession(args) {
+    const token = signToken({
+        id: args.user.id,
+        role: args.user.role,
+        email: args.user.email,
+        name: args.user.name,
+        warehouseId: args.user.warehouse?.id ?? null,
+        customerEntityId: args.user.customerEntity?.id ?? null,
+    });
+    const refreshToken = await createRefreshSession({
+        userId: args.user.id,
+        userAgent: args.userAgent ?? null,
+        ipAddress: args.ipAddress ?? null,
+    });
+    return {
+        token,
+        refreshToken,
+        accessTokenExpiresInSec: getTokenLifetimeSec(token),
     };
 }
 const registerUser = async (args) => {
@@ -72,16 +146,15 @@ const registerUser = async (args) => {
             customerEntity: true,
         },
     });
-    const token = signToken({
-        id: user.id,
-        role: user.role,
-        warehouseId: user.warehouse?.id ?? null,
-        customerEntityId: user.customerEntity?.id ?? null,
+    const session = await issueAuthSession({
+        user,
+        userAgent: args.userAgent ?? null,
+        ipAddress: args.ipAddress ?? null,
     });
-    return { token, user: safeUser(user) };
+    return { ...session, user: safeUser(user) };
 };
 exports.registerUser = registerUser;
-const loginUser = async (emailRaw, password) => {
+const loginUser = async (emailRaw, password, meta) => {
     const email = emailRaw?.trim().toLowerCase();
     if (!email)
         throw new Error("Email is required");
@@ -99,15 +172,129 @@ const loginUser = async (emailRaw, password) => {
     const validPassword = await bcryptjs_1.default.compare(password, user.password);
     if (!validPassword)
         throw new Error("Invalid email or password");
-    const token = signToken({
-        id: user.id,
-        role: user.role,
-        warehouseId: user.warehouse?.id ?? null,
-        customerEntityId: user.customerEntity?.id ?? null,
+    const session = await issueAuthSession({
+        user,
+        userAgent: meta?.userAgent ?? null,
+        ipAddress: meta?.ipAddress ?? null,
     });
-    return { token, user: safeUser(user) };
+    return { ...session, user: safeUser(user) };
 };
 exports.loginUser = loginUser;
+const refreshUserSession = async (args) => {
+    const rawToken = String(args.refreshToken ?? "").trim();
+    if (!rawToken)
+        throw new Error("Refresh token is required");
+    let decoded;
+    try {
+        decoded = jsonwebtoken_1.default.verify(rawToken, getRefreshTokenSecret());
+    }
+    catch {
+        throw new Error("Invalid refresh token");
+    }
+    if (!decoded?.id || !decoded?.sid) {
+        throw new Error("Invalid refresh token");
+    }
+    if (decoded.tokenType && decoded.tokenType !== "refresh") {
+        throw new Error("Invalid refresh token type");
+    }
+    const now = new Date();
+    const tokenHash = hashToken(rawToken);
+    const currentSession = await prismaClient_1.default.userRefreshSession.findUnique({
+        where: { id: decoded.sid },
+        include: {
+            user: {
+                include: {
+                    warehouse: true,
+                    customerEntity: true,
+                },
+            },
+        },
+    });
+    if (!currentSession || currentSession.userId !== decoded.id) {
+        throw new Error("Invalid refresh token");
+    }
+    if (currentSession.revokedAt) {
+        throw new Error("Refresh token revoked");
+    }
+    if (currentSession.expiresAt <= now) {
+        throw new Error("Refresh token expired");
+    }
+    if (currentSession.tokenHash !== tokenHash) {
+        throw new Error("Refresh token mismatch");
+    }
+    const nextSessionId = (0, crypto_1.randomUUID)();
+    const nextRefreshToken = signRefreshToken({
+        id: currentSession.user.id,
+        sid: nextSessionId,
+        tokenType: "refresh",
+    });
+    const nextRefreshHash = hashToken(nextRefreshToken);
+    const nextRefreshExpiresAt = getTokenExpiryDate(nextRefreshToken);
+    await prismaClient_1.default.$transaction(async (tx) => {
+        await tx.userRefreshSession.update({
+            where: { id: currentSession.id },
+            data: {
+                revokedAt: now,
+                replacedBySessionId: nextSessionId,
+            },
+        });
+        await tx.userRefreshSession.create({
+            data: {
+                id: nextSessionId,
+                userId: currentSession.user.id,
+                tokenHash: nextRefreshHash,
+                expiresAt: nextRefreshExpiresAt,
+                userAgent: args.userAgent ?? currentSession.userAgent ?? null,
+                ipAddress: args.ipAddress ?? currentSession.ipAddress ?? null,
+            },
+        });
+        await tx.userRefreshSession.deleteMany({
+            where: {
+                userId: currentSession.user.id,
+                OR: [{ expiresAt: { lt: now } }, { revokedAt: { not: null } }],
+            },
+        });
+    });
+    const token = signToken({
+        id: currentSession.user.id,
+        role: currentSession.user.role,
+        email: currentSession.user.email,
+        name: currentSession.user.name,
+        warehouseId: currentSession.user.warehouse?.id ?? null,
+        customerEntityId: currentSession.user.customerEntity?.id ?? null,
+    });
+    return {
+        token,
+        refreshToken: nextRefreshToken,
+        accessTokenExpiresInSec: getTokenLifetimeSec(token),
+        user: safeUser(currentSession.user),
+    };
+};
+exports.refreshUserSession = refreshUserSession;
+const revokeRefreshSession = async (refreshTokenRaw) => {
+    const token = String(refreshTokenRaw ?? "").trim();
+    if (!token)
+        return;
+    let decoded;
+    try {
+        decoded = jsonwebtoken_1.default.verify(token, getRefreshTokenSecret());
+    }
+    catch {
+        return;
+    }
+    if (!decoded?.sid)
+        return;
+    await prismaClient_1.default.userRefreshSession.updateMany({
+        where: {
+            id: decoded.sid,
+            revokedAt: null,
+        },
+        data: {
+            revokedAt: new Date(),
+        },
+    });
+};
+exports.revokeRefreshSession = revokeRefreshSession;
 const changeUserPassword = async (args) => {
     const userId = args.userId?.trim();
     const currentPassword = args.currentPassword;

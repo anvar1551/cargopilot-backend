@@ -5,13 +5,22 @@ export type AnalyticsInvalidationReason =
   | "order_mutation"
   | "invoice_mutation"
   | "cash_mutation"
-  | "manual_refresh";
+  | "manual_refresh"
+  | "worker_rebuild";
+
+export type AnalyticsRefreshSection =
+  | "summary"
+  | "trend"
+  | "warnings"
+  | "finance-queue";
 
 export type AnalyticsInvalidationEvent = {
   type: "analytics.invalidate";
   at: string;
   reason: AnalyticsInvalidationReason;
-  scope: "global";
+  scope: string;
+  keys: AnalyticsRefreshSection[];
+  source?: "api" | "worker";
 };
 
 const emitter = new EventEmitter();
@@ -25,9 +34,18 @@ function getAnalyticsEventsStream() {
 
 function safeParseEvent(raw: string): AnalyticsInvalidationEvent | null {
   try {
-    const parsed = JSON.parse(raw) as AnalyticsInvalidationEvent;
+    const parsed = JSON.parse(raw) as Partial<AnalyticsInvalidationEvent> | null;
     if (parsed?.type !== "analytics.invalidate") return null;
-    return parsed;
+    return {
+      type: "analytics.invalidate",
+      at: String(parsed.at || new Date().toISOString()),
+      reason: (parsed.reason as AnalyticsInvalidationReason) || "manual_refresh",
+      scope: String(parsed.scope || "global"),
+      keys: Array.isArray(parsed.keys) && parsed.keys.length > 0
+        ? (parsed.keys as AnalyticsRefreshSection[])
+        : ["summary", "trend", "warnings", "finance-queue"],
+      source: parsed.source === "worker" ? "worker" : "api",
+    };
   } catch {
     return null;
   }
@@ -77,12 +95,21 @@ export function ensureAnalyticsInvalidationConsumer() {
 
 export async function publishAnalyticsInvalidation(
   reason: AnalyticsInvalidationReason,
+  options?: {
+    scope?: string;
+    keys?: AnalyticsRefreshSection[];
+    source?: "api" | "worker";
+  },
 ) {
   const event: AnalyticsInvalidationEvent = {
     type: "analytics.invalidate",
     at: new Date().toISOString(),
     reason,
-    scope: "global",
+    scope: options?.scope || "global",
+    keys: options?.keys?.length
+      ? options.keys
+      : ["summary", "trend", "warnings", "finance-queue"],
+    source: options?.source || "api",
   };
 
   emitter.emit("analytics.invalidate", event);
@@ -102,6 +129,10 @@ export async function publishAnalyticsInvalidation(
       event.reason,
       "scope",
       event.scope,
+      "keys",
+      JSON.stringify(event.keys),
+      "source",
+      event.source || "api",
       "data",
       JSON.stringify(event),
     );
@@ -120,4 +151,3 @@ export function subscribeAnalyticsInvalidation(
     emitter.off("analytics.invalidate", handler);
   };
 }
-

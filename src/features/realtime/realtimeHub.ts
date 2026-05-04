@@ -17,7 +17,7 @@ type AuthSocket = Socket & {
   };
 };
 
-type JwtPayload = { id: string };
+type JwtPayload = { id: string; tokenType?: "access" | "refresh" };
 
 export type DriverRealtimeNotification = {
   id: string;
@@ -86,6 +86,9 @@ export function initRealtimeHub(server: HttpServer, corsOrigins: string[]) {
       if (!secret) return next(new Error("JWT_SECRET not configured"));
 
       const decoded = jwt.verify(token, secret) as JwtPayload;
+      if (decoded?.tokenType && decoded.tokenType !== "access") {
+        return next(new Error("Unauthorized"));
+      }
       const user = await prisma.user.findUnique({
         where: { id: decoded.id },
         select: {

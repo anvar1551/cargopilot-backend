@@ -1,6 +1,15 @@
+import { createHash } from "crypto";
 import { PaidStatus, Prisma } from "@prisma/client";
 import prisma from "../../config/prismaClient";
 import { getOrComputeCached, makeScopeKey } from "./analyticsV2Cache";
+import {
+  getFinanceQueueReadModelKey,
+  getSummaryReadModelKey,
+  getTrendReadModelKey,
+  getWarningsReadModelKey,
+  readAnalyticsReadModel,
+  writeAnalyticsReadModel,
+} from "./analyticsReadModel";
 
 const ACTIVE_ORDER_STATUSES = [
   "pending",
@@ -123,6 +132,7 @@ let cachedPolicy: {
 };
 
 async function getSlaPolicy() {
+  const dbPolicyEnabled = process.env.ANALYTICS_SLA_POLICY_DB_ENABLED === "true";
   if (Date.now() < cachedPolicy.expiresAt) {
     return {
       staleHours: cachedPolicy.staleHours,
@@ -131,38 +141,40 @@ async function getSlaPolicy() {
     };
   }
 
-  try {
-    const db = prisma as any;
-    if (typeof db?.operationalSlaPolicy?.findUnique === "function") {
-      const row = await db.operationalSlaPolicy.findUnique({
-        where: { singletonKey: "global" },
-      });
-      if (row) {
-        cachedPolicy = {
-          staleHours: clampInt(row.staleHours, 6, 720, DEFAULT_SLA_POLICY.staleHours),
-          dueSoonHours: clampInt(row.dueSoonHours, 1, 168, DEFAULT_SLA_POLICY.dueSoonHours),
-          overdueGraceHours: clampInt(
-            row.overdueGraceHours,
-            0,
-            168,
-            DEFAULT_SLA_POLICY.overdueGraceHours,
-          ),
-          expiresAt: Date.now() + 5 * 60_000,
-        };
-        return {
-          staleHours: cachedPolicy.staleHours,
-          dueSoonHours: cachedPolicy.dueSoonHours,
-          overdueGraceHours: cachedPolicy.overdueGraceHours,
-        };
+  if (dbPolicyEnabled) {
+    try {
+      const db = prisma as any;
+      if (typeof db?.operationalSlaPolicy?.findUnique === "function") {
+        const row = await db.operationalSlaPolicy.findUnique({
+          where: { singletonKey: "global" },
+        });
+        if (row) {
+          cachedPolicy = {
+            staleHours: clampInt(row.staleHours, 6, 720, DEFAULT_SLA_POLICY.staleHours),
+            dueSoonHours: clampInt(row.dueSoonHours, 1, 168, DEFAULT_SLA_POLICY.dueSoonHours),
+            overdueGraceHours: clampInt(
+              row.overdueGraceHours,
+              0,
+              168,
+              DEFAULT_SLA_POLICY.overdueGraceHours,
+            ),
+            expiresAt: Date.now() + 5 * 60_000,
+          };
+          return {
+            staleHours: cachedPolicy.staleHours,
+            dueSoonHours: cachedPolicy.dueSoonHours,
+            overdueGraceHours: cachedPolicy.overdueGraceHours,
+          };
+        }
       }
-    }
-  } catch (error: any) {
-    const knownSchemaMismatch =
-      error?.code === "P2021" ||
-      error?.code === "P2022" ||
-      /OperationalSlaPolicy/i.test(String(error?.message ?? ""));
-    if (!knownSchemaMismatch) {
-      console.error(`[analytics-v2] sla policy load failed: ${error?.message || "unknown"}`);
+    } catch (error: any) {
+      const knownSchemaMismatch =
+        error?.code === "P2021" ||
+        error?.code === "P2022" ||
+        /OperationalSlaPolicy/i.test(String(error?.message ?? ""));
+      if (!knownSchemaMismatch) {
+        console.error(`[analytics-v2] sla policy load failed: ${error?.message || "unknown"}`);
+      }
     }
   }
 
@@ -190,15 +202,49 @@ function buildScopeOrderWhere(scope: Scope): Prisma.OrderWhereInput {
   };
 }
 
-function buildScopeQueueWhere(scope: Scope): Prisma.Sql[] {
-  if (scope.role !== "warehouse" || !scope.warehouseId) return [];
-  return [
-    Prisma.sql`(
-      o."currentWarehouseId" = ${scope.warehouseId}::uuid
-      OR u."warehouseId" = ${scope.warehouseId}::uuid
-      OR dwa."warehouseId" = ${scope.warehouseId}::uuid
-    )`,
-  ];
+function buildScopeOrderSql(scope: Scope, orderAlias: string) {
+  if (scope.role !== "warehouse" || !scope.warehouseId) {
+    return Prisma.sql`TRUE`;
+  }
+  const wid = scope.warehouseId;
+  return Prisma.sql`(
+    ${Prisma.raw(`"${orderAlias}"."currentWarehouseId"`)} = ${wid}::uuid
+    OR EXISTS (
+      SELECT 1
+      FROM "User" ad
+      WHERE ad.id = ${Prisma.raw(`"${orderAlias}"."assignedDriverId"`)}
+        AND (
+          ad."warehouseId" = ${wid}::uuid
+          OR EXISTS (
+            SELECT 1
+            FROM "DriverWarehouseAccess" dwa
+            WHERE dwa."driverId" = ad.id
+              AND dwa."warehouseId" = ${wid}::uuid
+          )
+        )
+    )
+  )`;
+}
+
+function buildScopeQueueSql(scope: Scope, orderAlias: string, assignedDriverAlias: string) {
+  if (scope.role !== "warehouse" || !scope.warehouseId) {
+    return Prisma.sql`TRUE`;
+  }
+  const wid = scope.warehouseId;
+  return Prisma.sql`(
+    ${Prisma.raw(`"${orderAlias}"."currentWarehouseId"`)} = ${wid}::uuid
+    OR ${Prisma.raw(`"${assignedDriverAlias}"."warehouseId"`)} = ${wid}::uuid
+    OR EXISTS (
+      SELECT 1
+      FROM "DriverWarehouseAccess" dwa
+      WHERE dwa."driverId" = ${Prisma.raw(`"${assignedDriverAlias}"."id"`)}
+        AND dwa."warehouseId" = ${wid}::uuid
+    )
+  )`;
+}
+
+function digestFilter(input: unknown) {
+  return createHash("sha1").update(JSON.stringify(input)).digest("hex").slice(0, 20);
 }
 
 export async function getAnalyticsSummaryV2(params: SummaryParams) {
@@ -206,12 +252,23 @@ export async function getAnalyticsSummaryV2(params: SummaryParams) {
   const rangeDays = clampInt(params.rangeDays ?? 30, 7, 180, 30);
   const staleHours = clampInt(params.staleHours ?? policy.staleHours, 6, 720, policy.staleHours);
   const scopeKey = makeScopeKey(params.scope);
+  const ttlMs = Number(process.env.ANALYTICS_V2_SUMMARY_TTL_MS || 60_000);
+  const readModelKey = getSummaryReadModelKey({
+    scope: scopeKey,
+    rangeDays,
+    staleHours,
+  });
+
+  const readModelHit = await readAnalyticsReadModel<any>(readModelKey);
+  if (readModelHit) {
+    return { payload: readModelHit, cacheHit: true };
+  }
 
   const key = JSON.stringify({ scopeKey, rangeDays, staleHours });
-  return getOrComputeCached({
+  const result = await getOrComputeCached({
     namespace: "summary",
     key,
-    ttlMs: Number(process.env.ANALYTICS_V2_SUMMARY_TTL_MS || 60_000),
+    ttlMs,
     compute: async () => {
       const now = new Date();
       const rangeStart = startOfUtcDay(subtractDays(now, rangeDays - 1));
@@ -219,39 +276,147 @@ export async function getAnalyticsSummaryV2(params: SummaryParams) {
       const dueSoonEnd = new Date(now.getTime() + policy.dueSoonHours * 60 * 60 * 1000);
       const overdueBefore = new Date(now.getTime() - policy.overdueGraceHours * 60 * 60 * 1000);
       const staleBefore = new Date(now.getTime() - staleHours * 60 * 60 * 1000);
-      const scopeWhere = buildScopeOrderWhere(params.scope);
+      const activeStatusesSql = Prisma.sql`ARRAY[${Prisma.join(
+        ACTIVE_ORDER_STATUSES.map((status) => Prisma.sql`${status}`),
+      )}]::"OrderStatus"[]`;
+      const scopeSql = buildScopeOrderSql(params.scope, "o");
 
-      const [statusDistribution, createdInRange, deliveredInRange, returnedInRange, pendingInvoicesCount, paidInvoices, codExpected, serviceChargeExpected, unpaidCodCount, unpaidServiceCount] = await Promise.all([
-        prisma.order.groupBy({
-          by: ["status"],
-          _count: { _all: true },
-          where: scopeWhere,
-        }),
-        prisma.order.count({ where: { ...scopeWhere, createdAt: { gte: rangeStart, lte: rangeEnd } } }),
-        prisma.order.count({ where: { ...scopeWhere, status: "delivered", updatedAt: { gte: rangeStart, lte: rangeEnd } } }),
-        prisma.order.count({ where: { ...scopeWhere, status: "returned", updatedAt: { gte: rangeStart, lte: rangeEnd } } }),
-        prisma.invoice.count({ where: { status: "pending", createdAt: { gte: rangeStart, lte: rangeEnd }, order: scopeWhere } }),
-        prisma.invoice.aggregate({ _sum: { amount: true }, where: { status: "paid", createdAt: { gte: rangeStart, lte: rangeEnd }, order: scopeWhere } }),
-        prisma.order.aggregate({ _sum: { codAmount: true }, where: { ...scopeWhere, createdAt: { gte: rangeStart, lte: rangeEnd }, codAmount: { not: null } } }),
-        prisma.order.aggregate({ _sum: { serviceCharge: true }, where: { ...scopeWhere, createdAt: { gte: rangeStart, lte: rangeEnd }, serviceCharge: { not: null } } }),
-        prisma.order.count({ where: { ...scopeWhere, createdAt: { gte: rangeStart, lte: rangeEnd }, codAmount: { gt: 0 }, codPaidStatus: { in: UNPAID_PAID_STATUSES } } }),
-        prisma.order.count({ where: { ...scopeWhere, createdAt: { gte: rangeStart, lte: rangeEnd }, serviceCharge: { gt: 0 }, serviceChargePaidStatus: { in: UNPAID_PAID_STATUSES } } }),
+      const [ordersAggRows, invoiceAggRows] = await Promise.all([
+        prisma.$queryRaw<
+          Array<{
+            totalOrders: bigint;
+            createdInRange: bigint;
+            openOrders: bigint;
+            deliveredInRange: bigint;
+            returnedInRange: bigint;
+            pendingOrders: bigint;
+            atWarehouseOrders: bigint;
+            inTransitOrders: bigint;
+            outForDeliveryOrders: bigint;
+            exceptionOpenOrders: bigint;
+            overdueOpenOrders: bigint;
+            dueSoonOpenOrders: bigint;
+            staleOpenOrders: bigint;
+            codExpected: number | null;
+            serviceChargeExpected: number | null;
+            unpaidCodCount: bigint;
+            unpaidServiceCount: bigint;
+          }>
+        >(
+          Prisma.sql`
+            SELECT
+              COUNT(*)::bigint AS "totalOrders",
+              COUNT(*) FILTER (
+                WHERE o."createdAt" >= ${rangeStart} AND o."createdAt" <= ${rangeEnd}
+              )::bigint AS "createdInRange",
+              COUNT(*) FILTER (
+                WHERE o.status = ANY(${activeStatusesSql})
+              )::bigint AS "openOrders",
+              COUNT(*) FILTER (
+                WHERE o.status = 'delivered'::"OrderStatus"
+                  AND o."updatedAt" >= ${rangeStart}
+                  AND o."updatedAt" <= ${rangeEnd}
+              )::bigint AS "deliveredInRange",
+              COUNT(*) FILTER (
+                WHERE o.status = 'returned'::"OrderStatus"
+                  AND o."updatedAt" >= ${rangeStart}
+                  AND o."updatedAt" <= ${rangeEnd}
+              )::bigint AS "returnedInRange",
+              COUNT(*) FILTER (
+                WHERE o.status = 'pending'::"OrderStatus"
+              )::bigint AS "pendingOrders",
+              COUNT(*) FILTER (
+                WHERE o.status = 'at_warehouse'::"OrderStatus"
+              )::bigint AS "atWarehouseOrders",
+              COUNT(*) FILTER (
+                WHERE o.status = 'in_transit'::"OrderStatus"
+              )::bigint AS "inTransitOrders",
+              COUNT(*) FILTER (
+                WHERE o.status = 'out_for_delivery'::"OrderStatus"
+              )::bigint AS "outForDeliveryOrders",
+              COUNT(*) FILTER (
+                WHERE o.status IN ('exception'::"OrderStatus", 'return_in_progress'::"OrderStatus")
+              )::bigint AS "exceptionOpenOrders",
+              COUNT(*) FILTER (
+                WHERE o.status = ANY(${activeStatusesSql})
+                  AND o."expectedDeliveryAt" < ${overdueBefore}
+              )::bigint AS "overdueOpenOrders",
+              COUNT(*) FILTER (
+                WHERE o.status = ANY(${activeStatusesSql})
+                  AND o."expectedDeliveryAt" >= ${now}
+                  AND o."expectedDeliveryAt" <= ${dueSoonEnd}
+              )::bigint AS "dueSoonOpenOrders",
+              COUNT(*) FILTER (
+                WHERE o.status = ANY(${activeStatusesSql})
+                  AND o."updatedAt" < ${staleBefore}
+              )::bigint AS "staleOpenOrders",
+              COALESCE(SUM(o."codAmount") FILTER (
+                WHERE o."createdAt" >= ${rangeStart}
+                  AND o."createdAt" <= ${rangeEnd}
+                  AND o."codAmount" IS NOT NULL
+              ), 0)::double precision AS "codExpected",
+              COALESCE(SUM(o."serviceCharge") FILTER (
+                WHERE o."createdAt" >= ${rangeStart}
+                  AND o."createdAt" <= ${rangeEnd}
+                  AND o."serviceCharge" IS NOT NULL
+              ), 0)::double precision AS "serviceChargeExpected",
+              COUNT(*) FILTER (
+                WHERE o."createdAt" >= ${rangeStart}
+                  AND o."createdAt" <= ${rangeEnd}
+                  AND COALESCE(o."codAmount", 0) > 0
+                  AND o."codPaidStatus" IN ('NOT_PAID'::"PaidStatus", 'PARTIAL'::"PaidStatus")
+              )::bigint AS "unpaidCodCount",
+              COUNT(*) FILTER (
+                WHERE o."createdAt" >= ${rangeStart}
+                  AND o."createdAt" <= ${rangeEnd}
+                  AND COALESCE(o."serviceCharge", 0) > 0
+                  AND o."serviceChargePaidStatus" IN ('NOT_PAID'::"PaidStatus", 'PARTIAL'::"PaidStatus")
+              )::bigint AS "unpaidServiceCount"
+            FROM "Order" o
+            WHERE ${scopeSql}
+          `,
+        ),
+        prisma.$queryRaw<Array<{ pendingInvoicesCount: bigint; invoicedPaidAmount: number | null }>>(
+          Prisma.sql`
+            SELECT
+              COUNT(*) FILTER (
+                WHERE i.status = 'pending'::"InvoiceStatus"
+                  AND i."createdAt" >= ${rangeStart}
+                  AND i."createdAt" <= ${rangeEnd}
+              )::bigint AS "pendingInvoicesCount",
+              COALESCE(SUM(i.amount) FILTER (
+                WHERE i.status = 'paid'::"InvoiceStatus"
+                  AND i."createdAt" >= ${rangeStart}
+                  AND i."createdAt" <= ${rangeEnd}
+              ), 0)::double precision AS "invoicedPaidAmount"
+            FROM "Invoice" i
+            INNER JOIN "Order" o ON o.id = i."orderId"
+            WHERE ${scopeSql}
+          `,
+        ),
       ]);
 
-      const statusMap = new Map(statusDistribution.map((row) => [row.status, row._count._all]));
-      const totalOrders = Array.from(statusMap.values()).reduce((sum, value) => sum + value, 0);
-      const openOrders = ACTIVE_ORDER_STATUSES.reduce((sum, status) => sum + (statusMap.get(status) ?? 0), 0);
-      const pendingOrders = statusMap.get("pending") ?? 0;
-      const atWarehouseOrders = statusMap.get("at_warehouse") ?? 0;
-      const inTransitOrders = statusMap.get("in_transit") ?? 0;
-      const outForDeliveryOrders = statusMap.get("out_for_delivery") ?? 0;
-      const exceptionOpenOrders = (statusMap.get("exception") ?? 0) + (statusMap.get("return_in_progress") ?? 0);
-
-      const [overdueOpenOrders, dueSoonOpenOrders, staleOpenOrders] = await Promise.all([
-        prisma.order.count({ where: { ...scopeWhere, status: { in: [...ACTIVE_ORDER_STATUSES] }, expectedDeliveryAt: { lt: overdueBefore } } }),
-        prisma.order.count({ where: { ...scopeWhere, status: { in: [...ACTIVE_ORDER_STATUSES] }, expectedDeliveryAt: { gte: now, lte: dueSoonEnd } } }),
-        prisma.order.count({ where: { ...scopeWhere, status: { in: [...ACTIVE_ORDER_STATUSES] }, updatedAt: { lt: staleBefore } } }),
-      ]);
+      const ordersAgg = ordersAggRows[0];
+      const invoiceAgg = invoiceAggRows[0];
+      const totalOrders = Number(ordersAgg?.totalOrders ?? 0);
+      const openOrders = Number(ordersAgg?.openOrders ?? 0);
+      const pendingOrders = Number(ordersAgg?.pendingOrders ?? 0);
+      const atWarehouseOrders = Number(ordersAgg?.atWarehouseOrders ?? 0);
+      const inTransitOrders = Number(ordersAgg?.inTransitOrders ?? 0);
+      const outForDeliveryOrders = Number(ordersAgg?.outForDeliveryOrders ?? 0);
+      const exceptionOpenOrders = Number(ordersAgg?.exceptionOpenOrders ?? 0);
+      const overdueOpenOrders = Number(ordersAgg?.overdueOpenOrders ?? 0);
+      const dueSoonOpenOrders = Number(ordersAgg?.dueSoonOpenOrders ?? 0);
+      const staleOpenOrders = Number(ordersAgg?.staleOpenOrders ?? 0);
+      const createdInRange = Number(ordersAgg?.createdInRange ?? 0);
+      const deliveredInRange = Number(ordersAgg?.deliveredInRange ?? 0);
+      const returnedInRange = Number(ordersAgg?.returnedInRange ?? 0);
+      const pendingInvoicesCount = Number(invoiceAgg?.pendingInvoicesCount ?? 0);
+      const invoicedPaidAmount = Number(invoiceAgg?.invoicedPaidAmount ?? 0);
+      const serviceChargeExpected = Number(ordersAgg?.serviceChargeExpected ?? 0);
+      const codExpected = Number(ordersAgg?.codExpected ?? 0);
+      const unpaidServiceCount = Number(ordersAgg?.unpaidServiceCount ?? 0);
+      const unpaidCodCount = Number(ordersAgg?.unpaidCodCount ?? 0);
 
       return {
         period: {
@@ -281,10 +446,10 @@ export async function getAnalyticsSummaryV2(params: SummaryParams) {
           dueTodayOpenOrders: dueSoonOpenOrders,
         },
         finance: {
-          invoicedPaidAmount: paidInvoices._sum.amount ?? 0,
+          invoicedPaidAmount,
           pendingInvoicesCount,
-          serviceChargeExpected: serviceChargeExpected._sum.serviceCharge ?? 0,
-          codExpected: codExpected._sum.codAmount ?? 0,
+          serviceChargeExpected,
+          codExpected,
           unpaidServiceCount,
           unpaidCodCount,
         },
@@ -292,43 +457,50 @@ export async function getAnalyticsSummaryV2(params: SummaryParams) {
       };
     },
   });
+
+  await writeAnalyticsReadModel({
+    key: readModelKey,
+    payload: result.payload,
+    ttlMs,
+  });
+
+  return result;
 }
 
 export async function getAnalyticsTrendV2(params: TrendParams) {
   const rangeDays = clampInt(params.rangeDays ?? 30, 7, 180, 30);
   const scopeKey = makeScopeKey(params.scope);
+  const ttlMs = Number(process.env.ANALYTICS_V2_TREND_TTL_MS || 60_000);
+  const readModelKey = getTrendReadModelKey({
+    scope: scopeKey,
+    rangeDays,
+  });
+
+  const readModelHit = await readAnalyticsReadModel<any>(readModelKey);
+  if (readModelHit) {
+    return { payload: readModelHit, cacheHit: true };
+  }
+
   const key = JSON.stringify({ scopeKey, rangeDays });
 
-  return getOrComputeCached({
+  const result = await getOrComputeCached({
     namespace: "trend",
     key,
-    ttlMs: Number(process.env.ANALYTICS_V2_TREND_TTL_MS || 60_000),
+    ttlMs,
     compute: async () => {
       const now = new Date();
       const rangeStart = startOfUtcDay(subtractDays(now, rangeDays - 1));
       const rangeEnd = endOfUtcDay(now);
-      const scopeWhere = buildScopeOrderWhere(params.scope);
-
-      const scopeSql =
-        params.scope.role === "warehouse" && params.scope.warehouseId
-          ? Prisma.sql`
-              AND (
-                o."currentWarehouseId" = ${params.scope.warehouseId}::uuid
-                OR u."warehouseId" = ${params.scope.warehouseId}::uuid
-                OR dwa."warehouseId" = ${params.scope.warehouseId}::uuid
-              )
-            `
-          : Prisma.empty;
+      const scopeSql = buildScopeOrderSql(params.scope, "o");
 
       const [createdRows, deliveredRows] = await Promise.all([
         prisma.$queryRaw<Array<{ day: Date; count: bigint }>>(
           Prisma.sql`
             SELECT DATE_TRUNC('day', o."createdAt") AS day, COUNT(*)::bigint AS count
             FROM "Order" o
-            LEFT JOIN "User" u ON u.id = o."assignedDriverId"
-            LEFT JOIN "DriverWarehouseAccess" dwa ON dwa."driverId" = u.id
-            WHERE o."createdAt" >= ${rangeStart} AND o."createdAt" <= ${rangeEnd}
-            ${scopeSql}
+            WHERE o."createdAt" >= ${rangeStart}
+              AND o."createdAt" <= ${rangeEnd}
+              AND ${scopeSql}
             GROUP BY DATE_TRUNC('day', o."createdAt")
             ORDER BY day ASC
           `,
@@ -337,19 +509,15 @@ export async function getAnalyticsTrendV2(params: TrendParams) {
           Prisma.sql`
             SELECT DATE_TRUNC('day', o."updatedAt") AS day, COUNT(*)::bigint AS count
             FROM "Order" o
-            LEFT JOIN "User" u ON u.id = o."assignedDriverId"
-            LEFT JOIN "DriverWarehouseAccess" dwa ON dwa."driverId" = u.id
             WHERE o."status" = 'delivered'
               AND o."updatedAt" >= ${rangeStart}
               AND o."updatedAt" <= ${rangeEnd}
-              ${scopeSql}
+              AND ${scopeSql}
             GROUP BY DATE_TRUNC('day', o."updatedAt")
             ORDER BY day ASC
           `,
         ),
       ]);
-
-      void scopeWhere;
 
       return {
         period: {
@@ -373,6 +541,14 @@ export async function getAnalyticsTrendV2(params: TrendParams) {
       };
     },
   });
+
+  await writeAnalyticsReadModel({
+    key: readModelKey,
+    payload: result.payload,
+    ttlMs,
+  });
+
+  return result;
 }
 
 export async function getAnalyticsWarningsV2(params: WarningsParams) {
@@ -380,12 +556,24 @@ export async function getAnalyticsWarningsV2(params: WarningsParams) {
   const rangeDays = clampInt(params.rangeDays ?? 30, 7, 180, 30);
   const staleHours = clampInt(params.staleHours ?? policy.staleHours, 6, 720, policy.staleHours);
   const scopeKey = makeScopeKey(params.scope);
+  const ttlMs = Number(process.env.ANALYTICS_V2_WARNINGS_TTL_MS || 60_000);
+  const readModelKey = getWarningsReadModelKey({
+    scope: scopeKey,
+    rangeDays,
+    staleHours,
+  });
+
+  const readModelHit = await readAnalyticsReadModel<any>(readModelKey);
+  if (readModelHit) {
+    return { payload: readModelHit, cacheHit: true };
+  }
+
   const key = JSON.stringify({ scopeKey, rangeDays, staleHours });
 
-  return getOrComputeCached({
+  const result = await getOrComputeCached({
     namespace: "warnings",
     key,
-    ttlMs: Number(process.env.ANALYTICS_V2_WARNINGS_TTL_MS || 60_000),
+    ttlMs,
     compute: async () => {
       const now = new Date();
       const rangeStart = startOfUtcDay(subtractDays(now, rangeDays - 1));
@@ -472,6 +660,14 @@ export async function getAnalyticsWarningsV2(params: WarningsParams) {
       };
     },
   });
+
+  await writeAnalyticsReadModel({
+    key: readModelKey,
+    payload: result.payload,
+    ttlMs,
+  });
+
+  return result;
 }
 
 export async function getAnalyticsFinanceQueueV2(params: QueueParams) {
@@ -482,6 +678,7 @@ export async function getAnalyticsFinanceQueueV2(params: QueueParams) {
   const queuePage = Math.max(Number(params.queuePage ?? 1) || 1, 1);
   const queueOffset = (queuePage - 1) * queuePageSize;
   const scopeKey = makeScopeKey(params.scope);
+  const ttlMs = Number(process.env.ANALYTICS_V2_FINANCE_QUEUE_TTL_MS || 60_000);
 
   const queueStatuses = Array.from(
     new Set((params.queueStatuses ?? []).filter((v) => v === "expected" || v === "held")),
@@ -505,15 +702,33 @@ export async function getAnalyticsFinanceQueueV2(params: QueueParams) {
     queueKinds,
     queueHolderTypes,
   });
+  const filterHash = digestFilter({
+    scopeKey,
+    queueFrom: params.queueFrom?.toISOString() ?? null,
+    queueTo: params.queueTo?.toISOString() ?? null,
+    queueStatuses,
+    queueKinds,
+    queueHolderTypes,
+    queuePageSize,
+  });
+  const readModelKey = getFinanceQueueReadModelKey({
+    scope: scopeKey,
+    filterHash,
+    page: queuePage,
+  });
 
-  return getOrComputeCached({
+  const readModelHit = await readAnalyticsReadModel<any>(readModelKey);
+  if (readModelHit) {
+    return { payload: readModelHit, cacheHit: true };
+  }
+
+  const result = await getOrComputeCached({
     namespace: "finance-queue",
     key,
-    ttlMs: Number(process.env.ANALYTICS_V2_FINANCE_QUEUE_TTL_MS || 60_000),
+    ttlMs,
     compute: async () => {
       const queueWhereParts: Prisma.Sql[] = [Prisma.sql`cc.status IN ('expected', 'held')`];
       const queueReferenceAtSql = Prisma.sql`COALESCE(cc."collectedAt", cc."createdAt", cc."updatedAt")`;
-      queueWhereParts.push(...buildScopeQueueWhere(params.scope));
 
       if (queueStatuses.length) {
         queueWhereParts.push(Prisma.sql`cc.status::text IN (${Prisma.join(queueStatuses)})`);
@@ -532,6 +747,7 @@ export async function getAnalyticsFinanceQueueV2(params: QueueParams) {
       if (params.queueTo) {
         queueWhereParts.push(Prisma.sql`${queueReferenceAtSql} < ${params.queueTo}`);
       }
+      queueWhereParts.push(buildScopeQueueSql(params.scope, "o", "ad"));
 
       const [totalRows, queueRows] = await Promise.all([
         prisma.$queryRaw<Array<{ total: bigint }>>(
@@ -539,8 +755,7 @@ export async function getAnalyticsFinanceQueueV2(params: QueueParams) {
             SELECT COUNT(*)::bigint AS total
             FROM "CashCollection" cc
             INNER JOIN "Order" o ON o.id = cc."orderId"
-            LEFT JOIN "User" u ON u.id = o."assignedDriverId"
-            LEFT JOIN "DriverWarehouseAccess" dwa ON dwa."driverId" = u.id
+            LEFT JOIN "User" ad ON ad.id = o."assignedDriverId"
             WHERE ${Prisma.join(queueWhereParts, " AND ")}
           `,
         ),
@@ -579,7 +794,6 @@ export async function getAnalyticsFinanceQueueV2(params: QueueParams) {
             LEFT JOIN "User" u ON u.id = cc."currentHolderUserId"
             LEFT JOIN "Warehouse" w ON w.id = cc."currentHolderWarehouseId"
             LEFT JOIN "User" ad ON ad.id = o."assignedDriverId"
-            LEFT JOIN "DriverWarehouseAccess" dwa ON dwa."driverId" = ad.id
             WHERE ${Prisma.join(queueWhereParts, " AND ")}
             ORDER BY
               ${queueReferenceAtSql} DESC,
@@ -627,5 +841,12 @@ export async function getAnalyticsFinanceQueueV2(params: QueueParams) {
       };
     },
   });
-}
 
+  await writeAnalyticsReadModel({
+    key: readModelKey,
+    payload: result.payload,
+    ttlMs,
+  });
+
+  return result;
+}
