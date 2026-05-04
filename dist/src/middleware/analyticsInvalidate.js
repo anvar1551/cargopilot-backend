@@ -43,19 +43,24 @@ function analyticsInvalidateOnSuccess(reason) {
                 return;
             const resolved = typeof reason === "function" ? reason(req) : reason;
             const directInvalidation = process.env.ANALYTICS_DIRECT_INVALIDATION === "true";
+            const legacyEventPublishing = process.env.ANALYTICS_LEGACY_MIDDLEWARE_EVENTS === "true";
             if (directInvalidation) {
                 void (0, analyticsV2Realtime_1.publishAnalyticsInvalidation)(resolved, { source: "api" });
             }
-            void (0, analyticsEvents_1.publishCargoPilotDomainEvent)({
-                type: inferEventType(resolved, req),
-                tenantScope: getTenantScope(req),
-                entityId: typeof req.params?.id === "string" && req.params.id.trim() ? req.params.id : null,
-                payload: {
-                    reason: resolved,
-                    method: req.method,
-                    path: req.path,
-                },
-            });
+            if (legacyEventPublishing) {
+                void (0, analyticsEvents_1.publishCargoPilotDomainEvent)({
+                    type: inferEventType(resolved, req),
+                    tenantScope: getTenantScope(req),
+                    entityId: typeof req.params?.id === "string" && req.params.id.trim()
+                        ? req.params.id
+                        : null,
+                    payload: {
+                        reason: resolved,
+                        method: req.method,
+                        path: req.path,
+                    },
+                });
+            }
         });
         return next();
     };

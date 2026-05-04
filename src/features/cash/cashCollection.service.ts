@@ -11,6 +11,7 @@ import {
 } from "@prisma/client";
 
 import prisma from "../../config/prismaClient";
+import { enqueueCargoPilotDomainEventsTx } from "../manager/analyticsOutbox";
 import { getOrderById } from "../../services/orders/repo";
 import { OrderActor, orderError } from "../../services/orders/orderService.shared";
 
@@ -277,6 +278,13 @@ function resolvePaidStatusFromCollection(
   return collectedAmount >= expected ? PaidStatus.PAID : PaidStatus.PARTIAL;
 }
 
+function resolveActorTenantScope(actor: OrderActor) {
+  if (actor.role === AppRole.warehouse && actor.warehouseId) {
+    return `warehouse:${actor.warehouseId}`;
+  }
+  return `role:${actor.role}`;
+}
+
 export async function collectOrderCash(params: {
   orderId: string;
   kind: CashCollectionKind;
@@ -415,6 +423,20 @@ export async function collectOrderCash(params: {
           ? { codPaidStatus: nextPaidStatus }
           : { serviceChargePaidStatus: nextPaidStatus },
     });
+
+    await enqueueCargoPilotDomainEventsTx(tx, [
+      {
+        type: "cash_handoff",
+        tenantScope: resolveActorTenantScope(actor),
+        entityId: order.id,
+        payload: {
+          source: "collectOrderCash",
+          kind,
+          actorId: actor.id,
+          actorRole: actor.role,
+        },
+      },
+    ]);
   });
 
   return getOrderById(orderId);
@@ -529,6 +551,21 @@ export async function handoffOrderCash(params: {
         },
       },
     });
+
+    await enqueueCargoPilotDomainEventsTx(tx, [
+      {
+        type: "cash_handoff",
+        tenantScope: resolveActorTenantScope(actor),
+        entityId: order.id,
+        payload: {
+          source: "handoffOrderCash",
+          kind,
+          toHolderType,
+          actorId: actor.id,
+          actorRole: actor.role,
+        },
+      },
+    ]);
   });
 
   return getOrderById(orderId);
@@ -589,6 +626,20 @@ export async function settleOrderCash(params: {
         },
       },
     });
+
+    await enqueueCargoPilotDomainEventsTx(tx, [
+      {
+        type: "cash_settled",
+        tenantScope: resolveActorTenantScope(actor),
+        entityId: order.id,
+        payload: {
+          source: "settleOrderCash",
+          kind,
+          actorId: actor.id,
+          actorRole: actor.role,
+        },
+      },
+    ]);
   });
 
   return getOrderById(orderId);

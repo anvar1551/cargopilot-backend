@@ -10,6 +10,7 @@ exports.listCashQueueForActor = listCashQueueForActor;
 exports.getCashQueueSummaryForActor = getCashQueueSummaryForActor;
 const client_1 = require("@prisma/client");
 const prismaClient_1 = __importDefault(require("../../config/prismaClient"));
+const analyticsOutbox_1 = require("../manager/analyticsOutbox");
 const repo_1 = require("../../services/orders/repo");
 const orderService_shared_1 = require("../../services/orders/orderService.shared");
 async function loadOrderContext(tx, orderId) {
@@ -186,6 +187,12 @@ function resolvePaidStatusFromCollection(expectedAmount, collectedAmount) {
     }
     return collectedAmount >= expected ? client_1.PaidStatus.PAID : client_1.PaidStatus.PARTIAL;
 }
+function resolveActorTenantScope(actor) {
+    if (actor.role === client_1.AppRole.warehouse && actor.warehouseId) {
+        return `warehouse:${actor.warehouseId}`;
+    }
+    return `role:${actor.role}`;
+}
 async function collectOrderCash(params) {
     const { orderId, kind, actor } = params;
     await prismaClient_1.default.$transaction(async (tx) => {
@@ -275,6 +282,19 @@ async function collectOrderCash(params) {
                 ? { codPaidStatus: nextPaidStatus }
                 : { serviceChargePaidStatus: nextPaidStatus },
         });
+        await (0, analyticsOutbox_1.enqueueCargoPilotDomainEventsTx)(tx, [
+            {
+                type: "cash_handoff",
+                tenantScope: resolveActorTenantScope(actor),
+                entityId: order.id,
+                payload: {
+                    source: "collectOrderCash",
+                    kind,
+                    actorId: actor.id,
+                    actorRole: actor.role,
+                },
+            },
+        ]);
     });
     return (0, repo_1.getOrderById)(orderId);
 }
@@ -359,6 +379,20 @@ async function handoffOrderCash(params) {
                 },
             },
         });
+        await (0, analyticsOutbox_1.enqueueCargoPilotDomainEventsTx)(tx, [
+            {
+                type: "cash_handoff",
+                tenantScope: resolveActorTenantScope(actor),
+                entityId: order.id,
+                payload: {
+                    source: "handoffOrderCash",
+                    kind,
+                    toHolderType,
+                    actorId: actor.id,
+                    actorRole: actor.role,
+                },
+            },
+        ]);
     });
     return (0, repo_1.getOrderById)(orderId);
 }
@@ -403,6 +437,19 @@ async function settleOrderCash(params) {
                 },
             },
         });
+        await (0, analyticsOutbox_1.enqueueCargoPilotDomainEventsTx)(tx, [
+            {
+                type: "cash_settled",
+                tenantScope: resolveActorTenantScope(actor),
+                entityId: order.id,
+                payload: {
+                    source: "settleOrderCash",
+                    kind,
+                    actorId: actor.id,
+                    actorRole: actor.role,
+                },
+            },
+        ]);
     });
     return (0, repo_1.getOrderById)(orderId);
 }

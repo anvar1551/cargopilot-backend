@@ -803,6 +803,28 @@ model UserRefreshSession {
   @@index([userId, revokedAt, expiresAt])
 }
 
+model AnalyticsDomainEventOutbox {
+  id String @id @default(uuid()) @db.Uuid
+
+  eventId       String @unique
+  type          String
+  tenantScope   String
+  entityId      String?
+  schemaVersion Int      @default(1)
+  occurredAt    DateTime
+  payload       Json
+
+  publishedAt DateTime?
+  attempts    Int      @default(0)
+  lastError   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([publishedAt, createdAt])
+  @@index([type, createdAt])
+}
+
 model Counter {
   key       String   @id
   value     Int

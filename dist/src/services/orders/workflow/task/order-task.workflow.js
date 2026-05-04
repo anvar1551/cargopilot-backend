@@ -8,6 +8,7 @@ exports.assignOrderTasksBulk = assignOrderTasksBulk;
 exports.updateOrdersStatusBulk = updateOrdersStatusBulk;
 exports.updateDriverOrderStatus = updateDriverOrderStatus;
 const prismaClient_1 = __importDefault(require("../../../../config/prismaClient"));
+const analyticsOutbox_1 = require("../../../../features/manager/analyticsOutbox");
 const client_1 = require("@prisma/client");
 const orderService_shared_1 = require("../../orderService.shared");
 const FINAL_ORDER_STATUSES = [
@@ -140,6 +141,12 @@ function resolveWarehouseId(actor, provided) {
 }
 function formatStatus(status) {
     return status.replace(/_/g, " ");
+}
+function resolveActorTenantScope(actor) {
+    if (actor.role === client_1.AppRole.warehouse && actor.warehouseId) {
+        return `warehouse:${actor.warehouseId}`;
+    }
+    return `role:${actor.role}`;
 }
 function hasPositiveAmount(value) {
     const amount = Number(value ?? 0);
@@ -276,6 +283,18 @@ async function assignDriversBulk(args) {
                 parcelId: null,
             })),
         });
+        await (0, analyticsOutbox_1.enqueueCargoPilotDomainEventsTx)(tx, orderIds.map((orderId) => ({
+            type: type === "pickup" ? "order_status_changed" : "manual_refresh",
+            tenantScope: resolveActorTenantScope(actor),
+            entityId: orderId,
+            payload: {
+                source: "assignDriversBulk",
+                assignmentType: type,
+                driverId,
+                actorId: actor.id,
+                actorRole: actor.role,
+            },
+        })));
     });
     return loadAssignedOrdersForResponse(orderIds, includeFull);
 }
@@ -374,6 +393,18 @@ async function updateOrdersStatusBulk(args) {
                 parcelId: null,
             })),
         });
+        await (0, analyticsOutbox_1.enqueueCargoPilotDomainEventsTx)(tx, orderIds.map((orderId) => ({
+            type: "order_status_changed",
+            tenantScope: resolveActorTenantScope(actor),
+            entityId: orderId,
+            payload: {
+                source: "updateOrdersStatusBulk",
+                status,
+                reasonCode: reasonCode ?? null,
+                actorId: actor.id,
+                actorRole: actor.role,
+            },
+        })));
     });
     if (includeFull) {
         return prismaClient_1.default.order.findMany({
@@ -489,6 +520,20 @@ async function updateDriverOrderStatus(args) {
                 parcelId: null,
             },
         });
+        await (0, analyticsOutbox_1.enqueueCargoPilotDomainEventsTx)(tx, [
+            {
+                type: "order_status_changed",
+                tenantScope: resolveActorTenantScope(actor),
+                entityId: orderId,
+                payload: {
+                    source: "updateDriverOrderStatus",
+                    status,
+                    reasonCode: reasonCode ?? null,
+                    actorId: actor.id,
+                    actorRole: actor.role,
+                },
+            },
+        ]);
     });
     return prismaClient_1.default.order.findUnique({
         where: { id: orderId },

@@ -50,19 +50,26 @@ export function analyticsInvalidateOnSuccess(reason: ReasonResolver) {
       if (res.statusCode < 200 || res.statusCode >= 400) return;
       const resolved = typeof reason === "function" ? reason(req) : reason;
       const directInvalidation = process.env.ANALYTICS_DIRECT_INVALIDATION === "true";
+      const legacyEventPublishing =
+        process.env.ANALYTICS_LEGACY_MIDDLEWARE_EVENTS === "true";
       if (directInvalidation) {
         void publishAnalyticsInvalidation(resolved, { source: "api" });
       }
-      void publishCargoPilotDomainEvent({
-        type: inferEventType(resolved, req),
-        tenantScope: getTenantScope(req),
-        entityId: typeof req.params?.id === "string" && req.params.id.trim() ? req.params.id : null,
-        payload: {
-          reason: resolved,
-          method: req.method,
-          path: req.path,
-        },
-      });
+      if (legacyEventPublishing) {
+        void publishCargoPilotDomainEvent({
+          type: inferEventType(resolved, req),
+          tenantScope: getTenantScope(req),
+          entityId:
+            typeof req.params?.id === "string" && req.params.id.trim()
+              ? req.params.id
+              : null,
+          payload: {
+            reason: resolved,
+            method: req.method,
+            path: req.path,
+          },
+        });
+      }
     });
 
     return next();

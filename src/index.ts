@@ -29,6 +29,7 @@ import { analyticsInvalidateOnSuccess } from "./middleware/analyticsInvalidate";
 import { ensureAnalyticsInvalidationConsumer } from "./features/manager/analyticsV2Realtime";
 import { startAnalyticsWorker } from "./workers/analytics.worker";
 import { startAnalyticsWarmupLoop } from "./features/manager/analyticsWarmup";
+import { startAnalyticsOutboxPublisher } from "./features/manager/analyticsOutboxPublisher";
 
 const app = express();
 app.set("trust proxy", process.env.TRUST_PROXY === "false" ? false : 1);
@@ -143,6 +144,7 @@ initRealtimeHub(server, Array.from(allowedOrigins));
 startNotificationRetentionWorker();
 ensureAnalyticsInvalidationConsumer();
 startAnalyticsWarmupLoop();
+void startAnalyticsOutboxPublisher();
 if (process.env.ANALYTICS_WORKER_IN_PROCESS === "true") {
   void startAnalyticsWorker({ leaderLock: true });
 }

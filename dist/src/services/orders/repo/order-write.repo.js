@@ -7,6 +7,7 @@ exports.createOrder = void 0;
 const prismaClient_1 = __importDefault(require("../../../config/prismaClient"));
 const client_1 = require("@prisma/client");
 const cashCollection_shared_1 = require("../../../features/cash/cashCollection.shared");
+const analyticsOutbox_1 = require("../../../features/manager/analyticsOutbox");
 const orderNumber_1 = require("../../../utils/orderNumber");
 const pricingRepo_1 = require("../../pricing/pricingRepo");
 const orderService_shared_1 = require("../orderService.shared");
@@ -43,6 +44,15 @@ function toDateOrNull(v) {
         return v;
     const d = new Date(v);
     return Number.isNaN(d.getTime()) ? null : d;
+}
+function resolveActorTenantScope(actor) {
+    if (actor?.role === "warehouse" && actor.warehouseId) {
+        return `warehouse:${actor.warehouseId}`;
+    }
+    if (actor?.role) {
+        return `role:${actor.role}`;
+    }
+    return "global";
 }
 async function assertFkExists(payload) {
     if (payload.customerEntityId) {
@@ -176,103 +186,119 @@ const createOrder = async (customerId, payload, actor) => {
         deliveryChargePaidBy: payload.deliveryChargePaidBy ?? null,
         currency: payload.currency ?? null,
     }, actor);
-    return prismaClient_1.default.order.create({
-        data: {
-            customerId,
-            orderNumber,
-            status: client_1.OrderStatus.pending,
-            pickupAddress: payload.pickupAddress,
-            dropoffAddress: payload.dropoffAddress,
-            destinationCity: payload.destinationCity ?? null,
-            pickupLat: payload.pickupLat ?? null,
-            pickupLng: payload.pickupLng ?? null,
-            dropoffLat: payload.dropoffLat ?? null,
-            dropoffLng: payload.dropoffLng ?? null,
-            senderName: payload.senderName ?? null,
-            senderPhone: payload.senderPhone ?? null,
-            senderPhone2: payload.senderPhone2 ?? null,
-            senderPhone3: payload.senderPhone3 ?? null,
-            senderAddress: payload.senderAddress ?? null,
-            receiverName: payload.receiverName ?? null,
-            receiverPhone: payload.receiverPhone ?? null,
-            receiverPhone2: payload.receiverPhone2 ?? null,
-            receiverPhone3: payload.receiverPhone3 ?? null,
-            receiverAddress: payload.receiverAddress ?? null,
-            customerEntityId: payload.customerEntityId ?? null,
-            senderAddressId,
-            receiverAddressId,
-            serviceType: payload.serviceType ?? null,
-            codAmount: payload.codAmount ?? null,
-            currency: payload.currency ?? null,
-            weightKg: payload.weightKg ?? null,
-            paymentType: payload.paymentType ?? null,
-            deliveryChargePaidBy: payload.deliveryChargePaidBy ?? null,
-            ifRecipientNotAvailable: payload.ifRecipientNotAvailable ?? null,
-            codPaidStatus: payload.codPaidStatus ?? null,
-            serviceCharge: payload.serviceCharge ?? null,
-            serviceChargePaidStatus: payload.serviceChargePaidStatus ?? null,
-            itemValue: payload.itemValue ?? null,
-            plannedPickupAt: toDateOrNull(payload.plannedPickupAt),
-            plannedDeliveryAt: toDateOrNull(payload.plannedDeliveryAt),
-            promiseDate: toDateOrNull(payload.promiseDate),
-            expectedDeliveryAt: slaSnapshot.expectedDeliveryAt,
-            slaSource: slaSnapshot.slaSource,
-            slaRuleId: slaSnapshot.slaRuleId,
-            slaTargetDays: slaSnapshot.slaTargetDays,
-            referenceId: payload.referenceId ?? null,
-            shelfId: payload.shelfId ?? null,
-            promoCode: payload.promoCode ?? null,
-            numberOfCalls: payload.numberOfCalls ?? null,
-            fragile: payload.fragile ?? false,
-            dangerousGoods: payload.dangerousGoods ?? false,
-            shipmentInsurance: payload.shipmentInsurance ?? false,
-            createdAt,
-            parcels: { create: parcelsToCreate },
-            ...(cashCollectionsToCreate.length > 0
-                ? { cashCollections: { create: cashCollectionsToCreate } }
-                : {}),
-            trackingEvents: {
-                create: {
-                    status: client_1.OrderStatus.pending,
-                    note: "Order created",
-                    actorId: actor?.id ?? null,
-                    actorRole: actor?.role ?? null,
-                    warehouseId: actor?.warehouseId ?? null,
-                    region: null,
-                },
-            },
-        },
-        include: {
-            customer: { select: order_repo_shared_1.userLiteSelect },
-            customerEntity: true,
-            senderAddressObj: true,
-            receiverAddressObj: true,
-            attachments: true,
-            parcels: true,
-            cashCollections: {
-                include: {
-                    currentHolderUser: { select: order_repo_shared_1.userLiteSelect },
-                    currentHolderWarehouse: true,
-                    events: {
-                        include: {
-                            actor: { select: order_repo_shared_1.userLiteSelect },
-                        },
-                        orderBy: { createdAt: "asc" },
+    return prismaClient_1.default.$transaction(async (tx) => {
+        const created = await tx.order.create({
+            data: {
+                customerId,
+                orderNumber,
+                status: client_1.OrderStatus.pending,
+                pickupAddress: payload.pickupAddress,
+                dropoffAddress: payload.dropoffAddress,
+                destinationCity: payload.destinationCity ?? null,
+                pickupLat: payload.pickupLat ?? null,
+                pickupLng: payload.pickupLng ?? null,
+                dropoffLat: payload.dropoffLat ?? null,
+                dropoffLng: payload.dropoffLng ?? null,
+                senderName: payload.senderName ?? null,
+                senderPhone: payload.senderPhone ?? null,
+                senderPhone2: payload.senderPhone2 ?? null,
+                senderPhone3: payload.senderPhone3 ?? null,
+                senderAddress: payload.senderAddress ?? null,
+                receiverName: payload.receiverName ?? null,
+                receiverPhone: payload.receiverPhone ?? null,
+                receiverPhone2: payload.receiverPhone2 ?? null,
+                receiverPhone3: payload.receiverPhone3 ?? null,
+                receiverAddress: payload.receiverAddress ?? null,
+                customerEntityId: payload.customerEntityId ?? null,
+                senderAddressId,
+                receiverAddressId,
+                serviceType: payload.serviceType ?? null,
+                codAmount: payload.codAmount ?? null,
+                currency: payload.currency ?? null,
+                weightKg: payload.weightKg ?? null,
+                paymentType: payload.paymentType ?? null,
+                deliveryChargePaidBy: payload.deliveryChargePaidBy ?? null,
+                ifRecipientNotAvailable: payload.ifRecipientNotAvailable ?? null,
+                codPaidStatus: payload.codPaidStatus ?? null,
+                serviceCharge: payload.serviceCharge ?? null,
+                serviceChargePaidStatus: payload.serviceChargePaidStatus ?? null,
+                itemValue: payload.itemValue ?? null,
+                plannedPickupAt: toDateOrNull(payload.plannedPickupAt),
+                plannedDeliveryAt: toDateOrNull(payload.plannedDeliveryAt),
+                promiseDate: toDateOrNull(payload.promiseDate),
+                expectedDeliveryAt: slaSnapshot.expectedDeliveryAt,
+                slaSource: slaSnapshot.slaSource,
+                slaRuleId: slaSnapshot.slaRuleId,
+                slaTargetDays: slaSnapshot.slaTargetDays,
+                referenceId: payload.referenceId ?? null,
+                shelfId: payload.shelfId ?? null,
+                promoCode: payload.promoCode ?? null,
+                numberOfCalls: payload.numberOfCalls ?? null,
+                fragile: payload.fragile ?? false,
+                dangerousGoods: payload.dangerousGoods ?? false,
+                shipmentInsurance: payload.shipmentInsurance ?? false,
+                createdAt,
+                parcels: { create: parcelsToCreate },
+                ...(cashCollectionsToCreate.length > 0
+                    ? { cashCollections: { create: cashCollectionsToCreate } }
+                    : {}),
+                trackingEvents: {
+                    create: {
+                        status: client_1.OrderStatus.pending,
+                        note: "Order created",
+                        actorId: actor?.id ?? null,
+                        actorRole: actor?.role ?? null,
+                        warehouseId: actor?.warehouseId ?? null,
+                        region: null,
                     },
                 },
             },
-            currentWarehouse: true,
-            assignedDriver: { select: order_repo_shared_1.userLiteSelect },
-            invoice: true,
-            trackingEvents: {
-                include: {
-                    actor: { select: order_repo_shared_1.userLiteSelect },
-                    warehouse: true,
-                    parcel: true,
+            include: {
+                customer: { select: order_repo_shared_1.userLiteSelect },
+                customerEntity: true,
+                senderAddressObj: true,
+                receiverAddressObj: true,
+                attachments: true,
+                parcels: true,
+                cashCollections: {
+                    include: {
+                        currentHolderUser: { select: order_repo_shared_1.userLiteSelect },
+                        currentHolderWarehouse: true,
+                        events: {
+                            include: {
+                                actor: { select: order_repo_shared_1.userLiteSelect },
+                            },
+                            orderBy: { createdAt: "asc" },
+                        },
+                    },
                 },
-                orderBy: { timestamp: "asc" },
+                currentWarehouse: true,
+                assignedDriver: { select: order_repo_shared_1.userLiteSelect },
+                invoice: true,
+                trackingEvents: {
+                    include: {
+                        actor: { select: order_repo_shared_1.userLiteSelect },
+                        warehouse: true,
+                        parcel: true,
+                    },
+                    orderBy: { timestamp: "asc" },
+                },
             },
-        },
+        });
+        await (0, analyticsOutbox_1.enqueueCargoPilotDomainEventsTx)(tx, [
+            {
+                type: "order_created",
+                tenantScope: resolveActorTenantScope(actor),
+                entityId: created.id,
+                payload: {
+                    source: "createOrder",
+                    orderNumber: created.orderNumber,
+                    actorId: actor?.id ?? null,
+                    actorRole: actor?.role ?? null,
+                },
+            },
+        ]);
+        return created;
     });
 };
 exports.createOrder = createOrder;

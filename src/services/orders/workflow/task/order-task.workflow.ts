@@ -1,4 +1,5 @@
 import prisma from "../../../../config/prismaClient";
+import { enqueueCargoPilotDomainEventsTx } from "../../../../features/manager/analyticsOutbox";
 import {
   AppRole,
   CashCollectionKind,
@@ -170,6 +171,13 @@ function resolveWarehouseId(actor: OrderActor, provided?: string | null) {
 
 function formatStatus(status: OrderStatus) {
   return status.replace(/_/g, " ");
+}
+
+function resolveActorTenantScope(actor: OrderActor) {
+  if (actor.role === AppRole.warehouse && actor.warehouseId) {
+    return `warehouse:${actor.warehouseId}`;
+  }
+  return `role:${actor.role}`;
 }
 
 function hasPositiveAmount(value: unknown) {
@@ -377,6 +385,22 @@ export async function assignDriversBulk(args: {
         parcelId: null,
       })),
     });
+
+    await enqueueCargoPilotDomainEventsTx(
+      tx,
+      orderIds.map((orderId) => ({
+        type: type === "pickup" ? "order_status_changed" : "manual_refresh",
+        tenantScope: resolveActorTenantScope(actor),
+        entityId: orderId,
+        payload: {
+          source: "assignDriversBulk",
+          assignmentType: type,
+          driverId,
+          actorId: actor.id,
+          actorRole: actor.role,
+        },
+      })),
+    );
   });
 
   return loadAssignedOrdersForResponse(orderIds, includeFull);
@@ -532,6 +556,22 @@ export async function updateOrdersStatusBulk(args: {
         parcelId: null,
       })),
     });
+
+    await enqueueCargoPilotDomainEventsTx(
+      tx,
+      orderIds.map((orderId) => ({
+        type: "order_status_changed",
+        tenantScope: resolveActorTenantScope(actor),
+        entityId: orderId,
+        payload: {
+          source: "updateOrdersStatusBulk",
+          status,
+          reasonCode: reasonCode ?? null,
+          actorId: actor.id,
+          actorRole: actor.role,
+        },
+      })),
+    );
   });
 
   if (includeFull) {
@@ -676,6 +716,21 @@ export async function updateDriverOrderStatus(args: {
         parcelId: null,
       },
     });
+
+    await enqueueCargoPilotDomainEventsTx(tx, [
+      {
+        type: "order_status_changed",
+        tenantScope: resolveActorTenantScope(actor),
+        entityId: orderId,
+        payload: {
+          source: "updateDriverOrderStatus",
+          status,
+          reasonCode: reasonCode ?? null,
+          actorId: actor.id,
+          actorRole: actor.role,
+        },
+      },
+    ]);
   });
 
   return prisma.order.findUnique({

@@ -2,6 +2,7 @@ import prisma from "../../../config/prismaClient";
 import { OrderStatus } from "@prisma/client";
 
 import { buildInitialOrderCashCollections } from "../../../features/cash/cashCollection.shared";
+import { enqueueCargoPilotDomainEventsTx } from "../../../features/manager/analyticsOutbox";
 import { getNextOrderNumber } from "../../../utils/orderNumber";
 import { resolveOrderSlaSnapshot } from "../../pricing/pricingRepo";
 import { CreateOrderRepoPayload } from "../orderCreate.mapper";
@@ -41,6 +42,16 @@ function toDateOrNull(v?: Date | string | null) {
   if (v instanceof Date) return v;
   const d = new Date(v);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function resolveActorTenantScope(actor?: OrderActor) {
+  if (actor?.role === "warehouse" && actor.warehouseId) {
+    return `warehouse:${actor.warehouseId}`;
+  }
+  if (actor?.role) {
+    return `role:${actor.role}`;
+  }
+  return "global";
 }
 
 async function assertFkExists(payload: CreateOrderRepoPayload) {
@@ -211,8 +222,9 @@ export const createOrder = async (
     actor,
   );
 
-  return prisma.order.create({
-    data: {
+  return prisma.$transaction(async (tx) => {
+    const created = await tx.order.create({
+      data: {
       customerId,
       orderNumber,
       status: OrderStatus.pending,
@@ -276,37 +288,54 @@ export const createOrder = async (
           region: null,
         },
       },
-    },
-    include: {
-      customer: { select: userLiteSelect },
-      customerEntity: true,
-      senderAddressObj: true,
-      receiverAddressObj: true,
-      attachments: true,
-      parcels: true,
-      cashCollections: {
-        include: {
-          currentHolderUser: { select: userLiteSelect },
-          currentHolderWarehouse: true,
-          events: {
-            include: {
-              actor: { select: userLiteSelect },
+      },
+      include: {
+        customer: { select: userLiteSelect },
+        customerEntity: true,
+        senderAddressObj: true,
+        receiverAddressObj: true,
+        attachments: true,
+        parcels: true,
+        cashCollections: {
+          include: {
+            currentHolderUser: { select: userLiteSelect },
+            currentHolderWarehouse: true,
+            events: {
+              include: {
+                actor: { select: userLiteSelect },
+              },
+              orderBy: { createdAt: "asc" },
             },
-            orderBy: { createdAt: "asc" },
           },
         },
-      },
-      currentWarehouse: true,
-      assignedDriver: { select: userLiteSelect },
-      invoice: true,
-      trackingEvents: {
-        include: {
-          actor: { select: userLiteSelect },
-          warehouse: true,
-          parcel: true,
+        currentWarehouse: true,
+        assignedDriver: { select: userLiteSelect },
+        invoice: true,
+        trackingEvents: {
+          include: {
+            actor: { select: userLiteSelect },
+            warehouse: true,
+            parcel: true,
+          },
+          orderBy: { timestamp: "asc" },
         },
-        orderBy: { timestamp: "asc" },
       },
-    },
+    });
+
+    await enqueueCargoPilotDomainEventsTx(tx, [
+      {
+        type: "order_created",
+        tenantScope: resolveActorTenantScope(actor),
+        entityId: created.id,
+        payload: {
+          source: "createOrder",
+          orderNumber: created.orderNumber,
+          actorId: actor?.id ?? null,
+          actorRole: actor?.role ?? null,
+        },
+      },
+    ]);
+
+    return created;
   });
 };
