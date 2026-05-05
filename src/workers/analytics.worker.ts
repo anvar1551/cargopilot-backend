@@ -137,10 +137,16 @@ async function rebuildDirtySections() {
 
   try {
     const shouldClearBeforeRebuild =
-      process.env.ANALYTICS_WORKER_CLEAR_BEFORE_REBUILD === "true";
+      process.env.ANALYTICS_WORKER_CLEAR_BEFORE_REBUILD !== "false";
     if (shouldClearBeforeRebuild) {
       for (const section of sections) {
         await invalidateNamespaceCaches(section);
+        await clearAnalyticsReadModelBySection(toReadModelSection(section));
+      }
+    } else {
+      // Even in "soft" mode we must clear v3 read-model keys first;
+      // otherwise getAnalytics* may return stale cache-hit and skip rebuild.
+      for (const section of sections) {
         await clearAnalyticsReadModelBySection(toReadModelSection(section));
       }
     }
@@ -175,10 +181,10 @@ async function rebuildDirtySections() {
       });
     }
 
-    if (!shouldClearBeforeRebuild) {
-      for (const section of sections) {
-        await invalidateNamespaceCaches(section);
-      }
+    // Clear legacy v2 namespace cache after rebuild so request-path fallbacks
+    // cannot keep serving stale payloads.
+    for (const section of sections) {
+      await invalidateNamespaceCaches(section);
     }
 
     totalRebuilds += 1;

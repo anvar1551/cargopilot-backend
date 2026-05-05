@@ -34,7 +34,7 @@ function getDriversRedisKey(rawKey) {
 async function getManagerOverview(req, res) {
     try {
         const cacheKey = "overview-v1";
-        const cacheTtlMs = Math.min(Math.max(Number(process.env.MANAGER_OVERVIEW_CACHE_TTL_MS || 30000), 5000), 300000);
+        const cacheTtlMs = Math.min(Math.max(Number(process.env.MANAGER_OVERVIEW_CACHE_TTL_MS || 60000), 5000), 300000);
         const memoryHit = overviewCache.get(cacheKey);
         if (memoryHit && Date.now() < memoryHit.expiresAt) {
             res.setHeader("X-Overview-Cache", "HIT");
@@ -102,7 +102,7 @@ async function listDrivers(req, res) {
             role: role ?? null,
             warehouseId,
         });
-        const cacheTtlMs = Math.min(Math.max(Number(process.env.MANAGER_DRIVERS_CACHE_TTL_MS || 30000), 5000), 300000);
+        const cacheTtlMs = Math.min(Math.max(Number(process.env.MANAGER_DRIVERS_CACHE_TTL_MS || 120000), 5000), 300000);
         const memoryHit = driversCache.get(cacheKey);
         if (memoryHit && Date.now() < memoryHit.expiresAt) {
             res.setHeader("X-Drivers-Cache", "HIT");

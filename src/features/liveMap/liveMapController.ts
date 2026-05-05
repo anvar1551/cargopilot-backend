@@ -138,8 +138,8 @@ export async function getLiveMapSnapshotController(req: Request, res: Response) 
       : ":all";
     const cacheKey = `${getSnapshotCacheKey(actor.role, actor.warehouseId)}${viewportKey}`;
     const cacheTtlMs = Math.min(
-      Math.max(Number(process.env.LIVE_MAP_SNAPSHOT_CACHE_TTL_MS || 20_000), 1_000),
-      60_000,
+      Math.max(Number(process.env.LIVE_MAP_SNAPSHOT_CACHE_TTL_MS || 45_000), 1_000),
+      120_000,
     );
 
     const cached = await readSnapshotCache(cacheKey);

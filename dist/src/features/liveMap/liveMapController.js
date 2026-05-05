@@ -126,7 +126,7 @@ async function getLiveMapSnapshotController(req, res) {
             ? `:${viewport.minLat.toFixed(4)},${viewport.minLng.toFixed(4)},${viewport.maxLat.toFixed(4)},${viewport.maxLng.toFixed(4)}`
             : ":all";
         const cacheKey = `${getSnapshotCacheKey(actor.role, actor.warehouseId)}${viewportKey}`;
-        const cacheTtlMs = Math.min(Math.max(Number(process.env.LIVE_MAP_SNAPSHOT_CACHE_TTL_MS || 20000), 1000), 60000);
+        const cacheTtlMs = Math.min(Math.max(Number(process.env.LIVE_MAP_SNAPSHOT_CACHE_TTL_MS || 45000), 1000), 120000);
         const cached = await readSnapshotCache(cacheKey);
         if (cached) {
             res.setHeader("X-Live-Map-Cache", "HIT");

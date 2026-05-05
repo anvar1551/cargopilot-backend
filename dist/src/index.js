@@ -127,7 +127,10 @@ const server = (0, http_1.createServer)(app);
 (0, analyticsV2Realtime_1.ensureAnalyticsInvalidationConsumer)();
 (0, analyticsWarmup_1.startAnalyticsWarmupLoop)();
 void (0, analyticsOutboxPublisher_1.startAnalyticsOutboxPublisher)();
-if (process.env.ANALYTICS_WORKER_IN_PROCESS === "true") {
+const analyticsWorkerInProcessEnv = String(process.env.ANALYTICS_WORKER_IN_PROCESS ?? "").trim().toLowerCase();
+const runAnalyticsWorkerInProcess = analyticsWorkerInProcessEnv === "true" ||
+    (process.env.NODE_ENV !== "production" && analyticsWorkerInProcessEnv !== "false");
+if (runAnalyticsWorkerInProcess) {
     void (0, analytics_worker_1.startAnalyticsWorker)({ leaderLock: true });
 }
 server.listen(PORT, "0.0.0.0", () => {

@@ -57,7 +57,7 @@ export async function getManagerOverview(req: Request, res: Response) {
   try {
     const cacheKey = "overview-v1";
     const cacheTtlMs = Math.min(
-      Math.max(Number(process.env.MANAGER_OVERVIEW_CACHE_TTL_MS || 30_000), 5_000),
+      Math.max(Number(process.env.MANAGER_OVERVIEW_CACHE_TTL_MS || 60_000), 5_000),
       300_000,
     );
 
@@ -136,7 +136,7 @@ export async function listDrivers(req: Request, res: Response) {
       warehouseId,
     });
     const cacheTtlMs = Math.min(
-      Math.max(Number(process.env.MANAGER_DRIVERS_CACHE_TTL_MS || 30_000), 5_000),
+      Math.max(Number(process.env.MANAGER_DRIVERS_CACHE_TTL_MS || 120_000), 5_000),
       300_000,
     );
 
@@ -236,4 +236,3 @@ export async function listDrivers(req: Request, res: Response) {
     return res.status(500).json({ error: err.message });
   }
 }
-
