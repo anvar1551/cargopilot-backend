@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.isRedisEnabled = isRedisEnabled;
 exports.getRedisPrefix = getRedisPrefix;
 exports.getRedisClient = getRedisClient;
+exports.withRedisTimeout = withRedisTimeout;
 // Modernized: ioredis + Hash storage + Redis Streams
 const ioredis_1 = __importDefault(require("ioredis"));
 let redisClient = null;
@@ -90,4 +91,21 @@ async function getRedisClient() {
         }
     })();
     return connectPromise;
+}
+async function withRedisTimeout(operation, work, timeoutMs = Math.max(20, Number(process.env.REDIS_OP_TIMEOUT_MS || 80))) {
+    let timer = null;
+    try {
+        return await Promise.race([
+            work(),
+            new Promise((_, reject) => {
+                timer = setTimeout(() => {
+                    reject(new Error(`[redis] ${operation} timed out after ${timeoutMs}ms`));
+                }, timeoutMs);
+            }),
+        ]);
+    }
+    finally {
+        if (timer)
+            clearTimeout(timer);
+    }
 }

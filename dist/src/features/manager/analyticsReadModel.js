@@ -63,7 +63,7 @@ async function readAnalyticsReadModel(key) {
         const redis = await (0, redis_1.getRedisClient)();
         if (!redis)
             return null;
-        const raw = await redis.get(key);
+        const raw = await (0, redis_1.withRedisTimeout)("analytics:read-model:get", () => redis.get(key));
         if (!raw)
             return null;
         return JSON.parse(raw);
@@ -86,7 +86,7 @@ async function writeAnalyticsReadModel(args) {
         const redis = await (0, redis_1.getRedisClient)();
         if (!redis)
             return;
-        await redis.set(args.key, JSON.stringify(args.payload), "EX", Math.max(1, Math.floor(ttlMs / 1000)));
+        await (0, redis_1.withRedisTimeout)("analytics:read-model:set", () => redis.set(args.key, JSON.stringify(args.payload), "EX", Math.max(1, Math.floor(ttlMs / 1000))));
     }
     catch (err) {
         console.error(`[analytics-v3] read model write failed: ${err?.message || "unknown"}`);

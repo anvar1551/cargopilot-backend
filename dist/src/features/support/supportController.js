@@ -13,6 +13,7 @@ exports.streamSupportController = streamSupportController;
 const client_1 = require("@prisma/client");
 const supportService_1 = require("./supportService");
 const supportRealtime_1 = require("./supportRealtime");
+const opsMetrics_1 = require("../observability/opsMetrics");
 function actorFromRequest(req) {
     return {
         id: req.user?.id || "",
@@ -50,39 +51,13 @@ async function listSupportTicketsController(req, res) {
             includeArchived: String(req.query.includeArchived || "") === "true",
             actor: actorFromRequest(req),
         };
-        const work = (0, supportService_1.listSupportTickets)(args).catch((err) => {
-            console.error(`[support] list background load failed: ${err?.message || "unknown"}`);
-            throw err;
-        });
-        const timeoutMs = Math.max(250, Number(process.env.SUPPORT_LIST_FAST_TIMEOUT_MS || 1500));
-        const result = await Promise.race([
-            work,
-            new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs)),
-        ]);
-        if (!result) {
-            res.setHeader("X-Support-Cache", "PARTIAL");
-            res.setHeader("X-Support-Time-Ms", String(Date.now() - startedAt));
-            return res.json({
-                items: [],
-                hasMore: false,
-                nextCursor: null,
-                summary: {
-                    open: 0,
-                    escalated: 0,
-                    waitingCustomer: 0,
-                    waitingDriver: 0,
-                    waiting: 0,
-                    resolvedToday: 0,
-                    slaRisk: 0,
-                },
-                isPartial: true,
-            });
-        }
+        const result = await (0, supportService_1.listSupportTickets)(args);
         res.setHeader("X-Support-Cache", result.cacheHit ? "HIT" : "MISS");
         res.setHeader("X-Support-Time-Ms", String(Date.now() - startedAt));
         return res.json(result.payload);
     }
     catch (err) {
+        console.error(`[support] list tickets failed: ${err?.message || "unknown"}`);
         return res.status(500).json({ error: err?.message || "Failed to load support tickets" });
     }
 }
@@ -98,6 +73,7 @@ async function getSupportTicketController(req, res) {
         return res.json(result.payload);
     }
     catch (err) {
+        console.error(`[support] get ticket failed: ${err?.message || "unknown"}`);
         return res.status(500).json({ error: err?.message || "Failed to load support ticket" });
     }
 }
@@ -186,14 +162,35 @@ async function streamSupportController(req, res) {
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders?.();
+    const clientKey = `${req.user?.id || "anon"}:${req.ip || "ip"}`;
+    const lastEventId = String(req.header("last-event-id") || req.header("Last-Event-ID") || "").trim();
+    (0, opsMetrics_1.recordSseConnected)({ stream: "support", clientKey });
     let closed = false;
+    let sequence = 0;
     const send = (event, payload) => {
         if (closed)
             return;
+        sequence += 1;
+        res.write(`id: ${sequence}\n`);
         res.write(`event: ${event}\n`);
         res.write(`data: ${JSON.stringify(payload)}\n\n`);
     };
-    send("ready", { connectedAt: new Date().toISOString() });
+    send("ready", { connectedAt: new Date().toISOString(), resumedFrom: lastEventId || null });
+    const replayEvents = (await (0, supportRealtime_1.replaySupportRefreshFromRedis)({
+        lastEventId,
+        limit: Number(process.env.SUPPORT_STREAM_REPLAY_MAX_EVENTS || 200),
+    })) || (0, supportRealtime_1.replaySupportRefreshSince)(lastEventId);
+    const replayLimit = Math.max(10, Number(process.env.SUPPORT_STREAM_REPLAY_MAX_EVENTS || 200));
+    const replaySlice = replayEvents.slice(-replayLimit);
+    replaySlice.forEach((event) => {
+        send("support-refresh", event);
+    });
+    if (replayEvents.length > replaySlice.length) {
+        send("support-replay-truncated", {
+            skipped: replayEvents.length - replaySlice.length,
+            delivered: replaySlice.length,
+        });
+    }
     const heartbeat = setInterval(() => {
         if (!closed)
             res.write(`: ping ${Date.now()}\n\n`);
@@ -203,6 +200,7 @@ async function streamSupportController(req, res) {
     });
     req.on("close", () => {
         closed = true;
+        (0, opsMetrics_1.recordSseDisconnected)("support");
         clearInterval(heartbeat);
         unsubscribe();
     });

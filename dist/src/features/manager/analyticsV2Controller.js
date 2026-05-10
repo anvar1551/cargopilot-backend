@@ -80,6 +80,7 @@ async function getAnalyticsSummaryV2Controller(req, res) {
     }
     catch (err) {
         const durationMs = Date.now() - startedAt;
+        console.error(`[analytics-v2] summary failed: ${err?.message || "unknown"}`);
         res.setHeader("X-Analytics-V2-Time-Ms", String(durationMs));
         (0, opsMetrics_1.recordAnalyticsRequest)({
             endpoint: "analytics.summary",
@@ -110,6 +111,7 @@ async function getAnalyticsTrendV2Controller(req, res) {
     }
     catch (err) {
         const durationMs = Date.now() - startedAt;
+        console.error(`[analytics-v2] trend failed: ${err?.message || "unknown"}`);
         res.setHeader("X-Analytics-V2-Time-Ms", String(durationMs));
         (0, opsMetrics_1.recordAnalyticsRequest)({
             endpoint: "analytics.trend",
@@ -142,6 +144,7 @@ async function getAnalyticsWarningsV2Controller(req, res) {
     }
     catch (err) {
         const durationMs = Date.now() - startedAt;
+        console.error(`[analytics-v2] warnings failed: ${err?.message || "unknown"}`);
         res.setHeader("X-Analytics-V2-Time-Ms", String(durationMs));
         (0, opsMetrics_1.recordAnalyticsRequest)({
             endpoint: "analytics.warnings",
@@ -182,6 +185,7 @@ async function getAnalyticsFinanceQueueV2Controller(req, res) {
     }
     catch (err) {
         const durationMs = Date.now() - startedAt;
+        console.error(`[analytics-v2] finance queue failed: ${err?.message || "unknown"}`);
         res.setHeader("X-Analytics-V2-Time-Ms", String(durationMs));
         (0, opsMetrics_1.recordAnalyticsRequest)({
             endpoint: "analytics.finance-queue",
@@ -214,15 +218,40 @@ async function streamAnalyticsV2Controller(req, res) {
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders?.();
     const clientKey = `${req.user?.id || "anon"}:${req.ip || "ip"}`;
+    const lastEventId = String(req.header("last-event-id") || req.header("Last-Event-ID") || "").trim();
     (0, opsMetrics_1.recordSseConnected)({ stream: "analytics", clientKey });
     let closed = false;
+    let sequence = 0;
     const send = (event, payload) => {
         if (closed)
             return;
+        sequence += 1;
+        res.write(`id: ${sequence}\n`);
         res.write(`event: ${event}\n`);
         res.write(`data: ${JSON.stringify(payload)}\n\n`);
     };
-    send("ready", { connectedAt: new Date().toISOString() });
+    send("ready", { connectedAt: new Date().toISOString(), resumedFrom: lastEventId || null });
+    const replayEvents = (await (0, analyticsV2Realtime_1.replayAnalyticsInvalidationFromRedis)({
+        lastEventId,
+        limit: Number(process.env.ANALYTICS_V2_STREAM_REPLAY_MAX_EVENTS || 250),
+    })) || (0, analyticsV2Realtime_1.replayAnalyticsInvalidationSince)(lastEventId);
+    const replayLimit = Math.max(10, Number(process.env.ANALYTICS_V2_STREAM_REPLAY_MAX_EVENTS || 250));
+    const replaySlice = replayEvents.slice(-replayLimit);
+    replaySlice.forEach((event) => {
+        send("analytics-refresh", {
+            at: event.at,
+            reason: event.reason,
+            scope: event.scope,
+            keys: event.keys,
+            source: event.source || "api",
+        });
+    });
+    if (replayEvents.length > replaySlice.length) {
+        send("analytics-replay-truncated", {
+            skipped: replayEvents.length - replaySlice.length,
+            delivered: replaySlice.length,
+        });
+    }
     const heartbeatMs = Math.max(10000, Number(process.env.ANALYTICS_V2_STREAM_HEARTBEAT_MS || 25000));
     const configuredRefreshMs = Number(process.env.ANALYTICS_V2_STREAM_REFRESH_MS || 0);
     const refreshEveryMs = Number.isFinite(configuredRefreshMs) && configuredRefreshMs > 0

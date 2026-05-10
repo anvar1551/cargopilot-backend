@@ -2,7 +2,7 @@ import { Request, Response } from "express";
 import { DriverType } from "@prisma/client";
 import { createHash } from "crypto";
 import prisma from "../../config/prismaClient";
-import { getRedisClient, getRedisPrefix } from "../../config/redis";
+import { getRedisClient, getRedisPrefix, withRedisTimeout } from "../../config/redis";
 import { subscribeAnalyticsInvalidation } from "./analyticsV2Realtime";
 import { getAnalyticsSummaryV2 } from "./analyticsV2";
 
@@ -65,7 +65,11 @@ function getDriversRedisKey(rawKey: string) {
 function clearManagerOverviewCache() {
   overviewCache.clear();
   void getRedisClient()
-    .then((redis) => redis?.del(getOverviewRedisKey("overview-v1")))
+    .then((redis) =>
+      redis
+        ? withRedisTimeout("manager:overview:clear", () => redis.del(getOverviewRedisKey("overview-v1")))
+        : undefined,
+    )
     .catch((err: any) => {
       console.error(`[overview-cache] redis clear failed: ${err?.message || "unknown"}`);
     });
@@ -212,11 +216,13 @@ export async function getManagerOverview(req: Request, res: Response) {
             writeOverviewMemory(cacheKey, payload, cacheTtlMs);
             const redis = await getRedisClient();
             if (redis) {
-              await redis.set(
-                getOverviewRedisKey(cacheKey),
-                JSON.stringify(payload),
-                "EX",
-                Math.max(1, Math.floor(cacheTtlMs / 1000)),
+              await withRedisTimeout("manager:overview:bg-set", () =>
+                redis.set(
+                  getOverviewRedisKey(cacheKey),
+                  JSON.stringify(payload),
+                  "EX",
+                  Math.max(1, Math.floor(cacheTtlMs / 1000)),
+                ),
               );
             }
             return payload;
@@ -237,7 +243,9 @@ export async function getManagerOverview(req: Request, res: Response) {
     try {
       const redis = await getRedisClient();
       if (redis) {
-        const redisHit = await redis.get(getOverviewRedisKey(cacheKey));
+        const redisHit = await withRedisTimeout("manager:overview:get", () =>
+          redis.get(getOverviewRedisKey(cacheKey)),
+        );
         if (redisHit) {
           const payload = JSON.parse(redisHit) as ManagerOverviewPayload;
           writeOverviewMemory(cacheKey, payload, cacheTtlMs);
@@ -263,11 +271,13 @@ export async function getManagerOverview(req: Request, res: Response) {
     try {
       const redis = await getRedisClient();
       if (redis) {
-        await redis.set(
-          getOverviewRedisKey(cacheKey),
-          JSON.stringify(payload),
-          "EX",
-          Math.max(1, Math.floor(cacheTtlMs / 1000)),
+        await withRedisTimeout("manager:overview:set", () =>
+          redis.set(
+            getOverviewRedisKey(cacheKey),
+            JSON.stringify(payload),
+            "EX",
+            Math.max(1, Math.floor(cacheTtlMs / 1000)),
+          ),
         );
       }
     } catch (err: any) {
@@ -310,11 +320,13 @@ export async function listDrivers(req: Request, res: Response) {
             writeDriversMemory(cacheKey, payload, cacheTtlMs);
             const redis = await getRedisClient();
             if (redis) {
-              await redis.set(
-                getDriversRedisKey(cacheKey),
-                JSON.stringify(payload),
-                "EX",
-                Math.max(1, Math.floor(cacheTtlMs / 1000)),
+              await withRedisTimeout("manager:drivers:bg-set", () =>
+                redis.set(
+                  getDriversRedisKey(cacheKey),
+                  JSON.stringify(payload),
+                  "EX",
+                  Math.max(1, Math.floor(cacheTtlMs / 1000)),
+                ),
               );
             }
             return payload;
@@ -335,7 +347,9 @@ export async function listDrivers(req: Request, res: Response) {
     try {
       const redis = await getRedisClient();
       if (redis) {
-        const redisHit = await redis.get(getDriversRedisKey(cacheKey));
+        const redisHit = await withRedisTimeout("manager:drivers:get", () =>
+          redis.get(getDriversRedisKey(cacheKey)),
+        );
         if (redisHit) {
           const payload = JSON.parse(redisHit) as DriverListPayload;
           writeDriversMemory(cacheKey, payload, cacheTtlMs);
@@ -361,11 +375,13 @@ export async function listDrivers(req: Request, res: Response) {
     try {
       const redis = await getRedisClient();
       if (redis) {
-        await redis.set(
-          getDriversRedisKey(cacheKey),
-          JSON.stringify(payload),
-          "EX",
-          Math.max(1, Math.floor(cacheTtlMs / 1000)),
+        await withRedisTimeout("manager:drivers:set", () =>
+          redis.set(
+            getDriversRedisKey(cacheKey),
+            JSON.stringify(payload),
+            "EX",
+            Math.max(1, Math.floor(cacheTtlMs / 1000)),
+          ),
         );
       }
     } catch (err: any) {

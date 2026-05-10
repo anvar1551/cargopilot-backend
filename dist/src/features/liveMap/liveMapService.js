@@ -415,7 +415,7 @@ async function getLiveMapSnapshot(args) {
     const warehouseRegionById = new Map(warehouses.map((warehouse) => [warehouse.id, warehouse.region ?? null]));
     const driverIds = driverRows.map((driver) => driver.id);
     const [driverLocations, driverPresences] = await Promise.all([
-        (0, liveMapStore_1.readDriverLocations)(driverIds),
+        viewport ? (0, liveMapStore_1.readDriverLocationsInViewport)(viewport) : (0, liveMapStore_1.readDriverLocations)(driverIds),
         (0, liveMapStore_1.readDriverPresences)(driverIds),
     ]);
     const drivers = driverRows.map((driver) => {
@@ -474,7 +474,8 @@ async function getLiveMapSnapshot(args) {
         })
         : orders;
     const viewportFilteredDrivers = viewport
-        ? drivers.filter((driver) => isInViewport(driver.lat, driver.lng, viewport))
+        ? drivers.filter((driver) => driverLocations.has(driver.id) ||
+            isInViewport(driver.lat, driver.lng, viewport))
         : drivers;
     const viewportFilteredWarehouses = viewport
         ? warehouses.filter((warehouse) => warehouse.lat != null &&

@@ -3,7 +3,11 @@ import { createHash } from "crypto";
 import type { Request, Response } from "express";
 import { ZodError } from "zod";
 import { getRedisClient, getRedisPrefix } from "../../config/redis";
-import { subscribeLiveMapEvents } from "./liveMapStore";
+import {
+  replayLiveMapEventsFromRedis,
+  replayLiveMapEventsSince,
+  subscribeLiveMapEvents,
+} from "./liveMapStore";
 import { recordSseConnected, recordSseDisconnected } from "../observability/opsMetrics";
 import {
   getDriverPresence,
@@ -140,17 +144,6 @@ async function writeSnapshotCache(
   }
 }
 
-function emptySnapshot(): ManagerLiveMapSnapshot {
-  return {
-    generatedAt: new Date().toISOString(),
-    drivers: [],
-    orders: [],
-    warehouses: [],
-    isMock: false,
-    isPartial: true,
-  };
-}
-
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => resolve(null), timeoutMs);
@@ -199,22 +192,26 @@ export async function getLiveMapSnapshotController(req: Request, res: Response) 
           warehouseId: actor.warehouseId,
         },
         viewport,
-      }).finally(() => {
-        liveMapSnapshotBuilds.delete(cacheKey);
       });
       liveMapSnapshotBuilds.set(cacheKey, build);
+      build
+        .then((snapshot) => writeSnapshotCache(cacheKey, snapshot, cacheTtlMs))
+        .catch((err: any) => {
+          console.error(`[live-map-cache] snapshot build failed: ${err?.message || "unknown"}`);
+        })
+        .finally(() => {
+          liveMapSnapshotBuilds.delete(cacheKey);
+        });
     }
 
     const fastTimeoutMs = Math.max(
       250,
       Number(process.env.LIVE_MAP_SNAPSHOT_FAST_TIMEOUT_MS || 1200),
     );
-    const snapshot = await withTimeout(build, fastTimeoutMs);
+    const snapshot = cached?.payload ? await withTimeout(build, fastTimeoutMs) : await build;
     if (!snapshot) {
-      const fallback = cached?.payload
-        ? { ...cached.payload, isStale: true }
-        : emptySnapshot();
-      res.setHeader("X-Live-Map-Cache", cached ? "STALE" : "PARTIAL");
+      const fallback = { ...cached!.payload, isStale: true };
+      res.setHeader("X-Live-Map-Cache", "STALE");
       res.setHeader("X-Live-Map-Time-Ms", String(Date.now() - startedAt));
       res.setHeader("Cache-Control", "private, max-age=3");
       return res.json(fallback);
@@ -333,6 +330,7 @@ export async function streamLiveMapController(req: Request, res: Response) {
   if (!actor) return res.status(401).json({ error: "Unauthorized" });
   const viewport = parseViewportFromRequest(req);
   const clientKey = `${req.user?.id || "anon"}:${req.ip || "ip"}`;
+  const lastEventId = String(req.header("last-event-id") || req.header("Last-Event-ID") || "").trim();
 
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -340,7 +338,26 @@ export async function streamLiveMapController(req: Request, res: Response) {
   res.flushHeaders?.();
   recordSseConnected({ stream: "live-map", clientKey });
 
-  res.write(`event: ready\ndata: ${JSON.stringify({ connectedAt: new Date().toISOString() })}\n\n`);
+  res.write(`event: ready\ndata: ${JSON.stringify({ connectedAt: new Date().toISOString(), resumedFrom: lastEventId || null })}\n\n`);
+  const replayEvents =
+    (await replayLiveMapEventsFromRedis({
+      lastEventId,
+      limit: Number(process.env.LIVE_MAP_STREAM_REPLAY_MAX_EVENTS || 300),
+    })) || replayLiveMapEventsSince(lastEventId);
+  const replayLimit = Math.max(10, Number(process.env.LIVE_MAP_STREAM_REPLAY_MAX_EVENTS || 300));
+  const replaySlice = replayEvents.slice(-replayLimit);
+  replaySlice.forEach((event) => {
+    res.write(`id: ${event.id || ""}\n`);
+    res.write(`event: live-map\ndata: ${JSON.stringify(event)}\n\n`);
+  });
+  if (replayEvents.length > replaySlice.length) {
+    res.write(
+      `event: live-map-replay-truncated\ndata: ${JSON.stringify({
+        skipped: replayEvents.length - replaySlice.length,
+        delivered: replaySlice.length,
+      })}\n\n`,
+    );
+  }
 
   const heartbeatMs = Math.max(10000, Number(process.env.LIVE_MAP_STREAM_HEARTBEAT_MS || 25000));
   const heartbeat = setInterval(() => {
@@ -358,6 +375,7 @@ export async function streamLiveMapController(req: Request, res: Response) {
     if (viewport && event.type === "driver_location_upsert") {
       if (!isInViewport(event.payload.lat, event.payload.lng, viewport)) return;
     }
+    res.write(`id: ${event.id || ""}\n`);
     res.write(`event: live-map\ndata: ${JSON.stringify(event)}\n\n`);
   });
 

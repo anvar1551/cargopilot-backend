@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { getRedisClient, getRedisPrefix } from "../../config/redis";
+import { getRedisClient, getRedisPrefix, withRedisTimeout } from "../../config/redis";
 
 type CacheEntry<T> = {
   expiresAt: number;
@@ -9,6 +9,8 @@ type CacheEntry<T> = {
 
 const memoryCache = new Map<string, CacheEntry<unknown>>();
 const refreshInFlight = new Map<string, Promise<void>>();
+const versionCache = new Map<string, { value: number; expiresAt: number }>();
+const VERSION_TTL_MS = 5000;
 
 const cleanupTimer = setInterval(() => {
   const now = Date.now();
@@ -32,6 +34,28 @@ function lockKey(namespace: string, key: string) {
 
 function memoryKey(namespace: string, key: string) {
   return `${namespace}:${key}`;
+}
+
+function versionKey(namespace: "list" | "detail" | "summary") {
+  return `${getRedisPrefix()}:support:version:${namespace}`;
+}
+
+async function getNamespaceVersion(namespace: "list" | "detail" | "summary") {
+  const mem = versionCache.get(namespace);
+  if (mem && Date.now() < mem.expiresAt) return mem.value;
+  try {
+    const redis = await getRedisClient();
+    if (!redis) return mem?.value ?? 1;
+    const raw = await withRedisTimeout("support:version:get", () => redis.get(versionKey(namespace)));
+    const parsed = Math.max(1, Number(raw || mem?.value || 1));
+    versionCache.set(namespace, { value: parsed, expiresAt: Date.now() + VERSION_TTL_MS });
+    return parsed;
+  } catch (err: any) {
+    const fallback = mem?.value ?? 1;
+    versionCache.set(namespace, { value: fallback, expiresAt: Date.now() + VERSION_TTL_MS });
+    console.error(`[support] namespace version fallback ${namespace}: ${err?.message || "unknown"}`);
+    return fallback;
+  }
 }
 
 function withJitter(ttlMs: number) {
@@ -79,32 +103,15 @@ function refreshMemoryInBackground<T>(
   refreshInFlight.set(cacheKey, task);
 }
 
-async function deleteRedisPattern(pattern: string) {
-  const redis = await getRedisClient();
-  if (!redis) return;
-
-  let cursor = "0";
-  do {
-    const [nextCursor, keys] = (await redis.scan(
-      cursor,
-      "MATCH",
-      pattern,
-      "COUNT",
-      250,
-    )) as [string, string[]];
-    cursor = nextCursor;
-    if (keys.length) await redis.del(...keys);
-  } while (cursor !== "0");
-}
-
 export async function invalidateSupportCache(ticketId?: string | null) {
   try {
-    await deleteRedisPattern(`${getRedisPrefix()}:support:list:*`);
-    await deleteRedisPattern(`${getRedisPrefix()}:support:summary:*`);
-    if (ticketId) {
-      await deleteRedisPattern(`${getRedisPrefix()}:support:detail:${digest(ticketId)}*`);
-    } else {
-      await deleteRedisPattern(`${getRedisPrefix()}:support:detail:*`);
+    const redis = await getRedisClient();
+    if (redis) {
+      const namespaces: Array<"list" | "summary" | "detail"> = ["list", "summary", "detail"];
+      for (const ns of namespaces) {
+        const next = await withRedisTimeout("support:version:incr", () => redis.incr(versionKey(ns)));
+        versionCache.set(ns, { value: Math.max(1, Number(next || 1)), expiresAt: Date.now() + VERSION_TTL_MS });
+      }
     }
   } catch (err: any) {
     console.error(`[support] cache invalidation failed: ${err?.message || "unknown"}`);
@@ -127,7 +134,9 @@ export async function getOrComputeSupportCached<T>(args: {
   ttlMs: number;
   compute: () => Promise<T>;
 }): Promise<{ payload: T; cacheHit: boolean }> {
-  const memKey = memoryKey(args.namespace, args.key);
+  const namespaceVersion = await getNamespaceVersion(args.namespace);
+  const versionedKey = `v${namespaceVersion}:${args.key}`;
+  const memKey = memoryKey(args.namespace, versionedKey);
   const memHit = readMemory<T>(memKey);
   if (memHit?.isFresh) return { payload: memHit.payload, cacheHit: true };
 
@@ -137,8 +146,8 @@ export async function getOrComputeSupportCached<T>(args: {
     return { payload: memHit.payload, cacheHit: true };
   }
 
-  const redisDataKey = dataKey(args.namespace, args.key);
-  const redisLockKey = lockKey(args.namespace, args.key);
+  const redisDataKey = dataKey(args.namespace, versionedKey);
+  const redisLockKey = lockKey(args.namespace, versionedKey);
   const lockMs = 2500;
 
   try {
@@ -149,7 +158,7 @@ export async function getOrComputeSupportCached<T>(args: {
       return { payload, cacheHit: false };
     }
 
-    const redisHit = await redis.get(redisDataKey);
+    const redisHit = await withRedisTimeout("support:cache:get", () => redis.get(redisDataKey));
     if (redisHit) {
       const payload = JSON.parse(redisHit) as T;
       writeMemory(memKey, payload, ttlMs);
@@ -157,16 +166,26 @@ export async function getOrComputeSupportCached<T>(args: {
     }
 
     const lockValue = `${Date.now()}-${Math.random()}`;
-    const locked = await redis.set(redisLockKey, lockValue, "PX", lockMs, "NX");
+    const locked = await withRedisTimeout("support:lock:set", () =>
+      redis.set(redisLockKey, lockValue, "PX", lockMs, "NX"));
     if (locked) {
       try {
         const payload = await args.compute();
-        await redis.set(redisDataKey, JSON.stringify(payload), "EX", Math.max(1, Math.floor(ttlMs / 1000)));
         writeMemory(memKey, payload, ttlMs);
+        try {
+          await withRedisTimeout("support:cache:set", () =>
+            redis.set(redisDataKey, JSON.stringify(payload), "EX", Math.max(1, Math.floor(ttlMs / 1000))));
+        } catch (err: any) {
+          console.error(`[support] redis cache set skipped: ${err?.message || "unknown"}`);
+        }
         return { payload, cacheHit: false };
       } finally {
-        const current = await redis.get(redisLockKey);
-        if (current === lockValue) await redis.del(redisLockKey);
+        try {
+          const current = await withRedisTimeout("support:lock:get", () => redis.get(redisLockKey));
+          if (current === lockValue) await withRedisTimeout("support:lock:del", () => redis.del(redisLockKey));
+        } catch (err: any) {
+          console.error(`[support] lock release skipped: ${err?.message || "unknown"}`);
+        }
       }
     }
 
@@ -177,7 +196,7 @@ export async function getOrComputeSupportCached<T>(args: {
     );
     while (Date.now() - started < waitMs) {
       await new Promise((resolve) => setTimeout(resolve, 50));
-      const retryHit = await redis.get(redisDataKey);
+      const retryHit = await withRedisTimeout("support:cache:retry-get", () => redis.get(redisDataKey));
       if (retryHit) {
         const payload = JSON.parse(retryHit) as T;
         writeMemory(memKey, payload, ttlMs);
@@ -186,8 +205,13 @@ export async function getOrComputeSupportCached<T>(args: {
     }
 
     const payload = await args.compute();
-    await redis.set(redisDataKey, JSON.stringify(payload), "EX", Math.max(1, Math.floor(ttlMs / 1000)));
     writeMemory(memKey, payload, ttlMs);
+    try {
+      await withRedisTimeout("support:cache:late-set", () =>
+        redis.set(redisDataKey, JSON.stringify(payload), "EX", Math.max(1, Math.floor(ttlMs / 1000))));
+    } catch (err: any) {
+      console.error(`[support] redis cache late-set skipped: ${err?.message || "unknown"}`);
+    }
     return { payload, cacheHit: false };
   } catch (err: any) {
     console.error(`[support] cache fallback compute: ${err?.message || "unknown"}`);

@@ -31,7 +31,6 @@ const DEFAULT_SLA_POLICY = {
 
 const UNPAID_PAID_STATUSES: PaidStatus[] = ["NOT_PAID", "PARTIAL"];
 const trendBuilds = new Map<string, Promise<{ payload: any; cacheHit: boolean }>>();
-
 type Scope = {
   role: string;
   warehouseId: string | null;
@@ -120,25 +119,6 @@ function bucketByDay(
     if (bucket) bucket.count += row.count;
   }
   return buckets;
-}
-
-function emptyTrendPayload(rangeDays: number) {
-  const now = new Date();
-  const rangeStart = startOfUtcDay(subtractDays(now, rangeDays - 1));
-  const rangeEnd = endOfUtcDay(now);
-  return {
-    period: {
-      rangeDays,
-      from: rangeStart.toISOString(),
-      to: rangeEnd.toISOString(),
-    },
-    trend: {
-      created: buildDailyBuckets(rangeStart, rangeEnd),
-      delivered: buildDailyBuckets(rangeStart, rangeEnd),
-    },
-    generatedAt: new Date().toISOString(),
-    isPartial: true,
-  };
 }
 
 let cachedPolicy: {
@@ -580,18 +560,7 @@ export async function getAnalyticsTrendV2(params: TrendParams) {
     trendBuilds.set(readModelKey, buildPromise);
   }
 
-  const fastTimeoutMs = Math.max(
-    250,
-    Number(process.env.ANALYTICS_TREND_FAST_TIMEOUT_MS || 1200),
-  );
-  const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), fastTimeoutMs));
-  const result = await Promise.race([buildPromise, timeout]);
-  if (result) return result;
-
-  return {
-    payload: emptyTrendPayload(rangeDays),
-    cacheHit: true,
-  };
+  return buildPromise;
 }
 
 export async function getAnalyticsWarningsV2(params: WarningsParams) {

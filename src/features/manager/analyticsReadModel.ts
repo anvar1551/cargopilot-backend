@@ -1,4 +1,4 @@
-import { getRedisClient, getRedisPrefix } from "../../config/redis";
+import { getRedisClient, getRedisPrefix, withRedisTimeout } from "../../config/redis";
 
 export type AnalyticsReadSection = "summary" | "trend" | "warnings" | "finance-queue";
 
@@ -91,7 +91,7 @@ export async function readAnalyticsReadModel<T>(key: string): Promise<T | null> 
   try {
     const redis = await getRedisClient();
     if (!redis) return null;
-    const raw = await redis.get(key);
+    const raw = await withRedisTimeout("analytics:read-model:get", () => redis.get(key));
     if (!raw) return null;
     return JSON.parse(raw) as T;
   } catch (err: any) {
@@ -120,7 +120,9 @@ export async function writeAnalyticsReadModel<T>(args: {
   try {
     const redis = await getRedisClient();
     if (!redis) return;
-    await redis.set(args.key, JSON.stringify(args.payload), "EX", Math.max(1, Math.floor(ttlMs / 1000)));
+    await withRedisTimeout("analytics:read-model:set", () =>
+      redis.set(args.key, JSON.stringify(args.payload), "EX", Math.max(1, Math.floor(ttlMs / 1000))),
+    );
   } catch (err: any) {
     console.error(`[analytics-v3] read model write failed: ${err?.message || "unknown"}`);
   }

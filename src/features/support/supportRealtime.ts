@@ -9,6 +9,7 @@ export type SupportRefreshReason =
   | "ticket_archived";
 
 export type SupportRefreshEvent = {
+  id?: string;
   type: "support.refresh";
   at: string;
   reason: SupportRefreshReason;
@@ -18,8 +19,11 @@ export type SupportRefreshEvent = {
 
 const emitter = new EventEmitter();
 const STREAM_MAX_LEN = 10_000;
+const EVENT_BUFFER_LIMIT = Math.max(100, Number(process.env.SUPPORT_STREAM_REPLAY_BUFFER || 1000));
 let consumerStarted = false;
 let streamLastId = "$";
+let localEventSeq = 0;
+const recentEvents: SupportRefreshEvent[] = [];
 
 function getSupportEventsStream() {
   return `${getRedisPrefix()}:support:events`;
@@ -30,6 +34,7 @@ function safeParseEvent(raw: string): SupportRefreshEvent | null {
     const parsed = JSON.parse(raw) as Partial<SupportRefreshEvent> | null;
     if (parsed?.type !== "support.refresh") return null;
     return {
+      id: parsed.id ? String(parsed.id) : undefined,
       type: "support.refresh",
       at: String(parsed.at || new Date().toISOString()),
       reason: (parsed.reason as SupportRefreshReason) || "ticket_updated",
@@ -40,6 +45,13 @@ function safeParseEvent(raw: string): SupportRefreshEvent | null {
     };
   } catch {
     return null;
+  }
+}
+
+function appendRecentEvent(event: SupportRefreshEvent) {
+  recentEvents.push(event);
+  if (recentEvents.length > EVENT_BUFFER_LIMIT) {
+    recentEvents.splice(0, recentEvents.length - EVENT_BUFFER_LIMIT);
   }
 }
 
@@ -69,7 +81,10 @@ async function startStreamConsumer() {
           const raw = fields[dataIdx + 1];
           if (!raw) continue;
           const event = safeParseEvent(raw);
-          if (event) emitter.emit("support.refresh", event);
+          if (event) {
+            appendRecentEvent(event);
+            emitter.emit("support.refresh", event);
+          }
         }
       }
     } catch (err: any) {
@@ -93,6 +108,7 @@ export async function publishSupportRefresh(
   },
 ) {
   const event: SupportRefreshEvent = {
+    id: String(++localEventSeq),
     type: "support.refresh",
     at: new Date().toISOString(),
     reason,
@@ -101,6 +117,7 @@ export async function publishSupportRefresh(
   };
 
   emitter.emit("support.refresh", event);
+  appendRecentEvent(event);
 
   try {
     const redis = await getRedisClient();
@@ -124,6 +141,43 @@ export async function publishSupportRefresh(
     );
   } catch (err: any) {
     console.error(`[support] stream publish failed: ${err?.message || "unknown"}`);
+  }
+}
+
+export function replaySupportRefreshSince(lastEventId: string | null | undefined) {
+  if (!lastEventId) return [];
+  const normalized = String(lastEventId).trim();
+  if (!normalized) return [];
+  const idx = recentEvents.findIndex((event) => String(event.id || "") === normalized);
+  if (idx < 0) return [];
+  return recentEvents.slice(idx + 1);
+}
+
+export async function replaySupportRefreshFromRedis(args: { lastEventId?: string | null; limit?: number }) {
+  const lastEventId = String(args.lastEventId || "").trim();
+  if (!lastEventId) return [] as SupportRefreshEvent[];
+  const redis = await getRedisClient();
+  if (!redis) return [] as SupportRefreshEvent[];
+  try {
+    const entries = (await redis.call(
+      "XRANGE",
+      getSupportEventsStream(),
+      `(${lastEventId}`,
+      "+",
+      "COUNT",
+      String(Math.max(1, Math.min(args.limit ?? 200, 1000))),
+    )) as Array<[string, string[]]>;
+    return entries
+      .map(([, fields]) => {
+        const dataIdx = fields.indexOf("data");
+        if (dataIdx === -1) return null;
+        const raw = fields[dataIdx + 1];
+        return raw ? safeParseEvent(raw) : null;
+      })
+      .filter((item): item is SupportRefreshEvent => Boolean(item));
+  } catch (err: any) {
+    console.error(`[support] replay from redis failed: ${err?.message || "unknown"}`);
+    return [] as SupportRefreshEvent[];
   }
 }
 

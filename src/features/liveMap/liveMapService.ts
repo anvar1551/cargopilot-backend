@@ -5,6 +5,7 @@ import {
   publishLiveMapEvent,
   readDriverLocation,
   readDriverLocations,
+  readDriverLocationsInViewport,
   readDriverPresences,
   touchDriverPresenceHeartbeat,
   upsertDriverLocation,
@@ -504,7 +505,7 @@ export async function getLiveMapSnapshot(args: {
 
   const driverIds = driverRows.map((driver) => driver.id);
   const [driverLocations, driverPresences] = await Promise.all([
-    readDriverLocations(driverIds),
+    viewport ? readDriverLocationsInViewport(viewport) : readDriverLocations(driverIds),
     readDriverPresences(driverIds),
   ]);
 
@@ -579,7 +580,11 @@ export async function getLiveMapSnapshot(args: {
     : orders;
 
   const viewportFilteredDrivers = viewport
-    ? drivers.filter((driver) => isInViewport(driver.lat, driver.lng, viewport))
+    ? drivers.filter(
+        (driver) =>
+          driverLocations.has(driver.id) ||
+          isInViewport(driver.lat, driver.lng, viewport),
+      )
     : drivers;
 
   const viewportFilteredWarehouses = viewport

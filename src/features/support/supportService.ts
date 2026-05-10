@@ -10,6 +10,7 @@ import {
 } from "@prisma/client";
 import { getOrComputeSupportCached, invalidateSupportCache } from "./supportCache";
 import { publishSupportRefresh } from "./supportRealtime";
+import { enqueueCargoPilotDomainEventTx } from "../manager/analyticsOutbox";
 
 type Actor = {
   id: string;
@@ -56,14 +57,47 @@ function scheduleSupportRefresh(
   void invalidateSupportCache(ticketId).catch((err: any) => {
     console.error(`[support] async cache invalidation failed: ${err?.message || "unknown"}`);
   });
+  if (process.env.SUPPORT_DIRECT_REFRESH !== "true") return;
   void publishSupportRefresh(reason, { ticketId }).catch((err: any) => {
     console.error(`[support] async refresh publish failed: ${err?.message || "unknown"}`);
+  });
+}
+
+function supportTenantScope(actor: Actor) {
+  return actor.role ? `role:${actor.role}` : "role:manager";
+}
+
+async function enqueueSupportTicketChangedTx(
+  tx: any,
+  args: {
+    ticketId: string;
+    reason: Parameters<typeof publishSupportRefresh>[0];
+    actor: Actor;
+    payload?: Record<string, unknown>;
+  },
+) {
+  await enqueueCargoPilotDomainEventTx(tx, {
+    type: "support_ticket_changed",
+    tenantScope: supportTenantScope(args.actor),
+    entityId: args.ticketId,
+    payload: {
+      reason: args.reason,
+      actorId: actorId(args.actor),
+      actorRole: args.actor.role ?? null,
+      ...(args.payload ?? {}),
+    },
   });
 }
 
 function normalizeLimit(value?: number | null) {
   if (!Number.isFinite(value || 0)) return 30;
   return Math.min(80, Math.max(10, Math.floor(Number(value))));
+}
+
+function normalizeSearchQuery(value?: string | null) {
+  const raw = String(value || "").trim().slice(0, 80);
+  if (raw.length < 2) return "";
+  return raw;
 }
 
 function isEnumValue<T extends Record<string, string>>(enumObj: T, value?: string | null): value is T[keyof T] {
@@ -198,7 +232,7 @@ function serializeTicket(ticket: any) {
   };
 }
 
-const ticketSelect = {
+const ticketListSelect = {
   id: true,
   ticketNumber: true,
   sourceKey: true,
@@ -229,6 +263,17 @@ const ticketSelect = {
   archivedAt: true,
   createdAt: true,
   updatedAt: true,
+  order: {
+    select: {
+      id: true,
+      orderNumber: true,
+      status: true,
+    },
+  },
+} as const;
+
+const ticketDetailSelect = {
+  ...ticketListSelect,
   order: {
     select: {
       id: true,
@@ -268,7 +313,7 @@ function buildListWhere(args: ListSupportTicketsArgs) {
     ];
   }
 
-  const q = String(args.q || "").trim();
+  const q = normalizeSearchQuery(args.q);
   if (q) {
     const searchOr = [
       { ticketNumber: { contains: q, mode: "insensitive" } },
@@ -369,7 +414,7 @@ export async function listSupportTickets(args: ListSupportTicketsArgs) {
     priority: args.priority || "all",
     source: args.source || "all",
     owner: args.owner || "mine",
-    q: String(args.q || "").trim(),
+    q: normalizeSearchQuery(args.q),
     cursor: args.cursor || "",
     limit,
     includeArchived: Boolean(args.includeArchived),
@@ -384,7 +429,7 @@ export async function listSupportTickets(args: ListSupportTicketsArgs) {
       const where = buildListWhere(args);
       const rows = await prisma.supportTicket.findMany({
         where,
-        select: ticketSelect,
+        select: ticketListSelect,
         orderBy: [{ lastActivityAt: "desc" }, { id: "desc" }],
         take: limit + 1,
       });
@@ -410,7 +455,7 @@ async function loadSerializedTicketFresh(id: string) {
   const ticket = await prisma.supportTicket.findUnique({
     where: { id },
     select: {
-      ...ticketSelect,
+      ...ticketDetailSelect,
       messages: { orderBy: { createdAt: "asc" }, take: 100 },
       notes: { orderBy: { createdAt: "asc" }, take: 100 },
       events: { orderBy: { createdAt: "asc" }, take: 120 },
@@ -472,8 +517,8 @@ export async function createSupportTicket(input: CreateSupportTicketInput, actor
   if (sourceKey) {
     const existing = await prisma.supportTicket.findUnique({
       where: { sourceKey },
-      select: {
-        ...ticketSelect,
+          select: {
+            ...ticketDetailSelect,
         messages: { orderBy: { createdAt: "asc" }, take: 100 },
         notes: { orderBy: { createdAt: "asc" }, take: 100 },
         events: { orderBy: { createdAt: "asc" }, take: 120 },
@@ -491,7 +536,7 @@ export async function createSupportTicket(input: CreateSupportTicketInput, actor
         archivedAt: null,
         status: { not: SupportTicketStatus.resolved },
       },
-      select: ticketSelect,
+      select: ticketListSelect,
       orderBy: [{ lastActivityAt: "desc" }, { id: "desc" }],
     });
 
@@ -524,7 +569,7 @@ export async function createSupportTicket(input: CreateSupportTicketInput, actor
             lastReplyBy: getAuthorType(actor),
             lastActivityAt: now,
           },
-          select: ticketSelect,
+          select: ticketListSelect,
         });
 
         await tx.supportTicketEvent.create({
@@ -542,6 +587,16 @@ export async function createSupportTicket(input: CreateSupportTicketInput, actor
               requestedPriority: input.priority || SupportTicketPriority.normal,
               summary: input.summary?.trim() || null,
             },
+          },
+        });
+        await enqueueSupportTicketChangedTx(tx, {
+          ticketId: ticket.id,
+          reason: "ticket_updated",
+          actor,
+          payload: {
+            status: mergedStatus,
+            priority: mergedPriority,
+            source: input.source || SupportTicketSource.manager,
           },
         });
 
@@ -583,7 +638,7 @@ export async function createSupportTicket(input: CreateSupportTicketInput, actor
         slaDueAt: new Date(now.getTime() + 4 * 60 * 60 * 1000),
         lastActivityAt: now,
       },
-      select: ticketSelect,
+      select: ticketListSelect,
     });
     await tx.supportTicketEvent.create({
       data: {
@@ -593,6 +648,16 @@ export async function createSupportTicket(input: CreateSupportTicketInput, actor
         actorName: actorName(actor),
         body: "Ticket created",
         metadata: { source: input.source || SupportTicketSource.manager },
+      },
+    });
+    await enqueueSupportTicketChangedTx(tx, {
+      ticketId: ticket.id,
+      reason: "ticket_created",
+      actor,
+      payload: {
+        status: ticket.status,
+        priority: ticket.priority,
+        source: input.source || SupportTicketSource.manager,
       },
     });
     return ticket;
@@ -625,7 +690,7 @@ export async function updateSupportTicketStatus(ticketId: string, status: Suppor
     const ticket = await tx.supportTicket.update({
       where: { id: ticketId },
       data,
-      select: ticketSelect,
+      select: ticketListSelect,
     });
     await tx.supportTicketEvent.create({
       data: {
@@ -640,6 +705,12 @@ export async function updateSupportTicketStatus(ticketId: string, status: Suppor
         actorName: actorName(actor),
         body: `Status changed to ${status}`,
       },
+    });
+    await enqueueSupportTicketChangedTx(tx, {
+      ticketId,
+      reason: "ticket_updated",
+      actor,
+      payload: { status },
     });
     return ticket;
   });
@@ -660,7 +731,7 @@ export async function assignSupportTicket(ticketId: string, ownerId: string | nu
         ownerName: owner?.name || owner?.email || null,
         lastActivityAt: new Date(),
       },
-      select: ticketSelect,
+      select: ticketListSelect,
     });
     await tx.supportTicketEvent.create({
       data: {
@@ -670,6 +741,12 @@ export async function assignSupportTicket(ticketId: string, ownerId: string | nu
         actorName: actorName(actor),
         body: owner ? `Assigned to ${owner.name || owner.email}` : "Unassigned",
       },
+    });
+    await enqueueSupportTicketChangedTx(tx, {
+      ticketId,
+      reason: "ticket_updated",
+      actor,
+      payload: { ownerId },
     });
     return ticket;
   });
@@ -703,6 +780,11 @@ export async function addSupportTicketNote(ticketId: string, body: string, actor
         actorName: actorName(actor),
         body: "Internal note added",
       },
+    });
+    await enqueueSupportTicketChangedTx(tx, {
+      ticketId,
+      reason: "note_added",
+      actor,
     });
   });
 
@@ -741,6 +823,12 @@ export async function addSupportTicketMessage(ticketId: string, body: string, ac
         actorName: actorName(actor),
         body: "Message added",
       },
+    });
+    await enqueueSupportTicketChangedTx(tx, {
+      ticketId,
+      reason: "message_added",
+      actor,
+      payload: { authorType },
     });
   });
 

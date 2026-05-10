@@ -71,24 +71,6 @@ function bucketByDay(rows, start, end) {
     }
     return buckets;
 }
-function emptyTrendPayload(rangeDays) {
-    const now = new Date();
-    const rangeStart = startOfUtcDay(subtractDays(now, rangeDays - 1));
-    const rangeEnd = endOfUtcDay(now);
-    return {
-        period: {
-            rangeDays,
-            from: rangeStart.toISOString(),
-            to: rangeEnd.toISOString(),
-        },
-        trend: {
-            created: buildDailyBuckets(rangeStart, rangeEnd),
-            delivered: buildDailyBuckets(rangeStart, rangeEnd),
-        },
-        generatedAt: new Date().toISOString(),
-        isPartial: true,
-    };
-}
 let cachedPolicy = {
     ...DEFAULT_SLA_POLICY,
     expiresAt: 0,
@@ -456,15 +438,7 @@ async function getAnalyticsTrendV2(params) {
         });
         trendBuilds.set(readModelKey, buildPromise);
     }
-    const fastTimeoutMs = Math.max(250, Number(process.env.ANALYTICS_TREND_FAST_TIMEOUT_MS || 1200));
-    const timeout = new Promise((resolve) => setTimeout(() => resolve(null), fastTimeoutMs));
-    const result = await Promise.race([buildPromise, timeout]);
-    if (result)
-        return result;
-    return {
-        payload: emptyTrendPayload(rangeDays),
-        cacheHit: true,
-    };
+    return buildPromise;
 }
 async function getAnalyticsWarningsV2(params) {
     const policy = await getSlaPolicy();

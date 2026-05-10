@@ -16,7 +16,7 @@ function getRefreshTokenSecret() {
 }
 
 function getAccessTokenTtl() {
-  return process.env.ACCESS_TOKEN_TTL || "30m";
+  return process.env.ACCESS_TOKEN_TTL || "12h";
 }
 
 function getRefreshTokenTtl() {

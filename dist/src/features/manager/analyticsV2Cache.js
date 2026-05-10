@@ -15,19 +15,8 @@ const cleanupTimer = setInterval(() => {
     }
 }, 60000);
 cleanupTimer.unref();
-async function deleteByPatternScan(pattern) {
-    const redis = await (0, redis_1.getRedisClient)();
-    if (!redis)
-        return;
-    let cursor = "0";
-    do {
-        const [nextCursor, keys] = (await redis.scan(cursor, "MATCH", pattern, "COUNT", 200));
-        cursor = nextCursor;
-        if (Array.isArray(keys) && keys.length > 0) {
-            await redis.del(...keys);
-        }
-    } while (cursor !== "0");
-}
+const versionCache = new Map();
+const VERSION_TTL_MS = 5000;
 function digestKey(input) {
     return (0, crypto_1.createHash)("sha1").update(input).digest("hex");
 }
@@ -36,6 +25,29 @@ function asRedisKey(namespace, key) {
 }
 function asLockKey(namespace, key) {
     return `${(0, redis_1.getRedisPrefix)()}:analytics:v2:lock:${namespace}:${digestKey(key)}`;
+}
+function asVersionKey(namespace) {
+    return `${(0, redis_1.getRedisPrefix)()}:analytics:v2:version:${namespace}`;
+}
+async function readNamespaceVersion(namespace) {
+    const mem = versionCache.get(namespace);
+    if (mem && Date.now() < mem.expiresAt)
+        return mem.value;
+    try {
+        const redis = await (0, redis_1.getRedisClient)();
+        if (!redis)
+            return mem?.value ?? 1;
+        const raw = await (0, redis_1.withRedisTimeout)("analytics:version:get", () => redis.get(asVersionKey(namespace)));
+        const parsed = Math.max(1, Number(raw || mem?.value || 1));
+        versionCache.set(namespace, { value: parsed, expiresAt: Date.now() + VERSION_TTL_MS });
+        return parsed;
+    }
+    catch (err) {
+        const fallback = mem?.value ?? 1;
+        versionCache.set(namespace, { value: fallback, expiresAt: Date.now() + VERSION_TTL_MS });
+        console.error(`[analytics-v2] namespace version fallback ${namespace}: ${err?.message || "unknown"}`);
+        return fallback;
+    }
 }
 function withJitter(ttlMs) {
     const jitterPct = Math.min(Math.max(Number(process.env.ANALYTICS_V2_CACHE_JITTER_PCT || 0.15), 0), 0.45);
@@ -87,8 +99,11 @@ function makeScopeKey(args) {
 }
 async function invalidateNamespaceCaches(namespace) {
     try {
-        const pattern = `${(0, redis_1.getRedisPrefix)()}:analytics:v2:${namespace}:*`;
-        await deleteByPatternScan(pattern);
+        const redis = await (0, redis_1.getRedisClient)();
+        if (redis) {
+            const next = await (0, redis_1.withRedisTimeout)("analytics:version:incr", () => redis.incr(asVersionKey(namespace)));
+            versionCache.set(namespace, { value: Math.max(1, Number(next || 1)), expiresAt: Date.now() + VERSION_TTL_MS });
+        }
     }
     catch (err) {
         console.error(`[analytics-v2] invalidate ${namespace} failed: ${err?.message || "unknown"}`);
@@ -100,7 +115,9 @@ async function invalidateNamespaceCaches(namespace) {
     }
 }
 async function getOrComputeCached(args) {
-    const memoryKey = `${args.namespace}:${args.key}`;
+    const namespaceVersion = await readNamespaceVersion(args.namespace);
+    const versionedLogicalKey = `v${namespaceVersion}:${args.key}`;
+    const memoryKey = `${args.namespace}:${versionedLogicalKey}`;
     const memoryHit = readMemory(memoryKey);
     if (memoryHit?.isFresh) {
         return { payload: memoryHit.payload, cacheHit: true };
@@ -111,8 +128,8 @@ async function getOrComputeCached(args) {
         return { payload: memoryHit.payload, cacheHit: true };
     }
     const lockMs = Math.max(500, args.lockMs ?? 4000);
-    const redisDataKey = asRedisKey(args.namespace, args.key);
-    const redisLockKey = asLockKey(args.namespace, args.key);
+    const redisDataKey = asRedisKey(args.namespace, versionedLogicalKey);
+    const redisLockKey = asLockKey(args.namespace, versionedLogicalKey);
     try {
         const redis = await (0, redis_1.getRedisClient)();
         if (!redis) {
@@ -120,26 +137,36 @@ async function getOrComputeCached(args) {
             writeMemory(memoryKey, payload, ttlMs);
             return { payload, cacheHit: false };
         }
-        const redisHit = await redis.get(redisDataKey);
+        const redisHit = await (0, redis_1.withRedisTimeout)("analytics:cache:get", () => redis.get(redisDataKey));
         if (redisHit) {
             const payload = JSON.parse(redisHit);
             writeMemory(memoryKey, payload, ttlMs);
             return { payload, cacheHit: true };
         }
         const lockValue = `${Date.now()}-${Math.random()}`;
-        const lockAcquired = await redis.set(redisLockKey, lockValue, "PX", lockMs, "NX");
+        const lockAcquired = await (0, redis_1.withRedisTimeout)("analytics:lock:set", () => redis.set(redisLockKey, lockValue, "PX", lockMs, "NX"));
         if (lockAcquired) {
             try {
                 const payload = await args.compute();
                 const ttlSec = Math.max(1, Math.floor(ttlMs / 1000));
-                await redis.set(redisDataKey, JSON.stringify(payload), "EX", ttlSec);
                 writeMemory(memoryKey, payload, ttlMs);
+                try {
+                    await (0, redis_1.withRedisTimeout)("analytics:cache:set", () => redis.set(redisDataKey, JSON.stringify(payload), "EX", ttlSec));
+                }
+                catch (err) {
+                    console.error(`[analytics-v2] redis cache set skipped: ${err?.message || "unknown"}`);
+                }
                 return { payload, cacheHit: false };
             }
             finally {
-                const current = await redis.get(redisLockKey);
-                if (current === lockValue) {
-                    await redis.del(redisLockKey);
+                try {
+                    const current = await (0, redis_1.withRedisTimeout)("analytics:lock:get", () => redis.get(redisLockKey));
+                    if (current === lockValue) {
+                        await (0, redis_1.withRedisTimeout)("analytics:lock:del", () => redis.del(redisLockKey));
+                    }
+                }
+                catch (err) {
+                    console.error(`[analytics-v2] lock release skipped: ${err?.message || "unknown"}`);
                 }
             }
         }
@@ -148,7 +175,7 @@ async function getOrComputeCached(args) {
         const started = Date.now();
         while (Date.now() - started < waitMaxMs) {
             await new Promise((resolve) => setTimeout(resolve, 60));
-            const retryHit = await redis.get(redisDataKey);
+            const retryHit = await (0, redis_1.withRedisTimeout)("analytics:cache:retry-get", () => redis.get(redisDataKey));
             if (retryHit) {
                 const payload = JSON.parse(retryHit);
                 writeMemory(memoryKey, payload, ttlMs);
@@ -157,8 +184,13 @@ async function getOrComputeCached(args) {
         }
         const payload = await args.compute();
         const ttlSec = Math.max(1, Math.floor(ttlMs / 1000));
-        await redis.set(redisDataKey, JSON.stringify(payload), "EX", ttlSec);
         writeMemory(memoryKey, payload, ttlMs);
+        try {
+            await (0, redis_1.withRedisTimeout)("analytics:cache:late-set", () => redis.set(redisDataKey, JSON.stringify(payload), "EX", ttlSec));
+        }
+        catch (err) {
+            console.error(`[analytics-v2] redis cache late-set skipped: ${err?.message || "unknown"}`);
+        }
         return { payload, cacheHit: false };
     }
     catch (err) {

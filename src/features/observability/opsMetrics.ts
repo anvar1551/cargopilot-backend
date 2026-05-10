@@ -4,7 +4,7 @@ type AnalyticsEndpoint =
   | "analytics.warnings"
   | "analytics.finance-queue";
 
-type SseStream = "analytics" | "live-map";
+type SseStream = "analytics" | "live-map" | "support";
 
 type EndpointStats = {
   total: number;
@@ -61,6 +61,16 @@ const sseStats = new Map<SseStream, SseStats>([
   ],
   [
     "live-map",
+    {
+      active: 0,
+      totalConnects: 0,
+      totalDisconnects: 0,
+      reconnectSpikes: 0,
+      lastConnectByClient: new Map<string, number>(),
+    },
+  ],
+  [
+    "support",
     {
       active: 0,
       totalConnects: 0,
@@ -231,6 +241,8 @@ export function getOpsMetricsSnapshot() {
       (sseStats.get("analytics")?.reconnectSpikes ?? 0) > 0,
     liveMapReconnectSpike:
       (sseStats.get("live-map")?.reconnectSpikes ?? 0) > 0,
+    supportReconnectSpike:
+      (sseStats.get("support")?.reconnectSpikes ?? 0) > 0,
   };
 
   return {
@@ -261,9 +273,17 @@ export function getOpsMetricsSnapshot() {
           reconnectSpikes: stats?.reconnectSpikes ?? 0,
         };
       })(),
+      support: (() => {
+        const stats = sseStats.get("support");
+        return {
+          active: stats?.active ?? 0,
+          totalConnects: stats?.totalConnects ?? 0,
+          totalDisconnects: stats?.totalDisconnects ?? 0,
+          reconnectSpikes: stats?.reconnectSpikes ?? 0,
+        };
+      })(),
     },
     worker,
     alerts,
   };
 }
-

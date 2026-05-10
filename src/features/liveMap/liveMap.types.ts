@@ -73,7 +73,7 @@ export type DriverPresenceRecord = {
   updatedAt: string;
 };
 
-export type LiveMapEvent =
+export type LiveMapEvent = (
   | {
       type: "driver_location_upsert";
       at: string;
@@ -96,7 +96,8 @@ export type LiveMapEvent =
         driverId: string;
         heartbeatAt: string;
       };
-    };
+    }
+) & { id?: string };
 
 export type LiveMapActor = {
   role: AppRole;

@@ -19,7 +19,7 @@ function getRefreshTokenSecret() {
     return process.env.REFRESH_TOKEN_SECRET || getJwtSecret();
 }
 function getAccessTokenTtl() {
-    return process.env.ACCESS_TOKEN_TTL || "30m";
+    return process.env.ACCESS_TOKEN_TTL || "12h";
 }
 function getRefreshTokenTtl() {
     return process.env.REFRESH_TOKEN_TTL || "30d";

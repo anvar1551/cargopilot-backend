@@ -14,7 +14,12 @@ import {
   listSupportTickets,
   updateSupportTicketStatus,
 } from "./supportService";
-import { subscribeSupportRefresh } from "./supportRealtime";
+import {
+  replaySupportRefreshFromRedis,
+  replaySupportRefreshSince,
+  subscribeSupportRefresh,
+} from "./supportRealtime";
+import { recordSseConnected, recordSseDisconnected } from "../observability/opsMetrics";
 
 function actorFromRequest(req: Request) {
   return {
@@ -56,38 +61,12 @@ export async function listSupportTicketsController(req: Request, res: Response) 
       includeArchived: String(req.query.includeArchived || "") === "true",
       actor: actorFromRequest(req),
     };
-    const work = listSupportTickets(args).catch((err) => {
-      console.error(`[support] list background load failed: ${err?.message || "unknown"}`);
-      throw err;
-    });
-    const timeoutMs = Math.max(250, Number(process.env.SUPPORT_LIST_FAST_TIMEOUT_MS || 1500));
-    const result = await Promise.race([
-      work,
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
-    ]);
-    if (!result) {
-      res.setHeader("X-Support-Cache", "PARTIAL");
-      res.setHeader("X-Support-Time-Ms", String(Date.now() - startedAt));
-      return res.json({
-        items: [],
-        hasMore: false,
-        nextCursor: null,
-        summary: {
-          open: 0,
-          escalated: 0,
-          waitingCustomer: 0,
-          waitingDriver: 0,
-          waiting: 0,
-          resolvedToday: 0,
-          slaRisk: 0,
-        },
-        isPartial: true,
-      });
-    }
+    const result = await listSupportTickets(args);
     res.setHeader("X-Support-Cache", result.cacheHit ? "HIT" : "MISS");
     res.setHeader("X-Support-Time-Ms", String(Date.now() - startedAt));
     return res.json(result.payload);
   } catch (err: any) {
+    console.error(`[support] list tickets failed: ${err?.message || "unknown"}`);
     return res.status(500).json({ error: err?.message || "Failed to load support tickets" });
   }
 }
@@ -102,6 +81,7 @@ export async function getSupportTicketController(req: Request, res: Response) {
     if (!result.payload) return res.status(404).json({ error: "Support ticket not found" });
     return res.json(result.payload);
   } catch (err: any) {
+    console.error(`[support] get ticket failed: ${err?.message || "unknown"}`);
     return res.status(500).json({ error: err?.message || "Failed to load support ticket" });
   }
 }
@@ -199,14 +179,36 @@ export async function streamSupportController(req: Request, res: Response) {
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders?.();
 
+  const clientKey = `${req.user?.id || "anon"}:${req.ip || "ip"}`;
+  const lastEventId = String(req.header("last-event-id") || req.header("Last-Event-ID") || "").trim();
+  recordSseConnected({ stream: "support", clientKey });
   let closed = false;
+  let sequence = 0;
   const send = (event: string, payload: unknown) => {
     if (closed) return;
+    sequence += 1;
+    res.write(`id: ${sequence}\n`);
     res.write(`event: ${event}\n`);
     res.write(`data: ${JSON.stringify(payload)}\n\n`);
   };
 
-  send("ready", { connectedAt: new Date().toISOString() });
+  send("ready", { connectedAt: new Date().toISOString(), resumedFrom: lastEventId || null });
+  const replayEvents =
+    (await replaySupportRefreshFromRedis({
+      lastEventId,
+      limit: Number(process.env.SUPPORT_STREAM_REPLAY_MAX_EVENTS || 200),
+    })) || replaySupportRefreshSince(lastEventId);
+  const replayLimit = Math.max(10, Number(process.env.SUPPORT_STREAM_REPLAY_MAX_EVENTS || 200));
+  const replaySlice = replayEvents.slice(-replayLimit);
+  replaySlice.forEach((event) => {
+    send("support-refresh", event);
+  });
+  if (replayEvents.length > replaySlice.length) {
+    send("support-replay-truncated", {
+      skipped: replayEvents.length - replaySlice.length,
+      delivered: replaySlice.length,
+    });
+  }
   const heartbeat = setInterval(() => {
     if (!closed) res.write(`: ping ${Date.now()}\n\n`);
   }, Math.max(10_000, Number(process.env.SUPPORT_STREAM_HEARTBEAT_MS || 25_000)));
@@ -217,6 +219,7 @@ export async function streamSupportController(req: Request, res: Response) {
 
   req.on("close", () => {
     closed = true;
+    recordSseDisconnected("support");
     clearInterval(heartbeat);
     unsubscribe();
   });

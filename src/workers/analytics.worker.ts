@@ -23,6 +23,11 @@ import {
   recordAnalyticsWorkerError,
   recordAnalyticsWorkerRebuild,
 } from "../features/observability/opsMetrics";
+import { invalidateSupportCache } from "../features/support/supportCache";
+import {
+  publishSupportRefresh,
+  type SupportRefreshReason,
+} from "../features/support/supportRealtime";
 
 const GROUP_NAME = process.env.ANALYTICS_WORKER_GROUP || "cp_analytics_workers";
 const CONSUMER_NAME =
@@ -69,10 +74,34 @@ function sectionForEventType(type: CargoPilotDomainEventType): DirtySection[] {
       return ["summary", "trend", "warnings", "finance-queue"];
     case "driver_location_upsert":
     case "driver_presence_update":
+    case "support_ticket_changed":
       return [];
     default:
       return [];
   }
+}
+
+function asSupportRefreshReason(value: unknown): SupportRefreshReason {
+  const raw = String(value || "").trim();
+  if (
+    raw === "ticket_created" ||
+    raw === "ticket_updated" ||
+    raw === "message_added" ||
+    raw === "note_added" ||
+    raw === "ticket_archived"
+  ) {
+    return raw;
+  }
+  return "ticket_updated";
+}
+
+async function handleSupportTicketChanged(event: CargoPilotDomainEvent) {
+  const reason = asSupportRefreshReason(event.payload?.reason);
+  await invalidateSupportCache(event.entityId);
+  await publishSupportRefresh(reason, {
+    ticketId: event.entityId,
+    keys: ["list", "summary", "detail"],
+  });
 }
 
 function toReadModelSection(section: DirtySection): AnalyticsReadSection {
@@ -277,6 +306,9 @@ export async function startAnalyticsWorker(args?: { leaderLock?: boolean }) {
           if (event) {
             shouldProcess = await markEventDeduped(event.id);
             if (shouldProcess) {
+              if (event.type === "support_ticket_changed") {
+                await handleSupportTicketChanged(event);
+              }
               for (const section of sectionForEventType(event.type)) {
                 dirtySections.add(section);
               }

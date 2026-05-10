@@ -38,7 +38,9 @@ function getDriversRedisKey(rawKey) {
 function clearManagerOverviewCache() {
     overviewCache.clear();
     void (0, redis_1.getRedisClient)()
-        .then((redis) => redis?.del(getOverviewRedisKey("overview-v1")))
+        .then((redis) => redis
+        ? (0, redis_1.withRedisTimeout)("manager:overview:clear", () => redis.del(getOverviewRedisKey("overview-v1")))
+        : undefined)
         .catch((err) => {
         console.error(`[overview-cache] redis clear failed: ${err?.message || "unknown"}`);
     });
@@ -159,7 +161,7 @@ async function getManagerOverview(req, res) {
                     writeOverviewMemory(cacheKey, payload, cacheTtlMs);
                     const redis = await (0, redis_1.getRedisClient)();
                     if (redis) {
-                        await redis.set(getOverviewRedisKey(cacheKey), JSON.stringify(payload), "EX", Math.max(1, Math.floor(cacheTtlMs / 1000)));
+                        await (0, redis_1.withRedisTimeout)("manager:overview:bg-set", () => redis.set(getOverviewRedisKey(cacheKey), JSON.stringify(payload), "EX", Math.max(1, Math.floor(cacheTtlMs / 1000))));
                     }
                     return payload;
                 })
@@ -179,7 +181,7 @@ async function getManagerOverview(req, res) {
         try {
             const redis = await (0, redis_1.getRedisClient)();
             if (redis) {
-                const redisHit = await redis.get(getOverviewRedisKey(cacheKey));
+                const redisHit = await (0, redis_1.withRedisTimeout)("manager:overview:get", () => redis.get(getOverviewRedisKey(cacheKey)));
                 if (redisHit) {
                     const payload = JSON.parse(redisHit);
                     writeOverviewMemory(cacheKey, payload, cacheTtlMs);
@@ -204,7 +206,7 @@ async function getManagerOverview(req, res) {
         try {
             const redis = await (0, redis_1.getRedisClient)();
             if (redis) {
-                await redis.set(getOverviewRedisKey(cacheKey), JSON.stringify(payload), "EX", Math.max(1, Math.floor(cacheTtlMs / 1000)));
+                await (0, redis_1.withRedisTimeout)("manager:overview:set", () => redis.set(getOverviewRedisKey(cacheKey), JSON.stringify(payload), "EX", Math.max(1, Math.floor(cacheTtlMs / 1000))));
             }
         }
         catch (err) {
@@ -242,7 +244,7 @@ async function listDrivers(req, res) {
                     writeDriversMemory(cacheKey, payload, cacheTtlMs);
                     const redis = await (0, redis_1.getRedisClient)();
                     if (redis) {
-                        await redis.set(getDriversRedisKey(cacheKey), JSON.stringify(payload), "EX", Math.max(1, Math.floor(cacheTtlMs / 1000)));
+                        await (0, redis_1.withRedisTimeout)("manager:drivers:bg-set", () => redis.set(getDriversRedisKey(cacheKey), JSON.stringify(payload), "EX", Math.max(1, Math.floor(cacheTtlMs / 1000))));
                     }
                     return payload;
                 })
@@ -262,7 +264,7 @@ async function listDrivers(req, res) {
         try {
             const redis = await (0, redis_1.getRedisClient)();
             if (redis) {
-                const redisHit = await redis.get(getDriversRedisKey(cacheKey));
+                const redisHit = await (0, redis_1.withRedisTimeout)("manager:drivers:get", () => redis.get(getDriversRedisKey(cacheKey)));
                 if (redisHit) {
                     const payload = JSON.parse(redisHit);
                     writeDriversMemory(cacheKey, payload, cacheTtlMs);
@@ -287,7 +289,7 @@ async function listDrivers(req, res) {
         try {
             const redis = await (0, redis_1.getRedisClient)();
             if (redis) {
-                await redis.set(getDriversRedisKey(cacheKey), JSON.stringify(payload), "EX", Math.max(1, Math.floor(cacheTtlMs / 1000)));
+                await (0, redis_1.withRedisTimeout)("manager:drivers:set", () => redis.set(getDriversRedisKey(cacheKey), JSON.stringify(payload), "EX", Math.max(1, Math.floor(cacheTtlMs / 1000))));
             }
         }
         catch (err) {

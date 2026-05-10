@@ -13,6 +13,8 @@ const analyticsV2Cache_1 = require("../features/manager/analyticsV2Cache");
 const analyticsReadModel_1 = require("../features/manager/analyticsReadModel");
 const analyticsV2Realtime_1 = require("../features/manager/analyticsV2Realtime");
 const opsMetrics_1 = require("../features/observability/opsMetrics");
+const supportCache_1 = require("../features/support/supportCache");
+const supportRealtime_1 = require("../features/support/supportRealtime");
 const GROUP_NAME = process.env.ANALYTICS_WORKER_GROUP || "cp_analytics_workers";
 const CONSUMER_NAME = process.env.ANALYTICS_WORKER_CONSUMER ||
     `${process.env.HOSTNAME || "analytics"}-${process.pid}`;
@@ -40,10 +42,30 @@ function sectionForEventType(type) {
             return ["summary", "trend", "warnings", "finance-queue"];
         case "driver_location_upsert":
         case "driver_presence_update":
+        case "support_ticket_changed":
             return [];
         default:
             return [];
     }
+}
+function asSupportRefreshReason(value) {
+    const raw = String(value || "").trim();
+    if (raw === "ticket_created" ||
+        raw === "ticket_updated" ||
+        raw === "message_added" ||
+        raw === "note_added" ||
+        raw === "ticket_archived") {
+        return raw;
+    }
+    return "ticket_updated";
+}
+async function handleSupportTicketChanged(event) {
+    const reason = asSupportRefreshReason(event.payload?.reason);
+    await (0, supportCache_1.invalidateSupportCache)(event.entityId);
+    await (0, supportRealtime_1.publishSupportRefresh)(reason, {
+        ticketId: event.entityId,
+        keys: ["list", "summary", "detail"],
+    });
 }
 function toReadModelSection(section) {
     return section;
@@ -214,6 +236,9 @@ async function startAnalyticsWorker(args) {
                     if (event) {
                         shouldProcess = await markEventDeduped(event.id);
                         if (shouldProcess) {
+                            if (event.type === "support_ticket_changed") {
+                                await handleSupportTicketChanged(event);
+                            }
                             for (const section of sectionForEventType(event.type)) {
                                 dirtySections.add(section);
                             }

@@ -7,6 +7,8 @@ import {
 } from "./analyticsV2";
 import {
   publishAnalyticsInvalidation,
+  replayAnalyticsInvalidationFromRedis,
+  replayAnalyticsInvalidationSince,
   subscribeAnalyticsInvalidation,
 } from "./analyticsV2Realtime";
 import { publishCargoPilotDomainEvent } from "./analyticsEvents";
@@ -84,6 +86,7 @@ export async function getAnalyticsSummaryV2Controller(req: Request, res: Respons
     return res.json(result.payload);
   } catch (err: any) {
     const durationMs = Date.now() - startedAt;
+    console.error(`[analytics-v2] summary failed: ${err?.message || "unknown"}`);
     res.setHeader("X-Analytics-V2-Time-Ms", String(durationMs));
     recordAnalyticsRequest({
       endpoint: "analytics.summary",
@@ -114,6 +117,7 @@ export async function getAnalyticsTrendV2Controller(req: Request, res: Response)
     return res.json(result.payload);
   } catch (err: any) {
     const durationMs = Date.now() - startedAt;
+    console.error(`[analytics-v2] trend failed: ${err?.message || "unknown"}`);
     res.setHeader("X-Analytics-V2-Time-Ms", String(durationMs));
     recordAnalyticsRequest({
       endpoint: "analytics.trend",
@@ -146,6 +150,7 @@ export async function getAnalyticsWarningsV2Controller(req: Request, res: Respon
     return res.json(result.payload);
   } catch (err: any) {
     const durationMs = Date.now() - startedAt;
+    console.error(`[analytics-v2] warnings failed: ${err?.message || "unknown"}`);
     res.setHeader("X-Analytics-V2-Time-Ms", String(durationMs));
     recordAnalyticsRequest({
       endpoint: "analytics.warnings",
@@ -187,6 +192,7 @@ export async function getAnalyticsFinanceQueueV2Controller(req: Request, res: Re
     return res.json(result.payload);
   } catch (err: any) {
     const durationMs = Date.now() - startedAt;
+    console.error(`[analytics-v2] finance queue failed: ${err?.message || "unknown"}`);
     res.setHeader("X-Analytics-V2-Time-Ms", String(durationMs));
     recordAnalyticsRequest({
       endpoint: "analytics.finance-queue",
@@ -221,16 +227,42 @@ export async function streamAnalyticsV2Controller(req: Request, res: Response) {
   res.flushHeaders?.();
 
   const clientKey = `${req.user?.id || "anon"}:${req.ip || "ip"}`;
+  const lastEventId = String(req.header("last-event-id") || req.header("Last-Event-ID") || "").trim();
   recordSseConnected({ stream: "analytics", clientKey });
   let closed = false;
+  let sequence = 0;
 
   const send = (event: string, payload: unknown) => {
     if (closed) return;
+    sequence += 1;
+    res.write(`id: ${sequence}\n`);
     res.write(`event: ${event}\n`);
     res.write(`data: ${JSON.stringify(payload)}\n\n`);
   };
 
-  send("ready", { connectedAt: new Date().toISOString() });
+  send("ready", { connectedAt: new Date().toISOString(), resumedFrom: lastEventId || null });
+  const replayEvents =
+    (await replayAnalyticsInvalidationFromRedis({
+      lastEventId,
+      limit: Number(process.env.ANALYTICS_V2_STREAM_REPLAY_MAX_EVENTS || 250),
+    })) || replayAnalyticsInvalidationSince(lastEventId);
+  const replayLimit = Math.max(10, Number(process.env.ANALYTICS_V2_STREAM_REPLAY_MAX_EVENTS || 250));
+  const replaySlice = replayEvents.slice(-replayLimit);
+  replaySlice.forEach((event) => {
+    send("analytics-refresh", {
+      at: event.at,
+      reason: event.reason,
+      scope: event.scope,
+      keys: event.keys,
+      source: event.source || "api",
+    });
+  });
+  if (replayEvents.length > replaySlice.length) {
+    send("analytics-replay-truncated", {
+      skipped: replayEvents.length - replaySlice.length,
+      delivered: replaySlice.length,
+    });
+  }
 
   const heartbeatMs = Math.max(
     10_000,

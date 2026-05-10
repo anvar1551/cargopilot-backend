@@ -35,6 +35,16 @@ const sseStats = new Map([
             lastConnectByClient: new Map(),
         },
     ],
+    [
+        "support",
+        {
+            active: 0,
+            totalConnects: 0,
+            totalDisconnects: 0,
+            reconnectSpikes: 0,
+            lastConnectByClient: new Map(),
+        },
+    ],
 ]);
 const workerState = {
     eventsConsumed: 0,
@@ -171,6 +181,7 @@ function getOpsMetricsSnapshot() {
         workerLagHigh: worker.lagAlert,
         analyticsReconnectSpike: (sseStats.get("analytics")?.reconnectSpikes ?? 0) > 0,
         liveMapReconnectSpike: (sseStats.get("live-map")?.reconnectSpikes ?? 0) > 0,
+        supportReconnectSpike: (sseStats.get("support")?.reconnectSpikes ?? 0) > 0,
     };
     return {
         generatedAt: new Date().toISOString(),
@@ -193,6 +204,15 @@ function getOpsMetricsSnapshot() {
             })(),
             liveMap: (() => {
                 const stats = sseStats.get("live-map");
+                return {
+                    active: stats?.active ?? 0,
+                    totalConnects: stats?.totalConnects ?? 0,
+                    totalDisconnects: stats?.totalDisconnects ?? 0,
+                    reconnectSpikes: stats?.reconnectSpikes ?? 0,
+                };
+            })(),
+            support: (() => {
+                const stats = sseStats.get("support");
                 return {
                     active: stats?.active ?? 0,
                     totalConnects: stats?.totalConnects ?? 0,

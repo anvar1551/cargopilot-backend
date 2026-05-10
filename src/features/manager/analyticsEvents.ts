@@ -8,6 +8,7 @@ export type CargoPilotDomainEventType =
   | "cash_settled"
   | "driver_location_upsert"
   | "driver_presence_update"
+  | "support_ticket_changed"
   | "manual_refresh";
 
 export type CargoPilotDomainEvent = {

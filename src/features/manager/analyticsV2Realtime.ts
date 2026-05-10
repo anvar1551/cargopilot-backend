@@ -15,6 +15,7 @@ export type AnalyticsRefreshSection =
   | "finance-queue";
 
 export type AnalyticsInvalidationEvent = {
+  id?: string;
   type: "analytics.invalidate";
   at: string;
   reason: AnalyticsInvalidationReason;
@@ -25,8 +26,11 @@ export type AnalyticsInvalidationEvent = {
 
 const emitter = new EventEmitter();
 const STREAM_MAX_LEN = 10_000;
+const EVENT_BUFFER_LIMIT = Math.max(100, Number(process.env.ANALYTICS_V2_STREAM_REPLAY_BUFFER || 1000));
 let consumerStarted = false;
 let streamLastId = "$";
+let localEventSeq = 0;
+const recentEvents: AnalyticsInvalidationEvent[] = [];
 
 function getAnalyticsEventsStream() {
   return `${getRedisPrefix()}:analytics:v2:events`;
@@ -37,6 +41,7 @@ function safeParseEvent(raw: string): AnalyticsInvalidationEvent | null {
     const parsed = JSON.parse(raw) as Partial<AnalyticsInvalidationEvent> | null;
     if (parsed?.type !== "analytics.invalidate") return null;
     return {
+      id: parsed.id ? String(parsed.id) : undefined,
       type: "analytics.invalidate",
       at: String(parsed.at || new Date().toISOString()),
       reason: (parsed.reason as AnalyticsInvalidationReason) || "manual_refresh",
@@ -48,6 +53,13 @@ function safeParseEvent(raw: string): AnalyticsInvalidationEvent | null {
     };
   } catch {
     return null;
+  }
+}
+
+function appendRecentEvent(event: AnalyticsInvalidationEvent) {
+  recentEvents.push(event);
+  if (recentEvents.length > EVENT_BUFFER_LIMIT) {
+    recentEvents.splice(0, recentEvents.length - EVENT_BUFFER_LIMIT);
   }
 }
 
@@ -76,7 +88,10 @@ async function startStreamConsumer() {
             const raw = fields[dataIdx + 1];
             if (!raw) continue;
             const event = safeParseEvent(raw);
-            if (event) emitter.emit("analytics.invalidate", event);
+            if (event) {
+              appendRecentEvent(event);
+              emitter.emit("analytics.invalidate", event);
+            }
           }
         }
       }
@@ -102,6 +117,7 @@ export async function publishAnalyticsInvalidation(
   },
 ) {
   const event: AnalyticsInvalidationEvent = {
+    id: String(++localEventSeq),
     type: "analytics.invalidate",
     at: new Date().toISOString(),
     reason,
@@ -113,6 +129,7 @@ export async function publishAnalyticsInvalidation(
   };
 
   emitter.emit("analytics.invalidate", event);
+  appendRecentEvent(event);
 
   try {
     const redis = await getRedisClient();
@@ -138,6 +155,46 @@ export async function publishAnalyticsInvalidation(
     );
   } catch (err: any) {
     console.error(`[analytics-v2] stream publish failed: ${err?.message || "unknown"}`);
+  }
+}
+
+export function replayAnalyticsInvalidationSince(lastEventId: string | null | undefined) {
+  if (!lastEventId) return [];
+  const normalized = String(lastEventId).trim();
+  if (!normalized) return [];
+  const idx = recentEvents.findIndex((event) => String(event.id || "") === normalized);
+  if (idx < 0) return [];
+  return recentEvents.slice(idx + 1);
+}
+
+export async function replayAnalyticsInvalidationFromRedis(args: {
+  lastEventId?: string | null;
+  limit?: number;
+}) {
+  const lastEventId = String(args.lastEventId || "").trim();
+  if (!lastEventId) return [] as AnalyticsInvalidationEvent[];
+  const redis = await getRedisClient();
+  if (!redis) return [] as AnalyticsInvalidationEvent[];
+  try {
+    const entries = (await redis.call(
+      "XRANGE",
+      getAnalyticsEventsStream(),
+      `(${lastEventId}`,
+      "+",
+      "COUNT",
+      String(Math.max(1, Math.min(args.limit ?? 250, 1000))),
+    )) as Array<[string, string[]]>;
+    return entries
+      .map(([, fields]) => {
+        const dataIdx = fields.indexOf("data");
+        if (dataIdx === -1) return null;
+        const raw = fields[dataIdx + 1];
+        return raw ? safeParseEvent(raw) : null;
+      })
+      .filter((item): item is AnalyticsInvalidationEvent => Boolean(item));
+  } catch (err: any) {
+    console.error(`[analytics-v2] replay from redis failed: ${err?.message || "unknown"}`);
+    return [] as AnalyticsInvalidationEvent[];
   }
 }
 

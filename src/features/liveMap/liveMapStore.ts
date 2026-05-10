@@ -43,9 +43,19 @@ liveMapEmitter.setMaxListeners(200);
 
 let streamLastId = "$";
 let streamConsumerStarted = false;
+let localEventSeq = 0;
+const EVENT_BUFFER_LIMIT = Math.max(100, Number(process.env.LIVE_MAP_STREAM_REPLAY_BUFFER || 1000));
+const recentEvents: LiveMapEvent[] = [];
 
 function nowMs() {
   return Date.now();
+}
+
+function appendRecentEvent(event: LiveMapEvent) {
+  recentEvents.push(event);
+  if (recentEvents.length > EVENT_BUFFER_LIMIT) {
+    recentEvents.splice(0, recentEvents.length - EVENT_BUFFER_LIMIT);
+  }
 }
 
 function parseDriverLocationRecord(raw: unknown): DriverLocationRecord | null {
@@ -126,6 +136,10 @@ function getEventsStream() {
   return `${getRedisPrefix()}:live-map:events`;
 }
 
+function getGeoIndexKey() {
+  return `${getRedisPrefix()}:live-map:geo:drivers`;
+}
+
 function readMemoryLocation(driverId: string) {
   const hit = memoryStore.get(driverId);
   if (!hit) return null;
@@ -185,6 +199,7 @@ async function startStreamConsumer() {
               const rawEvent = fields[dataIdx + 1];
               if (!rawEvent) continue;
               const event = JSON.parse(rawEvent) as LiveMapEvent;
+              appendRecentEvent(event);
               liveMapEmitter.emit("live-map-event", event);
             }
           }
@@ -221,8 +236,44 @@ export async function upsertDriverLocation(location: DriverLocationRecord) {
 
     await redis.hset(getLocationRedisKey(location.driverId), ...fields);
     await redis.expire(getLocationRedisKey(location.driverId), LOCATION_TTL_SEC);
+    await redis.geoadd(getGeoIndexKey(), location.lng, location.lat, location.driverId);
+    await redis.expire(getGeoIndexKey(), LOCATION_TTL_SEC);
   } catch (err: any) {
     console.error(`[live-map] redis write location failed: ${err?.message || "unknown"}`);
+  }
+}
+
+export async function readDriverLocationsInViewport(viewport: {
+  minLat: number;
+  minLng: number;
+  maxLat: number;
+  maxLng: number;
+}) {
+  const centerLng = (viewport.minLng + viewport.maxLng) / 2;
+  const centerLat = (viewport.minLat + viewport.maxLat) / 2;
+  const widthM = Math.max(100, Math.abs(viewport.maxLng - viewport.minLng) * 111_320);
+  const heightM = Math.max(100, Math.abs(viewport.maxLat - viewport.minLat) * 110_540);
+
+  const redis = await getRedisClient();
+  if (!redis) return new Map<string, DriverLocationRecord>();
+  try {
+    const ids = (await redis.call(
+      "GEOSEARCH",
+      getGeoIndexKey(),
+      "FROMLONLAT",
+      String(centerLng),
+      String(centerLat),
+      "BYBOX",
+      String(widthM),
+      String(heightM),
+      "m",
+      "ASC",
+    )) as string[];
+    const uniqueIds = Array.from(new Set(ids)).filter(Boolean);
+    return readDriverLocations(uniqueIds);
+  } catch (err: any) {
+    console.error(`[live-map] geo viewport read failed: ${err?.message || "unknown"}`);
+    return new Map<string, DriverLocationRecord>();
   }
 }
 
@@ -406,7 +457,9 @@ export async function readDriverPresences(driverIds: string[]) {
 }
 
 export async function publishLiveMapEvent(event: LiveMapEvent) {
-  liveMapEmitter.emit("live-map-event", event);
+  const enriched = { ...event, id: event.id || String(++localEventSeq) } as LiveMapEvent;
+  appendRecentEvent(enriched);
+  liveMapEmitter.emit("live-map-event", enriched);
   try {
     const redis = await getRedisClient();
     if (!redis) return;
@@ -417,12 +470,54 @@ export async function publishLiveMapEvent(event: LiveMapEvent) {
       "10000",
       "*",
       "type",
-      event.type,
+      enriched.type,
       "data",
-      JSON.stringify(event),
+      JSON.stringify(enriched),
     );
   } catch (err: any) {
     console.error(`[live-map] redis stream publish failed: ${err?.message || "unknown"}`);
+  }
+}
+
+export function replayLiveMapEventsSince(lastEventId: string | null | undefined) {
+  if (!lastEventId) return [];
+  const normalized = String(lastEventId).trim();
+  if (!normalized) return [];
+  const idx = recentEvents.findIndex((event) => String(event.id || "") === normalized);
+  if (idx < 0) return [];
+  return recentEvents.slice(idx + 1);
+}
+
+export async function replayLiveMapEventsFromRedis(args: { lastEventId?: string | null; limit?: number }) {
+  const lastEventId = String(args.lastEventId || "").trim();
+  if (!lastEventId) return [] as LiveMapEvent[];
+  const redis = await getRedisClient();
+  if (!redis) return [] as LiveMapEvent[];
+  try {
+    const entries = (await redis.call(
+      "XRANGE",
+      getEventsStream(),
+      `(${lastEventId}`,
+      "+",
+      "COUNT",
+      String(Math.max(1, Math.min(args.limit ?? 300, 1000))),
+    )) as Array<[string, string[]]>;
+    return entries
+      .map(([, fields]) => {
+        const dataIdx = fields.indexOf("data");
+        if (dataIdx === -1) return null;
+        const raw = fields[dataIdx + 1];
+        if (!raw) return null;
+        try {
+          return JSON.parse(raw) as LiveMapEvent;
+        } catch {
+          return null;
+        }
+      })
+      .filter((item): item is LiveMapEvent => Boolean(item));
+  } catch (err: any) {
+    console.error(`[live-map] replay from redis failed: ${err?.message || "unknown"}`);
+    return [] as LiveMapEvent[];
   }
 }
 

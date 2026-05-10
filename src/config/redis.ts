@@ -94,3 +94,22 @@ export async function getRedisClient() {
   return connectPromise;
 }
 
+export async function withRedisTimeout<T>(
+  operation: string,
+  work: () => Promise<T>,
+  timeoutMs = Math.max(20, Number(process.env.REDIS_OP_TIMEOUT_MS || 80)),
+): Promise<T> {
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      work(),
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`[redis] ${operation} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
