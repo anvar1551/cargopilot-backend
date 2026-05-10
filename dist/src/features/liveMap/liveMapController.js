@@ -43,10 +43,11 @@ function handleLiveMapActionError(res, err, fallbackMessage) {
     return res.status(400).json({ error: err?.message || fallbackMessage });
 }
 const liveMapSnapshotCache = new Map();
+const liveMapSnapshotBuilds = new Map();
 const liveMapCacheGcTimer = setInterval(() => {
     const now = Date.now();
     for (const [key, entry] of liveMapSnapshotCache.entries()) {
-        if (now >= entry.expiresAt)
+        if (now >= entry.staleUntil)
             liveMapSnapshotCache.delete(key);
     }
 }, 60000);
@@ -82,8 +83,15 @@ function getSnapshotRedisKey(rawKey) {
 }
 async function readSnapshotCache(key) {
     const memoryHit = liveMapSnapshotCache.get(key);
-    if (memoryHit && Date.now() < memoryHit.expiresAt)
-        return memoryHit.payload;
+    if (memoryHit && Date.now() < memoryHit.staleUntil) {
+        return {
+            payload: {
+                ...memoryHit.payload,
+                isStale: Date.now() >= memoryHit.expiresAt,
+            },
+            isFresh: Date.now() < memoryHit.expiresAt,
+        };
+    }
     if (memoryHit)
         liveMapSnapshotCache.delete(key);
     try {
@@ -93,7 +101,7 @@ async function readSnapshotCache(key) {
         const redisHit = await redis.get(getSnapshotRedisKey(key));
         if (!redisHit)
             return null;
-        return JSON.parse(redisHit);
+        return { payload: JSON.parse(redisHit), isFresh: true };
     }
     catch (err) {
         console.error(`[live-map-cache] redis read failed: ${err?.message || "unknown"}`);
@@ -101,9 +109,12 @@ async function readSnapshotCache(key) {
     }
 }
 async function writeSnapshotCache(key, payload, ttlMs) {
+    const staleMs = Math.max(ttlMs, Number(process.env.LIVE_MAP_SNAPSHOT_STALE_MS || 10 * 60000));
+    const now = Date.now();
     liveMapSnapshotCache.set(key, {
         payload,
-        expiresAt: Date.now() + ttlMs,
+        expiresAt: now + ttlMs,
+        staleUntil: now + ttlMs + staleMs,
     });
     try {
         const redis = await (0, redis_1.getRedisClient)();
@@ -116,7 +127,32 @@ async function writeSnapshotCache(key, payload, ttlMs) {
         console.error(`[live-map-cache] redis write failed: ${err?.message || "unknown"}`);
     }
 }
+function emptySnapshot() {
+    return {
+        generatedAt: new Date().toISOString(),
+        drivers: [],
+        orders: [],
+        warehouses: [],
+        isMock: false,
+        isPartial: true,
+    };
+}
+function withTimeout(promise, timeoutMs) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => resolve(null), timeoutMs);
+        promise
+            .then((value) => {
+            clearTimeout(timer);
+            resolve(value);
+        })
+            .catch((err) => {
+            clearTimeout(timer);
+            reject(err);
+        });
+    });
+}
 async function getLiveMapSnapshotController(req, res) {
+    const startedAt = Date.now();
     try {
         const actor = getActor(req);
         if (!actor)
@@ -128,21 +164,44 @@ async function getLiveMapSnapshotController(req, res) {
         const cacheKey = `${getSnapshotCacheKey(actor.role, actor.warehouseId)}${viewportKey}`;
         const cacheTtlMs = Math.min(Math.max(Number(process.env.LIVE_MAP_SNAPSHOT_CACHE_TTL_MS || 45000), 1000), 120000);
         const cached = await readSnapshotCache(cacheKey);
-        if (cached) {
+        if (cached?.isFresh) {
             res.setHeader("X-Live-Map-Cache", "HIT");
+            res.setHeader("X-Live-Map-Time-Ms", String(Date.now() - startedAt));
             res.setHeader("Cache-Control", `private, max-age=${Math.floor(cacheTtlMs / 1000)}`);
-            return res.json(cached);
+            return res.json(cached.payload);
         }
-        const snapshot = await (0, liveMapService_1.getLiveMapSnapshot)({
-            actor: {
-                role: actor.role,
-                warehouseId: actor.warehouseId,
-            },
-            viewport,
-        });
+        let build = liveMapSnapshotBuilds.get(cacheKey);
+        if (!build) {
+            build = (0, liveMapService_1.getLiveMapSnapshot)({
+                actor: {
+                    role: actor.role,
+                    warehouseId: actor.warehouseId,
+                },
+                viewport,
+            }).finally(() => {
+                liveMapSnapshotBuilds.delete(cacheKey);
+            });
+            liveMapSnapshotBuilds.set(cacheKey, build);
+        }
+        const fastTimeoutMs = Math.max(250, Number(process.env.LIVE_MAP_SNAPSHOT_FAST_TIMEOUT_MS || 1200));
+        const snapshot = await withTimeout(build, fastTimeoutMs);
+        if (!snapshot) {
+            const fallback = cached?.payload
+                ? { ...cached.payload, isStale: true }
+                : emptySnapshot();
+            res.setHeader("X-Live-Map-Cache", cached ? "STALE" : "PARTIAL");
+            res.setHeader("X-Live-Map-Time-Ms", String(Date.now() - startedAt));
+            res.setHeader("Cache-Control", "private, max-age=3");
+            return res.json(fallback);
+        }
         await writeSnapshotCache(cacheKey, snapshot, cacheTtlMs);
+        const elapsedMs = Date.now() - startedAt;
         res.setHeader("X-Live-Map-Cache", "MISS");
+        res.setHeader("X-Live-Map-Time-Ms", String(elapsedMs));
         res.setHeader("Cache-Control", `private, max-age=${Math.floor(cacheTtlMs / 1000)}`);
+        if (elapsedMs > 1500) {
+            console.warn(`[live-map] slow snapshot ${elapsedMs}ms drivers=${snapshot.drivers.length} orders=${snapshot.orders.length} warehouses=${snapshot.warehouses.length} viewport=${viewport ? "yes" : "no"}`);
+        }
         return res.json(snapshot);
     }
     catch (err) {

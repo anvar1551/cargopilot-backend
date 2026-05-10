@@ -50,6 +50,8 @@ export type ManagerLiveMapSnapshot = {
   orders: ManagerLiveMapOrder[];
   warehouses: ManagerLiveMapWarehouse[];
   isMock: boolean;
+  isPartial?: boolean;
+  isStale?: boolean;
 };
 
 export type DriverLocationRecord = {

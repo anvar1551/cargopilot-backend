@@ -6,10 +6,11 @@ exports.getOrComputeCached = getOrComputeCached;
 const crypto_1 = require("crypto");
 const redis_1 = require("../../config/redis");
 const memoryCache = new Map();
+const refreshInFlight = new Map();
 const cleanupTimer = setInterval(() => {
     const now = Date.now();
     for (const [key, entry] of memoryCache.entries()) {
-        if (now >= entry.expiresAt)
+        if (now >= entry.staleUntil)
             memoryCache.delete(key);
     }
 }, 60000);
@@ -47,14 +48,36 @@ function readMemory(cacheKey) {
     const hit = memoryCache.get(cacheKey);
     if (!hit)
         return null;
-    if (Date.now() >= hit.expiresAt) {
+    const now = Date.now();
+    if (now >= hit.staleUntil) {
         memoryCache.delete(cacheKey);
         return null;
     }
-    return hit.payload;
+    return { payload: hit.payload, isFresh: now < hit.expiresAt };
 }
 function writeMemory(cacheKey, payload, ttlMs) {
-    memoryCache.set(cacheKey, { payload, expiresAt: Date.now() + ttlMs });
+    const staleMs = Math.max(ttlMs, Number(process.env.ANALYTICS_V2_CACHE_STALE_MS || 10 * 60000));
+    const now = Date.now();
+    memoryCache.set(cacheKey, {
+        payload,
+        expiresAt: now + ttlMs,
+        staleUntil: now + ttlMs + staleMs,
+    });
+}
+function refreshMemoryInBackground(cacheKey, ttlMs, compute) {
+    if (refreshInFlight.has(cacheKey))
+        return;
+    const task = compute()
+        .then((payload) => {
+        writeMemory(cacheKey, payload, ttlMs);
+    })
+        .catch((err) => {
+        console.error(`[analytics-v2] stale refresh failed: ${err?.message || "unknown"}`);
+    })
+        .finally(() => {
+        refreshInFlight.delete(cacheKey);
+    });
+    refreshInFlight.set(cacheKey, task);
 }
 function makeScopeKey(args) {
     if (args.role === "warehouse" && args.warehouseId) {
@@ -79,10 +102,14 @@ async function invalidateNamespaceCaches(namespace) {
 async function getOrComputeCached(args) {
     const memoryKey = `${args.namespace}:${args.key}`;
     const memoryHit = readMemory(memoryKey);
-    if (memoryHit) {
-        return { payload: memoryHit, cacheHit: true };
+    if (memoryHit?.isFresh) {
+        return { payload: memoryHit.payload, cacheHit: true };
     }
     const ttlMs = withJitter(Math.max(1000, args.ttlMs));
+    if (memoryHit) {
+        refreshMemoryInBackground(memoryKey, ttlMs, args.compute);
+        return { payload: memoryHit.payload, cacheHit: true };
+    }
     const lockMs = Math.max(500, args.lockMs ?? 4000);
     const redisDataKey = asRedisKey(args.namespace, args.key);
     const redisLockKey = asLockKey(args.namespace, args.key);

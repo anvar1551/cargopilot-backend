@@ -4,6 +4,7 @@ export type AnalyticsReadSection = "summary" | "trend" | "warnings" | "finance-q
 
 type MemoryEntry<T> = {
   expiresAt: number;
+  staleUntil: number;
   payload: T;
 };
 
@@ -12,7 +13,7 @@ const memoryStore = new Map<string, MemoryEntry<unknown>>();
 const cleanupTimer = setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of memoryStore.entries()) {
-    if (now >= entry.expiresAt) memoryStore.delete(key);
+    if (now >= entry.staleUntil) memoryStore.delete(key);
   }
 }, 60_000);
 cleanupTimer.unref();
@@ -82,7 +83,7 @@ export function getFinanceQueueReadModelKey(args: {
 
 export async function readAnalyticsReadModel<T>(key: string): Promise<T | null> {
   const memoryHit = memoryStore.get(key);
-  if (memoryHit && Date.now() < memoryHit.expiresAt) {
+  if (memoryHit && Date.now() < memoryHit.staleUntil) {
     return memoryHit.payload as T;
   }
   if (memoryHit) memoryStore.delete(key);
@@ -105,7 +106,16 @@ export async function writeAnalyticsReadModel<T>(args: {
   ttlMs: number;
 }) {
   const ttlMs = withJitter(Math.max(1_000, args.ttlMs));
-  memoryStore.set(args.key, { payload: args.payload, expiresAt: Date.now() + ttlMs });
+  const staleMs = Math.max(
+    ttlMs,
+    Number(process.env.ANALYTICS_V3_READ_MODEL_STALE_MS || 15 * 60_000),
+  );
+  const now = Date.now();
+  memoryStore.set(args.key, {
+    payload: args.payload,
+    expiresAt: now + ttlMs,
+    staleUntil: now + ttlMs + staleMs,
+  });
 
   try {
     const redis = await getRedisClient();

@@ -30,6 +30,8 @@ import { ensureAnalyticsInvalidationConsumer } from "./features/manager/analytic
 import { startAnalyticsWorker } from "./workers/analytics.worker";
 import { startAnalyticsWarmupLoop } from "./features/manager/analyticsWarmup";
 import { startAnalyticsOutboxPublisher } from "./features/manager/analyticsOutboxPublisher";
+import { startSupportRetentionWorker } from "./features/support/supportRetention";
+import { startSupportRulesWorker } from "./features/support/supportRules";
 
 const app = express();
 app.set("trust proxy", process.env.TRUST_PROXY === "false" ? false : 1);
@@ -142,6 +144,8 @@ const PORT =
 const server = createServer(app);
 initRealtimeHub(server, Array.from(allowedOrigins));
 startNotificationRetentionWorker();
+startSupportRetentionWorker();
+startSupportRulesWorker();
 ensureAnalyticsInvalidationConsumer();
 startAnalyticsWarmupLoop();
 void startAnalyticsOutboxPublisher();

@@ -1,4 +1,4 @@
-import { AppRole, DriverType, OrderStatus } from "@prisma/client";
+import { AppRole, DriverType, OrderStatus, Prisma } from "@prisma/client";
 import { z } from "zod";
 import prisma from "../../config/prismaClient";
 import {
@@ -51,6 +51,12 @@ const DRIVER_PROFILE_CACHE_TTL_MS = Math.min(
   Math.max(Number(process.env.LIVE_MAP_DRIVER_PROFILE_CACHE_TTL_MS || 60_000), 5_000),
   10 * 60_000,
 );
+
+function readIntEnv(name: string, fallback: number, min: number, max: number) {
+  const value = Number(process.env[name] ?? fallback);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(Math.max(value, min), max);
+}
 
 type DriverProfile = {
   id: string;
@@ -265,6 +271,48 @@ function mapOrderRecord(order: {
   };
 }
 
+function getOrderViewportWhere(viewport: LiveMapViewport | null): Prisma.OrderWhereInput {
+  if (!viewport) return {};
+  return {
+    OR: [
+      {
+        pickupLat: { gte: viewport.minLat, lte: viewport.maxLat },
+        pickupLng: { gte: viewport.minLng, lte: viewport.maxLng },
+      },
+      {
+        dropoffLat: { gte: viewport.minLat, lte: viewport.maxLat },
+        dropoffLng: { gte: viewport.minLng, lte: viewport.maxLng },
+      },
+    ],
+  };
+}
+
+function getWarehouseViewportWhere(viewport: LiveMapViewport | null): Prisma.WarehouseWhereInput {
+  if (!viewport) return {};
+  return {
+    latitude: { gte: viewport.minLat, lte: viewport.maxLat },
+    longitude: { gte: viewport.minLng, lte: viewport.maxLng },
+  };
+}
+
+function mergeLiveMapOrderRows<T extends { id: string; updatedAt: Date }>(
+  batches: T[][],
+  maxOrders: number,
+) {
+  const seen = new Set<string>();
+  const merged: T[] = [];
+  for (const batch of batches) {
+    for (const row of batch) {
+      if (seen.has(row.id)) continue;
+      seen.add(row.id);
+      merged.push(row);
+    }
+  }
+  return merged
+    .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
+    .slice(0, maxOrders);
+}
+
 function resolveTargetDriverId(args: {
   actor: LiveMapActor & { userId: string };
   requestedDriverId?: string;
@@ -289,23 +337,19 @@ export async function getLiveMapSnapshot(args: {
 }): Promise<ManagerLiveMapSnapshot> {
   const actor = args.actor;
   const viewport = args.viewport ?? null;
-  const maxOrders = Math.min(
-    Math.max(Number(process.env.LIVE_MAP_SNAPSHOT_ORDER_LIMIT || 300), 20),
-    1000,
-  );
-  const recentHours = Math.min(
-    Math.max(Number(process.env.LIVE_MAP_RECENT_HOURS || 72), 1),
-    24 * 14,
-  );
+  const maxOrders = readIntEnv("LIVE_MAP_SNAPSHOT_ORDER_LIMIT", 180, 20, 1000);
+  const maxDrivers = readIntEnv("LIVE_MAP_SNAPSHOT_DRIVER_LIMIT", 180, 20, 500);
+  const maxWarehouses = readIntEnv("LIVE_MAP_SNAPSHOT_WAREHOUSE_LIMIT", 250, 20, 1000);
+  const recentHours = readIntEnv("LIVE_MAP_RECENT_HOURS", 24, 1, 24 * 14);
   const recentFrom = new Date(Date.now() - recentHours * 60 * 60 * 1000);
 
-  const warehouseScope =
+  const warehouseScope: Prisma.OrderWhereInput =
     actor.role === AppRole.warehouse
       ? actor.warehouseId
         ? { currentWarehouseId: actor.warehouseId }
         : { currentWarehouseId: "__warehouse_scope_no_access__" }
       : {};
-  const driverScope =
+  const driverScope: Prisma.UserWhereInput =
     actor.role === AppRole.warehouse
       ? actor.warehouseId
         ? {
@@ -317,14 +361,33 @@ export async function getLiveMapSnapshot(args: {
           }
         : { id: "__warehouse_scope_no_access__" }
       : {};
-  const warehouseListScope =
+  const warehouseListScope: Prisma.WarehouseWhereInput =
     actor.role === AppRole.warehouse
       ? actor.warehouseId
         ? { id: actor.warehouseId }
         : { id: "__warehouse_scope_no_access__" }
       : {};
+  const orderViewportWhere = getOrderViewportWhere(viewport);
+  const warehouseViewportWhere = getWarehouseViewportWhere(viewport);
+  const orderSelect = {
+    id: true,
+    orderNumber: true,
+    status: true,
+    pickupLat: true,
+    pickupLng: true,
+    dropoffLat: true,
+    dropoffLng: true,
+    assignedDriverId: true,
+    currentWarehouseId: true,
+    updatedAt: true,
+    currentWarehouse: {
+      select: {
+        region: true,
+      },
+    },
+  } satisfies Prisma.OrderSelect;
 
-  const [driverRows, orderRows, warehouseRows] = await Promise.all([
+  const [driverRows, activeOrderRows, recentOrderRows, warehouseRows] = await Promise.all([
     prisma.user.findMany({
       where: {
         role: AppRole.driver,
@@ -348,47 +411,36 @@ export async function getLiveMapSnapshot(args: {
       orderBy: {
         createdAt: "desc",
       },
-      take: 500,
+      take: maxDrivers,
     }),
     prisma.order.findMany({
       where: {
-        ...warehouseScope,
-        OR: [
-          {
-            status: {
-              in: liveMapOrderStatuses,
-            },
-          },
-          {
-            updatedAt: {
-              gte: recentFrom,
-            },
-          },
+        AND: [
+          warehouseScope,
+          { status: { in: liveMapOrderStatuses } },
+          orderViewportWhere,
         ],
       },
-      select: {
-        id: true,
-        orderNumber: true,
-        status: true,
-        pickupLat: true,
-        pickupLng: true,
-        dropoffLat: true,
-        dropoffLng: true,
-        assignedDriverId: true,
-        currentWarehouseId: true,
-        currentWarehouse: {
-          select: {
-            region: true,
-          },
-        },
+      select: orderSelect,
+      orderBy: {
+        updatedAt: "desc",
       },
+      take: maxOrders,
+    }),
+    prisma.order.findMany({
+      where: {
+        AND: [warehouseScope, { updatedAt: { gte: recentFrom } }, orderViewportWhere],
+      },
+      select: orderSelect,
       orderBy: {
         updatedAt: "desc",
       },
       take: maxOrders,
     }),
     prisma.warehouse.findMany({
-      where: warehouseListScope,
+      where: {
+        AND: [warehouseListScope, warehouseViewportWhere],
+      },
       select: {
         id: true,
         name: true,
@@ -401,9 +453,11 @@ export async function getLiveMapSnapshot(args: {
       orderBy: {
         createdAt: "desc",
       },
+      take: maxWarehouses,
     }),
   ]);
 
+  const orderRows = mergeLiveMapOrderRows([activeOrderRows, recentOrderRows], maxOrders);
   const orders = orderRows.map(mapOrderRecord);
   const orderByAssignedDriver = new Map<string, ManagerLiveMapOrder>();
   const orderCoords: Array<{ lat: number; lng: number }> = [];

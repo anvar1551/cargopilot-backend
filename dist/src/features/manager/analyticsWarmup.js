@@ -60,7 +60,11 @@ function startAnalyticsWarmupLoop() {
             console.error(`[analytics-warmup] ${source} pass failed: ${err?.message || "unknown"}`);
         }
     };
-    void trigger("startup");
+    const startupDelayMs = Math.max(0, Number(process.env.ANALYTICS_WARMUP_STARTUP_DELAY_MS || 30000));
+    const startupTimer = setTimeout(() => {
+        void trigger("startup");
+    }, startupDelayMs);
+    startupTimer.unref();
     const timer = setInterval(() => {
         void trigger("interval");
     }, intervalMs);

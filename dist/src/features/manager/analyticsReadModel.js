@@ -12,7 +12,7 @@ const memoryStore = new Map();
 const cleanupTimer = setInterval(() => {
     const now = Date.now();
     for (const [key, entry] of memoryStore.entries()) {
-        if (now >= entry.expiresAt)
+        if (now >= entry.staleUntil)
             memoryStore.delete(key);
     }
 }, 60000);
@@ -54,7 +54,7 @@ function getFinanceQueueReadModelKey(args) {
 }
 async function readAnalyticsReadModel(key) {
     const memoryHit = memoryStore.get(key);
-    if (memoryHit && Date.now() < memoryHit.expiresAt) {
+    if (memoryHit && Date.now() < memoryHit.staleUntil) {
         return memoryHit.payload;
     }
     if (memoryHit)
@@ -75,7 +75,13 @@ async function readAnalyticsReadModel(key) {
 }
 async function writeAnalyticsReadModel(args) {
     const ttlMs = withJitter(Math.max(1000, args.ttlMs));
-    memoryStore.set(args.key, { payload: args.payload, expiresAt: Date.now() + ttlMs });
+    const staleMs = Math.max(ttlMs, Number(process.env.ANALYTICS_V3_READ_MODEL_STALE_MS || 15 * 60000));
+    const now = Date.now();
+    memoryStore.set(args.key, {
+        payload: args.payload,
+        expiresAt: now + ttlMs,
+        staleUntil: now + ttlMs + staleMs,
+    });
     try {
         const redis = await (0, redis_1.getRedisClient)();
         if (!redis)

@@ -35,6 +35,8 @@ const analyticsV2Realtime_1 = require("./features/manager/analyticsV2Realtime");
 const analytics_worker_1 = require("./workers/analytics.worker");
 const analyticsWarmup_1 = require("./features/manager/analyticsWarmup");
 const analyticsOutboxPublisher_1 = require("./features/manager/analyticsOutboxPublisher");
+const supportRetention_1 = require("./features/support/supportRetention");
+const supportRules_1 = require("./features/support/supportRules");
 const app = (0, express_1.default)();
 app.set("trust proxy", process.env.TRUST_PROXY === "false" ? false : 1);
 void (0, redis_1.getRedisClient)();
@@ -124,6 +126,8 @@ const PORT = Number.isFinite(portFromEnv) && portFromEnv > 0 ? portFromEnv : 400
 const server = (0, http_1.createServer)(app);
 (0, realtimeHub_1.initRealtimeHub)(server, Array.from(allowedOrigins));
 (0, notificationRetention_1.startNotificationRetentionWorker)();
+(0, supportRetention_1.startSupportRetentionWorker)();
+(0, supportRules_1.startSupportRulesWorker)();
 (0, analyticsV2Realtime_1.ensureAnalyticsInvalidationConsumer)();
 (0, analyticsWarmup_1.startAnalyticsWarmupLoop)();
 void (0, analyticsOutboxPublisher_1.startAnalyticsOutboxPublisher)();

@@ -97,7 +97,10 @@ export const create = async (req: Request, res: Response) => {
     const paymentsEnabled = process.env.PAYMENTS_ENABLED === "true";
     const rawLabelMode = process.env.ORDER_LABEL_MODE;
     const labelMode =
-      rawLabelMode === "async" || rawLabelMode === "queue" ? rawLabelMode : "sync";
+      rawLabelMode === "async" || rawLabelMode === "queue" || rawLabelMode === "sync"
+        ? rawLabelMode
+        : "queue";
+    const blockLabelWork = process.env.ORDER_LABEL_BLOCKING === "true";
 
     if (!req.user?.id) return res.status(401).json({ error: "Unauthorized" });
     const actor = requireOrderActor(req.user);
@@ -156,36 +159,43 @@ export const create = async (req: Request, res: Response) => {
 
     let labelWarning: string | null = null;
 
-    try {
+    const runLabelWork = async () => {
       if (labelMode === "queue") {
         await enqueueOrderLabelJob(order.id);
-      } else if (labelMode === "async") {
-        void generateAndAttachParcelLabelsForOrder(order.id).catch((labelErr) => {
-          console.error(`Label generation failed for order ${order.id}:`, labelErr);
-        });
       } else {
         await generateAndAttachParcelLabelsForOrder(order.id);
       }
-    } catch (labelErr: any) {
-      labelWarning =
-        labelErr?.message ??
-        "Order created, but parcel label generation failed";
-      console.error(`Label generation failed for order ${order.id}:`, labelErr);
+    };
+
+    if (blockLabelWork) {
+      try {
+        await runLabelWork();
+      } catch (labelErr: any) {
+        labelWarning =
+          labelErr?.message ??
+          "Order created, but parcel label generation failed";
+        console.error(`Label generation failed for order ${order.id}:`, labelErr);
+      }
+    } else {
+      void runLabelWork().catch((labelErr) => {
+        console.error(`Label generation failed for order ${order.id}:`, labelErr);
+      });
     }
 
     if (!paymentsEnabled) {
-      const fresh = await getOrderById(order.id);
       return res.status(201).json({
-        order: fresh,
+        order,
         warning: labelWarning,
         message:
-          labelMode === "async"
+          blockLabelWork
+            ? labelWarning
+              ? "Order created (manual payment) + parcel labels pending retry"
+              : "Order created (manual payment) + parcel labels generated"
+          : labelMode === "async" || labelMode === "sync"
             ? "Order created (manual payment) + parcel labels scheduled"
             : labelMode === "queue"
               ? "Order created (manual payment) + parcel labels queued"
-            : labelWarning
-              ? "Order created (manual payment) + parcel labels pending retry"
-              : "Order created (manual payment) + parcel labels generated",
+              : "Order created (manual payment)",
       });
     }
 
@@ -217,13 +227,15 @@ export const create = async (req: Request, res: Response) => {
       paymentUrl,
       warning: labelWarning,
       message:
-        labelMode === "async"
+        blockLabelWork
+          ? labelWarning
+            ? "Order + invoice created successfully (parcel labels pending retry)"
+            : "Order + parcel labels + invoice created successfully"
+        : labelMode === "async" || labelMode === "sync"
           ? "Order + invoice created successfully (parcel labels scheduled)"
           : labelMode === "queue"
             ? "Order + invoice created successfully (parcel labels queued)"
-            : labelWarning
-              ? "Order + invoice created successfully (parcel labels pending retry)"
-              : "Order + parcel labels + invoice created successfully",
+            : "Order + invoice created successfully",
     });
   } catch (err: any) {
     const code = err?.statusCode ?? 500;

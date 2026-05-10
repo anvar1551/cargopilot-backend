@@ -218,6 +218,46 @@ enum OrderLabelJobStatus {
   failed
 }
 
+enum SupportTicketPriority {
+  urgent
+  high
+  normal
+}
+
+enum SupportTicketStatus {
+  open
+  waiting_customer
+  waiting_driver
+  escalated
+  resolved
+}
+
+enum SupportTicketSource {
+  customer_chat
+  driver_app
+  system_alert
+  manager
+}
+
+enum SupportTicketAuthorType {
+  customer
+  driver
+  support
+  system
+}
+
+enum SupportTicketEventType {
+  created
+  status_changed
+  assigned
+  note_added
+  message_added
+  escalated
+  resolved
+  archived
+  system
+}
+
 model User {
   id       String @id @default(uuid()) @db.Uuid
   name     String
@@ -248,6 +288,9 @@ model User {
   cashCollectionActorEvents CashCollectionEvent[] @relation("CashCollectionEventActor")
   notifications UserNotification[]
   refreshSessions UserRefreshSession[]
+
+  @@index([role, createdAt])
+  @@index([role, warehouseId, createdAt])
 }
 
 model Warehouse {
@@ -264,6 +307,9 @@ model Warehouse {
   createdAt DateTime      @default(now())
   tracking  Tracking[]
   heldCashCollections CashCollection[] @relation("CashCollectionHolderWarehouse")
+
+  @@index([createdAt])
+  @@index([latitude, longitude])
 }
 
 model DriverWarehouseAccess {
@@ -346,6 +392,7 @@ model Order {
   invoice        Invoice?
   attachments    OrderAttachment[]
   cashCollections CashCollection[]
+  supportTickets SupportTicket[]
 
   // ---------------- Attempt counters ----------------
   pickupAttemptCount   Int @default(0)
@@ -400,7 +447,11 @@ model Order {
   @@index([expectedDeliveryAt])
   @@index([slaRuleId])
   @@index([currentWarehouseId, status, createdAt])
+  @@index([currentWarehouseId, status, updatedAt])
+  @@index([currentWarehouseId, updatedAt])
   @@index([assignedDriverId, status, createdAt])
+  @@index([pickupLat, pickupLng])
+  @@index([dropoffLat, dropoffLng])
   @@index([referenceId])
 }
 
@@ -776,6 +827,100 @@ model UserNotification {
   @@index([userId, createdAt])
   @@index([userId, readAt])
   @@index([userId, type, createdAt])
+}
+
+model SupportTicket {
+  id           String                @id @default(uuid()) @db.Uuid
+  ticketNumber String                @unique
+  sourceKey    String?               @unique
+  orderId      String?               @db.Uuid
+  order        Order?                @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  title       String
+  summary     String?
+  priority    SupportTicketPriority @default(normal)
+  status      SupportTicketStatus   @default(open)
+  source      SupportTicketSource   @default(manager)
+
+  customerUserId   String? @db.Uuid
+  customerEntityId String? @db.Uuid
+  driverId         String? @db.Uuid
+  warehouseId      String? @db.Uuid
+  ownerId          String? @db.Uuid
+  ownerName        String?
+
+  customerName    String?
+  companyName     String?
+  routeSnapshot   String?
+  driverName      String?
+  driverPhone     String?
+  warehouseLabel  String?
+  lastMessage     String?
+  lastReplyBy     SupportTicketAuthorType?
+
+  slaPercent     Int       @default(100)
+  slaDueAt       DateTime?
+  lastActivityAt DateTime  @default(now())
+  resolvedAt     DateTime?
+  archivedAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages SupportTicketMessage[]
+  notes    SupportTicketNote[]
+  events   SupportTicketEvent[]
+
+  @@index([status, lastActivityAt])
+  @@index([ownerId, status, lastActivityAt])
+  @@index([archivedAt, status, lastActivityAt])
+  @@index([orderId])
+  @@index([sourceKey])
+  @@index([priority, status, lastActivityAt])
+  @@index([source, status, lastActivityAt])
+  @@index([slaDueAt])
+}
+
+model SupportTicketMessage {
+  id        String                  @id @default(uuid()) @db.Uuid
+  ticketId  String                  @db.Uuid
+  ticket    SupportTicket           @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  authorType SupportTicketAuthorType
+  authorId   String?                @db.Uuid
+  authorName String?
+  body       String
+  createdAt  DateTime               @default(now())
+
+  @@index([ticketId, createdAt])
+  @@index([authorId, createdAt])
+}
+
+model SupportTicketNote {
+  id        String        @id @default(uuid()) @db.Uuid
+  ticketId  String        @db.Uuid
+  ticket    SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  actorId   String?       @db.Uuid
+  actorName String?
+  body      String
+  createdAt DateTime      @default(now())
+
+  @@index([ticketId, createdAt])
+  @@index([actorId, createdAt])
+}
+
+model SupportTicketEvent {
+  id        String                 @id @default(uuid()) @db.Uuid
+  ticketId  String                 @db.Uuid
+  ticket    SupportTicket          @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  eventType SupportTicketEventType
+  actorId   String?                @db.Uuid
+  actorName String?
+  body      String?
+  metadata  Json?
+  createdAt DateTime               @default(now())
+
+  @@index([ticketId, createdAt])
+  @@index([eventType, createdAt])
 }
 
 model UserRefreshSession {

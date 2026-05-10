@@ -3,15 +3,17 @@ import { getRedisClient, getRedisPrefix } from "../../config/redis";
 
 type CacheEntry<T> = {
   expiresAt: number;
+  staleUntil: number;
   payload: T;
 };
 
 const memoryCache = new Map<string, CacheEntry<unknown>>();
+const refreshInFlight = new Map<string, Promise<void>>();
 
 const cleanupTimer = setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of memoryCache.entries()) {
-    if (now >= entry.expiresAt) memoryCache.delete(key);
+    if (now >= entry.staleUntil) memoryCache.delete(key);
   }
 }, 60_000);
 cleanupTimer.unref();
@@ -59,18 +61,44 @@ function withJitter(ttlMs: number) {
   return Math.max(1_000, Math.floor(min + Math.random() * Math.max(1, max - min)));
 }
 
-function readMemory<T>(cacheKey: string): T | null {
+function readMemory<T>(cacheKey: string): { payload: T; isFresh: boolean } | null {
   const hit = memoryCache.get(cacheKey);
   if (!hit) return null;
-  if (Date.now() >= hit.expiresAt) {
+  const now = Date.now();
+  if (now >= hit.staleUntil) {
     memoryCache.delete(cacheKey);
     return null;
   }
-  return hit.payload as T;
+  return { payload: hit.payload as T, isFresh: now < hit.expiresAt };
 }
 
 function writeMemory<T>(cacheKey: string, payload: T, ttlMs: number) {
-  memoryCache.set(cacheKey, { payload, expiresAt: Date.now() + ttlMs });
+  const staleMs = Math.max(ttlMs, Number(process.env.ANALYTICS_V2_CACHE_STALE_MS || 10 * 60_000));
+  const now = Date.now();
+  memoryCache.set(cacheKey, {
+    payload,
+    expiresAt: now + ttlMs,
+    staleUntil: now + ttlMs + staleMs,
+  });
+}
+
+function refreshMemoryInBackground<T>(
+  cacheKey: string,
+  ttlMs: number,
+  compute: () => Promise<T>,
+) {
+  if (refreshInFlight.has(cacheKey)) return;
+  const task = compute()
+    .then((payload) => {
+      writeMemory(cacheKey, payload, ttlMs);
+    })
+    .catch((err: any) => {
+      console.error(`[analytics-v2] stale refresh failed: ${err?.message || "unknown"}`);
+    })
+    .finally(() => {
+      refreshInFlight.delete(cacheKey);
+    });
+  refreshInFlight.set(cacheKey, task);
 }
 
 export function makeScopeKey(args: {
@@ -108,11 +136,16 @@ export async function getOrComputeCached<T>(args: {
 }): Promise<{ payload: T; cacheHit: boolean }> {
   const memoryKey = `${args.namespace}:${args.key}`;
   const memoryHit = readMemory<T>(memoryKey);
-  if (memoryHit) {
-    return { payload: memoryHit, cacheHit: true };
+  if (memoryHit?.isFresh) {
+    return { payload: memoryHit.payload, cacheHit: true };
   }
 
   const ttlMs = withJitter(Math.max(1_000, args.ttlMs));
+  if (memoryHit) {
+    refreshMemoryInBackground(memoryKey, ttlMs, args.compute);
+    return { payload: memoryHit.payload, cacheHit: true };
+  }
+
   const lockMs = Math.max(500, args.lockMs ?? 4_000);
   const redisDataKey = asRedisKey(args.namespace, args.key);
   const redisLockKey = asLockKey(args.namespace, args.key);

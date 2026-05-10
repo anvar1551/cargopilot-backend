@@ -78,7 +78,14 @@ export function startAnalyticsWarmupLoop() {
     }
   };
 
-  void trigger("startup");
+  const startupDelayMs = Math.max(
+    0,
+    Number(process.env.ANALYTICS_WARMUP_STARTUP_DELAY_MS || 30_000),
+  );
+  const startupTimer = setTimeout(() => {
+    void trigger("startup");
+  }, startupDelayMs);
+  startupTimer.unref();
   const timer = setInterval(() => {
     void trigger("interval");
   }, intervalMs);

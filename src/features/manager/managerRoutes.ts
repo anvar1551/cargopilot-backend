@@ -16,6 +16,7 @@ import {
   streamLiveMapController,
 } from "../liveMap/liveMapController";
 import { getManagerOpsMetricsController } from "./opsMetricsController";
+import supportRoutes from "../support/supportRoutes";
 
 const router = Router();
 const analyticsLimiter = rateLimit({
@@ -53,6 +54,7 @@ const analyticsStreamLimiter = rateLimit({
 
 router.get("/overview", auth(["manager"]), getManagerOverview);
 router.get("/ops/metrics", auth(["manager"]), getManagerOpsMetricsController);
+router.use("/support", supportRoutes);
 router.get(
   "/analytics/summary",
   analyticsLimiter,
@@ -75,7 +77,7 @@ router.get(
 router.get(
   "/analytics/stream",
   analyticsStreamLimiter,
-  auth(["manager"]),
+  auth(["manager", "warehouse"]),
   streamAnalyticsV2Controller,
 );
 router.post(

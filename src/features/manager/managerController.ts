@@ -3,6 +3,8 @@ import { DriverType } from "@prisma/client";
 import { createHash } from "crypto";
 import prisma from "../../config/prismaClient";
 import { getRedisClient, getRedisPrefix } from "../../config/redis";
+import { subscribeAnalyticsInvalidation } from "./analyticsV2Realtime";
+import { getAnalyticsSummaryV2 } from "./analyticsV2";
 
 type ManagerOverviewPayload = {
   totalOrders: number;
@@ -10,6 +12,11 @@ type ManagerOverviewPayload = {
   inTransit: number;
   delivered: number;
   totalRevenue: number;
+  overdueOpenOrders: number;
+  dueSoonOpenOrders: number;
+  staleOpenOrders: number;
+  exceptionOpenOrders: number;
+  slaRiskOrders: number;
 };
 
 type DriverListPayload = Array<{
@@ -23,17 +30,19 @@ type DriverListPayload = Array<{
 
 const overviewCache = new Map<
   string,
-  { expiresAt: number; payload: ManagerOverviewPayload }
+  { expiresAt: number; staleUntil: number; payload: ManagerOverviewPayload }
 >();
 const driversCache = new Map<
   string,
-  { expiresAt: number; payload: DriverListPayload }
+  { expiresAt: number; staleUntil: number; payload: DriverListPayload }
 >();
+const overviewBuilds = new Map<string, Promise<ManagerOverviewPayload>>();
+const driverBuilds = new Map<string, Promise<DriverListPayload>>();
 
-function pruneExpired<T>(cache: Map<string, { expiresAt: number; payload: T }>) {
+function pruneExpired<T>(cache: Map<string, { expiresAt: number; staleUntil: number; payload: T }>) {
   const now = Date.now();
   for (const [key, entry] of cache.entries()) {
-    if (now >= entry.expiresAt) cache.delete(key);
+    if (now >= entry.staleUntil) cache.delete(key);
   }
 }
 
@@ -53,6 +62,133 @@ function getDriversRedisKey(rawKey: string) {
   return `${getRedisPrefix()}:manager:drivers:${digest}`;
 }
 
+function clearManagerOverviewCache() {
+  overviewCache.clear();
+  void getRedisClient()
+    .then((redis) => redis?.del(getOverviewRedisKey("overview-v1")))
+    .catch((err: any) => {
+      console.error(`[overview-cache] redis clear failed: ${err?.message || "unknown"}`);
+    });
+}
+
+function writeOverviewMemory(key: string, payload: ManagerOverviewPayload, ttlMs: number) {
+  const staleMs = Math.max(ttlMs, Number(process.env.MANAGER_OVERVIEW_STALE_MS || 10 * 60_000));
+  const now = Date.now();
+  overviewCache.set(key, {
+    payload,
+    expiresAt: now + ttlMs,
+    staleUntil: now + ttlMs + staleMs,
+  });
+}
+
+function writeDriversMemory(key: string, payload: DriverListPayload, ttlMs: number) {
+  const staleMs = Math.max(ttlMs, Number(process.env.MANAGER_DRIVERS_STALE_MS || 15 * 60_000));
+  const now = Date.now();
+  driversCache.set(key, {
+    payload,
+    expiresAt: now + ttlMs,
+    staleUntil: now + ttlMs + staleMs,
+  });
+}
+
+async function buildManagerOverviewPayload(req: Request): Promise<ManagerOverviewPayload> {
+  const summary = await getAnalyticsSummaryV2({
+    rangeDays: Math.max(
+      7,
+      Math.min(180, Number(process.env.ANALYTICS_V3_DEFAULT_RANGE_DAYS || 30)),
+    ),
+    scope: {
+      role: req.user?.role ?? "manager",
+      warehouseId: req.user?.warehouseId ?? null,
+      userId: req.user?.id ?? null,
+    },
+  });
+  const summaryPayload = summary.payload;
+
+  return {
+    totalOrders: summaryPayload.overview.totalOrders,
+    pending: summaryPayload.operations.pendingOrders,
+    inTransit: summaryPayload.operations.inTransitOrders,
+    delivered: summaryPayload.overview.deliveredInRange,
+    totalRevenue: summaryPayload.finance.invoicedPaidAmount,
+    overdueOpenOrders: summaryPayload.sla.overdueOpenOrders,
+    dueSoonOpenOrders: summaryPayload.sla.dueSoonOpenOrders,
+    staleOpenOrders: summaryPayload.operations.staleOpenOrders,
+    exceptionOpenOrders: summaryPayload.overview.exceptionOpenOrders,
+    slaRiskOrders:
+      summaryPayload.sla.overdueOpenOrders +
+      summaryPayload.operations.staleOpenOrders +
+      summaryPayload.overview.exceptionOpenOrders,
+  };
+}
+
+async function buildDriverListPayload(args: {
+  role?: string | null;
+  warehouseId?: string | null;
+}): Promise<DriverListPayload> {
+  const drivers = await prisma.user.findMany({
+    where: {
+      role: "driver",
+      ...(args.role === "warehouse"
+        ? args.warehouseId
+          ? {
+              OR: [
+                { driverType: DriverType.linehaul },
+                { warehouseId: args.warehouseId },
+                { warehouseAccesses: { some: { warehouseId: args.warehouseId } } },
+              ],
+            }
+          : { id: "__no_matching_driver__" }
+        : {}),
+    },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      warehouseId: true,
+      driverType: true,
+      warehouseAccesses: {
+        select: {
+          warehouseId: true,
+        },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+    take: Math.min(Math.max(Number(process.env.MANAGER_DRIVERS_LIST_LIMIT || 500), 20), 1000),
+  });
+
+  return drivers.map((driver) => {
+    const warehouseIds = Array.from(
+      new Set(
+        [
+          driver.warehouseId ?? null,
+          ...driver.warehouseAccesses.map((item) => item.warehouseId),
+        ].filter((value): value is string => Boolean(value)),
+      ),
+    );
+
+    return {
+      id: driver.id,
+      name: driver.name,
+      email: driver.email,
+      warehouseId: driver.warehouseId ?? null,
+      warehouseIds,
+      driverType: driver.driverType === DriverType.linehaul ? "linehaul" : "local",
+    };
+  });
+}
+
+subscribeAnalyticsInvalidation((event) => {
+  if (
+    event.keys.includes("summary") ||
+    event.keys.includes("trend") ||
+    event.reason === "order_mutation" ||
+    event.reason === "worker_rebuild"
+  ) {
+    clearManagerOverviewCache();
+  }
+});
+
 export async function getManagerOverview(req: Request, res: Response) {
   try {
     const cacheKey = "overview-v1";
@@ -67,6 +203,35 @@ export async function getManagerOverview(req: Request, res: Response) {
       res.setHeader("Cache-Control", `private, max-age=${Math.floor(cacheTtlMs / 1000)}`);
       return res.json(memoryHit.payload);
     }
+    if (memoryHit && Date.now() < memoryHit.staleUntil) {
+      res.setHeader("X-Overview-Cache", "STALE");
+      res.setHeader("Cache-Control", "private, max-age=5");
+      if (!overviewBuilds.has(cacheKey)) {
+        const build = buildManagerOverviewPayload(req)
+          .then(async (payload) => {
+            writeOverviewMemory(cacheKey, payload, cacheTtlMs);
+            const redis = await getRedisClient();
+            if (redis) {
+              await redis.set(
+                getOverviewRedisKey(cacheKey),
+                JSON.stringify(payload),
+                "EX",
+                Math.max(1, Math.floor(cacheTtlMs / 1000)),
+              );
+            }
+            return payload;
+          })
+          .catch((err: any) => {
+            console.error(`[overview-cache] background refresh failed: ${err?.message || "unknown"}`);
+            return memoryHit.payload;
+          })
+          .finally(() => {
+            overviewBuilds.delete(cacheKey);
+          });
+        overviewBuilds.set(cacheKey, build);
+      }
+      return res.json(memoryHit.payload);
+    }
     if (memoryHit) overviewCache.delete(cacheKey);
 
     try {
@@ -75,7 +240,7 @@ export async function getManagerOverview(req: Request, res: Response) {
         const redisHit = await redis.get(getOverviewRedisKey(cacheKey));
         if (redisHit) {
           const payload = JSON.parse(redisHit) as ManagerOverviewPayload;
-          overviewCache.set(cacheKey, { payload, expiresAt: Date.now() + cacheTtlMs });
+          writeOverviewMemory(cacheKey, payload, cacheTtlMs);
           res.setHeader("X-Overview-Cache", "HIT");
           res.setHeader("Cache-Control", `private, max-age=${Math.floor(cacheTtlMs / 1000)}`);
           return res.json(payload);
@@ -85,26 +250,16 @@ export async function getManagerOverview(req: Request, res: Response) {
       console.error(`[overview-cache] redis read failed: ${err?.message || "unknown"}`);
     }
 
-    const totalOrders = await prisma.order.count();
-    const [pending, inTransit, delivered] = await Promise.all([
-      prisma.order.count({ where: { status: "pending" } }),
-      prisma.order.count({ where: { status: "in_transit" } }),
-      prisma.order.count({ where: { status: "delivered" } }),
-    ]);
-    const paidInvoices = await prisma.invoice.aggregate({
-      _sum: { amount: true },
-      where: { status: "paid" },
-    });
+    let build = overviewBuilds.get(cacheKey);
+    if (!build) {
+      build = buildManagerOverviewPayload(req).finally(() => {
+        overviewBuilds.delete(cacheKey);
+      });
+      overviewBuilds.set(cacheKey, build);
+    }
+    const payload = await build;
 
-    const payload: ManagerOverviewPayload = {
-      totalOrders,
-      pending,
-      inTransit,
-      delivered,
-      totalRevenue: paidInvoices._sum.amount || 0,
-    };
-
-    overviewCache.set(cacheKey, { payload, expiresAt: Date.now() + cacheTtlMs });
+    writeOverviewMemory(cacheKey, payload, cacheTtlMs);
     try {
       const redis = await getRedisClient();
       if (redis) {
@@ -146,6 +301,35 @@ export async function listDrivers(req: Request, res: Response) {
       res.setHeader("Cache-Control", `private, max-age=${Math.floor(cacheTtlMs / 1000)}`);
       return res.json(memoryHit.payload);
     }
+    if (memoryHit && Date.now() < memoryHit.staleUntil) {
+      res.setHeader("X-Drivers-Cache", "STALE");
+      res.setHeader("Cache-Control", "private, max-age=5");
+      if (!driverBuilds.has(cacheKey)) {
+        const build = buildDriverListPayload({ role, warehouseId })
+          .then(async (payload) => {
+            writeDriversMemory(cacheKey, payload, cacheTtlMs);
+            const redis = await getRedisClient();
+            if (redis) {
+              await redis.set(
+                getDriversRedisKey(cacheKey),
+                JSON.stringify(payload),
+                "EX",
+                Math.max(1, Math.floor(cacheTtlMs / 1000)),
+              );
+            }
+            return payload;
+          })
+          .catch((err: any) => {
+            console.error(`[drivers-cache] background refresh failed: ${err?.message || "unknown"}`);
+            return memoryHit.payload;
+          })
+          .finally(() => {
+            driverBuilds.delete(cacheKey);
+          });
+        driverBuilds.set(cacheKey, build);
+      }
+      return res.json(memoryHit.payload);
+    }
     if (memoryHit) driversCache.delete(cacheKey);
 
     try {
@@ -154,7 +338,7 @@ export async function listDrivers(req: Request, res: Response) {
         const redisHit = await redis.get(getDriversRedisKey(cacheKey));
         if (redisHit) {
           const payload = JSON.parse(redisHit) as DriverListPayload;
-          driversCache.set(cacheKey, { payload, expiresAt: Date.now() + cacheTtlMs });
+          writeDriversMemory(cacheKey, payload, cacheTtlMs);
           res.setHeader("X-Drivers-Cache", "HIT");
           res.setHeader("Cache-Control", `private, max-age=${Math.floor(cacheTtlMs / 1000)}`);
           return res.json(payload);
@@ -164,57 +348,16 @@ export async function listDrivers(req: Request, res: Response) {
       console.error(`[drivers-cache] redis read failed: ${err?.message || "unknown"}`);
     }
 
-    const drivers = await prisma.user.findMany({
-      where: {
-        role: "driver",
-        ...(role === "warehouse"
-          ? warehouseId
-            ? {
-                OR: [
-                  { driverType: DriverType.linehaul },
-                  { warehouseId },
-                  { warehouseAccesses: { some: { warehouseId } } },
-                ],
-              }
-            : { id: "__no_matching_driver__" }
-          : {}),
-      },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        warehouseId: true,
-        driverType: true,
-        warehouseAccesses: {
-          select: {
-            warehouseId: true,
-          },
-        },
-      },
-      orderBy: { createdAt: "desc" },
-    });
+    let build = driverBuilds.get(cacheKey);
+    if (!build) {
+      build = buildDriverListPayload({ role, warehouseId }).finally(() => {
+        driverBuilds.delete(cacheKey);
+      });
+      driverBuilds.set(cacheKey, build);
+    }
+    const payload = await build;
 
-    const payload: DriverListPayload = drivers.map((driver) => {
-      const warehouseIds = Array.from(
-        new Set(
-          [
-            driver.warehouseId ?? null,
-            ...driver.warehouseAccesses.map((item) => item.warehouseId),
-          ].filter((value): value is string => Boolean(value)),
-        ),
-      );
-
-      return {
-        id: driver.id,
-        name: driver.name,
-        email: driver.email,
-        warehouseId: driver.warehouseId ?? null,
-        warehouseIds,
-        driverType: driver.driverType === DriverType.linehaul ? "linehaul" : "local",
-      };
-    });
-
-    driversCache.set(cacheKey, { payload, expiresAt: Date.now() + cacheTtlMs });
+    writeDriversMemory(cacheKey, payload, cacheTtlMs);
     try {
       const redis = await getRedisClient();
       if (redis) {

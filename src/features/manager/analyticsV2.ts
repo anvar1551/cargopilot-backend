@@ -30,6 +30,7 @@ const DEFAULT_SLA_POLICY = {
 } as const;
 
 const UNPAID_PAID_STATUSES: PaidStatus[] = ["NOT_PAID", "PARTIAL"];
+const trendBuilds = new Map<string, Promise<{ payload: any; cacheHit: boolean }>>();
 
 type Scope = {
   role: string;
@@ -119,6 +120,25 @@ function bucketByDay(
     if (bucket) bucket.count += row.count;
   }
   return buckets;
+}
+
+function emptyTrendPayload(rangeDays: number) {
+  const now = new Date();
+  const rangeStart = startOfUtcDay(subtractDays(now, rangeDays - 1));
+  const rangeEnd = endOfUtcDay(now);
+  return {
+    period: {
+      rangeDays,
+      from: rangeStart.toISOString(),
+      to: rangeEnd.toISOString(),
+    },
+    trend: {
+      created: buildDailyBuckets(rangeStart, rangeEnd),
+      delivered: buildDailyBuckets(rangeStart, rangeEnd),
+    },
+    generatedAt: new Date().toISOString(),
+    isPartial: true,
+  };
 }
 
 let cachedPolicy: {
@@ -483,72 +503,95 @@ export async function getAnalyticsTrendV2(params: TrendParams) {
 
   const key = JSON.stringify({ scopeKey, rangeDays });
 
-  const result = await getOrComputeCached({
-    namespace: "trend",
-    key,
-    ttlMs,
-    compute: async () => {
-      const now = new Date();
-      const rangeStart = startOfUtcDay(subtractDays(now, rangeDays - 1));
-      const rangeEnd = endOfUtcDay(now);
-      const scopeSql = buildScopeOrderSql(params.scope, "o");
+  const build = async () => {
+    const result = await getOrComputeCached({
+      namespace: "trend",
+      key,
+      ttlMs,
+      compute: async () => {
+        const now = new Date();
+        const rangeStart = startOfUtcDay(subtractDays(now, rangeDays - 1));
+        const rangeEnd = endOfUtcDay(now);
+        const scopeSql = buildScopeOrderSql(params.scope, "o");
 
-      const [createdRows, deliveredRows] = await Promise.all([
-        prisma.$queryRaw<Array<{ day: Date; count: bigint }>>(
-          Prisma.sql`
-            SELECT DATE_TRUNC('day', o."createdAt") AS day, COUNT(*)::bigint AS count
-            FROM "Order" o
-            WHERE o."createdAt" >= ${rangeStart}
-              AND o."createdAt" <= ${rangeEnd}
-              AND ${scopeSql}
-            GROUP BY DATE_TRUNC('day', o."createdAt")
-            ORDER BY day ASC
-          `,
-        ),
-        prisma.$queryRaw<Array<{ day: Date; count: bigint }>>(
-          Prisma.sql`
-            SELECT DATE_TRUNC('day', o."updatedAt") AS day, COUNT(*)::bigint AS count
-            FROM "Order" o
-            WHERE o."status" = 'delivered'
-              AND o."updatedAt" >= ${rangeStart}
-              AND o."updatedAt" <= ${rangeEnd}
-              AND ${scopeSql}
-            GROUP BY DATE_TRUNC('day', o."updatedAt")
-            ORDER BY day ASC
-          `,
-        ),
-      ]);
-
-      return {
-        period: {
-          rangeDays,
-          from: rangeStart.toISOString(),
-          to: rangeEnd.toISOString(),
-        },
-        trend: {
-          created: bucketByDay(
-            createdRows.map((row) => ({ day: row.day, count: Number(row.count) })),
-            rangeStart,
-            rangeEnd,
+        const [createdRows, deliveredRows] = await Promise.all([
+          prisma.$queryRaw<Array<{ day: Date; count: bigint }>>(
+            Prisma.sql`
+              SELECT DATE_TRUNC('day', o."createdAt") AS day, COUNT(*)::bigint AS count
+              FROM "Order" o
+              WHERE o."createdAt" >= ${rangeStart}
+                AND o."createdAt" <= ${rangeEnd}
+                AND ${scopeSql}
+              GROUP BY DATE_TRUNC('day', o."createdAt")
+              ORDER BY day ASC
+            `,
           ),
-          delivered: bucketByDay(
-            deliveredRows.map((row) => ({ day: row.day, count: Number(row.count) })),
-            rangeStart,
-            rangeEnd,
+          prisma.$queryRaw<Array<{ day: Date; count: bigint }>>(
+            Prisma.sql`
+              SELECT DATE_TRUNC('day', o."updatedAt") AS day, COUNT(*)::bigint AS count
+              FROM "Order" o
+              WHERE o."status" = 'delivered'
+                AND o."updatedAt" >= ${rangeStart}
+                AND o."updatedAt" <= ${rangeEnd}
+                AND ${scopeSql}
+              GROUP BY DATE_TRUNC('day', o."updatedAt")
+              ORDER BY day ASC
+            `,
           ),
-        },
-        generatedAt: new Date().toISOString(),
-      };
-    },
-  });
+        ]);
 
-  await writeAnalyticsReadModel({
-    key: readModelKey,
-    payload: result.payload,
-    ttlMs,
-  });
+        return {
+          period: {
+            rangeDays,
+            from: rangeStart.toISOString(),
+            to: rangeEnd.toISOString(),
+          },
+          trend: {
+            created: bucketByDay(
+              createdRows.map((row) => ({ day: row.day, count: Number(row.count) })),
+              rangeStart,
+              rangeEnd,
+            ),
+            delivered: bucketByDay(
+              deliveredRows.map((row) => ({ day: row.day, count: Number(row.count) })),
+              rangeStart,
+              rangeEnd,
+            ),
+          },
+          generatedAt: new Date().toISOString(),
+        };
+      },
+    });
 
-  return result;
+    await writeAnalyticsReadModel({
+      key: readModelKey,
+      payload: result.payload,
+      ttlMs,
+    });
+
+    return result;
+  };
+
+  let buildPromise = trendBuilds.get(readModelKey);
+  if (!buildPromise) {
+    buildPromise = build().finally(() => {
+      trendBuilds.delete(readModelKey);
+    });
+    trendBuilds.set(readModelKey, buildPromise);
+  }
+
+  const fastTimeoutMs = Math.max(
+    250,
+    Number(process.env.ANALYTICS_TREND_FAST_TIMEOUT_MS || 1200),
+  );
+  const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), fastTimeoutMs));
+  const result = await Promise.race([buildPromise, timeout]);
+  if (result) return result;
+
+  return {
+    payload: emptyTrendPayload(rangeDays),
+    cacheHit: true,
+  };
 }
 
 export async function getAnalyticsWarningsV2(params: WarningsParams) {
