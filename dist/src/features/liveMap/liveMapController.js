@@ -303,10 +303,13 @@ async function streamLiveMapController(req, res) {
     res.flushHeaders?.();
     (0, opsMetrics_1.recordSseConnected)({ stream: "live-map", clientKey });
     res.write(`event: ready\ndata: ${JSON.stringify({ connectedAt: new Date().toISOString(), resumedFrom: lastEventId || null })}\n\n`);
-    const replayEvents = (await (0, liveMapStore_1.replayLiveMapEventsFromRedis)({
+    const redisReplayEvents = await (0, liveMapStore_1.replayLiveMapEventsFromRedis)({
         lastEventId,
         limit: Number(process.env.LIVE_MAP_STREAM_REPLAY_MAX_EVENTS || 300),
-    })) || (0, liveMapStore_1.replayLiveMapEventsSince)(lastEventId);
+    });
+    const replayEvents = redisReplayEvents.length
+        ? redisReplayEvents
+        : (0, liveMapStore_1.replayLiveMapEventsSince)(lastEventId);
     const replayLimit = Math.max(10, Number(process.env.LIVE_MAP_STREAM_REPLAY_MAX_EVENTS || 300));
     const replaySlice = replayEvents.slice(-replayLimit);
     replaySlice.forEach((event) => {

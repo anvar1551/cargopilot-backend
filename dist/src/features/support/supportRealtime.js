@@ -14,6 +14,10 @@ let consumerStarted = false;
 let streamLastId = "$";
 let localEventSeq = 0;
 const recentEvents = [];
+function nextStreamEventId() {
+    localEventSeq += 1;
+    return `${Date.now()}-${localEventSeq}`;
+}
 function getSupportEventsStream() {
     return `${(0, redis_1.getRedisPrefix)()}:support:events`;
 }
@@ -38,6 +42,8 @@ function safeParseEvent(raw) {
     }
 }
 function appendRecentEvent(event) {
+    if (event.id && recentEvents.some((item) => item.id === event.id))
+        return;
     recentEvents.push(event);
     if (recentEvents.length > EVENT_BUFFER_LIMIT) {
         recentEvents.splice(0, recentEvents.length - EVENT_BUFFER_LIMIT);
@@ -63,6 +69,8 @@ async function startStreamConsumer() {
                         continue;
                     const event = safeParseEvent(raw);
                     if (event) {
+                        if (event.id && recentEvents.some((item) => item.id === event.id))
+                            continue;
                         appendRecentEvent(event);
                         emitter.emit("support.refresh", event);
                     }
@@ -83,7 +91,7 @@ function ensureSupportRefreshConsumer() {
 }
 async function publishSupportRefresh(reason, options) {
     const event = {
-        id: String(++localEventSeq),
+        id: nextStreamEventId(),
         type: "support.refresh",
         at: new Date().toISOString(),
         reason,
@@ -96,7 +104,7 @@ async function publishSupportRefresh(reason, options) {
         const redis = await (0, redis_1.getRedisClient)();
         if (!redis)
             return;
-        await redis.xadd(getSupportEventsStream(), "MAXLEN", "~", String(STREAM_MAX_LEN), "*", "type", event.type, "reason", event.reason, "ticketId", event.ticketId ?? "", "keys", JSON.stringify(event.keys), "data", JSON.stringify(event));
+        await redis.xadd(getSupportEventsStream(), "MAXLEN", "~", String(STREAM_MAX_LEN), event.id || "*", "type", event.type, "reason", event.reason, "ticketId", event.ticketId ?? "", "keys", JSON.stringify(event.keys), "data", JSON.stringify(event));
     }
     catch (err) {
         console.error(`[support] stream publish failed: ${err?.message || "unknown"}`);
@@ -116,6 +124,8 @@ function replaySupportRefreshSince(lastEventId) {
 async function replaySupportRefreshFromRedis(args) {
     const lastEventId = String(args.lastEventId || "").trim();
     if (!lastEventId)
+        return [];
+    if (!/^\d+-\d+$/.test(lastEventId))
         return [];
     const redis = await (0, redis_1.getRedisClient)();
     if (!redis)

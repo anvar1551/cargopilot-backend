@@ -32,6 +32,11 @@ let streamLastId = "$";
 let localEventSeq = 0;
 const recentEvents: AnalyticsInvalidationEvent[] = [];
 
+function nextStreamEventId() {
+  localEventSeq += 1;
+  return `${Date.now()}-${localEventSeq}`;
+}
+
 function getAnalyticsEventsStream() {
   return `${getRedisPrefix()}:analytics:v2:events`;
 }
@@ -57,6 +62,7 @@ function safeParseEvent(raw: string): AnalyticsInvalidationEvent | null {
 }
 
 function appendRecentEvent(event: AnalyticsInvalidationEvent) {
+  if (event.id && recentEvents.some((item) => item.id === event.id)) return;
   recentEvents.push(event);
   if (recentEvents.length > EVENT_BUFFER_LIMIT) {
     recentEvents.splice(0, recentEvents.length - EVENT_BUFFER_LIMIT);
@@ -89,6 +95,7 @@ async function startStreamConsumer() {
             if (!raw) continue;
             const event = safeParseEvent(raw);
             if (event) {
+              if (event.id && recentEvents.some((item) => item.id === event.id)) continue;
               appendRecentEvent(event);
               emitter.emit("analytics.invalidate", event);
             }
@@ -117,7 +124,7 @@ export async function publishAnalyticsInvalidation(
   },
 ) {
   const event: AnalyticsInvalidationEvent = {
-    id: String(++localEventSeq),
+    id: nextStreamEventId(),
     type: "analytics.invalidate",
     at: new Date().toISOString(),
     reason,
@@ -139,7 +146,7 @@ export async function publishAnalyticsInvalidation(
       "MAXLEN",
       "~",
       String(STREAM_MAX_LEN),
-      "*",
+      event.id || "*",
       "type",
       event.type,
       "reason",
@@ -173,6 +180,7 @@ export async function replayAnalyticsInvalidationFromRedis(args: {
 }) {
   const lastEventId = String(args.lastEventId || "").trim();
   if (!lastEventId) return [] as AnalyticsInvalidationEvent[];
+  if (!/^\d+-\d+$/.test(lastEventId)) return [] as AnalyticsInvalidationEvent[];
   const redis = await getRedisClient();
   if (!redis) return [] as AnalyticsInvalidationEvent[];
   try {

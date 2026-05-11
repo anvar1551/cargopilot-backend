@@ -183,25 +183,25 @@ export async function streamSupportController(req: Request, res: Response) {
   const lastEventId = String(req.header("last-event-id") || req.header("Last-Event-ID") || "").trim();
   recordSseConnected({ stream: "support", clientKey });
   let closed = false;
-  let sequence = 0;
-  const send = (event: string, payload: unknown) => {
+  const send = (event: string, payload: unknown, id?: string | null) => {
     if (closed) return;
-    sequence += 1;
-    res.write(`id: ${sequence}\n`);
+    if (id) res.write(`id: ${id}\n`);
     res.write(`event: ${event}\n`);
     res.write(`data: ${JSON.stringify(payload)}\n\n`);
   };
 
   send("ready", { connectedAt: new Date().toISOString(), resumedFrom: lastEventId || null });
-  const replayEvents =
-    (await replaySupportRefreshFromRedis({
-      lastEventId,
-      limit: Number(process.env.SUPPORT_STREAM_REPLAY_MAX_EVENTS || 200),
-    })) || replaySupportRefreshSince(lastEventId);
+  const redisReplayEvents = await replaySupportRefreshFromRedis({
+    lastEventId,
+    limit: Number(process.env.SUPPORT_STREAM_REPLAY_MAX_EVENTS || 200),
+  });
+  const replayEvents = redisReplayEvents.length
+    ? redisReplayEvents
+    : replaySupportRefreshSince(lastEventId);
   const replayLimit = Math.max(10, Number(process.env.SUPPORT_STREAM_REPLAY_MAX_EVENTS || 200));
   const replaySlice = replayEvents.slice(-replayLimit);
   replaySlice.forEach((event) => {
-    send("support-refresh", event);
+    send("support-refresh", event, event.id);
   });
   if (replayEvents.length > replaySlice.length) {
     send("support-replay-truncated", {
@@ -214,7 +214,7 @@ export async function streamSupportController(req: Request, res: Response) {
   }, Math.max(10_000, Number(process.env.SUPPORT_STREAM_HEARTBEAT_MS || 25_000)));
 
   const unsubscribe = subscribeSupportRefresh((event) => {
-    send("support-refresh", event);
+    send("support-refresh", event, event.id);
   });
 
   req.on("close", () => {

@@ -14,6 +14,10 @@ let consumerStarted = false;
 let streamLastId = "$";
 let localEventSeq = 0;
 const recentEvents = [];
+function nextStreamEventId() {
+    localEventSeq += 1;
+    return `${Date.now()}-${localEventSeq}`;
+}
 function getAnalyticsEventsStream() {
     return `${(0, redis_1.getRedisPrefix)()}:analytics:v2:events`;
 }
@@ -39,6 +43,8 @@ function safeParseEvent(raw) {
     }
 }
 function appendRecentEvent(event) {
+    if (event.id && recentEvents.some((item) => item.id === event.id))
+        return;
     recentEvents.push(event);
     if (recentEvents.length > EVENT_BUFFER_LIMIT) {
         recentEvents.splice(0, recentEvents.length - EVENT_BUFFER_LIMIT);
@@ -63,6 +69,8 @@ async function startStreamConsumer() {
                             continue;
                         const event = safeParseEvent(raw);
                         if (event) {
+                            if (event.id && recentEvents.some((item) => item.id === event.id))
+                                continue;
                             appendRecentEvent(event);
                             emitter.emit("analytics.invalidate", event);
                         }
@@ -84,7 +92,7 @@ function ensureAnalyticsInvalidationConsumer() {
 }
 async function publishAnalyticsInvalidation(reason, options) {
     const event = {
-        id: String(++localEventSeq),
+        id: nextStreamEventId(),
         type: "analytics.invalidate",
         at: new Date().toISOString(),
         reason,
@@ -100,7 +108,7 @@ async function publishAnalyticsInvalidation(reason, options) {
         const redis = await (0, redis_1.getRedisClient)();
         if (!redis)
             return;
-        await redis.xadd(getAnalyticsEventsStream(), "MAXLEN", "~", String(STREAM_MAX_LEN), "*", "type", event.type, "reason", event.reason, "scope", event.scope, "keys", JSON.stringify(event.keys), "source", event.source || "api", "data", JSON.stringify(event));
+        await redis.xadd(getAnalyticsEventsStream(), "MAXLEN", "~", String(STREAM_MAX_LEN), event.id || "*", "type", event.type, "reason", event.reason, "scope", event.scope, "keys", JSON.stringify(event.keys), "source", event.source || "api", "data", JSON.stringify(event));
     }
     catch (err) {
         console.error(`[analytics-v2] stream publish failed: ${err?.message || "unknown"}`);
@@ -120,6 +128,8 @@ function replayAnalyticsInvalidationSince(lastEventId) {
 async function replayAnalyticsInvalidationFromRedis(args) {
     const lastEventId = String(args.lastEventId || "").trim();
     if (!lastEventId)
+        return [];
+    if (!/^\d+-\d+$/.test(lastEventId))
         return [];
     const redis = await (0, redis_1.getRedisClient)();
     if (!redis)

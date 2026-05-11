@@ -40,7 +40,7 @@ const DEDUPE_TTL_SEC = Math.max(
 );
 const FLUSH_DEBOUNCE_MS = Math.max(
   250,
-  Number(process.env.ANALYTICS_WORKER_FLUSH_DEBOUNCE_MS || 1500),
+  Number(process.env.ANALYTICS_WORKER_FLUSH_DEBOUNCE_MS || 750),
 );
 const HEALTH_LOG_MS = Math.max(
   10_000,

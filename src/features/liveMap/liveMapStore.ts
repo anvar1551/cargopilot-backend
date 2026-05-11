@@ -47,11 +47,17 @@ let localEventSeq = 0;
 const EVENT_BUFFER_LIMIT = Math.max(100, Number(process.env.LIVE_MAP_STREAM_REPLAY_BUFFER || 1000));
 const recentEvents: LiveMapEvent[] = [];
 
+function nextStreamEventId() {
+  localEventSeq += 1;
+  return `${Date.now()}-${localEventSeq}`;
+}
+
 function nowMs() {
   return Date.now();
 }
 
 function appendRecentEvent(event: LiveMapEvent) {
+  if (event.id && recentEvents.some((item) => item.id === event.id)) return;
   recentEvents.push(event);
   if (recentEvents.length > EVENT_BUFFER_LIMIT) {
     recentEvents.splice(0, recentEvents.length - EVENT_BUFFER_LIMIT);
@@ -199,6 +205,7 @@ async function startStreamConsumer() {
               const rawEvent = fields[dataIdx + 1];
               if (!rawEvent) continue;
               const event = JSON.parse(rawEvent) as LiveMapEvent;
+              if (event.id && recentEvents.some((item) => item.id === event.id)) continue;
               appendRecentEvent(event);
               liveMapEmitter.emit("live-map-event", event);
             }
@@ -457,7 +464,7 @@ export async function readDriverPresences(driverIds: string[]) {
 }
 
 export async function publishLiveMapEvent(event: LiveMapEvent) {
-  const enriched = { ...event, id: event.id || String(++localEventSeq) } as LiveMapEvent;
+  const enriched = { ...event, id: event.id || nextStreamEventId() } as LiveMapEvent;
   appendRecentEvent(enriched);
   liveMapEmitter.emit("live-map-event", enriched);
   try {
@@ -468,7 +475,7 @@ export async function publishLiveMapEvent(event: LiveMapEvent) {
       "MAXLEN",
       "~",
       "10000",
-      "*",
+      enriched.id || "*",
       "type",
       enriched.type,
       "data",
@@ -491,6 +498,7 @@ export function replayLiveMapEventsSince(lastEventId: string | null | undefined)
 export async function replayLiveMapEventsFromRedis(args: { lastEventId?: string | null; limit?: number }) {
   const lastEventId = String(args.lastEventId || "").trim();
   if (!lastEventId) return [] as LiveMapEvent[];
+  if (!/^\d+-\d+$/.test(lastEventId)) return [] as LiveMapEvent[];
   const redis = await getRedisClient();
   if (!redis) return [] as LiveMapEvent[];
   try {

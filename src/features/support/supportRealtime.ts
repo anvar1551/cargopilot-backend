@@ -25,6 +25,11 @@ let streamLastId = "$";
 let localEventSeq = 0;
 const recentEvents: SupportRefreshEvent[] = [];
 
+function nextStreamEventId() {
+  localEventSeq += 1;
+  return `${Date.now()}-${localEventSeq}`;
+}
+
 function getSupportEventsStream() {
   return `${getRedisPrefix()}:support:events`;
 }
@@ -49,6 +54,7 @@ function safeParseEvent(raw: string): SupportRefreshEvent | null {
 }
 
 function appendRecentEvent(event: SupportRefreshEvent) {
+  if (event.id && recentEvents.some((item) => item.id === event.id)) return;
   recentEvents.push(event);
   if (recentEvents.length > EVENT_BUFFER_LIMIT) {
     recentEvents.splice(0, recentEvents.length - EVENT_BUFFER_LIMIT);
@@ -82,6 +88,7 @@ async function startStreamConsumer() {
           if (!raw) continue;
           const event = safeParseEvent(raw);
           if (event) {
+            if (event.id && recentEvents.some((item) => item.id === event.id)) continue;
             appendRecentEvent(event);
             emitter.emit("support.refresh", event);
           }
@@ -108,7 +115,7 @@ export async function publishSupportRefresh(
   },
 ) {
   const event: SupportRefreshEvent = {
-    id: String(++localEventSeq),
+    id: nextStreamEventId(),
     type: "support.refresh",
     at: new Date().toISOString(),
     reason,
@@ -127,7 +134,7 @@ export async function publishSupportRefresh(
       "MAXLEN",
       "~",
       String(STREAM_MAX_LEN),
-      "*",
+      event.id || "*",
       "type",
       event.type,
       "reason",
@@ -156,6 +163,7 @@ export function replaySupportRefreshSince(lastEventId: string | null | undefined
 export async function replaySupportRefreshFromRedis(args: { lastEventId?: string | null; limit?: number }) {
   const lastEventId = String(args.lastEventId || "").trim();
   if (!lastEventId) return [] as SupportRefreshEvent[];
+  if (!/^\d+-\d+$/.test(lastEventId)) return [] as SupportRefreshEvent[];
   const redis = await getRedisClient();
   if (!redis) return [] as SupportRefreshEvent[];
   try {

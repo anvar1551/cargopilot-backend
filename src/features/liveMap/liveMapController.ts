@@ -339,11 +339,13 @@ export async function streamLiveMapController(req: Request, res: Response) {
   recordSseConnected({ stream: "live-map", clientKey });
 
   res.write(`event: ready\ndata: ${JSON.stringify({ connectedAt: new Date().toISOString(), resumedFrom: lastEventId || null })}\n\n`);
-  const replayEvents =
-    (await replayLiveMapEventsFromRedis({
-      lastEventId,
-      limit: Number(process.env.LIVE_MAP_STREAM_REPLAY_MAX_EVENTS || 300),
-    })) || replayLiveMapEventsSince(lastEventId);
+  const redisReplayEvents = await replayLiveMapEventsFromRedis({
+    lastEventId,
+    limit: Number(process.env.LIVE_MAP_STREAM_REPLAY_MAX_EVENTS || 300),
+  });
+  const replayEvents = redisReplayEvents.length
+    ? redisReplayEvents
+    : replayLiveMapEventsSince(lastEventId);
   const replayLimit = Math.max(10, Number(process.env.LIVE_MAP_STREAM_REPLAY_MAX_EVENTS || 300));
   const replaySlice = replayEvents.slice(-replayLimit);
   replaySlice.forEach((event) => {

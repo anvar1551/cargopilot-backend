@@ -38,10 +38,16 @@ let streamConsumerStarted = false;
 let localEventSeq = 0;
 const EVENT_BUFFER_LIMIT = Math.max(100, Number(process.env.LIVE_MAP_STREAM_REPLAY_BUFFER || 1000));
 const recentEvents = [];
+function nextStreamEventId() {
+    localEventSeq += 1;
+    return `${Date.now()}-${localEventSeq}`;
+}
 function nowMs() {
     return Date.now();
 }
 function appendRecentEvent(event) {
+    if (event.id && recentEvents.some((item) => item.id === event.id))
+        return;
     recentEvents.push(event);
     if (recentEvents.length > EVENT_BUFFER_LIMIT) {
         recentEvents.splice(0, recentEvents.length - EVENT_BUFFER_LIMIT);
@@ -180,6 +186,8 @@ async function startStreamConsumer() {
                             if (!rawEvent)
                                 continue;
                             const event = JSON.parse(rawEvent);
+                            if (event.id && recentEvents.some((item) => item.id === event.id))
+                                continue;
                             appendRecentEvent(event);
                             liveMapEmitter.emit("live-map-event", event);
                         }
@@ -415,14 +423,14 @@ async function readDriverPresences(driverIds) {
     return result;
 }
 async function publishLiveMapEvent(event) {
-    const enriched = { ...event, id: event.id || String(++localEventSeq) };
+    const enriched = { ...event, id: event.id || nextStreamEventId() };
     appendRecentEvent(enriched);
     liveMapEmitter.emit("live-map-event", enriched);
     try {
         const redis = await (0, redis_1.getRedisClient)();
         if (!redis)
             return;
-        await redis.xadd(getEventsStream(), "MAXLEN", "~", "10000", "*", "type", enriched.type, "data", JSON.stringify(enriched));
+        await redis.xadd(getEventsStream(), "MAXLEN", "~", "10000", enriched.id || "*", "type", enriched.type, "data", JSON.stringify(enriched));
     }
     catch (err) {
         console.error(`[live-map] redis stream publish failed: ${err?.message || "unknown"}`);
@@ -442,6 +450,8 @@ function replayLiveMapEventsSince(lastEventId) {
 async function replayLiveMapEventsFromRedis(args) {
     const lastEventId = String(args.lastEventId || "").trim();
     if (!lastEventId)
+        return [];
+    if (!/^\d+-\d+$/.test(lastEventId))
         return [];
     const redis = await (0, redis_1.getRedisClient)();
     if (!redis)

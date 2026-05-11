@@ -20,7 +20,7 @@ const CONSUMER_NAME = process.env.ANALYTICS_WORKER_CONSUMER ||
     `${process.env.HOSTNAME || "analytics"}-${process.pid}`;
 const STREAM_KEY = (0, analyticsEvents_1.getDomainEventsStreamKey)();
 const DEDUPE_TTL_SEC = Math.max(60, Number(process.env.ANALYTICS_WORKER_DEDUPE_TTL_SEC || 24 * 60 * 60));
-const FLUSH_DEBOUNCE_MS = Math.max(250, Number(process.env.ANALYTICS_WORKER_FLUSH_DEBOUNCE_MS || 1500));
+const FLUSH_DEBOUNCE_MS = Math.max(250, Number(process.env.ANALYTICS_WORKER_FLUSH_DEBOUNCE_MS || 750));
 const HEALTH_LOG_MS = Math.max(10000, Number(process.env.ANALYTICS_WORKER_HEALTH_LOG_MS || 60000));
 const LEADER_LOCK_KEY = process.env.ANALYTICS_WORKER_LEADER_LOCK_KEY || `${(0, redis_1.getRedisPrefix)()}:cp:analytics:worker:lock`;
 const LEADER_LOCK_TTL_SEC = Math.max(10, Number(process.env.ANALYTICS_WORKER_LEADER_LOCK_TTL_SEC || 30));

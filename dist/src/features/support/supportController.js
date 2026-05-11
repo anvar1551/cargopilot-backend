@@ -166,24 +166,26 @@ async function streamSupportController(req, res) {
     const lastEventId = String(req.header("last-event-id") || req.header("Last-Event-ID") || "").trim();
     (0, opsMetrics_1.recordSseConnected)({ stream: "support", clientKey });
     let closed = false;
-    let sequence = 0;
-    const send = (event, payload) => {
+    const send = (event, payload, id) => {
         if (closed)
             return;
-        sequence += 1;
-        res.write(`id: ${sequence}\n`);
+        if (id)
+            res.write(`id: ${id}\n`);
         res.write(`event: ${event}\n`);
         res.write(`data: ${JSON.stringify(payload)}\n\n`);
     };
     send("ready", { connectedAt: new Date().toISOString(), resumedFrom: lastEventId || null });
-    const replayEvents = (await (0, supportRealtime_1.replaySupportRefreshFromRedis)({
+    const redisReplayEvents = await (0, supportRealtime_1.replaySupportRefreshFromRedis)({
         lastEventId,
         limit: Number(process.env.SUPPORT_STREAM_REPLAY_MAX_EVENTS || 200),
-    })) || (0, supportRealtime_1.replaySupportRefreshSince)(lastEventId);
+    });
+    const replayEvents = redisReplayEvents.length
+        ? redisReplayEvents
+        : (0, supportRealtime_1.replaySupportRefreshSince)(lastEventId);
     const replayLimit = Math.max(10, Number(process.env.SUPPORT_STREAM_REPLAY_MAX_EVENTS || 200));
     const replaySlice = replayEvents.slice(-replayLimit);
     replaySlice.forEach((event) => {
-        send("support-refresh", event);
+        send("support-refresh", event, event.id);
     });
     if (replayEvents.length > replaySlice.length) {
         send("support-replay-truncated", {
@@ -196,7 +198,7 @@ async function streamSupportController(req, res) {
             res.write(`: ping ${Date.now()}\n\n`);
     }, Math.max(10000, Number(process.env.SUPPORT_STREAM_HEARTBEAT_MS || 25000)));
     const unsubscribe = (0, supportRealtime_1.subscribeSupportRefresh)((event) => {
-        send("support-refresh", event);
+        send("support-refresh", event, event.id);
     });
     req.on("close", () => {
         closed = true;

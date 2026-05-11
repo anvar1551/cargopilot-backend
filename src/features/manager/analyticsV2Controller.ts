@@ -230,22 +230,22 @@ export async function streamAnalyticsV2Controller(req: Request, res: Response) {
   const lastEventId = String(req.header("last-event-id") || req.header("Last-Event-ID") || "").trim();
   recordSseConnected({ stream: "analytics", clientKey });
   let closed = false;
-  let sequence = 0;
 
-  const send = (event: string, payload: unknown) => {
+  const send = (event: string, payload: unknown, id?: string | null) => {
     if (closed) return;
-    sequence += 1;
-    res.write(`id: ${sequence}\n`);
+    if (id) res.write(`id: ${id}\n`);
     res.write(`event: ${event}\n`);
     res.write(`data: ${JSON.stringify(payload)}\n\n`);
   };
 
   send("ready", { connectedAt: new Date().toISOString(), resumedFrom: lastEventId || null });
-  const replayEvents =
-    (await replayAnalyticsInvalidationFromRedis({
-      lastEventId,
-      limit: Number(process.env.ANALYTICS_V2_STREAM_REPLAY_MAX_EVENTS || 250),
-    })) || replayAnalyticsInvalidationSince(lastEventId);
+  const redisReplayEvents = await replayAnalyticsInvalidationFromRedis({
+    lastEventId,
+    limit: Number(process.env.ANALYTICS_V2_STREAM_REPLAY_MAX_EVENTS || 250),
+  });
+  const replayEvents = redisReplayEvents.length
+    ? redisReplayEvents
+    : replayAnalyticsInvalidationSince(lastEventId);
   const replayLimit = Math.max(10, Number(process.env.ANALYTICS_V2_STREAM_REPLAY_MAX_EVENTS || 250));
   const replaySlice = replayEvents.slice(-replayLimit);
   replaySlice.forEach((event) => {
@@ -255,7 +255,7 @@ export async function streamAnalyticsV2Controller(req: Request, res: Response) {
       scope: event.scope,
       keys: event.keys,
       source: event.source || "api",
-    });
+    }, event.id);
   });
   if (replayEvents.length > replaySlice.length) {
     send("analytics-replay-truncated", {
@@ -297,7 +297,7 @@ export async function streamAnalyticsV2Controller(req: Request, res: Response) {
       scope: event.scope,
       keys: event.keys,
       source: event.source || "api",
-    });
+    }, event.id);
   });
 
   req.on("close", () => {
