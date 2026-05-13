@@ -20,3 +20,6 @@ All required variables are listed in [.env.example](.env.example).
 ## Notes
 - Never commit `.env` or secret key files.
 - Rotate any leaked secrets immediately.
+
+## Architecture Policy
+- Locked ERP backend policy: [docs/erp-architecture-policy.md](docs/erp-architecture-policy.md)
