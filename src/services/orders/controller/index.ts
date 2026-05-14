@@ -27,3 +27,10 @@ export {
   handoffCashBulk,
   settleCashBulk,
 } from "./cash.controller";
+export {
+  listLegs,
+  upsertLeg,
+  listPricing,
+  createPricing,
+  listDocuments,
+} from "./legs-pricing.controller";

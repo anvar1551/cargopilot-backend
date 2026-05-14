@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.settleCashBulk = exports.handoffCashBulk = exports.settleCash = exports.handoffCash = exports.collectCashBulk = exports.collectCash = exports.listCashQueue = exports.getCashQueueSummary = exports.uploadDeliveryProofFiles = exports.submitOrderProof = exports.submitDeliveryProof = exports.getOrderProofLinks = exports.updateStatusBulk = exports.updateDriverStatus = exports.assignTasksBulk = exports.assignDriversBulk = exports.exportCsv = exports.listDriverWorkload = exports.getOne = exports.list = exports.previewImport = exports.downloadImportTemplate = exports.confirmImport = exports.create = void 0;
+exports.listDocuments = exports.createPricing = exports.listPricing = exports.upsertLeg = exports.listLegs = exports.settleCashBulk = exports.handoffCashBulk = exports.settleCash = exports.handoffCash = exports.collectCashBulk = exports.collectCash = exports.listCashQueue = exports.getCashQueueSummary = exports.uploadDeliveryProofFiles = exports.submitOrderProof = exports.submitDeliveryProof = exports.getOrderProofLinks = exports.updateStatusBulk = exports.updateDriverStatus = exports.assignTasksBulk = exports.assignDriversBulk = exports.exportCsv = exports.listDriverWorkload = exports.getOne = exports.list = exports.previewImport = exports.downloadImportTemplate = exports.confirmImport = exports.create = void 0;
 var create_controller_1 = require("./create.controller");
 Object.defineProperty(exports, "create", { enumerable: true, get: function () { return create_controller_1.create; } });
 Object.defineProperty(exports, "confirmImport", { enumerable: true, get: function () { return create_controller_1.confirmImport; } });
@@ -30,3 +30,9 @@ Object.defineProperty(exports, "handoffCash", { enumerable: true, get: function 
 Object.defineProperty(exports, "settleCash", { enumerable: true, get: function () { return cash_controller_1.settleCash; } });
 Object.defineProperty(exports, "handoffCashBulk", { enumerable: true, get: function () { return cash_controller_1.handoffCashBulk; } });
 Object.defineProperty(exports, "settleCashBulk", { enumerable: true, get: function () { return cash_controller_1.settleCashBulk; } });
+var legs_pricing_controller_1 = require("./legs-pricing.controller");
+Object.defineProperty(exports, "listLegs", { enumerable: true, get: function () { return legs_pricing_controller_1.listLegs; } });
+Object.defineProperty(exports, "upsertLeg", { enumerable: true, get: function () { return legs_pricing_controller_1.upsertLeg; } });
+Object.defineProperty(exports, "listPricing", { enumerable: true, get: function () { return legs_pricing_controller_1.listPricing; } });
+Object.defineProperty(exports, "createPricing", { enumerable: true, get: function () { return legs_pricing_controller_1.createPricing; } });
+Object.defineProperty(exports, "listDocuments", { enumerable: true, get: function () { return legs_pricing_controller_1.listDocuments; } });

@@ -55,6 +55,13 @@ Use the folder indexes (`controller`, `workflow`, `repo`) for all new imports.
   - `POST /api/orders/assign-driver-bulk`
   - `POST /api/orders/tasks/assign-bulk`
   - `POST /api/orders/status-bulk`
+- ERP multimodal/finance extensions (manager):
+  - `GET /api/orders/:id/legs`
+  - `POST /api/orders/:id/legs`
+  - `PUT /api/orders/:id/legs/:legId`
+  - `GET /api/orders/:id/pricing-components`
+  - `POST /api/orders/:id/pricing-components`
+  - `GET /api/orders/:id/documents`
 - `POST /api/orders/tasks/assign-bulk` is backward-compatible alias to direct assign flow.
 - `POST /api/orders/status-bulk` expects `status` and optional `reasonCode/note/region/warehouseId`.
 - Label generation mode is controlled by env:

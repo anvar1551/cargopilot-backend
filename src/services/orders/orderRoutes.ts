@@ -28,6 +28,11 @@ import {
   uploadDeliveryProofFiles,
   updateStatusBulk,
   listDriverWorkload,
+  listLegs,
+  upsertLeg,
+  listPricing,
+  createPricing,
+  listDocuments,
 } from "./controller";
 
 const router = Router();
@@ -81,6 +86,36 @@ router.get(
   "/:id/proofs",
   auth([AppRole.manager, AppRole.warehouse, AppRole.customer, AppRole.driver]),
   getOrderProofLinks,
+);
+router.get(
+  "/:id/legs",
+  auth([AppRole.manager]),
+  listLegs,
+);
+router.post(
+  "/:id/legs",
+  auth([AppRole.manager]),
+  upsertLeg,
+);
+router.put(
+  "/:id/legs/:legId",
+  auth([AppRole.manager]),
+  upsertLeg,
+);
+router.get(
+  "/:id/pricing-components",
+  auth([AppRole.manager]),
+  listPricing,
+);
+router.post(
+  "/:id/pricing-components",
+  auth([AppRole.manager]),
+  createPricing,
+);
+router.get(
+  "/:id/documents",
+  auth([AppRole.manager]),
+  listDocuments,
 );
 router.post(
   "/:id/delivery-proof",

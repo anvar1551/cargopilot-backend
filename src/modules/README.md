@@ -10,4 +10,4 @@ Rules:
 
 Current module foundation:
 - `identity-access`: RBAC + scope resolution (`orders`, `support`).
-
+- `orders-legs`: multimodal legs, pricing components, and order document read APIs.
