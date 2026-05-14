@@ -491,6 +491,7 @@ function buildOrderWhere(
   customerEntityId?: string | null,
   warehouseId?: string | null,
   params?: ListOrdersParams,
+  enforcedScopeWhere?: Prisma.OrderWhereInput | null,
 ): Prisma.OrderWhereInput {
   const scope: SearchScope = params?.scope === "deep" ? "deep" : "fast";
   const q = params?.q?.trim() ?? "";
@@ -509,6 +510,9 @@ function buildOrderWhere(
   const and = [roleWhere, searchWhere, filterWhere].filter(
     (item) => !isEmptyWhere(item),
   );
+  if (enforcedScopeWhere && !isEmptyWhere(enforcedScopeWhere)) {
+    and.push(enforcedScopeWhere);
+  }
 
   if (and.length === 0) return {};
   if (and.length === 1) return and[0];
@@ -516,44 +520,56 @@ function buildOrderWhere(
 }
 
 /** Returns a single order with full details used by manager/customer/driver views. */
-export const getOrderById = async (id: string) => {
-  return prisma.order.findUnique({
-    where: { id },
-    include: {
-      customer: { select: userLiteSelect },
-      assignedDriver: { select: userLiteSelect },
-      currentWarehouse: true,
-      invoice: true,
-      customerEntity: {
-        include: {
-          defaultAddress: true,
-        },
-      },
-      senderAddressObj: true,
-      receiverAddressObj: true,
-      attachments: true,
-      parcels: true,
-      cashCollections: {
-        include: {
-          currentHolderUser: { select: userLiteSelect },
-          currentHolderWarehouse: true,
-          events: {
-            include: {
-              actor: { select: userLiteSelect },
-            },
-            orderBy: { createdAt: "asc" },
-          },
-        },
-      },
-      trackingEvents: {
-        include: {
-          warehouse: true,
-          actor: { select: userLiteSelect },
-          parcel: true,
-        },
-        orderBy: { timestamp: "asc" },
+export const getOrderById = async (
+  id: string,
+  enforcedScopeWhere?: Prisma.OrderWhereInput | null,
+) => {
+  const include = {
+    customer: { select: userLiteSelect },
+    assignedDriver: { select: userLiteSelect },
+    currentWarehouse: true,
+    invoice: true,
+    customerEntity: {
+      include: {
+        defaultAddress: true,
       },
     },
+    senderAddressObj: true,
+    receiverAddressObj: true,
+    attachments: true,
+    parcels: true,
+    cashCollections: {
+      include: {
+        currentHolderUser: { select: userLiteSelect },
+        currentHolderWarehouse: true,
+        events: {
+          include: {
+            actor: { select: userLiteSelect },
+          },
+          orderBy: { createdAt: "asc" },
+        },
+      },
+    },
+    trackingEvents: {
+      include: {
+        warehouse: true,
+        actor: { select: userLiteSelect },
+        parcel: true,
+      },
+      orderBy: { timestamp: "asc" },
+    },
+  } as const;
+
+  if (!enforcedScopeWhere || isEmptyWhere(enforcedScopeWhere)) {
+    return prisma.order.findUnique({
+      where: { id },
+      include,
+    });
+  }
+
+  return prisma.order.findFirst({
+    where: { AND: [{ id }, enforcedScopeWhere] },
+    include,
   });
 };
 
@@ -564,6 +580,7 @@ export const listOrders = async (
   customerEntityId?: string | null,
   warehouseId?: string | null,
   params?: ListOrdersParams,
+  enforcedScopeWhere?: Prisma.OrderWhereInput | null,
 ): Promise<OrderListResult> => {
   const page = Math.max(1, params?.page ?? 1);
   const limit = Math.min(Math.max(params?.limit ?? 50, 1), 200);
@@ -592,6 +609,7 @@ export const listOrders = async (
     customerEntityId,
     warehouseId,
     params,
+    enforcedScopeWhere,
   );
 
   if (mode === "cursor") {
@@ -677,6 +695,7 @@ export const listOrdersForExport = async (
   customerEntityId?: string | null,
   warehouseId?: string | null,
   params?: ListOrdersParams,
+  enforcedScopeWhere?: Prisma.OrderWhereInput | null,
 ) => {
   const where = buildOrderWhere(
     userId,
@@ -684,6 +703,7 @@ export const listOrdersForExport = async (
     customerEntityId,
     warehouseId,
     params,
+    enforcedScopeWhere,
   );
   return prisma.order.findMany({
     where,
@@ -699,6 +719,7 @@ export const countOrdersForExport = async (
   customerEntityId?: string | null,
   warehouseId?: string | null,
   params?: ListOrdersParams,
+  enforcedScopeWhere?: Prisma.OrderWhereInput | null,
 ) => {
   const where = buildOrderWhere(
     userId,
@@ -706,6 +727,7 @@ export const countOrdersForExport = async (
     customerEntityId,
     warehouseId,
     params,
+    enforcedScopeWhere,
   );
   return prisma.order.count({ where });
 };

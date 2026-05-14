@@ -9,6 +9,7 @@ exports.listDriverWorkload = listDriverWorkload;
 exports.exportCsv = exportCsv;
 const client_1 = require("@prisma/client");
 const prismaClient_1 = __importDefault(require("../../../config/prismaClient"));
+const identity_access_1 = require("../../../modules/identity-access");
 const repo_1 = require("../repo");
 function toStringArray(value) {
     if (Array.isArray(value)) {
@@ -84,7 +85,14 @@ async function canWarehouseAccessOrder(args) {
 async function list(req, res) {
     try {
         const { id, role, customerEntityId, warehouseId } = req.user;
-        const result = await (0, repo_1.listOrders)(id, role, customerEntityId ?? undefined, warehouseId ?? undefined, parseOrderListParams(req.query));
+        const enforcedScopeWhere = role === client_1.AppRole.manager ? await (0, identity_access_1.buildOrderScopeWhere)(req.user) : null;
+        if (role === client_1.AppRole.manager) {
+            const canReadOrders = await (0, identity_access_1.hasPermission)(req.user, "orders.read");
+            if (!canReadOrders) {
+                return res.status(403).json({ error: "Forbidden" });
+            }
+        }
+        const result = await (0, repo_1.listOrders)(id, role, customerEntityId ?? undefined, warehouseId ?? undefined, parseOrderListParams(req.query), enforcedScopeWhere);
         res.json(result);
     }
     catch (err) {
@@ -94,10 +102,18 @@ async function list(req, res) {
 /** Returns one order when requester has access to it. */
 async function getOne(req, res) {
     try {
-        const order = await (0, repo_1.getOrderById)(req.params.id);
+        const { id: userId, role, customerEntityId, warehouseId, } = req.user;
+        let enforcedScopeWhere = null;
+        if (role === client_1.AppRole.manager) {
+            const canReadOrders = await (0, identity_access_1.hasPermission)(req.user, "orders.read");
+            if (!canReadOrders) {
+                return res.status(403).json({ error: "Forbidden" });
+            }
+            enforcedScopeWhere = await (0, identity_access_1.buildOrderScopeWhere)(req.user);
+        }
+        const order = await (0, repo_1.getOrderById)(req.params.id, enforcedScopeWhere);
         if (!order)
             return res.status(404).json({ error: "Not found" });
-        const { id: userId, role, customerEntityId, warehouseId, } = req.user;
         if (role === "manager")
             return res.json(order);
         if (role === "warehouse") {
@@ -150,6 +166,11 @@ async function exportCsv(req, res) {
         if (role !== "manager") {
             return res.status(403).json({ error: "Forbidden" });
         }
+        const canReadOrders = await (0, identity_access_1.hasPermission)(req.user, "orders.read");
+        if (!canReadOrders) {
+            return res.status(403).json({ error: "Forbidden" });
+        }
+        const enforcedScopeWhere = await (0, identity_access_1.buildOrderScopeWhere)(req.user);
         const exportParams = {
             ...parseOrderListParams(req.query),
             mode: "page",
@@ -158,13 +179,13 @@ async function exportCsv(req, res) {
             limit: undefined,
         };
         const maxExportRows = Math.min(Math.max(Number(process.env.MAX_EXPORT_ROWS || 20000), 1000), 200000);
-        const totalExportRows = await (0, repo_1.countOrdersForExport)(id, role, customerEntityId ?? undefined, warehouseId ?? undefined, exportParams);
+        const totalExportRows = await (0, repo_1.countOrdersForExport)(id, role, customerEntityId ?? undefined, warehouseId ?? undefined, exportParams, enforcedScopeWhere);
         if (totalExportRows > maxExportRows) {
             return res.status(413).json({
                 error: `Export is too large (${totalExportRows} rows). Narrow filters or raise MAX_EXPORT_ROWS.`,
             });
         }
-        const orders = await (0, repo_1.listOrdersForExport)(id, role, customerEntityId ?? undefined, warehouseId ?? undefined, exportParams);
+        const orders = await (0, repo_1.listOrdersForExport)(id, role, customerEntityId ?? undefined, warehouseId ?? undefined, exportParams, enforcedScopeWhere);
         const csvRows = orders.map((order) => ({
             orderId: order.id,
             orderNumber: order.orderNumber ?? "",

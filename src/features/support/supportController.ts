@@ -9,7 +9,7 @@ import {
   addSupportTicketNote,
   assignSupportTicket,
   createSupportTicket,
-  getSupportTicket,
+  getSupportTicketScoped,
   listSupportAssignees,
   listSupportTickets,
   updateSupportTicketStatus,
@@ -20,6 +20,7 @@ import {
   subscribeSupportRefresh,
 } from "./supportRealtime";
 import { recordSseConnected, recordSseDisconnected } from "../observability/opsMetrics";
+import { buildSupportScopeWhere, hasPermission } from "../../modules/identity-access";
 
 function actorFromRequest(req: Request) {
   return {
@@ -49,6 +50,11 @@ function asNullableString(value: unknown) {
 export async function listSupportTicketsController(req: Request, res: Response) {
   const startedAt = Date.now();
   try {
+    const canReadSupport = await hasPermission(req.user!, "support.read");
+    if (!canReadSupport) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    const scopeWhere = await buildSupportScopeWhere(req.user!);
     const limit = Number(req.query.limit);
     const args = {
       status: asOptionalString(req.query.status),
@@ -60,6 +66,7 @@ export async function listSupportTicketsController(req: Request, res: Response) 
       limit: Number.isFinite(limit) ? limit : undefined,
       includeArchived: String(req.query.includeArchived || "") === "true",
       actor: actorFromRequest(req),
+      scopeWhere,
     };
     const result = await listSupportTickets(args);
     res.setHeader("X-Support-Cache", result.cacheHit ? "HIT" : "MISS");
@@ -74,8 +81,13 @@ export async function listSupportTicketsController(req: Request, res: Response) 
 export async function getSupportTicketController(req: Request, res: Response) {
   const startedAt = Date.now();
   try {
+    const canReadSupport = await hasPermission(req.user!, "support.read");
+    if (!canReadSupport) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    const scopeWhere = await buildSupportScopeWhere(req.user!);
     const id = String(req.params.id || "").trim();
-    const result = await getSupportTicket(id);
+    const result = await getSupportTicketScoped({ id, scopeWhere });
     res.setHeader("X-Support-Cache", result.cacheHit ? "HIT" : "MISS");
     res.setHeader("X-Support-Time-Ms", String(Date.now() - startedAt));
     if (!result.payload) return res.status(404).json({ error: "Support ticket not found" });
@@ -88,6 +100,10 @@ export async function getSupportTicketController(req: Request, res: Response) {
 
 export async function createSupportTicketController(req: Request, res: Response) {
   try {
+    const canCreateSupport = await hasPermission(req.user!, "support.create");
+    if (!canCreateSupport) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     const body = req.body || {};
     const ticket = await createSupportTicket(
       {
@@ -121,6 +137,10 @@ export async function listSupportAssigneesController(_req: Request, res: Respons
 
 export async function updateSupportTicketStatusController(req: Request, res: Response) {
   try {
+    const canUpdateSupport = await hasPermission(req.user!, "support.update");
+    if (!canUpdateSupport) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     const status = asEnumValue(SupportTicketStatus, req.body?.status, SupportTicketStatus.open);
     const ticket = await updateSupportTicketStatus(String(req.params.id), status, actorFromRequest(req));
     return res.json(ticket);
@@ -131,6 +151,10 @@ export async function updateSupportTicketStatusController(req: Request, res: Res
 
 export async function assignSupportTicketController(req: Request, res: Response) {
   try {
+    const canUpdateSupport = await hasPermission(req.user!, "support.update");
+    if (!canUpdateSupport) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     const ownerId = req.body?.ownerId === null ? null : asOptionalString(req.body?.ownerId) || req.user?.id || null;
     const ticket = await assignSupportTicket(String(req.params.id), ownerId, actorFromRequest(req));
     return res.json(ticket);
@@ -141,6 +165,10 @@ export async function assignSupportTicketController(req: Request, res: Response)
 
 export async function addSupportTicketNoteController(req: Request, res: Response) {
   try {
+    const canUpdateSupport = await hasPermission(req.user!, "support.update");
+    if (!canUpdateSupport) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     const ticket = await addSupportTicketNote(String(req.params.id), String(req.body?.body || ""), actorFromRequest(req));
     return res.status(201).json(ticket);
   } catch (err: any) {
@@ -151,6 +179,10 @@ export async function addSupportTicketNoteController(req: Request, res: Response
 
 export async function addSupportTicketMessageController(req: Request, res: Response) {
   try {
+    const canUpdateSupport = await hasPermission(req.user!, "support.update");
+    if (!canUpdateSupport) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     const ticket = await addSupportTicketMessage(String(req.params.id), String(req.body?.body || ""), actorFromRequest(req));
     return res.status(201).json(ticket);
   } catch (err: any) {
@@ -161,6 +193,10 @@ export async function addSupportTicketMessageController(req: Request, res: Respo
 
 export async function escalateSupportTicketController(req: Request, res: Response) {
   try {
+    const canUpdateSupport = await hasPermission(req.user!, "support.update");
+    if (!canUpdateSupport) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     const ticket = await updateSupportTicketStatus(
       String(req.params.id),
       SupportTicketStatus.escalated,

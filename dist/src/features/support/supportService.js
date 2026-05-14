@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.listSupportTickets = listSupportTickets;
 exports.getSupportTicket = getSupportTicket;
+exports.getSupportTicketScoped = getSupportTicketScoped;
 exports.createSupportTicket = createSupportTicket;
 exports.listSupportAssignees = listSupportAssignees;
 exports.updateSupportTicketStatus = updateSupportTicketStatus;
@@ -228,6 +229,10 @@ const ticketDetailSelect = {
 };
 function buildListWhere(args) {
     const where = {};
+    const and = [];
+    if (args.scopeWhere && Object.keys(args.scopeWhere).length > 0) {
+        and.push(args.scopeWhere);
+    }
     if (!args.includeArchived)
         where.archivedAt = null;
     if (isEnumValue(client_1.SupportTicketStatus, args.status)) {
@@ -272,6 +277,10 @@ function buildListWhere(args) {
         else {
             where.OR = searchOr;
         }
+    }
+    if (and.length > 0) {
+        and.push(where);
+        return { AND: and };
     }
     return where;
 }
@@ -373,9 +382,12 @@ async function listSupportTickets(args) {
         },
     });
 }
-async function loadSerializedTicketFresh(id) {
-    const ticket = await prismaClient_1.default.supportTicket.findUnique({
-        where: { id },
+async function loadSerializedTicketFresh(id, scopeWhere) {
+    const scopedWhere = scopeWhere && Object.keys(scopeWhere).length > 0
+        ? { AND: [{ id }, scopeWhere] }
+        : { id };
+    const ticket = await prismaClient_1.default.supportTicket.findFirst({
+        where: scopedWhere,
         select: {
             ...ticketDetailSelect,
             messages: { orderBy: { createdAt: "asc" }, take: 100 },
@@ -388,11 +400,17 @@ async function loadSerializedTicketFresh(id) {
     return serializeTicket(ticket);
 }
 async function getSupportTicket(id) {
+    return getSupportTicketScoped({ id });
+}
+async function getSupportTicketScoped(args) {
     return (0, supportCache_1.getOrComputeSupportCached)({
         namespace: "detail",
-        key: id,
+        key: JSON.stringify({
+            id: args.id,
+            scope: args.scopeWhere || null,
+        }),
         ttlMs: 30000,
-        compute: () => loadSerializedTicketFresh(id),
+        compute: () => loadSerializedTicketFresh(args.id, args.scopeWhere),
     });
 }
 function normalizeOrderNumber(value) {

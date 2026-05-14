@@ -258,23 +258,165 @@ enum SupportTicketEventType {
   system
 }
 
+enum OrganizationType {
+  company
+  branch
+  agent
+  pickup_point
+  carrier
+  client
+}
+
+enum ScopeResource {
+  orders
+  finance
+  support
+  drivers
+  warehouses
+  customers
+}
+
+enum ScopeType {
+  own
+  branch
+  organization
+  subtree
+  assigned
+  global
+}
+
+model Organization {
+  id   String           @id @default(uuid()) @db.Uuid
+  name String
+  type OrganizationType
+  code String?          @unique
+
+  parentOrgId String?        @db.Uuid
+  parentOrg   Organization?  @relation("OrganizationHierarchy", fields: [parentOrgId], references: [id], onDelete: SetNull)
+  childOrgs   Organization[] @relation("OrganizationHierarchy")
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  roles                  AccessRole[]
+  userRoleBindings       UserRoleBinding[]
+  userHomeOrgs           User[]            @relation("UserHomeOrganization")
+  ownedOrders            Order[]           @relation("OrderOwnerOrganization")
+  assignedOrders         Order[]           @relation("OrderAssignedOrganization")
+  ownedSupportTickets    SupportTicket[]   @relation("SupportTicketOwnerOrganization")
+  assignedSupportTickets SupportTicket[]   @relation("SupportTicketAssignedOrganization")
+
+  @@index([type, isActive])
+  @@index([parentOrgId])
+}
+
+model AccessRole {
+  id   String @id @default(uuid()) @db.Uuid
+  code String
+  name String
+
+  org   Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+  orgId String?       @db.Uuid
+
+  isSystem  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  rolePermissions  RolePermission[]
+  userRoleBindings UserRoleBinding[]
+  scopePolicies    DataScopePolicy[]
+
+  @@unique([orgId, code])
+  @@index([code])
+}
+
+model AccessPermission {
+  id          String  @id @default(uuid()) @db.Uuid
+  code        String  @unique
+  resource    String
+  action      String
+  description String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  rolePermissions RolePermission[]
+
+  @@index([resource, action])
+}
+
+model RolePermission {
+  id String @id @default(uuid()) @db.Uuid
+
+  roleId       String           @db.Uuid
+  role         AccessRole       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionId String           @db.Uuid
+  permission   AccessPermission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([roleId, permissionId])
+  @@index([permissionId])
+}
+
+model UserRoleBinding {
+  id String @id @default(uuid()) @db.Uuid
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  roleId String     @db.Uuid
+  role   AccessRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  orgId String       @db.Uuid
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, roleId, orgId])
+  @@index([roleId])
+  @@index([orgId])
+}
+
+model DataScopePolicy {
+  id String @id @default(uuid()) @db.Uuid
+
+  roleId    String        @db.Uuid
+  role      AccessRole    @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  resource  ScopeResource
+  scopeType ScopeType
+
+  constraintsJson Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([roleId, resource])
+  @@index([resource, scopeType])
+}
+
 model User {
   id       String @id @default(uuid()) @db.Uuid
   name     String
   email    String @unique
   password String
 
-  role AppRole @default(customer)
-  driverType DriverType?
-  liveLocationEnabled   Boolean  @default(true)
-  liveLocationUpdatedAt DateTime @default(now())
+  role                  AppRole     @default(customer)
+  driverType            DriverType?
+  liveLocationEnabled   Boolean     @default(true)
+  liveLocationUpdatedAt DateTime    @default(now())
+
+  homeOrgId    String?           @db.Uuid
+  homeOrg      Organization?     @relation("UserHomeOrganization", fields: [homeOrgId], references: [id], onDelete: SetNull)
+  roleBindings UserRoleBinding[]
 
   // ✅ link user -> customer entity (person/company)
   customerEntityId String?         @db.Uuid
   customerEntity   CustomerEntity? @relation("CustomerEntityUsers", fields: [customerEntityId], references: [id])
 
-  warehouseId String?    @db.Uuid
-  warehouse   Warehouse? @relation(fields: [warehouseId], references: [id])
+  warehouseId       String?                 @db.Uuid
+  warehouse         Warehouse?              @relation(fields: [warehouseId], references: [id])
   warehouseAccesses DriverWarehouseAccess[]
 
   orders       Order[] @relation("CustomerOrders")
@@ -282,44 +424,45 @@ model User {
 
   createdAt DateTime @default(now())
 
-  invoices       Invoice[]
-  trackingEvents Tracking[] @relation("TrackingActor")
-  heldCashCollections CashCollection[]     @relation("CashCollectionHolderUser")
+  invoices                  Invoice[]
+  trackingEvents            Tracking[]            @relation("TrackingActor")
+  heldCashCollections       CashCollection[]      @relation("CashCollectionHolderUser")
   cashCollectionActorEvents CashCollectionEvent[] @relation("CashCollectionEventActor")
-  notifications UserNotification[]
-  refreshSessions UserRefreshSession[]
+  notifications             UserNotification[]
+  refreshSessions           UserRefreshSession[]
 
   @@index([role, createdAt])
   @@index([role, warehouseId, createdAt])
+  @@index([homeOrgId])
 }
 
 model Warehouse {
-  id        String        @id @default(uuid()) @db.Uuid
-  name      String
-  type      WarehouseType @default(warehouse)
-  location  String
-  region    String?
-  latitude  Float?
-  longitude Float?
-  users     User[]
-  driverAccesses DriverWarehouseAccess[]
-  orders    Order[]
-  createdAt DateTime      @default(now())
-  tracking  Tracking[]
-  heldCashCollections CashCollection[] @relation("CashCollectionHolderWarehouse")
+  id                  String                  @id @default(uuid()) @db.Uuid
+  name                String
+  type                WarehouseType           @default(warehouse)
+  location            String
+  region              String?
+  latitude            Float?
+  longitude           Float?
+  users               User[]
+  driverAccesses      DriverWarehouseAccess[]
+  orders              Order[]
+  createdAt           DateTime                @default(now())
+  tracking            Tracking[]
+  heldCashCollections CashCollection[]        @relation("CashCollectionHolderWarehouse")
 
   @@index([createdAt])
   @@index([latitude, longitude])
 }
 
 model DriverWarehouseAccess {
-  id          String    @id @default(uuid()) @db.Uuid
-  driverId    String    @db.Uuid
-  warehouseId String    @db.Uuid
-  createdAt   DateTime  @default(now())
+  id          String   @id @default(uuid()) @db.Uuid
+  driverId    String   @db.Uuid
+  warehouseId String   @db.Uuid
+  createdAt   DateTime @default(now())
 
-  driver      User      @relation(fields: [driverId], references: [id], onDelete: Cascade)
-  warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  driver    User      @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
 
   @@unique([driverId, warehouseId])
   @@index([driverId])
@@ -383,16 +526,21 @@ model Order {
   currentWarehouseId String?    @db.Uuid
   currentWarehouse   Warehouse? @relation(fields: [currentWarehouseId], references: [id])
 
+  ownerOrgId    String?       @db.Uuid
+  ownerOrg      Organization? @relation("OrderOwnerOrganization", fields: [ownerOrgId], references: [id], onDelete: SetNull)
+  assignedOrgId String?       @db.Uuid
+  assignedOrg   Organization? @relation("OrderAssignedOrganization", fields: [assignedOrgId], references: [id], onDelete: SetNull)
+
   labelKey String?
 
   // ---------------- Relations ----------------
-  parcels        Parcel[]
-  trackingEvents Tracking[]
-  labelJob       OrderLabelJob?
-  invoice        Invoice?
-  attachments    OrderAttachment[]
+  parcels         Parcel[]
+  trackingEvents  Tracking[]
+  labelJob        OrderLabelJob?
+  invoice         Invoice?
+  attachments     OrderAttachment[]
   cashCollections CashCollection[]
-  supportTickets SupportTicket[]
+  supportTickets  SupportTicket[]
 
   // ---------------- Attempt counters ----------------
   pickupAttemptCount   Int @default(0)
@@ -403,11 +551,11 @@ model Order {
   lastExceptionAt     DateTime?
 
   // ---------------- Scheduling ----------------
-  plannedPickupAt   DateTime?
-  plannedDeliveryAt DateTime?
+  plannedPickupAt    DateTime?
+  plannedDeliveryAt  DateTime?
   expectedDeliveryAt DateTime?
   slaSource          OrderSlaSource?
-  slaRuleId          String?         @db.Uuid
+  slaRuleId          String?          @db.Uuid
   slaRule            DeliverySlaRule? @relation(fields: [slaRuleId], references: [id])
   slaTargetDays      Int?
 
@@ -453,6 +601,8 @@ model Order {
   @@index([pickupLat, pickupLng])
   @@index([dropoffLat, dropoffLng])
   @@index([referenceId])
+  @@index([ownerOrgId, status, createdAt])
+  @@index([assignedOrgId, status, createdAt])
 }
 
 model PricingRegion {
@@ -815,13 +965,13 @@ model UserNotification {
   userId String @db.Uuid
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  type  NotificationType
-  title String
-  body  String
-  orderId String? @db.Uuid
-  data Json?
+  type    NotificationType
+  title   String
+  body    String
+  orderId String?          @db.Uuid
+  data    Json?
 
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
   readAt    DateTime?
 
   @@index([userId, createdAt])
@@ -830,17 +980,17 @@ model UserNotification {
 }
 
 model SupportTicket {
-  id           String                @id @default(uuid()) @db.Uuid
-  ticketNumber String                @unique
-  sourceKey    String?               @unique
-  orderId      String?               @db.Uuid
-  order        Order?                @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  id           String  @id @default(uuid()) @db.Uuid
+  ticketNumber String  @unique
+  sourceKey    String? @unique
+  orderId      String? @db.Uuid
+  order        Order?  @relation(fields: [orderId], references: [id], onDelete: SetNull)
 
-  title       String
-  summary     String?
-  priority    SupportTicketPriority @default(normal)
-  status      SupportTicketStatus   @default(open)
-  source      SupportTicketSource   @default(manager)
+  title    String
+  summary  String?
+  priority SupportTicketPriority @default(normal)
+  status   SupportTicketStatus   @default(open)
+  source   SupportTicketSource   @default(manager)
 
   customerUserId   String? @db.Uuid
   customerEntityId String? @db.Uuid
@@ -849,14 +999,19 @@ model SupportTicket {
   ownerId          String? @db.Uuid
   ownerName        String?
 
-  customerName    String?
-  companyName     String?
-  routeSnapshot   String?
-  driverName      String?
-  driverPhone     String?
-  warehouseLabel  String?
-  lastMessage     String?
-  lastReplyBy     SupportTicketAuthorType?
+  ownerOrgId    String?       @db.Uuid
+  ownerOrg      Organization? @relation("SupportTicketOwnerOrganization", fields: [ownerOrgId], references: [id], onDelete: SetNull)
+  assignedOrgId String?       @db.Uuid
+  assignedOrg   Organization? @relation("SupportTicketAssignedOrganization", fields: [assignedOrgId], references: [id], onDelete: SetNull)
+
+  customerName   String?
+  companyName    String?
+  routeSnapshot  String?
+  driverName     String?
+  driverPhone    String?
+  warehouseLabel String?
+  lastMessage    String?
+  lastReplyBy    SupportTicketAuthorType?
 
   slaPercent     Int       @default(100)
   slaDueAt       DateTime?
@@ -879,17 +1034,19 @@ model SupportTicket {
   @@index([priority, status, lastActivityAt])
   @@index([source, status, lastActivityAt])
   @@index([slaDueAt])
+  @@index([ownerOrgId, status, lastActivityAt])
+  @@index([assignedOrgId, status, lastActivityAt])
 }
 
 model SupportTicketMessage {
-  id        String                  @id @default(uuid()) @db.Uuid
-  ticketId  String                  @db.Uuid
-  ticket    SupportTicket           @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  id         String                  @id @default(uuid()) @db.Uuid
+  ticketId   String                  @db.Uuid
+  ticket     SupportTicket           @relation(fields: [ticketId], references: [id], onDelete: Cascade)
   authorType SupportTicketAuthorType
-  authorId   String?                @db.Uuid
+  authorId   String?                 @db.Uuid
   authorName String?
   body       String
-  createdAt  DateTime               @default(now())
+  createdAt  DateTime                @default(now())
 
   @@index([ticketId, createdAt])
   @@index([authorId, createdAt])
@@ -929,12 +1086,12 @@ model UserRefreshSession {
   userId String @db.Uuid
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  tokenHash String @unique
+  tokenHash String    @unique
   expiresAt DateTime
   revokedAt DateTime?
 
-  replacedBySessionId String?             @db.Uuid
-  replacedBySession   UserRefreshSession? @relation("RefreshSessionReplacement", fields: [replacedBySessionId], references: [id])
+  replacedBySessionId String?              @db.Uuid
+  replacedBySession   UserRefreshSession?  @relation("RefreshSessionReplacement", fields: [replacedBySessionId], references: [id])
   replacedSessions    UserRefreshSession[] @relation("RefreshSessionReplacement")
 
   userAgent String?
@@ -951,7 +1108,7 @@ model UserRefreshSession {
 model AnalyticsDomainEventOutbox {
   id String @id @default(uuid()) @db.Uuid
 
-  eventId       String @unique
+  eventId       String   @unique
   type          String
   tenantScope   String
   entityId      String?
@@ -960,7 +1117,7 @@ model AnalyticsDomainEventOutbox {
   payload       Json
 
   publishedAt DateTime?
-  attempts    Int      @default(0)
+  attempts    Int       @default(0)
   lastError   String?
 
   createdAt DateTime @default(now())

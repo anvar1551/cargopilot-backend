@@ -1,5 +1,6 @@
 import { AppRole } from "@prisma/client";
 import prisma from "../../../config/prismaClient";
+import { buildOrderScopeWhere, hasPermission } from "../../../modules/identity-access";
 
 import {
   countOrdersForExport,
@@ -108,12 +109,21 @@ export async function list(req: any, res: any) {
       customerEntityId?: string | null;
       warehouseId?: string | null;
     };
+    const enforcedScopeWhere =
+      role === AppRole.manager ? await buildOrderScopeWhere(req.user) : null;
+    if (role === AppRole.manager) {
+      const canReadOrders = await hasPermission(req.user, "orders.read");
+      if (!canReadOrders) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+    }
     const result = await listOrders(
       id,
       role,
       customerEntityId ?? undefined,
       warehouseId ?? undefined,
       parseOrderListParams(req.query),
+      enforcedScopeWhere,
     );
 
     res.json(result);
@@ -125,9 +135,6 @@ export async function list(req: any, res: any) {
 /** Returns one order when requester has access to it. */
 export async function getOne(req: any, res: any) {
   try {
-    const order = await getOrderById(req.params.id);
-    if (!order) return res.status(404).json({ error: "Not found" });
-
     const {
       id: userId,
       role,
@@ -139,6 +146,18 @@ export async function getOne(req: any, res: any) {
       customerEntityId?: string | null;
       warehouseId?: string | null;
     };
+
+    let enforcedScopeWhere = null;
+    if (role === AppRole.manager) {
+      const canReadOrders = await hasPermission(req.user, "orders.read");
+      if (!canReadOrders) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+      enforcedScopeWhere = await buildOrderScopeWhere(req.user);
+    }
+
+    const order = await getOrderById(req.params.id, enforcedScopeWhere);
+    if (!order) return res.status(404).json({ error: "Not found" });
 
     if (role === "manager") return res.json(order);
     if (role === "warehouse") {
@@ -199,6 +218,11 @@ export async function exportCsv(req: any, res: any) {
     if (role !== "manager") {
       return res.status(403).json({ error: "Forbidden" });
     }
+    const canReadOrders = await hasPermission(req.user, "orders.read");
+    if (!canReadOrders) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    const enforcedScopeWhere = await buildOrderScopeWhere(req.user);
 
     const exportParams = {
       ...parseOrderListParams(req.query),
@@ -219,6 +243,7 @@ export async function exportCsv(req: any, res: any) {
       customerEntityId ?? undefined,
       warehouseId ?? undefined,
       exportParams,
+      enforcedScopeWhere,
     );
 
     if (totalExportRows > maxExportRows) {
@@ -233,6 +258,7 @@ export async function exportCsv(req: any, res: any) {
       customerEntityId ?? undefined,
       warehouseId ?? undefined,
       exportParams,
+      enforcedScopeWhere,
     );
 
     const csvRows = orders.map((order: any) => ({

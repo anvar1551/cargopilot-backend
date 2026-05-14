@@ -29,6 +29,7 @@ export type ListSupportTicketsArgs = {
   limit?: number | null;
   includeArchived?: boolean;
   actor: Actor;
+  scopeWhere?: Prisma.SupportTicketWhereInput | null;
 };
 
 export type CreateSupportTicketInput = {
@@ -287,6 +288,11 @@ const ticketDetailSelect = {
 
 function buildListWhere(args: ListSupportTicketsArgs) {
   const where: any = {};
+  const and: any[] = [];
+
+  if (args.scopeWhere && Object.keys(args.scopeWhere).length > 0) {
+    and.push(args.scopeWhere);
+  }
 
   if (!args.includeArchived) where.archivedAt = null;
 
@@ -332,6 +338,11 @@ function buildListWhere(args: ListSupportTicketsArgs) {
     } else {
       where.OR = searchOr;
     }
+  }
+
+  if (and.length > 0) {
+    and.push(where);
+    return { AND: and };
   }
 
   return where;
@@ -451,9 +462,16 @@ export async function listSupportTickets(args: ListSupportTicketsArgs) {
   });
 }
 
-async function loadSerializedTicketFresh(id: string) {
-  const ticket = await prisma.supportTicket.findUnique({
-    where: { id },
+async function loadSerializedTicketFresh(
+  id: string,
+  scopeWhere?: Prisma.SupportTicketWhereInput | null,
+) {
+  const scopedWhere = scopeWhere && Object.keys(scopeWhere).length > 0
+    ? { AND: [{ id }, scopeWhere] }
+    : { id };
+
+  const ticket = await prisma.supportTicket.findFirst({
+    where: scopedWhere,
     select: {
       ...ticketDetailSelect,
       messages: { orderBy: { createdAt: "asc" }, take: 100 },
@@ -466,11 +484,21 @@ async function loadSerializedTicketFresh(id: string) {
 }
 
 export async function getSupportTicket(id: string) {
+  return getSupportTicketScoped({ id });
+}
+
+export async function getSupportTicketScoped(args: {
+  id: string;
+  scopeWhere?: Prisma.SupportTicketWhereInput | null;
+}) {
   return getOrComputeSupportCached({
     namespace: "detail",
-    key: id,
+    key: JSON.stringify({
+      id: args.id,
+      scope: args.scopeWhere || null,
+    }),
     ttlMs: 30_000,
-    compute: () => loadSerializedTicketFresh(id),
+    compute: () => loadSerializedTicketFresh(args.id, args.scopeWhere),
   });
 }
 

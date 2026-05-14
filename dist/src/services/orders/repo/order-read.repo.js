@@ -396,7 +396,7 @@ function buildStructuredFiltersWhere(params) {
         return {};
     return { AND: and };
 }
-function buildOrderWhere(userId, role, customerEntityId, warehouseId, params) {
+function buildOrderWhere(userId, role, customerEntityId, warehouseId, params, enforcedScopeWhere) {
     const scope = params?.scope === "deep" ? "deep" : "fast";
     const q = params?.q?.trim() ?? "";
     const effectiveParams = role === "warehouse" && params
@@ -406,6 +406,9 @@ function buildOrderWhere(userId, role, customerEntityId, warehouseId, params) {
     const searchWhere = q ? buildSearchWhere(q, scope) : {};
     const filterWhere = buildStructuredFiltersWhere(effectiveParams);
     const and = [roleWhere, searchWhere, filterWhere].filter((item) => !isEmptyWhere(item));
+    if (enforcedScopeWhere && !isEmptyWhere(enforcedScopeWhere)) {
+        and.push(enforcedScopeWhere);
+    }
     if (and.length === 0)
         return {};
     if (and.length === 1)
@@ -413,49 +416,56 @@ function buildOrderWhere(userId, role, customerEntityId, warehouseId, params) {
     return { AND: and };
 }
 /** Returns a single order with full details used by manager/customer/driver views. */
-const getOrderById = async (id) => {
-    return prismaClient_1.default.order.findUnique({
-        where: { id },
-        include: {
-            customer: { select: order_repo_shared_1.userLiteSelect },
-            assignedDriver: { select: order_repo_shared_1.userLiteSelect },
-            currentWarehouse: true,
-            invoice: true,
-            customerEntity: {
-                include: {
-                    defaultAddress: true,
-                },
-            },
-            senderAddressObj: true,
-            receiverAddressObj: true,
-            attachments: true,
-            parcels: true,
-            cashCollections: {
-                include: {
-                    currentHolderUser: { select: order_repo_shared_1.userLiteSelect },
-                    currentHolderWarehouse: true,
-                    events: {
-                        include: {
-                            actor: { select: order_repo_shared_1.userLiteSelect },
-                        },
-                        orderBy: { createdAt: "asc" },
-                    },
-                },
-            },
-            trackingEvents: {
-                include: {
-                    warehouse: true,
-                    actor: { select: order_repo_shared_1.userLiteSelect },
-                    parcel: true,
-                },
-                orderBy: { timestamp: "asc" },
+const getOrderById = async (id, enforcedScopeWhere) => {
+    const include = {
+        customer: { select: order_repo_shared_1.userLiteSelect },
+        assignedDriver: { select: order_repo_shared_1.userLiteSelect },
+        currentWarehouse: true,
+        invoice: true,
+        customerEntity: {
+            include: {
+                defaultAddress: true,
             },
         },
+        senderAddressObj: true,
+        receiverAddressObj: true,
+        attachments: true,
+        parcels: true,
+        cashCollections: {
+            include: {
+                currentHolderUser: { select: order_repo_shared_1.userLiteSelect },
+                currentHolderWarehouse: true,
+                events: {
+                    include: {
+                        actor: { select: order_repo_shared_1.userLiteSelect },
+                    },
+                    orderBy: { createdAt: "asc" },
+                },
+            },
+        },
+        trackingEvents: {
+            include: {
+                warehouse: true,
+                actor: { select: order_repo_shared_1.userLiteSelect },
+                parcel: true,
+            },
+            orderBy: { timestamp: "asc" },
+        },
+    };
+    if (!enforcedScopeWhere || isEmptyWhere(enforcedScopeWhere)) {
+        return prismaClient_1.default.order.findUnique({
+            where: { id },
+            include,
+        });
+    }
+    return prismaClient_1.default.order.findFirst({
+        where: { AND: [{ id }, enforcedScopeWhere] },
+        include,
     });
 };
 exports.getOrderById = getOrderById;
 /** Lists orders with search + pagination and role-based scope restrictions. */
-const listOrders = async (userId, role, customerEntityId, warehouseId, params) => {
+const listOrders = async (userId, role, customerEntityId, warehouseId, params, enforcedScopeWhere) => {
     const page = Math.max(1, params?.page ?? 1);
     const limit = Math.min(Math.max(params?.limit ?? 50, 1), 200);
     const mode = params?.mode === "cursor" ? "cursor" : "page";
@@ -475,7 +485,7 @@ const listOrders = async (userId, role, customerEntityId, warehouseId, params) =
     if (cacheEntry) {
         orderListCache.delete(cacheKey);
     }
-    const where = buildOrderWhere(userId, role, customerEntityId, warehouseId, params);
+    const where = buildOrderWhere(userId, role, customerEntityId, warehouseId, params, enforcedScopeWhere);
     if (mode === "cursor") {
         const whereWithCursor = cursor
             ? {
@@ -544,8 +554,8 @@ const listOrders = async (userId, role, customerEntityId, warehouseId, params) =
 };
 exports.listOrders = listOrders;
 /** Returns detailed rows for CSV export using the same filters as the manager list. */
-const listOrdersForExport = async (userId, role, customerEntityId, warehouseId, params) => {
-    const where = buildOrderWhere(userId, role, customerEntityId, warehouseId, params);
+const listOrdersForExport = async (userId, role, customerEntityId, warehouseId, params, enforcedScopeWhere) => {
+    const where = buildOrderWhere(userId, role, customerEntityId, warehouseId, params, enforcedScopeWhere);
     return prismaClient_1.default.order.findMany({
         where,
         select: orderExportSelect,
@@ -554,8 +564,8 @@ const listOrdersForExport = async (userId, role, customerEntityId, warehouseId, 
 };
 exports.listOrdersForExport = listOrdersForExport;
 /** Returns exact count for current export filters to guard large synchronous CSV exports. */
-const countOrdersForExport = async (userId, role, customerEntityId, warehouseId, params) => {
-    const where = buildOrderWhere(userId, role, customerEntityId, warehouseId, params);
+const countOrdersForExport = async (userId, role, customerEntityId, warehouseId, params, enforcedScopeWhere) => {
+    const where = buildOrderWhere(userId, role, customerEntityId, warehouseId, params, enforcedScopeWhere);
     return prismaClient_1.default.order.count({ where });
 };
 exports.countOrdersForExport = countOrdersForExport;
