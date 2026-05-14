@@ -1,7 +1,7 @@
-import { AppRole, NotificationType } from "@prisma/client";
+import { NotificationType } from "@prisma/client";
 import { emitDriverUnreadCount } from "../../features/realtime/realtimeHub";
 
-import { requireOrderActor } from "../orders/orderService.shared";
+import { requireOrderActor } from "../../modules/orders-core/shared";
 import {
   countUnreadUserNotifications,
   listUserNotifications,
@@ -22,8 +22,8 @@ function parseUnread(value: unknown): boolean | null {
   return null;
 }
 
-function assertDriverOrManager(role: AppRole) {
-  if (role === AppRole.driver || role === AppRole.manager) return;
+function assertDriverOrManager(role?: string | null) {
+  if (role === "driver" || role === "manager") return;
   throw new Error("Forbidden");
 }
 

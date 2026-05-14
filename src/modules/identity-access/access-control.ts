@@ -1,12 +1,8 @@
-import { AppRole, Prisma, ScopeResource, ScopeType } from "@prisma/client";
+import { Prisma, ScopeResource, ScopeType } from "@prisma/client";
 import prisma from "../../config/prismaClient";
 
 type AuthUser = Express.User;
-type PermissionCode =
-  | "orders.read"
-  | "support.read"
-  | "support.create"
-  | "support.update";
+type PermissionCode = string;
 
 type ResolvedAccess = {
   hasBindings: boolean;
@@ -35,13 +31,6 @@ const accessCacheGc = setInterval(() => {
   }
 }, 60_000);
 accessCacheGc.unref();
-
-const legacyRolePermissions: Record<AppRole, PermissionCode[]> = {
-  customer: ["orders.read"],
-  driver: ["orders.read"],
-  warehouse: ["orders.read"],
-  manager: ["orders.read", "support.read", "support.create", "support.update"],
-};
 
 function readAccessCache(userId: string) {
   const hit = accessCache.get(userId);
@@ -125,10 +114,15 @@ async function loadResolvedAccess(user: AuthUser): Promise<ResolvedAccess> {
 
 export async function hasPermission(user: AuthUser, permission: PermissionCode) {
   const resolved = await loadResolvedAccess(user);
-  if (!resolved.hasBindings) {
-    return legacyRolePermissions[user.role]?.includes(permission) ?? false;
-  }
   return resolved.permissions.has(permission);
+}
+
+export async function authorize(user: AuthUser, permission: PermissionCode) {
+  const ok = await hasPermission(user, permission);
+  if (ok) return;
+  const err = new Error("Forbidden") as Error & { statusCode: number };
+  err.statusCode = 403;
+  throw err;
 }
 
 function orWhere<T>(items: T[]): T | null {
@@ -137,22 +131,7 @@ function orWhere<T>(items: T[]): T | null {
   return { OR: items } as T;
 }
 
-function resolvedScopesOrFallback(
-  resolved: ResolvedAccess,
-  user: AuthUser,
-  resource: ScopeResource,
-): ScopeType[] {
-  if (!resolved.hasBindings) {
-    if (resource === ScopeResource.orders) {
-      if (user.role === AppRole.customer) return [ScopeType.own];
-      if (user.role === AppRole.driver) return [ScopeType.assigned];
-      if (user.role === AppRole.warehouse) return [ScopeType.assigned];
-      return [ScopeType.global];
-    }
-    if (resource === ScopeResource.support) {
-      return user.role === AppRole.manager ? [ScopeType.global] : [ScopeType.assigned];
-    }
-  }
+function resolvedScopes(resolved: ResolvedAccess, resource: ScopeResource): ScopeType[] {
   return resolved.scopeRules.get(resource) ?? [];
 }
 
@@ -160,7 +139,11 @@ export async function buildOrderScopeWhere(
   user: AuthUser,
 ): Promise<Prisma.OrderWhereInput | null> {
   const resolved = await loadResolvedAccess(user);
-  const scopes = resolvedScopesOrFallback(resolved, user, ScopeResource.orders);
+  if (!resolved.hasBindings) {
+    return { id: "__no_access__" };
+  }
+
+  const scopes = resolvedScopes(resolved, ScopeResource.orders);
   const orgIds = Array.from(resolved.orgIds);
 
   if (scopes.includes(ScopeType.global)) return {};
@@ -195,7 +178,11 @@ export async function buildSupportScopeWhere(
   user: AuthUser,
 ): Promise<Prisma.SupportTicketWhereInput | null> {
   const resolved = await loadResolvedAccess(user);
-  const scopes = resolvedScopesOrFallback(resolved, user, ScopeResource.support);
+  if (!resolved.hasBindings) {
+    return { id: "__no_access__" };
+  }
+
+  const scopes = resolvedScopes(resolved, ScopeResource.support);
   const orgIds = Array.from(resolved.orgIds);
 
   if (scopes.includes(ScopeType.global)) return {};
@@ -223,4 +210,3 @@ export async function buildSupportScopeWhere(
 
   return orWhere<Prisma.SupportTicketWhereInput>(clauses) ?? { id: "__no_access__" };
 }
-

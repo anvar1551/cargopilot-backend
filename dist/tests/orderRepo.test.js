@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-const orderCreate_mapper_1 = require("../src/services/orders/orderCreate.mapper");
+const orderCreate_mapper_1 = require("../src/modules/orders-core/domain/orderCreate.mapper");
 describe("mapCreateOrderDtoToRepoPayload", () => {
     it("maps a basic order payload without address-book lookups", async () => {
         const payload = await (0, orderCreate_mapper_1.mapCreateOrderDtoToRepoPayload)({

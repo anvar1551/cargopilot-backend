@@ -3,6 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.resolveAuthenticatedUserFromAuthHeader = resolveAuthenticatedUserFromAuthHeader;
 exports.auth = auth;
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const prismaClient_1 = __importDefault(require("../config/prismaClient"));
@@ -76,6 +77,9 @@ async function loadUserFromDb(userId) {
 }
 function getBearerToken(req) {
     const header = req.headers.authorization;
+    return getBearerTokenFromHeader(header);
+}
+function getBearerTokenFromHeader(header) {
     if (!header)
         return null;
     const [scheme, token] = header.split(" ");
@@ -83,43 +87,51 @@ function getBearerToken(req) {
         return null;
     return token;
 }
+async function resolveUserFromToken(token) {
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+        const e = new Error("JWT_SECRET not configured");
+        e.statusCode = 500;
+        throw e;
+    }
+    try {
+        const decoded = jsonwebtoken_1.default.verify(token, secret);
+        if (!decoded?.id)
+            return null;
+        if (decoded?.tokenType && decoded.tokenType !== "access")
+            return null;
+        const lookupMode = resolveLookupMode();
+        const tokenUser = buildUserFromToken(decoded);
+        if (lookupMode === "always") {
+            return await loadUserFromDb(decoded.id);
+        }
+        if (lookupMode === "cache_first") {
+            return readCachedUser(decoded.id) ?? (await loadUserFromDb(decoded.id));
+        }
+        // token_or_cache
+        if (tokenUser?.email && tokenUser?.name) {
+            writeCachedUser(tokenUser);
+            return tokenUser;
+        }
+        return readCachedUser(decoded.id) ?? (await loadUserFromDb(decoded.id));
+    }
+    catch {
+        return null;
+    }
+}
+async function resolveAuthenticatedUserFromAuthHeader(authorizationHeader) {
+    const token = getBearerTokenFromHeader(authorizationHeader);
+    if (!token)
+        return null;
+    return resolveUserFromToken(token);
+}
 function auth(requiredRoles = []) {
     return async (req, res, next) => {
         const token = getBearerToken(req);
         if (!token)
             return res.status(401).json({ error: "Invalid or missing token" });
-        const secret = process.env.JWT_SECRET;
-        if (!secret) {
-            // fail fast (especially important in prod)
-            return res.status(500).json({ error: "JWT_SECRET not configured" });
-        }
         try {
-            const decoded = jsonwebtoken_1.default.verify(token, secret);
-            if (!decoded?.id) {
-                return res.status(401).json({ error: "Unauthorized" });
-            }
-            if (decoded?.tokenType && decoded.tokenType !== "access") {
-                return res.status(401).json({ error: "Unauthorized" });
-            }
-            const lookupMode = resolveLookupMode();
-            const tokenUser = buildUserFromToken(decoded);
-            let user = null;
-            if (lookupMode === "always") {
-                user = await loadUserFromDb(decoded.id);
-            }
-            else if (lookupMode === "cache_first") {
-                user = readCachedUser(decoded.id) ?? (await loadUserFromDb(decoded.id));
-            }
-            else {
-                // token_or_cache
-                if (tokenUser?.email && tokenUser?.name) {
-                    user = tokenUser;
-                    writeCachedUser(user);
-                }
-                else {
-                    user = readCachedUser(decoded.id) ?? (await loadUserFromDb(decoded.id));
-                }
-            }
+            const user = await resolveUserFromToken(token);
             if (!user)
                 return res.status(401).json({ error: "Unauthorized" });
             req.user = user;

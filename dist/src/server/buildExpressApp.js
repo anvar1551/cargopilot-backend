@@ -10,13 +10,11 @@ const compression_1 = __importDefault(require("compression"));
 const helmet_1 = __importDefault(require("helmet"));
 const morgan_1 = __importDefault(require("morgan"));
 const express_rate_limit_1 = __importDefault(require("express-rate-limit"));
-const prismaClient_1 = __importDefault(require("../config/prismaClient"));
 const rateLimitStore_1 = require("../config/rateLimitStore");
 const redis_1 = require("../config/redis");
 const auth_1 = require("../middleware/auth");
 const analyticsInvalidate_1 = require("../middleware/analyticsInvalidate");
 const userRoutes_1 = __importDefault(require("../services/users/userRoutes"));
-const orderRoutes_1 = __importDefault(require("../services/orders/orderRoutes"));
 const trackingRoutes_1 = __importDefault(require("../services/tracking/trackingRoutes"));
 const warehouseRoutes_1 = __importDefault(require("../services/warehouse/warehouseRoutes"));
 const driverRoutes_1 = __importDefault(require("../services/driver/driverRoutes"));
@@ -81,22 +79,10 @@ function buildExpressApp() {
         passOnStoreError: true,
     });
     app.use(globalLimiter);
-    app.get("/api/health", async (_req, res) => {
-        try {
-            await prismaClient_1.default.$queryRaw `SELECT 1`;
-            res.json({ status: "ok" });
-        }
-        catch (err) {
-            res.status(500).json({ status: "error", error: err?.message });
-        }
-    });
     app.use("/api/auth", authLimiter, userRoutes_1.default);
     app.get("/api/protected", (0, auth_1.auth)(["manager", "customer"]), (req, res) => {
         res.json({ msg: "You are allowed here", user: req.user });
     });
-    app.use("/api/orders", (0, analyticsInvalidate_1.analyticsInvalidateOnSuccess)((req) => req.path.includes("/cash/") || req.path.endsWith("/cash")
-        ? "cash_mutation"
-        : "order_mutation"), orderRoutes_1.default);
     app.use("/api/tracking", trackingRoutes_1.default);
     app.use("/api/warehouses", warehouseRoutes_1.default);
     app.use("/api/drivers", driverRoutes_1.default);

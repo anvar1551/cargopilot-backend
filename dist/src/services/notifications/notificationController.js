@@ -6,7 +6,7 @@ exports.markNotificationRead = markNotificationRead;
 exports.markAllNotificationsRead = markAllNotificationsRead;
 const client_1 = require("@prisma/client");
 const realtimeHub_1 = require("../../features/realtime/realtimeHub");
-const orderService_shared_1 = require("../orders/orderService.shared");
+const shared_1 = require("../../modules/orders-core/shared");
 const notificationService_1 = require("./notificationService");
 function parseType(value) {
     if (value === client_1.NotificationType.order)
@@ -25,14 +25,14 @@ function parseUnread(value) {
     return null;
 }
 function assertDriverOrManager(role) {
-    if (role === client_1.AppRole.driver || role === client_1.AppRole.manager)
+    if (role === "driver" || role === "manager")
         return;
     throw new Error("Forbidden");
 }
 /** Returns notifications with cursor pagination and optional type/unread filters. */
 async function listNotifications(req, res) {
     try {
-        const actor = (0, orderService_shared_1.requireOrderActor)(req.user);
+        const actor = (0, shared_1.requireOrderActor)(req.user);
         assertDriverOrManager(actor.role);
         const data = await (0, notificationService_1.listUserNotifications)(actor.id, {
             limit: req.query?.limit ? Number(req.query.limit) : undefined,
@@ -49,7 +49,7 @@ async function listNotifications(req, res) {
 /** Returns unread notification count (optionally filtered by type). */
 async function getUnreadCount(req, res) {
     try {
-        const actor = (0, orderService_shared_1.requireOrderActor)(req.user);
+        const actor = (0, shared_1.requireOrderActor)(req.user);
         assertDriverOrManager(actor.role);
         const unreadCount = await (0, notificationService_1.countUnreadUserNotifications)(actor.id, parseType(req.query?.type));
         return res.json({ unreadCount });
@@ -61,7 +61,7 @@ async function getUnreadCount(req, res) {
 /** Marks one notification as read for current user. */
 async function markNotificationRead(req, res) {
     try {
-        const actor = (0, orderService_shared_1.requireOrderActor)(req.user);
+        const actor = (0, shared_1.requireOrderActor)(req.user);
         assertDriverOrManager(actor.role);
         const notificationId = String(req.params?.id ?? "").trim();
         if (!notificationId)
@@ -79,7 +79,7 @@ async function markNotificationRead(req, res) {
 /** Marks all matching notifications as read for current user. */
 async function markAllNotificationsRead(req, res) {
     try {
-        const actor = (0, orderService_shared_1.requireOrderActor)(req.user);
+        const actor = (0, shared_1.requireOrderActor)(req.user);
         assertDriverOrManager(actor.role);
         const type = parseType(req.body?.type ?? req.query?.type);
         const updatedCount = await (0, notificationService_1.markAllUserNotificationsRead)(actor.id, type);

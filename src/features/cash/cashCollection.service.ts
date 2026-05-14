@@ -1,6 +1,5 @@
 import {
-  AppRole,
-  CashCollectionEventType,
+    CashCollectionEventType,
   CashCollectionKind,
   CashCollectionStatus,
   CashHolderType,
@@ -12,8 +11,8 @@ import {
 
 import prisma from "../../config/prismaClient";
 import { enqueueCargoPilotDomainEventsTx } from "../manager/analyticsOutbox";
-import { getOrderById } from "../../services/orders/repo";
-import { OrderActor, orderError } from "../../services/orders/orderService.shared";
+import { getOrderById } from "../../modules/orders-core/repo";
+import { OrderActor, orderError } from "../../modules/orders-core/shared";
 
 type WarehouseContext = {
   id: string;
@@ -158,7 +157,7 @@ async function ensureCollectionForCollect(
               ? "COD expected for this order"
               : "Service charge expected for this order",
           actorId: actor.id,
-          actorRole: actor.role,
+          actorRole: toAuditActorRole(actor),
           toHolderType: CashHolderType.none,
           toHolderName: "Not collected yet",
         },
@@ -191,14 +190,14 @@ function assertActorCanAccessOrder(
   order: Awaited<ReturnType<typeof loadOrderContext>>,
   actor: OrderActor,
 ) {
-  if (actor.role === AppRole.manager) return;
+  if (actor.role === "manager") return;
 
-  if (actor.role === AppRole.driver) {
+  if (actor.role === "driver") {
     if (order.assignedDriverId === actor.id) return;
     throw orderError("Only the assigned driver can update cash for this order", 403);
   }
 
-  if (actor.role === AppRole.warehouse) {
+  if (actor.role === "warehouse") {
     if (actor.warehouseId && order.currentWarehouseId === actor.warehouseId) return;
     throw orderError("Warehouse user can only update cash for orders at their location", 403);
   }
@@ -245,7 +244,7 @@ async function resolveDriver(
     select: { id: true, name: true, role: true },
   });
 
-  if (!driver || driver.role !== AppRole.driver) {
+  if (!driver || driver.role !== "driver") {
     throw orderError("Driver not found", 404);
   }
 
@@ -279,10 +278,17 @@ function resolvePaidStatusFromCollection(
 }
 
 function resolveActorTenantScope(actor: OrderActor) {
-  if (actor.role === AppRole.warehouse && actor.warehouseId) {
+  if (actor.tenantScope) {
+    return actor.tenantScope;
+  }
+  if (actor.warehouseId) {
     return `warehouse:${actor.warehouseId}`;
   }
-  return `role:${actor.role}`;
+  return `user:${actor.id}`;
+}
+
+function toAuditActorRole(actor: OrderActor) {
+  return (actor.userRole ?? actor.role ?? null) as any;
 }
 
 export async function collectOrderCash(params: {
@@ -305,7 +311,7 @@ export async function collectOrderCash(params: {
     let holderWarehouseId: string | null = null;
     let holderLabel: string | null = null;
 
-    if (actor.role === AppRole.driver) {
+    if (actor.role === "driver") {
       if (
         collection.status === CashCollectionStatus.held &&
         collection.currentHolderType !== CashHolderType.driver
@@ -330,7 +336,7 @@ export async function collectOrderCash(params: {
       holderType = CashHolderType.driver;
       holderUserId = actor.id;
       holderLabel = collection.currentHolderUser?.name ?? "Driver";
-    } else if (actor.role === AppRole.warehouse) {
+    } else if (actor.role === "warehouse") {
       if (
         collection.status === CashCollectionStatus.held &&
         collection.currentHolderType === CashHolderType.driver
@@ -410,7 +416,7 @@ export async function collectOrderCash(params: {
             toHolderId: holderUserId ?? holderWarehouseId,
             toHolderName: holderLabel,
             actorId: actor.id,
-            actorRole: actor.role,
+            actorRole: toAuditActorRole(actor),
           },
         },
       },
@@ -433,7 +439,7 @@ export async function collectOrderCash(params: {
           source: "collectOrderCash",
           kind,
           actorId: actor.id,
-          actorRole: actor.role,
+          actorRole: toAuditActorRole(actor),
         },
       },
     ]);
@@ -464,7 +470,7 @@ export async function handoffOrderCash(params: {
       throw orderError("Only held cash can be handed off", 400);
     }
 
-    if (actor.role === AppRole.driver) {
+    if (actor.role === "driver") {
       if (
         collection.currentHolderType !== CashHolderType.driver ||
         collection.currentHolderUserId !== actor.id
@@ -473,7 +479,7 @@ export async function handoffOrderCash(params: {
       }
     }
 
-    if (actor.role === AppRole.warehouse) {
+    if (actor.role === "warehouse") {
       if (
         !actor.warehouseId ||
         collection.currentHolderWarehouseId !== actor.warehouseId
@@ -498,7 +504,7 @@ export async function handoffOrderCash(params: {
     } else {
       const warehouseId =
         params.toWarehouseId ??
-        (actor.role === AppRole.warehouse ? actor.warehouseId ?? null : null);
+        (actor.role === "warehouse" ? actor.warehouseId ?? null : null);
 
       if (!warehouseId) {
         throw orderError("toWarehouseId is required when handing off to a location", 400);
@@ -546,7 +552,7 @@ export async function handoffOrderCash(params: {
             toHolderId: nextHolderUserId ?? nextHolderWarehouseId,
             toHolderName: nextHolderLabel,
             actorId: actor.id,
-            actorRole: actor.role,
+            actorRole: toAuditActorRole(actor),
           },
         },
       },
@@ -562,7 +568,7 @@ export async function handoffOrderCash(params: {
           kind,
           toHolderType,
           actorId: actor.id,
-          actorRole: actor.role,
+          actorRole: toAuditActorRole(actor),
         },
       },
     ]);
@@ -579,7 +585,7 @@ export async function settleOrderCash(params: {
 }) {
   const { orderId, kind, actor } = params;
 
-  if (actor.role !== AppRole.manager) {
+  if (actor.role !== "manager") {
     throw orderError("Only managers can settle cash to finance", 403);
   }
 
@@ -621,7 +627,7 @@ export async function settleOrderCash(params: {
             toHolderType: CashHolderType.finance,
             toHolderName: "Finance",
             actorId: actor.id,
-            actorRole: actor.role,
+            actorRole: toAuditActorRole(actor),
           },
         },
       },
@@ -636,7 +642,7 @@ export async function settleOrderCash(params: {
           source: "settleOrderCash",
           kind,
           actorId: actor.id,
-          actorRole: actor.role,
+          actorRole: toAuditActorRole(actor),
         },
       },
     ]);
@@ -704,11 +710,11 @@ function buildQueueWhere(actor: OrderActor, filters?: CashQueueFilters) {
     });
   }
 
-  if (actor.role === AppRole.manager) {
+  if (actor.role === "manager") {
     return and.length === 1 ? and[0] : { AND: and };
   }
 
-  if (actor.role === AppRole.warehouse) {
+  if (actor.role === "warehouse") {
     if (!actor.warehouseId) {
       throw orderError("Warehouse user has no attached location", 403);
     }
@@ -726,10 +732,10 @@ function buildQueueWhere(actor: OrderActor, filters?: CashQueueFilters) {
 }
 
 function buildQueueScopeSql(actor: OrderActor) {
-  if (actor.role === AppRole.manager) {
+  if (actor.role === "manager") {
     return Prisma.sql`1=1`;
   }
-  if (actor.role === AppRole.warehouse) {
+  if (actor.role === "warehouse") {
     if (!actor.warehouseId) {
       throw orderError("Warehouse user has no attached location", 403);
     }
@@ -823,12 +829,12 @@ export async function listCashQueueForActor(params: {
       ageHours,
       canCollect:
         row.status === CashCollectionStatus.expected &&
-        (actor.role === AppRole.manager || actor.role === AppRole.warehouse),
+        (actor.role === "manager" || actor.role === "warehouse"),
       canHandoff:
         row.status === CashCollectionStatus.held &&
-        (actor.role === AppRole.manager || actor.role === AppRole.warehouse),
+        (actor.role === "manager" || actor.role === "warehouse"),
       canSettle:
-        row.status === CashCollectionStatus.held && actor.role === AppRole.manager,
+        row.status === CashCollectionStatus.held && actor.role === "manager",
     };
   });
 
@@ -921,3 +927,4 @@ export async function getCashQueueSummaryForActor(params: {
     totalAmount: Number(summary.totalAmount ?? 0),
   };
 }
+

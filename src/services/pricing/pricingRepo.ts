@@ -1,6 +1,6 @@
 import prisma from "../../config/prismaClient";
 import { OrderSlaSource, OrderStatus, ServiceType } from "@prisma/client";
-import { orderError } from "../orders/orderService.shared";
+import { orderError } from "../../modules/orders-core/shared";
 import {
   CreateDeliverySlaRuleInput,
   CreatePricingRegionInput,

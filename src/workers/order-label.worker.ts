@@ -1,7 +1,7 @@
 import "dotenv/config";
 import os from "os";
 
-import { runOrderLabelQueueTick } from "../services/orders/workflow";
+import { runOrderLabelQueueTick } from "../modules/orders-core";
 
 function parsePositiveInt(value: string | undefined, fallback: number) {
   const parsed = Number(value);

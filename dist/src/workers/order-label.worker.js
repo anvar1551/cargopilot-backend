@@ -5,7 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
 const os_1 = __importDefault(require("os"));
-const workflow_1 = require("../services/orders/workflow");
+const orders_core_1 = require("../modules/orders-core");
 function parsePositiveInt(value, fallback) {
     const parsed = Number(value);
     if (!Number.isFinite(parsed) || parsed <= 0)
@@ -22,7 +22,7 @@ async function tick() {
         return;
     running = true;
     try {
-        const result = await (0, workflow_1.runOrderLabelQueueTick)({ workerId, batchSize });
+        const result = await (0, orders_core_1.runOrderLabelQueueTick)({ workerId, batchSize });
         if (result.claimed > 0 || result.failed > 0 || result.retried > 0) {
             console.log(`[order-label-worker] claimed=${result.claimed} completed=${result.completed} retried=${result.retried} failed=${result.failed}`);
         }

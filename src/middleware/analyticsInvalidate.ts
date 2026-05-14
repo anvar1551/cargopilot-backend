@@ -12,15 +12,6 @@ function isMutatingMethod(method: string) {
   return method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE";
 }
 
-function getTenantScope(req: Request) {
-  const user = (req as any)?.user as { role?: string; warehouseId?: string | null } | undefined;
-  if (user?.role === "warehouse" && user.warehouseId) {
-    return `warehouse:${user.warehouseId}`;
-  }
-  if (user?.role) return `role:${user.role}`;
-  return "global";
-}
-
 function inferEventType(reason: Reason, req: Request): CargoPilotDomainEventType {
   const path = req.path.toLowerCase();
 
@@ -40,6 +31,50 @@ function inferEventType(reason: Reason, req: Request): CargoPilotDomainEventType
   return "manual_refresh";
 }
 
+type FastMutationEmitArgs = {
+  reason: Reason;
+  method: string;
+  path: string;
+  user?: { role?: string; warehouseId?: string | null } | null;
+  entityId?: string | null;
+};
+
+export async function emitAnalyticsInvalidationForMutation(args: FastMutationEmitArgs) {
+  const directInvalidation = process.env.ANALYTICS_DIRECT_INVALIDATION === "true";
+  const legacyEventPublishing =
+    process.env.ANALYTICS_LEGACY_MIDDLEWARE_EVENTS === "true";
+
+  if (!directInvalidation && !legacyEventPublishing) return;
+
+  if (directInvalidation) {
+    await publishAnalyticsInvalidation(args.reason, { source: "api" });
+  }
+
+  if (legacyEventPublishing) {
+    const role = String(args.user?.role ?? "").trim().toLowerCase();
+    const tenantScope =
+      role === "warehouse" && args.user?.warehouseId
+        ? `warehouse:${args.user.warehouseId}`
+        : role
+          ? `role:${role}`
+          : "global";
+
+    await publishCargoPilotDomainEvent({
+      type: inferEventType(args.reason, {
+        method: args.method,
+        path: args.path,
+      } as Request),
+      tenantScope,
+      entityId: args.entityId?.trim() || null,
+      payload: {
+        reason: args.reason,
+        method: args.method,
+        path: args.path,
+      },
+    });
+  }
+}
+
 export function analyticsInvalidateOnSuccess(reason: ReasonResolver) {
   return (req: Request, res: Response, next: NextFunction) => {
     if (!isMutatingMethod(req.method)) {
@@ -49,27 +84,16 @@ export function analyticsInvalidateOnSuccess(reason: ReasonResolver) {
     res.on("finish", () => {
       if (res.statusCode < 200 || res.statusCode >= 400) return;
       const resolved = typeof reason === "function" ? reason(req) : reason;
-      const directInvalidation = process.env.ANALYTICS_DIRECT_INVALIDATION === "true";
-      const legacyEventPublishing =
-        process.env.ANALYTICS_LEGACY_MIDDLEWARE_EVENTS === "true";
-      if (directInvalidation) {
-        void publishAnalyticsInvalidation(resolved, { source: "api" });
-      }
-      if (legacyEventPublishing) {
-        void publishCargoPilotDomainEvent({
-          type: inferEventType(resolved, req),
-          tenantScope: getTenantScope(req),
-          entityId:
-            typeof req.params?.id === "string" && req.params.id.trim()
-              ? req.params.id
-              : null,
-          payload: {
-            reason: resolved,
-            method: req.method,
-            path: req.path,
-          },
-        });
-      }
+      void emitAnalyticsInvalidationForMutation({
+        reason: resolved,
+        method: req.method,
+        path: req.path,
+        user: req.user,
+        entityId:
+          typeof req.params?.id === "string" && req.params.id.trim()
+            ? req.params.id
+            : null,
+      });
     });
 
     return next();

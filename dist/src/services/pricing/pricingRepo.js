@@ -22,7 +22,7 @@ exports.backfillOrderSlaSnapshots = backfillOrderSlaSnapshots;
 exports.quoteTariff = quoteTariff;
 const prismaClient_1 = __importDefault(require("../../config/prismaClient"));
 const client_1 = require("@prisma/client");
-const orderService_shared_1 = require("../orders/orderService.shared");
+const shared_1 = require("../../modules/orders-core/shared");
 const pricing_shared_1 = require("./pricing.shared");
 const db = prismaClient_1.default;
 const OPERATIONAL_SLA_POLICY_KEY = "global";
@@ -96,7 +96,7 @@ async function ensurePricingRegionExists(id) {
         select: { id: true },
     });
     if (!region) {
-        throw (0, orderService_shared_1.orderError)(`pricingRegionId not found: ${id}`, 400);
+        throw (0, shared_1.orderError)(`pricingRegionId not found: ${id}`, 400);
     }
 }
 async function assertDeliverySlaRuleReferences(input) {
@@ -219,7 +219,7 @@ async function updatePricingRegion(id, input) {
         select: { id: true },
     });
     if (!existing) {
-        throw (0, orderService_shared_1.orderError)("Pricing region not found", 404);
+        throw (0, shared_1.orderError)("Pricing region not found", 404);
     }
     return db.pricingRegion.update({
         where: { id },
@@ -258,7 +258,7 @@ async function updateDeliverySlaRule(id, input) {
         select: { id: true },
     });
     if (!existing) {
-        throw (0, orderService_shared_1.orderError)("Delivery SLA rule not found", 404);
+        throw (0, shared_1.orderError)("Delivery SLA rule not found", 404);
     }
     await assertDeliverySlaRuleReferences(input);
     return db.deliverySlaRule.update({
@@ -367,7 +367,7 @@ async function upsertZoneMatrix(input) {
     });
     const missingRegionIds = regionIds.filter((id) => !regions.some((region) => region.id === id));
     if (missingRegionIds.length > 0) {
-        throw (0, orderService_shared_1.orderError)(`Unknown pricingRegionId: ${missingRegionIds.join(", ")}`, 400);
+        throw (0, shared_1.orderError)(`Unknown pricingRegionId: ${missingRegionIds.join(", ")}`, 400);
     }
     await db.$transaction(input.entries.map((entry) => db.zoneMatrixEntry.upsert({
         where: {
@@ -414,7 +414,7 @@ async function createTariffPlan(input) {
             select: { id: true },
         });
         if (!customerEntity) {
-            throw (0, orderService_shared_1.orderError)("customerEntityId not found", 400);
+            throw (0, shared_1.orderError)("customerEntityId not found", 400);
         }
     }
     return db.$transaction(async (tx) => {
@@ -469,7 +469,7 @@ async function updateTariffPlan(id, input) {
         },
     });
     if (!existing) {
-        throw (0, orderService_shared_1.orderError)("Tariff plan not found", 404);
+        throw (0, shared_1.orderError)("Tariff plan not found", 404);
     }
     if (input.customerEntityId) {
         const customerEntity = await db.customerEntity.findUnique({
@@ -477,7 +477,7 @@ async function updateTariffPlan(id, input) {
             select: { id: true },
         });
         if (!customerEntity) {
-            throw (0, orderService_shared_1.orderError)("customerEntityId not found", 400);
+            throw (0, shared_1.orderError)("customerEntityId not found", 400);
         }
     }
     return db.$transaction(async (tx) => {

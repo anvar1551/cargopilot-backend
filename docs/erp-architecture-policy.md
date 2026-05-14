@@ -4,6 +4,10 @@ Last updated: 2026-05-14
 Scope: backend foundation for CargoPilot growth from parcel flow app to logistics ERP platform.
 Status: mandatory engineering policy for all new work.
 
+Related mandatory guardrails:
+
+- `docs/engineering-guardrails.md`
+
 ## 1) Locked stack
 
 - Runtime: Node.js 22 LTS
@@ -80,6 +84,9 @@ Locked bounded contexts:
 
 Implementation must enforce scope in backend query filters, not only UI.
 
+`AppRole` is not an authorization engine. It may exist only as identity metadata during migration.  
+No new endpoint access or row-scope logic may be implemented with `AppRole`.
+
 ## 5) Integration layer policy (ERP requirement)
 
 All external systems must be connected through a unified integration layer.
@@ -140,6 +147,7 @@ Rules:
 - Per-page custom realtime protocols (must use shared SSE client contract)
 - Hidden cross-module service calls bypassing application layer
 - Role checks without scope checks for row-level resources
+- Any new `AppRole`-based access control logic (`role === ...`) in transport/application layers
 - Big-bang rewrites without migration flags
 
 ## 10) Delivery and migration strategy
@@ -157,4 +165,3 @@ Rules:
 - Idempotency + audit log implemented
 - Unit + integration tests pass
 - Observability metrics/logs added
-

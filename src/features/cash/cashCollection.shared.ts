@@ -7,7 +7,7 @@ import {
   Prisma,
 } from "@prisma/client";
 
-import type { OrderActor } from "../../services/orders/orderService.shared";
+import type { OrderActor } from "../../modules/orders-core/shared";
 
 type OrderCashSeedInput = {
   codAmount?: number | null;
@@ -41,7 +41,7 @@ function buildExpectedCollection(
             ? "COD expected for this order"
             : "Service charge expected for this order",
         actorId: actor?.id ?? null,
-        actorRole: actor?.role ?? null,
+        actorRole: (actor?.userRole ?? actor?.role ?? null) as any,
         toHolderType: CashHolderType.none,
         toHolderName: "Not collected yet",
       },

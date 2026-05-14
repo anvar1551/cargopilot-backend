@@ -1,6 +1,7 @@
 import "dotenv/config";
 import Fastify from "fastify";
 import fastifyExpress from "@fastify/express";
+import prisma from "./config/prismaClient";
 import { initRealtimeHub } from "./features/realtime/realtimeHub";
 import { startNotificationRetentionWorker } from "./services/notifications/notificationRetention";
 import { ensureAnalyticsInvalidationConsumer } from "./features/manager/analyticsV2Realtime";
@@ -10,6 +11,7 @@ import { startAnalyticsOutboxPublisher } from "./features/manager/analyticsOutbo
 import { startSupportRetentionWorker } from "./features/support/supportRetention";
 import { startSupportRulesWorker } from "./features/support/supportRules";
 import { buildExpressApp } from "./server/buildExpressApp";
+import ordersFastifyRoutes from "./modules/orders-core/transport/fastify-routes";
 
 async function start() {
   const portFromEnv = Number(process.env.PORT);
@@ -23,6 +25,21 @@ async function start() {
   });
 
   await fastify.register(fastifyExpress);
+
+  // First native Fastify route: readiness check without Express bridge.
+  fastify.get("/api/health", async (_request, reply) => {
+    try {
+      await prisma.$queryRaw`SELECT 1`;
+      return reply.send({ status: "ok" });
+    } catch (err: any) {
+      return reply
+        .code(500)
+        .send({ status: "error", error: err?.message ?? "healthcheck failed" });
+    }
+  });
+
+  // Modular native Fastify transport for orders.
+  await fastify.register(ordersFastifyRoutes, { prefix: "/api/orders" });
 
   const { app, allowedOrigins } = buildExpressApp();
   fastify.use(app);
@@ -56,4 +73,3 @@ void start().catch((err) => {
   console.error("[server] failed to start", err);
   process.exitCode = 1;
 });
-

@@ -3,7 +3,7 @@ import {
   DEFAULT_SERVICE_TYPE,
   SERVICE_TYPES,
   normalizeServiceTypeInput,
-} from "../orders/order.constants";
+} from "../../modules/orders-core/domain/order.constants";
 
 export const PRICING_PLAN_STATUSES = ["draft", "active", "archived"] as const;
 export const TARIFF_PRICE_TYPES = ["bucket", "linear"] as const;

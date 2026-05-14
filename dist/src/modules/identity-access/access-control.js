@@ -4,6 +4,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.hasPermission = hasPermission;
+exports.authorize = authorize;
 exports.buildOrderScopeWhere = buildOrderScopeWhere;
 exports.buildSupportScopeWhere = buildSupportScopeWhere;
 const client_1 = require("@prisma/client");
@@ -19,12 +20,6 @@ const accessCacheGc = setInterval(() => {
     }
 }, 60000);
 accessCacheGc.unref();
-const legacyRolePermissions = {
-    customer: ["orders.read"],
-    driver: ["orders.read"],
-    warehouse: ["orders.read"],
-    manager: ["orders.read", "support.read", "support.create", "support.update"],
-};
 function readAccessCache(userId) {
     const hit = accessCache.get(userId);
     if (!hit)
@@ -101,10 +96,15 @@ async function loadResolvedAccess(user) {
 }
 async function hasPermission(user, permission) {
     const resolved = await loadResolvedAccess(user);
-    if (!resolved.hasBindings) {
-        return legacyRolePermissions[user.role]?.includes(permission) ?? false;
-    }
     return resolved.permissions.has(permission);
+}
+async function authorize(user, permission) {
+    const ok = await hasPermission(user, permission);
+    if (ok)
+        return;
+    const err = new Error("Forbidden");
+    err.statusCode = 403;
+    throw err;
 }
 function orWhere(items) {
     if (items.length === 0)
@@ -113,26 +113,15 @@ function orWhere(items) {
         return items[0];
     return { OR: items };
 }
-function resolvedScopesOrFallback(resolved, user, resource) {
-    if (!resolved.hasBindings) {
-        if (resource === client_1.ScopeResource.orders) {
-            if (user.role === client_1.AppRole.customer)
-                return [client_1.ScopeType.own];
-            if (user.role === client_1.AppRole.driver)
-                return [client_1.ScopeType.assigned];
-            if (user.role === client_1.AppRole.warehouse)
-                return [client_1.ScopeType.assigned];
-            return [client_1.ScopeType.global];
-        }
-        if (resource === client_1.ScopeResource.support) {
-            return user.role === client_1.AppRole.manager ? [client_1.ScopeType.global] : [client_1.ScopeType.assigned];
-        }
-    }
+function resolvedScopes(resolved, resource) {
     return resolved.scopeRules.get(resource) ?? [];
 }
 async function buildOrderScopeWhere(user) {
     const resolved = await loadResolvedAccess(user);
-    const scopes = resolvedScopesOrFallback(resolved, user, client_1.ScopeResource.orders);
+    if (!resolved.hasBindings) {
+        return { id: "__no_access__" };
+    }
+    const scopes = resolvedScopes(resolved, client_1.ScopeResource.orders);
     const orgIds = Array.from(resolved.orgIds);
     if (scopes.includes(client_1.ScopeType.global))
         return {};
@@ -160,7 +149,10 @@ async function buildOrderScopeWhere(user) {
 }
 async function buildSupportScopeWhere(user) {
     const resolved = await loadResolvedAccess(user);
-    const scopes = resolvedScopesOrFallback(resolved, user, client_1.ScopeResource.support);
+    if (!resolved.hasBindings) {
+        return { id: "__no_access__" };
+    }
+    const scopes = resolvedScopes(resolved, client_1.ScopeResource.support);
     const orgIds = Array.from(resolved.orgIds);
     if (scopes.includes(client_1.ScopeType.global))
         return {};

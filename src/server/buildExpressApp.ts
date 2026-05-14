@@ -4,13 +4,11 @@ import compression from "compression";
 import helmet from "helmet";
 import morgan from "morgan";
 import rateLimit from "express-rate-limit";
-import prisma from "../config/prismaClient";
 import { createRateLimitStore } from "../config/rateLimitStore";
 import { getRedisClient } from "../config/redis";
 import { auth } from "../middleware/auth";
 import { analyticsInvalidateOnSuccess } from "../middleware/analyticsInvalidate";
 import userRoutes from "../services/users/userRoutes";
-import orderRoutes from "../services/orders/orderRoutes";
 import trackingRoutes from "../services/tracking/trackingRoutes";
 import warehouseRoutes from "../services/warehouse/warehouseRoutes";
 import driverRoutes from "../services/driver/driverRoutes";
@@ -96,28 +94,10 @@ export function buildExpressApp(): BuildExpressAppResult {
 
   app.use(globalLimiter);
 
-  app.get("/api/health", async (_req, res) => {
-    try {
-      await prisma.$queryRaw`SELECT 1`;
-      res.json({ status: "ok" });
-    } catch (err: any) {
-      res.status(500).json({ status: "error", error: err?.message });
-    }
-  });
-
   app.use("/api/auth", authLimiter, userRoutes);
   app.get("/api/protected", auth(["manager", "customer"]), (req, res) => {
     res.json({ msg: "You are allowed here", user: req.user });
   });
-  app.use(
-    "/api/orders",
-    analyticsInvalidateOnSuccess((req) =>
-      req.path.includes("/cash/") || req.path.endsWith("/cash")
-        ? "cash_mutation"
-        : "order_mutation",
-    ),
-    orderRoutes,
-  );
   app.use("/api/tracking", trackingRoutes);
   app.use("/api/warehouses", warehouseRoutes);
   app.use("/api/drivers", driverRoutes);
@@ -138,4 +118,3 @@ export function buildExpressApp(): BuildExpressAppResult {
 
   return { app, allowedOrigins };
 }
-

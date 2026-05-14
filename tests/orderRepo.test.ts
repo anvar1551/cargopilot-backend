@@ -1,4 +1,4 @@
-import { mapCreateOrderDtoToRepoPayload } from "../src/services/orders/orderCreate.mapper";
+import { mapCreateOrderDtoToRepoPayload } from "../src/modules/orders-core/domain/orderCreate.mapper";
 
 describe("mapCreateOrderDtoToRepoPayload", () => {
   it("maps a basic order payload without address-book lookups", async () => {

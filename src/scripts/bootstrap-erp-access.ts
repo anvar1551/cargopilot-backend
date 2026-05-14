@@ -19,6 +19,18 @@ const permissionSeeds: PermissionSeed[] = [
     description: "Read order list/detail in scoped context",
   },
   {
+    code: "orders.write",
+    resource: "orders",
+    action: "write",
+    description: "Create/update scoped order operational data",
+  },
+  {
+    code: "orders.export",
+    resource: "orders",
+    action: "export",
+    description: "Export scoped orders to CSV and operational extracts",
+  },
+  {
     code: "support.read",
     resource: "support",
     action: "read",
@@ -206,4 +218,3 @@ main()
   .finally(async () => {
     await prisma.$disconnect().catch(() => undefined);
   });
-

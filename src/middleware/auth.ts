@@ -95,6 +95,10 @@ async function loadUserFromDb(userId: string) {
 
 function getBearerToken(req: Request) {
   const header = req.headers.authorization;
+  return getBearerTokenFromHeader(header);
+}
+
+function getBearerTokenFromHeader(header: string | undefined) {
   if (!header) return null;
 
   const [scheme, token] = header.split(" ");
@@ -103,45 +107,56 @@ function getBearerToken(req: Request) {
   return token;
 }
 
-export function auth(requiredRoles: AppRole[] = []) {
+async function resolveUserFromToken(token: string): Promise<Express.User | null> {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    const e = new Error("JWT_SECRET not configured") as Error & { statusCode: number };
+    e.statusCode = 500;
+    throw e;
+  }
+
+  try {
+    const decoded = jwt.verify(token, secret) as JwtPayload;
+    if (!decoded?.id) return null;
+    if (decoded?.tokenType && decoded.tokenType !== "access") return null;
+
+    const lookupMode = resolveLookupMode();
+    const tokenUser = buildUserFromToken(decoded);
+
+    if (lookupMode === "always") {
+      return await loadUserFromDb(decoded.id);
+    }
+    if (lookupMode === "cache_first") {
+      return readCachedUser(decoded.id) ?? (await loadUserFromDb(decoded.id));
+    }
+
+    // token_or_cache
+    if (tokenUser?.email && tokenUser?.name) {
+      writeCachedUser(tokenUser);
+      return tokenUser;
+    }
+    return readCachedUser(decoded.id) ?? (await loadUserFromDb(decoded.id));
+  } catch {
+    return null;
+  }
+}
+
+export async function resolveAuthenticatedUserFromAuthHeader(
+  authorizationHeader: string | undefined,
+) {
+  const token = getBearerTokenFromHeader(authorizationHeader);
+  if (!token) return null;
+  return resolveUserFromToken(token);
+}
+
+export function auth(requiredRoles: string[] = []) {
   return async (req: Request, res: Response, next: NextFunction) => {
     const token = getBearerToken(req);
     if (!token)
       return res.status(401).json({ error: "Invalid or missing token" });
 
-    const secret = process.env.JWT_SECRET;
-    if (!secret) {
-      // fail fast (especially important in prod)
-      return res.status(500).json({ error: "JWT_SECRET not configured" });
-    }
-
     try {
-      const decoded = jwt.verify(token, secret) as JwtPayload;
-      if (!decoded?.id) {
-        return res.status(401).json({ error: "Unauthorized" });
-      }
-      if (decoded?.tokenType && decoded.tokenType !== "access") {
-        return res.status(401).json({ error: "Unauthorized" });
-      }
-
-      const lookupMode = resolveLookupMode();
-      const tokenUser = buildUserFromToken(decoded);
-      let user: Express.User | null = null;
-
-      if (lookupMode === "always") {
-        user = await loadUserFromDb(decoded.id);
-      } else if (lookupMode === "cache_first") {
-        user = readCachedUser(decoded.id) ?? (await loadUserFromDb(decoded.id));
-      } else {
-        // token_or_cache
-        if (tokenUser?.email && tokenUser?.name) {
-          user = tokenUser;
-          writeCachedUser(user);
-        } else {
-          user = readCachedUser(decoded.id) ?? (await loadUserFromDb(decoded.id));
-        }
-      }
-
+      const user = await resolveUserFromToken(token);
       if (!user) return res.status(401).json({ error: "Unauthorized" });
 
       req.user = user;

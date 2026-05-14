@@ -11,8 +11,8 @@ exports.getCashQueueSummaryForActor = getCashQueueSummaryForActor;
 const client_1 = require("@prisma/client");
 const prismaClient_1 = __importDefault(require("../../config/prismaClient"));
 const analyticsOutbox_1 = require("../manager/analyticsOutbox");
-const repo_1 = require("../../services/orders/repo");
-const orderService_shared_1 = require("../../services/orders/orderService.shared");
+const repo_1 = require("../../modules/orders-core/repo");
+const shared_1 = require("../../modules/orders-core/shared");
 async function loadOrderContext(tx, orderId) {
     const order = await tx.order.findUnique({
         where: { id: orderId },
@@ -29,7 +29,7 @@ async function loadOrderContext(tx, orderId) {
         },
     });
     if (!order) {
-        throw (0, orderService_shared_1.orderError)("Order not found", 404);
+        throw (0, shared_1.orderError)("Order not found", 404);
     }
     return order;
 }
@@ -85,7 +85,7 @@ async function ensureCollectionForCollect(tx, order, kind, actor) {
         return existing;
     const expectedAmount = resolveExpectedAmountForKind(order, kind);
     if (!isPositiveNumber(expectedAmount)) {
-        throw (0, orderService_shared_1.orderError)("Cash collection record not found for this order and no collectible amount is configured", 404);
+        throw (0, shared_1.orderError)("Cash collection record not found for this order and no collectible amount is configured", 404);
     }
     await tx.cashCollection.create({
         data: {
@@ -102,7 +102,7 @@ async function ensureCollectionForCollect(tx, order, kind, actor) {
                         ? "COD expected for this order"
                         : "Service charge expected for this order",
                     actorId: actor.id,
-                    actorRole: actor.role,
+                    actorRole: toAuditActorRole(actor),
                     toHolderType: client_1.CashHolderType.none,
                     toHolderName: "Not collected yet",
                 },
@@ -111,50 +111,50 @@ async function ensureCollectionForCollect(tx, order, kind, actor) {
     });
     const created = await findCollection(tx, order.id, kind);
     if (!created) {
-        throw (0, orderService_shared_1.orderError)("Failed to initialize cash collection record", 500);
+        throw (0, shared_1.orderError)("Failed to initialize cash collection record", 500);
     }
     return created;
 }
 async function loadCollection(tx, orderId, kind) {
     const collection = await findCollection(tx, orderId, kind);
     if (!collection) {
-        throw (0, orderService_shared_1.orderError)("Cash collection record not found for this order", 404);
+        throw (0, shared_1.orderError)("Cash collection record not found for this order", 404);
     }
     return collection;
 }
 function assertActorCanAccessOrder(order, actor) {
-    if (actor.role === client_1.AppRole.manager)
+    if (actor.role === "manager")
         return;
-    if (actor.role === client_1.AppRole.driver) {
+    if (actor.role === "driver") {
         if (order.assignedDriverId === actor.id)
             return;
-        throw (0, orderService_shared_1.orderError)("Only the assigned driver can update cash for this order", 403);
+        throw (0, shared_1.orderError)("Only the assigned driver can update cash for this order", 403);
     }
-    if (actor.role === client_1.AppRole.warehouse) {
+    if (actor.role === "warehouse") {
         if (actor.warehouseId && order.currentWarehouseId === actor.warehouseId)
             return;
-        throw (0, orderService_shared_1.orderError)("Warehouse user can only update cash for orders at their location", 403);
+        throw (0, shared_1.orderError)("Warehouse user can only update cash for orders at their location", 403);
     }
-    throw (0, orderService_shared_1.orderError)("Forbidden", 403);
+    throw (0, shared_1.orderError)("Forbidden", 403);
 }
 function assertCollectionMutable(collection) {
     if (collection.status === client_1.CashCollectionStatus.cancelled) {
-        throw (0, orderService_shared_1.orderError)("Cancelled cash collection cannot be changed", 400);
+        throw (0, shared_1.orderError)("Cancelled cash collection cannot be changed", 400);
     }
     if (collection.status === client_1.CashCollectionStatus.settled) {
-        throw (0, orderService_shared_1.orderError)("Settled cash collection cannot be changed", 400);
+        throw (0, shared_1.orderError)("Settled cash collection cannot be changed", 400);
     }
 }
 async function resolveActorWarehouse(tx, actor) {
     if (!actor.warehouseId) {
-        throw (0, orderService_shared_1.orderError)("Warehouse context is required for this action", 400);
+        throw (0, shared_1.orderError)("Warehouse context is required for this action", 400);
     }
     const warehouse = await tx.warehouse.findUnique({
         where: { id: actor.warehouseId },
         select: { id: true, name: true, type: true },
     });
     if (!warehouse) {
-        throw (0, orderService_shared_1.orderError)("Warehouse not found", 404);
+        throw (0, shared_1.orderError)("Warehouse not found", 404);
     }
     return warehouse;
 }
@@ -163,8 +163,8 @@ async function resolveDriver(tx, driverId) {
         where: { id: driverId },
         select: { id: true, name: true, role: true },
     });
-    if (!driver || driver.role !== client_1.AppRole.driver) {
-        throw (0, orderService_shared_1.orderError)("Driver not found", 404);
+    if (!driver || driver.role !== "driver") {
+        throw (0, shared_1.orderError)("Driver not found", 404);
     }
     return { id: driver.id, name: driver.name };
 }
@@ -188,10 +188,16 @@ function resolvePaidStatusFromCollection(expectedAmount, collectedAmount) {
     return collectedAmount >= expected ? client_1.PaidStatus.PAID : client_1.PaidStatus.PARTIAL;
 }
 function resolveActorTenantScope(actor) {
-    if (actor.role === client_1.AppRole.warehouse && actor.warehouseId) {
+    if (actor.tenantScope) {
+        return actor.tenantScope;
+    }
+    if (actor.warehouseId) {
         return `warehouse:${actor.warehouseId}`;
     }
-    return `role:${actor.role}`;
+    return `user:${actor.id}`;
+}
+function toAuditActorRole(actor) {
+    return (actor.userRole ?? actor.role ?? null);
 }
 async function collectOrderCash(params) {
     const { orderId, kind, actor } = params;
@@ -204,29 +210,29 @@ async function collectOrderCash(params) {
         let holderUserId = null;
         let holderWarehouseId = null;
         let holderLabel = null;
-        if (actor.role === client_1.AppRole.driver) {
+        if (actor.role === "driver") {
             if (collection.status === client_1.CashCollectionStatus.held &&
                 collection.currentHolderType !== client_1.CashHolderType.driver) {
-                throw (0, orderService_shared_1.orderError)("Driver cannot collect cash already held by another location or person", 403);
+                throw (0, shared_1.orderError)("Driver cannot collect cash already held by another location or person", 403);
             }
             if (collection.status === client_1.CashCollectionStatus.held &&
                 collection.currentHolderUserId &&
                 collection.currentHolderUserId !== actor.id) {
-                throw (0, orderService_shared_1.orderError)("Driver can only update cash currently held by them", 403);
+                throw (0, shared_1.orderError)("Driver can only update cash currently held by them", 403);
             }
             holderType = client_1.CashHolderType.driver;
             holderUserId = actor.id;
             holderLabel = collection.currentHolderUser?.name ?? "Driver";
         }
-        else if (actor.role === client_1.AppRole.warehouse) {
+        else if (actor.role === "warehouse") {
             if (collection.status === client_1.CashCollectionStatus.held &&
                 collection.currentHolderType === client_1.CashHolderType.driver) {
-                throw (0, orderService_shared_1.orderError)("Warehouse must accept driver cash through handoff, not direct collection", 400);
+                throw (0, shared_1.orderError)("Warehouse must accept driver cash through handoff, not direct collection", 400);
             }
             if (collection.status === client_1.CashCollectionStatus.held &&
                 collection.currentHolderType !== client_1.CashHolderType.warehouse &&
                 collection.currentHolderType !== client_1.CashHolderType.pickup_point) {
-                throw (0, orderService_shared_1.orderError)("Warehouse cannot overwrite cash already held elsewhere", 403);
+                throw (0, shared_1.orderError)("Warehouse cannot overwrite cash already held elsewhere", 403);
             }
             const warehouse = await resolveActorWarehouse(tx, actor);
             holderType = warehouseToHolderType(warehouse.type);
@@ -234,13 +240,13 @@ async function collectOrderCash(params) {
             holderLabel = warehouse.name;
         }
         else {
-            throw (0, orderService_shared_1.orderError)("Manager collection requires a specific target holder and is not enabled in this phase", 400);
+            throw (0, shared_1.orderError)("Manager collection requires a specific target holder and is not enabled in this phase", 400);
         }
         const nextAmount = params.amount != null
             ? Number(params.amount)
             : collection.collectedAmount ?? collection.expectedAmount;
         if (!Number.isFinite(nextAmount) || nextAmount <= 0) {
-            throw (0, orderService_shared_1.orderError)("Collected amount must be greater than zero", 400);
+            throw (0, shared_1.orderError)("Collected amount must be greater than zero", 400);
         }
         const nextEventType = collection.status === client_1.CashCollectionStatus.expected
             ? client_1.CashCollectionEventType.collected
@@ -271,7 +277,7 @@ async function collectOrderCash(params) {
                         toHolderId: holderUserId ?? holderWarehouseId,
                         toHolderName: holderLabel,
                         actorId: actor.id,
-                        actorRole: actor.role,
+                        actorRole: toAuditActorRole(actor),
                     },
                 },
             },
@@ -291,7 +297,7 @@ async function collectOrderCash(params) {
                     source: "collectOrderCash",
                     kind,
                     actorId: actor.id,
-                    actorRole: actor.role,
+                    actorRole: toAuditActorRole(actor),
                 },
             },
         ]);
@@ -306,18 +312,18 @@ async function handoffOrderCash(params) {
         assertActorCanAccessOrder(order, actor);
         assertCollectionMutable(collection);
         if (collection.status !== client_1.CashCollectionStatus.held) {
-            throw (0, orderService_shared_1.orderError)("Only held cash can be handed off", 400);
+            throw (0, shared_1.orderError)("Only held cash can be handed off", 400);
         }
-        if (actor.role === client_1.AppRole.driver) {
+        if (actor.role === "driver") {
             if (collection.currentHolderType !== client_1.CashHolderType.driver ||
                 collection.currentHolderUserId !== actor.id) {
-                throw (0, orderService_shared_1.orderError)("Driver can only hand off cash currently held by them", 403);
+                throw (0, shared_1.orderError)("Driver can only hand off cash currently held by them", 403);
             }
         }
-        if (actor.role === client_1.AppRole.warehouse) {
+        if (actor.role === "warehouse") {
             if (!actor.warehouseId ||
                 collection.currentHolderWarehouseId !== actor.warehouseId) {
-                throw (0, orderService_shared_1.orderError)("Warehouse can only hand off cash currently held at their location", 403);
+                throw (0, shared_1.orderError)("Warehouse can only hand off cash currently held at their location", 403);
             }
         }
         let nextHolderType = client_1.CashHolderType.none;
@@ -326,7 +332,7 @@ async function handoffOrderCash(params) {
         let nextHolderLabel = null;
         if (toHolderType === "driver") {
             if (!params.toDriverId) {
-                throw (0, orderService_shared_1.orderError)("toDriverId is required when handing off to a driver", 400);
+                throw (0, shared_1.orderError)("toDriverId is required when handing off to a driver", 400);
             }
             const driver = await resolveDriver(tx, params.toDriverId);
             nextHolderType = client_1.CashHolderType.driver;
@@ -335,16 +341,16 @@ async function handoffOrderCash(params) {
         }
         else {
             const warehouseId = params.toWarehouseId ??
-                (actor.role === client_1.AppRole.warehouse ? actor.warehouseId ?? null : null);
+                (actor.role === "warehouse" ? actor.warehouseId ?? null : null);
             if (!warehouseId) {
-                throw (0, orderService_shared_1.orderError)("toWarehouseId is required when handing off to a location", 400);
+                throw (0, shared_1.orderError)("toWarehouseId is required when handing off to a location", 400);
             }
             const warehouse = await tx.warehouse.findUnique({
                 where: { id: warehouseId },
                 select: { id: true, name: true, type: true },
             });
             if (!warehouse) {
-                throw (0, orderService_shared_1.orderError)("Target warehouse not found", 404);
+                throw (0, shared_1.orderError)("Target warehouse not found", 404);
             }
             const actualHolderType = warehouseToHolderType(warehouse.type);
             nextHolderType = actualHolderType;
@@ -374,7 +380,7 @@ async function handoffOrderCash(params) {
                         toHolderId: nextHolderUserId ?? nextHolderWarehouseId,
                         toHolderName: nextHolderLabel,
                         actorId: actor.id,
-                        actorRole: actor.role,
+                        actorRole: toAuditActorRole(actor),
                     },
                 },
             },
@@ -389,7 +395,7 @@ async function handoffOrderCash(params) {
                     kind,
                     toHolderType,
                     actorId: actor.id,
-                    actorRole: actor.role,
+                    actorRole: toAuditActorRole(actor),
                 },
             },
         ]);
@@ -398,8 +404,8 @@ async function handoffOrderCash(params) {
 }
 async function settleOrderCash(params) {
     const { orderId, kind, actor } = params;
-    if (actor.role !== client_1.AppRole.manager) {
-        throw (0, orderService_shared_1.orderError)("Only managers can settle cash to finance", 403);
+    if (actor.role !== "manager") {
+        throw (0, shared_1.orderError)("Only managers can settle cash to finance", 403);
     }
     await prismaClient_1.default.$transaction(async (tx) => {
         const order = await loadOrderContext(tx, orderId);
@@ -407,7 +413,7 @@ async function settleOrderCash(params) {
         assertActorCanAccessOrder(order, actor);
         assertCollectionMutable(collection);
         if (collection.status !== client_1.CashCollectionStatus.held) {
-            throw (0, orderService_shared_1.orderError)("Only held cash can be settled", 400);
+            throw (0, shared_1.orderError)("Only held cash can be settled", 400);
         }
         await tx.cashCollection.update({
             where: { id: collection.id },
@@ -432,7 +438,7 @@ async function settleOrderCash(params) {
                         toHolderType: client_1.CashHolderType.finance,
                         toHolderName: "Finance",
                         actorId: actor.id,
-                        actorRole: actor.role,
+                        actorRole: toAuditActorRole(actor),
                     },
                 },
             },
@@ -446,7 +452,7 @@ async function settleOrderCash(params) {
                     source: "settleOrderCash",
                     kind,
                     actorId: actor.id,
-                    actorRole: actor.role,
+                    actorRole: toAuditActorRole(actor),
                 },
             },
         ]);
@@ -491,12 +497,12 @@ function buildQueueWhere(actor, filters) {
             },
         });
     }
-    if (actor.role === client_1.AppRole.manager) {
+    if (actor.role === "manager") {
         return and.length === 1 ? and[0] : { AND: and };
     }
-    if (actor.role === client_1.AppRole.warehouse) {
+    if (actor.role === "warehouse") {
         if (!actor.warehouseId) {
-            throw (0, orderService_shared_1.orderError)("Warehouse user has no attached location", 403);
+            throw (0, shared_1.orderError)("Warehouse user has no attached location", 403);
         }
         and.push({
             OR: [
@@ -506,19 +512,19 @@ function buildQueueWhere(actor, filters) {
         });
         return { AND: and };
     }
-    throw (0, orderService_shared_1.orderError)("Forbidden", 403);
+    throw (0, shared_1.orderError)("Forbidden", 403);
 }
 function buildQueueScopeSql(actor) {
-    if (actor.role === client_1.AppRole.manager) {
+    if (actor.role === "manager") {
         return client_1.Prisma.sql `1=1`;
     }
-    if (actor.role === client_1.AppRole.warehouse) {
+    if (actor.role === "warehouse") {
         if (!actor.warehouseId) {
-            throw (0, orderService_shared_1.orderError)("Warehouse user has no attached location", 403);
+            throw (0, shared_1.orderError)("Warehouse user has no attached location", 403);
         }
         return client_1.Prisma.sql `(o."currentWarehouseId" = ${actor.warehouseId} OR cc."currentHolderWarehouseId" = ${actor.warehouseId})`;
     }
-    throw (0, orderService_shared_1.orderError)("Forbidden", 403);
+    throw (0, shared_1.orderError)("Forbidden", 403);
 }
 async function listCashQueueForActor(params) {
     const { actor, filters } = params;
@@ -593,10 +599,10 @@ async function listCashQueueForActor(params) {
             updatedAt,
             ageHours,
             canCollect: row.status === client_1.CashCollectionStatus.expected &&
-                (actor.role === client_1.AppRole.manager || actor.role === client_1.AppRole.warehouse),
+                (actor.role === "manager" || actor.role === "warehouse"),
             canHandoff: row.status === client_1.CashCollectionStatus.held &&
-                (actor.role === client_1.AppRole.manager || actor.role === client_1.AppRole.warehouse),
-            canSettle: row.status === client_1.CashCollectionStatus.held && actor.role === client_1.AppRole.manager,
+                (actor.role === "manager" || actor.role === "warehouse"),
+            canSettle: row.status === client_1.CashCollectionStatus.held && actor.role === "manager",
         };
     });
     return {
