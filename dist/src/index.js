@@ -4,139 +4,48 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
-const http_1 = require("http");
-const express_1 = __importDefault(require("express"));
-const cors_1 = __importDefault(require("cors"));
-const compression_1 = __importDefault(require("compression"));
-const helmet_1 = __importDefault(require("helmet"));
-const morgan_1 = __importDefault(require("morgan"));
-const express_rate_limit_1 = __importDefault(require("express-rate-limit"));
-const auth_1 = require("./middleware/auth");
-const rateLimitStore_1 = require("./config/rateLimitStore");
-const redis_1 = require("./config/redis");
-const prismaClient_1 = __importDefault(require("./config/prismaClient"));
-const userRoutes_1 = __importDefault(require("./services/users/userRoutes"));
-const orderRoutes_1 = __importDefault(require("./services/orders/orderRoutes"));
-const trackingRoutes_1 = __importDefault(require("./services/tracking/trackingRoutes"));
-const warehouseRoutes_1 = __importDefault(require("./services/warehouse/warehouseRoutes"));
-const driverRoutes_1 = __importDefault(require("./services/driver/driverRoutes"));
-const invoiceRoutes_1 = __importDefault(require("./services/invoice/invoiceRoutes"));
-const webhookRoutes_1 = __importDefault(require("./services/stripe/webhookRoutes"));
-const managerRoutes_1 = __importDefault(require("./features/manager/managerRoutes"));
-const labelRoutes_1 = __importDefault(require("./features/label/labelRoutes"));
-const addressRoutes_1 = __importDefault(require("./services/addresses/addressRoutes"));
-const customerRoutes_1 = __importDefault(require("./services/customers/customerRoutes"));
-const pricingRoutes_1 = __importDefault(require("./services/pricing/pricingRoutes"));
+const fastify_1 = __importDefault(require("fastify"));
+const express_1 = __importDefault(require("@fastify/express"));
 const realtimeHub_1 = require("./features/realtime/realtimeHub");
-const notificationRoutes_1 = __importDefault(require("./services/notifications/notificationRoutes"));
 const notificationRetention_1 = require("./services/notifications/notificationRetention");
-const analyticsInvalidate_1 = require("./middleware/analyticsInvalidate");
 const analyticsV2Realtime_1 = require("./features/manager/analyticsV2Realtime");
 const analytics_worker_1 = require("./workers/analytics.worker");
 const analyticsWarmup_1 = require("./features/manager/analyticsWarmup");
 const analyticsOutboxPublisher_1 = require("./features/manager/analyticsOutboxPublisher");
 const supportRetention_1 = require("./features/support/supportRetention");
 const supportRules_1 = require("./features/support/supportRules");
-const app = (0, express_1.default)();
-app.set("trust proxy", process.env.TRUST_PROXY === "false" ? false : 1);
-void (0, redis_1.getRedisClient)();
-// Stripe webhook must come before JSON body parsing middleware.
-app.use("/api/webhooks", webhookRoutes_1.default);
-const allowedOrigins = new Set([
-    process.env.CLIENT_URL,
-    ...(process.env.CORS_ORIGINS || "")
-        .split(",")
-        .map((value) => value.trim()),
-    ...(process.env.ADDITIONAL_ALLOWED_ORIGINS || "")
-        .split(",")
-        .map((value) => value.trim()),
-].filter((value) => Boolean(value)));
-app.use((0, cors_1.default)({
-    origin: (origin, callback) => {
-        if (!origin)
-            return callback(null, true);
-        if (allowedOrigins.size === 0)
-            return callback(null, true);
-        if (allowedOrigins.has(origin))
-            return callback(null, true);
-        return callback(new Error("Origin not allowed by CORS"));
-    },
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-}));
-app.use((0, helmet_1.default)({
-    crossOriginResourcePolicy: false,
-}));
-app.use((0, compression_1.default)({ threshold: 1024 }));
-app.use(express_1.default.json({ limit: process.env.JSON_BODY_LIMIT || "5mb" }));
-app.use((0, morgan_1.default)("dev", {
-    skip: (req) => req.path === "/api/health",
-}));
-const globalLimiter = (0, express_rate_limit_1.default)({
-    windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000),
-    max: Number(process.env.RATE_LIMIT_MAX || 1200),
-    store: (0, rateLimitStore_1.createRateLimitStore)("global"),
-    standardHeaders: true,
-    legacyHeaders: false,
-    passOnStoreError: true,
-});
-const authLimiter = (0, express_rate_limit_1.default)({
-    windowMs: Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000),
-    max: Number(process.env.AUTH_RATE_LIMIT_MAX || 120),
-    store: (0, rateLimitStore_1.createRateLimitStore)("auth"),
-    standardHeaders: true,
-    legacyHeaders: false,
-    passOnStoreError: true,
-});
-app.use(globalLimiter);
-app.get("/api/health", async (_req, res) => {
-    try {
-        await prismaClient_1.default.$queryRaw `SELECT 1`;
-        res.json({ status: "ok" });
+const buildExpressApp_1 = require("./server/buildExpressApp");
+async function start() {
+    const portFromEnv = Number(process.env.PORT);
+    const port = Number.isFinite(portFromEnv) && portFromEnv > 0 ? portFromEnv : 4000;
+    const trustProxy = process.env.TRUST_PROXY === "false" ? false : true;
+    const fastify = (0, fastify_1.default)({
+        trustProxy,
+        logger: false,
+        bodyLimit: Number(process.env.FASTIFY_BODY_LIMIT_BYTES || 5 * 1024 * 1024),
+    });
+    await fastify.register(express_1.default);
+    const { app, allowedOrigins } = (0, buildExpressApp_1.buildExpressApp)();
+    fastify.use(app);
+    (0, realtimeHub_1.initRealtimeHub)(fastify.server, allowedOrigins);
+    (0, notificationRetention_1.startNotificationRetentionWorker)();
+    (0, supportRetention_1.startSupportRetentionWorker)();
+    (0, supportRules_1.startSupportRulesWorker)();
+    (0, analyticsV2Realtime_1.ensureAnalyticsInvalidationConsumer)();
+    (0, analyticsWarmup_1.startAnalyticsWarmupLoop)();
+    void (0, analyticsOutboxPublisher_1.startAnalyticsOutboxPublisher)();
+    const analyticsWorkerInProcessEnv = String(process.env.ANALYTICS_WORKER_IN_PROCESS ?? "")
+        .trim()
+        .toLowerCase();
+    const runAnalyticsWorkerInProcess = analyticsWorkerInProcessEnv === "true" ||
+        (process.env.NODE_ENV !== "production" && analyticsWorkerInProcessEnv !== "false");
+    if (runAnalyticsWorkerInProcess) {
+        void (0, analytics_worker_1.startAnalyticsWorker)({ leaderLock: true });
     }
-    catch (err) {
-        res.status(500).json({ status: "error", error: err?.message });
-    }
-});
-app.use("/api/auth", authLimiter, userRoutes_1.default);
-app.get("/api/protected", (0, auth_1.auth)(["manager", "customer"]), (req, res) => {
-    res.json({ msg: "You are allowed here", user: req.user });
-});
-app.use("/api/orders", (0, analyticsInvalidate_1.analyticsInvalidateOnSuccess)((req) => req.path.includes("/cash/") || req.path.endsWith("/cash")
-    ? "cash_mutation"
-    : "order_mutation"), orderRoutes_1.default);
-app.use("/api/tracking", trackingRoutes_1.default);
-app.use("/api/warehouses", warehouseRoutes_1.default);
-app.use("/api/drivers", driverRoutes_1.default);
-app.use("/api/invoices", (0, analyticsInvalidate_1.analyticsInvalidateOnSuccess)("invoice_mutation"), invoiceRoutes_1.default);
-app.use("/api/manager", managerRoutes_1.default);
-app.use("/api/labels", labelRoutes_1.default);
-app.use("/api/addresses", addressRoutes_1.default);
-app.use("/api/customers", customerRoutes_1.default);
-app.use("/api/pricing", pricingRoutes_1.default);
-app.use("/api/notifications", notificationRoutes_1.default);
-app.use((err, _req, res, next) => {
-    if (err?.message === "Origin not allowed by CORS") {
-        return res.status(403).json({ error: "CORS origin blocked" });
-    }
-    return next(err);
-});
-const portFromEnv = Number(process.env.PORT);
-const PORT = Number.isFinite(portFromEnv) && portFromEnv > 0 ? portFromEnv : 4000;
-const server = (0, http_1.createServer)(app);
-(0, realtimeHub_1.initRealtimeHub)(server, Array.from(allowedOrigins));
-(0, notificationRetention_1.startNotificationRetentionWorker)();
-(0, supportRetention_1.startSupportRetentionWorker)();
-(0, supportRules_1.startSupportRulesWorker)();
-(0, analyticsV2Realtime_1.ensureAnalyticsInvalidationConsumer)();
-(0, analyticsWarmup_1.startAnalyticsWarmupLoop)();
-void (0, analyticsOutboxPublisher_1.startAnalyticsOutboxPublisher)();
-const analyticsWorkerInProcessEnv = String(process.env.ANALYTICS_WORKER_IN_PROCESS ?? "").trim().toLowerCase();
-const runAnalyticsWorkerInProcess = analyticsWorkerInProcessEnv === "true" ||
-    (process.env.NODE_ENV !== "production" && analyticsWorkerInProcessEnv !== "false");
-if (runAnalyticsWorkerInProcess) {
-    void (0, analytics_worker_1.startAnalyticsWorker)({ leaderLock: true });
+    await fastify.listen({ port, host: "0.0.0.0" });
+    console.log(`Server running on port ${port}`);
 }
-server.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on port ${PORT}`);
+void start().catch((err) => {
+    console.error("[server] failed to start", err);
+    process.exitCode = 1;
 });
