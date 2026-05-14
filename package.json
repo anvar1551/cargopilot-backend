@@ -8,10 +8,12 @@
     "worker:analytics": "ts-node-dev --respawn --transpile-only src/workers/analytics.worker.ts",
     "worker:labels": "ts-node-dev --respawn --transpile-only src/workers/order-label.worker.ts",
     "worker:labels:once": "ts-node-dev --transpile-only src/workers/order-label.worker.ts --once",
+    "bootstrap:erp-access": "ts-node-dev --transpile-only src/scripts/bootstrap-erp-access.ts",
     "build": "tsc",
     "start": "node dist/src/index.js",
     "start:worker:analytics": "node dist/src/workers/analytics.worker.js",
     "start:worker:labels": "node dist/src/workers/order-label.worker.js",
+    "start:bootstrap:erp-access": "node dist/src/scripts/bootstrap-erp-access.js",
     "load:orders:read": "k6 run tests/load/orders-read.k6.js",
     "test": "jest --detectOpenHandles"
   },
