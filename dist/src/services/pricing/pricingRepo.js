@@ -23,6 +23,7 @@ exports.quoteTariff = quoteTariff;
 const prismaClient_1 = __importDefault(require("../../config/prismaClient"));
 const client_1 = require("@prisma/client");
 const shared_1 = require("../../modules/orders-core/shared");
+const sla_1 = require("../../modules/orders-core/sla");
 const pricing_shared_1 = require("./pricing.shared");
 const db = prismaClient_1.default;
 const OPERATIONAL_SLA_POLICY_KEY = "global";
@@ -572,79 +573,7 @@ async function getTariffPlanById(id) {
     });
 }
 async function resolveOrderSlaSnapshot(input) {
-    const createdAt = input.createdAt ?? new Date();
-    const promiseDate = toDateOrNull(input.promiseDate);
-    if (promiseDate) {
-        return {
-            expectedDeliveryAt: promiseDate,
-            slaSource: client_1.OrderSlaSource.PROMISE_DATE,
-            slaRuleId: null,
-            slaTargetDays: null,
-        };
-    }
-    if (!input.serviceType) {
-        return {
-            expectedDeliveryAt: null,
-            slaSource: client_1.OrderSlaSource.NONE,
-            slaRuleId: null,
-            slaTargetDays: null,
-        };
-    }
-    const routeContext = await resolvePricingRouteContext({
-        originQuery: input.originQuery,
-        destinationQuery: input.destinationQuery,
-    });
-    const ruleOrClauses = [
-        {
-            zone: null,
-            originRegionId: null,
-            destinationRegionId: null,
-        },
-    ];
-    if (routeContext.originRegion?.id && routeContext.destinationRegion?.id) {
-        ruleOrClauses.push({
-            originRegionId: routeContext.originRegion.id,
-            destinationRegionId: routeContext.destinationRegion.id,
-        });
-    }
-    if (routeContext.zoneEntry?.zone !== undefined) {
-        ruleOrClauses.push({
-            zone: routeContext.zoneEntry.zone,
-            originRegionId: null,
-            destinationRegionId: null,
-        });
-    }
-    const rules = await db.deliverySlaRule.findMany({
-        where: {
-            isActive: true,
-            serviceType: input.serviceType,
-            OR: ruleOrClauses,
-        },
-        select: {
-            id: true,
-            originRegionId: true,
-            destinationRegionId: true,
-            zone: true,
-            priority: true,
-            createdAt: true,
-            deliveryDays: true,
-        },
-    });
-    const matchedRule = pickBestDeliverySlaRule(rules, routeContext);
-    if (!matchedRule) {
-        return {
-            expectedDeliveryAt: null,
-            slaSource: client_1.OrderSlaSource.NONE,
-            slaRuleId: null,
-            slaTargetDays: null,
-        };
-    }
-    return {
-        expectedDeliveryAt: addDaysUtc(createdAt, matchedRule.deliveryDays),
-        slaSource: client_1.OrderSlaSource.SLA_RULE,
-        slaRuleId: matchedRule.id,
-        slaTargetDays: matchedRule.deliveryDays,
-    };
+    return (0, sla_1.resolveOrderSlaSnapshot)(input);
 }
 async function backfillOrderSlaSnapshots(input) {
     const limit = Math.min(Math.max(Number(input?.limit ?? 500), 1), 5000);

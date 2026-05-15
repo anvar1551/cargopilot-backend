@@ -1,6 +1,7 @@
 import prisma from "../../config/prismaClient";
 import { OrderSlaSource, OrderStatus, ServiceType } from "@prisma/client";
 import { orderError } from "../../modules/orders-core/shared";
+import { resolveOrderSlaSnapshot as resolveOrderSlaSnapshotForOrder } from "../../modules/orders-core/sla";
 import {
   CreateDeliverySlaRuleInput,
   CreatePricingRegionInput,
@@ -741,89 +742,7 @@ export async function resolveOrderSlaSnapshot(input: {
   promiseDate?: Date | string | null;
   createdAt?: Date;
 }) {
-  const createdAt = input.createdAt ?? new Date();
-  const promiseDate = toDateOrNull(input.promiseDate);
-
-  if (promiseDate) {
-    return {
-      expectedDeliveryAt: promiseDate,
-      slaSource: OrderSlaSource.PROMISE_DATE,
-      slaRuleId: null,
-      slaTargetDays: null,
-    } as const;
-  }
-
-  if (!input.serviceType) {
-    return {
-      expectedDeliveryAt: null,
-      slaSource: OrderSlaSource.NONE,
-      slaRuleId: null,
-      slaTargetDays: null,
-    } as const;
-  }
-
-  const routeContext = await resolvePricingRouteContext({
-    originQuery: input.originQuery,
-    destinationQuery: input.destinationQuery,
-  });
-
-  const ruleOrClauses: Array<any> = [
-    {
-      zone: null,
-      originRegionId: null,
-      destinationRegionId: null,
-    },
-  ];
-
-  if (routeContext.originRegion?.id && routeContext.destinationRegion?.id) {
-    ruleOrClauses.push({
-      originRegionId: routeContext.originRegion.id,
-      destinationRegionId: routeContext.destinationRegion.id,
-    });
-  }
-
-  if (routeContext.zoneEntry?.zone !== undefined) {
-    ruleOrClauses.push({
-      zone: routeContext.zoneEntry.zone,
-      originRegionId: null,
-      destinationRegionId: null,
-    });
-  }
-
-  const rules = await db.deliverySlaRule.findMany({
-    where: {
-      isActive: true,
-      serviceType: input.serviceType as ServiceType,
-      OR: ruleOrClauses,
-    },
-    select: {
-      id: true,
-      originRegionId: true,
-      destinationRegionId: true,
-      zone: true,
-      priority: true,
-      createdAt: true,
-      deliveryDays: true,
-    },
-  });
-
-  const matchedRule = pickBestDeliverySlaRule(rules, routeContext);
-
-  if (!matchedRule) {
-    return {
-      expectedDeliveryAt: null,
-      slaSource: OrderSlaSource.NONE,
-      slaRuleId: null,
-      slaTargetDays: null,
-    } as const;
-  }
-
-  return {
-    expectedDeliveryAt: addDaysUtc(createdAt, matchedRule.deliveryDays),
-    slaSource: OrderSlaSource.SLA_RULE,
-    slaRuleId: matchedRule.id,
-    slaTargetDays: matchedRule.deliveryDays,
-  } as const;
+  return resolveOrderSlaSnapshotForOrder(input);
 }
 
 export async function backfillOrderSlaSnapshots(input?: {

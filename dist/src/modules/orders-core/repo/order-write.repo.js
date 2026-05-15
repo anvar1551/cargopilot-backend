@@ -6,9 +6,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.createOrder = void 0;
 const prismaClient_1 = __importDefault(require("../../../config/prismaClient"));
 const client_1 = require("@prisma/client");
-const cashCollection_shared_1 = require("../../../features/cash/cashCollection.shared");
+const cash_1 = require("../cash");
 const analyticsOutbox_1 = require("../../../features/manager/analyticsOutbox");
-const pricingRepo_1 = require("../../../services/pricing/pricingRepo");
+const sla_1 = require("../sla");
 const shared_1 = require("../shared");
 const order_repo_shared_1 = require("./order-repo.shared");
 function sanitizeSnapshot(s) {
@@ -167,7 +167,7 @@ const createOrder = async (customerId, payload, actor) => {
         ]);
         const createdAt = new Date();
         const orderNumber = await getNextOrderNumberTx(tx);
-        const slaSnapshot = await (0, pricingRepo_1.resolveOrderSlaSnapshot)({
+        const slaSnapshot = await (0, sla_1.resolveOrderSlaSnapshot)({
             serviceType: payload.serviceType ?? null,
             originQuery: payload.senderAddressSnapshot?.city ?? senderAddressRecord?.city ?? null,
             destinationQuery: payload.destinationCity ??
@@ -196,7 +196,7 @@ const createOrder = async (customerId, payload, actor) => {
                     parcelCode: `${orderNumber}-1/${pieceTotal}`,
                 },
             ];
-        const cashCollectionsToCreate = (0, cashCollection_shared_1.buildInitialOrderCashCollections)({
+        const cashCollectionsToCreate = (0, cash_1.buildInitialOrderCashCollections)({
             codAmount: payload.codAmount ?? null,
             codPaidStatus: payload.codPaidStatus ?? null,
             serviceCharge: payload.serviceCharge ?? null,

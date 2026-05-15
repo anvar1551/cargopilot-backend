@@ -9,10 +9,10 @@ import {
   WarehouseType,
 } from "@prisma/client";
 
-import prisma from "../../config/prismaClient";
-import { enqueueCargoPilotDomainEventsTx } from "../manager/analyticsOutbox";
-import { getOrderById } from "../../modules/orders-core/repo";
-import { OrderActor, orderError } from "../../modules/orders-core/shared";
+import prisma from "../../../config/prismaClient";
+import { enqueueCargoPilotDomainEventsTx } from "../../../features/manager/analyticsOutbox";
+import { getOrderById } from "../repo";
+import { OrderActor, orderError } from "../shared";
 
 type WarehouseContext = {
   id: string;

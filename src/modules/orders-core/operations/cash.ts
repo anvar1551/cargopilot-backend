@@ -9,7 +9,7 @@ import {
   handoffOrderCash,
   listCashQueueForActor,
   settleOrderCash,
-} from "../../../features/cash/cashCollection.service";
+} from "../cash";
 import { ORDER_BULK_MAX_IDS, orderError } from "../shared";
 import type { OrderActor } from "../shared";
 

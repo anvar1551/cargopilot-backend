@@ -7,7 +7,7 @@ import {
   Prisma,
 } from "@prisma/client";
 
-import type { OrderActor } from "../../modules/orders-core/shared";
+import type { OrderActor } from "../shared";
 
 type OrderCashSeedInput = {
   codAmount?: number | null;

@@ -18,13 +18,15 @@ Current module foundation:
     - `shared.ts`: shared typed inputs and guard helpers.
 - `orders-core`: central order runtime use-cases with RBAC scope enforcement:
   - folder structure:
-    - `transport/`: HTTP transport layer for `/api/orders` (native Fastify routes + controllers),
+    - `transport/`: native Fastify HTTP transport for `/api/orders`,
     - `read/`: list/get/workload/export queries,
     - `write/`: order creation and write orchestrations,
-    - `operations/`: task assignment and cash workflows,
+    - `operations/`: task assignment and order state workflows,
+    - `cash/`: cash queue + collect/handoff/settle runtime + seed helpers,
     - `proofs/`: pickup/delivery proof upload + access checks,
     - `import/`: CSV import preview/confirm use-cases,
     - `label/`: label generation queue + worker tick runtime.
+    - `sla/`: order SLA snapshot resolver used by order write path.
     - `shared/`: order actor/error helpers used across order modules.
   - read access (`list`, `getOne`, driver workload, CSV export),
   - create-order flow (address-book save, label workflow, optional invoice/payment),
