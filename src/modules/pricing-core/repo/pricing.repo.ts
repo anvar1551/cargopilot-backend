@@ -1,7 +1,7 @@
-import prisma from "../../config/prismaClient";
+import prisma from "../../../config/prismaClient";
 import { OrderSlaSource, OrderStatus, ServiceType } from "@prisma/client";
-import { orderError } from "../../modules/orders-core/shared";
-import { resolveOrderSlaSnapshot as resolveOrderSlaSnapshotForOrder } from "../../modules/orders-core/sla";
+import { orderError } from "../../orders-core/shared";
+import { resolveOrderSlaSnapshot as resolveOrderSlaSnapshotForOrder } from "../../orders-core/sla";
 import {
   CreateDeliverySlaRuleInput,
   CreatePricingRegionInput,
@@ -13,7 +13,7 @@ import {
   UpdateTariffPlanInput,
   UpsertZoneMatrixInput,
   normalizeTariffCode,
-} from "./pricing.shared";
+} from "../shared/validation";
 
 const db = prisma as any;
 const OPERATIONAL_SLA_POLICY_KEY = "global";

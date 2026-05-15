@@ -33,6 +33,10 @@ Current module foundation:
   - task assignment/status updates with realtime fan-out,
   - cash queue + collect/handoff/settle (single + bulk) with realtime fan-out,
   - pickup/delivery proof upload + proof link retrieval access checks.
+- `pricing-core`: tariff/SLA/regions runtime with native Fastify transport:
+  - `transport/`: native Fastify HTTP transport for `/api/pricing`,
+  - `repo/`: tariff/SLA/region persistence and quote logic,
+  - `shared/`: schema validation and typed DTO helpers.
 
 Migration note:
 - `/api/orders` is now served by native Fastify transport.

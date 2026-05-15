@@ -44,6 +44,18 @@ const permissionSeeds = [
         action: "update",
         description: "Update support ticket workflow/messages/notes",
     },
+    {
+        code: "pricing.read",
+        resource: "pricing",
+        action: "read",
+        description: "Read pricing regions, SLA rules/policy, tariffs, and quote views",
+    },
+    {
+        code: "pricing.write",
+        resource: "pricing",
+        action: "write",
+        description: "Create/update pricing regions, SLA rules/policy, zone matrix, and tariffs",
+    },
 ];
 async function ensureRootOrganization() {
     const existing = await prismaClient_1.default.organization.findFirst({

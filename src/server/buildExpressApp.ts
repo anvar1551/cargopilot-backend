@@ -18,7 +18,6 @@ import managerRoutes from "../features/manager/managerRoutes";
 import labelRoutes from "../features/label/labelRoutes";
 import addressRoutes from "../services/addresses/addressRoutes";
 import customerEntityRoutes from "../services/customers/customerRoutes";
-import pricingRoutes from "../services/pricing/pricingRoutes";
 import notificationRoutes from "../services/notifications/notificationRoutes";
 
 export type BuildExpressAppResult = {
@@ -106,7 +105,6 @@ export function buildExpressApp(): BuildExpressAppResult {
   app.use("/api/labels", labelRoutes);
   app.use("/api/addresses", addressRoutes);
   app.use("/api/customers", customerEntityRoutes);
-  app.use("/api/pricing", pricingRoutes);
   app.use("/api/notifications", notificationRoutes);
 
   app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {

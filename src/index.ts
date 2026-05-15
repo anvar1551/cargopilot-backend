@@ -12,6 +12,7 @@ import { startSupportRetentionWorker } from "./features/support/supportRetention
 import { startSupportRulesWorker } from "./features/support/supportRules";
 import { buildExpressApp } from "./server/buildExpressApp";
 import ordersFastifyRoutes from "./modules/orders-core/transport/fastify-routes";
+import pricingFastifyRoutes from "./modules/pricing-core/transport/fastify-routes";
 
 async function start() {
   const portFromEnv = Number(process.env.PORT);
@@ -40,6 +41,7 @@ async function start() {
 
   // Modular native Fastify transport for orders.
   await fastify.register(ordersFastifyRoutes, { prefix: "/api/orders" });
+  await fastify.register(pricingFastifyRoutes, { prefix: "/api/pricing" });
 
   const { app, allowedOrigins } = buildExpressApp();
   fastify.use(app);

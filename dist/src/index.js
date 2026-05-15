@@ -17,6 +17,7 @@ const supportRetention_1 = require("./features/support/supportRetention");
 const supportRules_1 = require("./features/support/supportRules");
 const buildExpressApp_1 = require("./server/buildExpressApp");
 const fastify_routes_1 = __importDefault(require("./modules/orders-core/transport/fastify-routes"));
+const fastify_routes_2 = __importDefault(require("./modules/pricing-core/transport/fastify-routes"));
 async function start() {
     const portFromEnv = Number(process.env.PORT);
     const port = Number.isFinite(portFromEnv) && portFromEnv > 0 ? portFromEnv : 4000;
@@ -41,6 +42,7 @@ async function start() {
     });
     // Modular native Fastify transport for orders.
     await fastify.register(fastify_routes_1.default, { prefix: "/api/orders" });
+    await fastify.register(fastify_routes_2.default, { prefix: "/api/pricing" });
     const { app, allowedOrigins } = (0, buildExpressApp_1.buildExpressApp)();
     fastify.use(app);
     (0, realtimeHub_1.initRealtimeHub)(fastify.server, allowedOrigins);

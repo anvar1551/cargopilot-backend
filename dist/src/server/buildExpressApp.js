@@ -24,7 +24,6 @@ const managerRoutes_1 = __importDefault(require("../features/manager/managerRout
 const labelRoutes_1 = __importDefault(require("../features/label/labelRoutes"));
 const addressRoutes_1 = __importDefault(require("../services/addresses/addressRoutes"));
 const customerRoutes_1 = __importDefault(require("../services/customers/customerRoutes"));
-const pricingRoutes_1 = __importDefault(require("../services/pricing/pricingRoutes"));
 const notificationRoutes_1 = __importDefault(require("../services/notifications/notificationRoutes"));
 function buildExpressApp() {
     const app = (0, express_1.default)();
@@ -91,7 +90,6 @@ function buildExpressApp() {
     app.use("/api/labels", labelRoutes_1.default);
     app.use("/api/addresses", addressRoutes_1.default);
     app.use("/api/customers", customerRoutes_1.default);
-    app.use("/api/pricing", pricingRoutes_1.default);
     app.use("/api/notifications", notificationRoutes_1.default);
     app.use((err, _req, res, next) => {
         if (err?.message === "Origin not allowed by CORS") {
