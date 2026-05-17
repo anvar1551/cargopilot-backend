@@ -2,14 +2,28 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const client_1 = require("@prisma/client");
 const adapter_pg_1 = require("@prisma/adapter-pg");
-const accelerateUrl = process.env.PRISMA_ACCELERATE_URL;
+function normalizeEnvUrl(raw) {
+    if (!raw)
+        return undefined;
+    const trimmed = raw.trim();
+    if (!trimmed)
+        return undefined;
+    // Handle accidental quoted/multiline values in .env
+    const unquoted = (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+        (trimmed.startsWith("'") && trimmed.endsWith("'"))
+        ? trimmed.slice(1, -1)
+        : trimmed;
+    return unquoted.replace(/\r?\n/g, "").trim();
+}
+const accelerateUrl = normalizeEnvUrl(process.env.PRISMA_ACCELERATE_URL);
+const databaseUrl = normalizeEnvUrl(process.env.DATABASE_URL);
 let clientOptions = {};
 if (accelerateUrl) {
     clientOptions.accelerateUrl = accelerateUrl;
 }
-else if (process.env.DATABASE_URL) {
+else if (databaseUrl) {
     clientOptions.adapter = new adapter_pg_1.PrismaPg({
-        connectionString: process.env.DATABASE_URL,
+        connectionString: databaseUrl,
     });
 }
 else {

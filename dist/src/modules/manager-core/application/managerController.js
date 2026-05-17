@@ -1,0 +1,276 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.getManagerOverviewPayload = getManagerOverviewPayload;
+exports.listDriversPayload = listDriversPayload;
+const client_1 = require("@prisma/client");
+const crypto_1 = require("crypto");
+const prismaClient_1 = __importDefault(require("../../../config/prismaClient"));
+const redis_1 = require("../../../config/redis");
+const analyticsV2_1 = require("../../analytics-core/application/analyticsV2");
+const analyticsV2Realtime_1 = require("../../analytics-core/realtime/analyticsV2Realtime");
+const overviewCache = new Map();
+const driversCache = new Map();
+const overviewBuilds = new Map();
+const driverBuilds = new Map();
+function pruneExpired(cache) {
+    const now = Date.now();
+    for (const [key, entry] of cache.entries()) {
+        if (now >= entry.staleUntil)
+            cache.delete(key);
+    }
+}
+const cacheGcTimer = setInterval(() => {
+    pruneExpired(overviewCache);
+    pruneExpired(driversCache);
+}, 60000);
+cacheGcTimer.unref();
+function getOverviewRedisKey(rawKey) {
+    const digest = (0, crypto_1.createHash)("sha1").update(rawKey).digest("hex");
+    return `${(0, redis_1.getRedisPrefix)()}:manager:overview:${digest}`;
+}
+function getDriversRedisKey(rawKey) {
+    const digest = (0, crypto_1.createHash)("sha1").update(rawKey).digest("hex");
+    return `${(0, redis_1.getRedisPrefix)()}:manager:drivers:${digest}`;
+}
+function clearManagerOverviewCache() {
+    overviewCache.clear();
+    void (0, redis_1.getRedisClient)()
+        .then((redis) => redis
+        ? (0, redis_1.withRedisTimeout)("manager:overview:clear", () => redis.del(getOverviewRedisKey("overview-v1")))
+        : undefined)
+        .catch((err) => {
+        console.error(`[overview-cache] redis clear failed: ${err?.message || "unknown"}`);
+    });
+}
+function writeOverviewMemory(key, payload, ttlMs) {
+    const staleMs = Math.max(ttlMs, Number(process.env.MANAGER_OVERVIEW_STALE_MS || 10 * 60000));
+    const now = Date.now();
+    overviewCache.set(key, {
+        payload,
+        expiresAt: now + ttlMs,
+        staleUntil: now + ttlMs + staleMs,
+    });
+}
+function writeDriversMemory(key, payload, ttlMs) {
+    const staleMs = Math.max(ttlMs, Number(process.env.MANAGER_DRIVERS_STALE_MS || 15 * 60000));
+    const now = Date.now();
+    driversCache.set(key, {
+        payload,
+        expiresAt: now + ttlMs,
+        staleUntil: now + ttlMs + staleMs,
+    });
+}
+async function buildManagerOverviewPayload(actor) {
+    const summary = await (0, analyticsV2_1.getAnalyticsSummaryV2)({
+        rangeDays: Math.max(7, Math.min(180, Number(process.env.ANALYTICS_V3_DEFAULT_RANGE_DAYS || 30))),
+        scope: {
+            role: actor.role ?? "manager",
+            warehouseId: actor.warehouseId ?? null,
+            userId: actor.id ?? null,
+        },
+    });
+    const summaryPayload = summary.payload;
+    return {
+        totalOrders: summaryPayload.overview.totalOrders,
+        pending: summaryPayload.operations.pendingOrders,
+        inTransit: summaryPayload.operations.inTransitOrders,
+        delivered: summaryPayload.overview.deliveredInRange,
+        totalRevenue: summaryPayload.finance.invoicedPaidAmount,
+        overdueOpenOrders: summaryPayload.sla.overdueOpenOrders,
+        dueSoonOpenOrders: summaryPayload.sla.dueSoonOpenOrders,
+        staleOpenOrders: summaryPayload.operations.staleOpenOrders,
+        exceptionOpenOrders: summaryPayload.overview.exceptionOpenOrders,
+        slaRiskOrders: summaryPayload.sla.overdueOpenOrders +
+            summaryPayload.operations.staleOpenOrders +
+            summaryPayload.overview.exceptionOpenOrders,
+    };
+}
+async function buildDriverListPayload(args) {
+    const drivers = await prismaClient_1.default.user.findMany({
+        where: {
+            role: "driver",
+            ...(args.role === "warehouse"
+                ? args.warehouseId
+                    ? {
+                        OR: [
+                            { driverType: client_1.DriverType.linehaul },
+                            { warehouseId: args.warehouseId },
+                            { warehouseAccesses: { some: { warehouseId: args.warehouseId } } },
+                        ],
+                    }
+                    : { id: "__no_matching_driver__" }
+                : {}),
+        },
+        select: {
+            id: true,
+            name: true,
+            email: true,
+            warehouseId: true,
+            driverType: true,
+            warehouseAccesses: {
+                select: {
+                    warehouseId: true,
+                },
+            },
+        },
+        orderBy: { createdAt: "desc" },
+        take: Math.min(Math.max(Number(process.env.MANAGER_DRIVERS_LIST_LIMIT || 500), 20), 1000),
+    });
+    return drivers.map((driver) => {
+        const warehouseIds = Array.from(new Set([
+            driver.warehouseId ?? null,
+            ...driver.warehouseAccesses.map((item) => item.warehouseId),
+        ].filter((value) => Boolean(value))));
+        return {
+            id: driver.id,
+            name: driver.name,
+            email: driver.email,
+            warehouseId: driver.warehouseId ?? null,
+            warehouseIds,
+            driverType: driver.driverType === client_1.DriverType.linehaul ? "linehaul" : "local",
+        };
+    });
+}
+(0, analyticsV2Realtime_1.subscribeAnalyticsInvalidation)((event) => {
+    if (event.keys.includes("summary") ||
+        event.keys.includes("trend") ||
+        event.reason === "order_mutation" ||
+        event.reason === "worker_rebuild") {
+        clearManagerOverviewCache();
+    }
+});
+async function getManagerOverviewPayload(args) {
+    const cacheKey = "overview-v1";
+    const cacheTtlMs = Math.min(Math.max(Number(process.env.MANAGER_OVERVIEW_CACHE_TTL_MS || 60000), 5000), 300000);
+    const memoryHit = overviewCache.get(cacheKey);
+    if (memoryHit && Date.now() < memoryHit.expiresAt) {
+        return { payload: memoryHit.payload, cache: "HIT", ttlMs: cacheTtlMs };
+    }
+    if (memoryHit && Date.now() < memoryHit.staleUntil) {
+        if (!overviewBuilds.has(cacheKey)) {
+            const build = buildManagerOverviewPayload(args.actor)
+                .then(async (payload) => {
+                writeOverviewMemory(cacheKey, payload, cacheTtlMs);
+                const redis = await (0, redis_1.getRedisClient)();
+                if (redis) {
+                    await (0, redis_1.withRedisTimeout)("manager:overview:bg-set", () => redis.set(getOverviewRedisKey(cacheKey), JSON.stringify(payload), "EX", Math.max(1, Math.floor(cacheTtlMs / 1000))));
+                }
+                return payload;
+            })
+                .catch((err) => {
+                console.error(`[overview-cache] background refresh failed: ${err?.message || "unknown"}`);
+                return memoryHit.payload;
+            })
+                .finally(() => {
+                overviewBuilds.delete(cacheKey);
+            });
+            overviewBuilds.set(cacheKey, build);
+        }
+        return { payload: memoryHit.payload, cache: "STALE", ttlMs: cacheTtlMs };
+    }
+    if (memoryHit)
+        overviewCache.delete(cacheKey);
+    try {
+        const redis = await (0, redis_1.getRedisClient)();
+        if (redis) {
+            const redisHit = await (0, redis_1.withRedisTimeout)("manager:overview:get", () => redis.get(getOverviewRedisKey(cacheKey)));
+            if (redisHit) {
+                const payload = JSON.parse(redisHit);
+                writeOverviewMemory(cacheKey, payload, cacheTtlMs);
+                return { payload, cache: "HIT", ttlMs: cacheTtlMs };
+            }
+        }
+    }
+    catch (err) {
+        console.error(`[overview-cache] redis read failed: ${err?.message || "unknown"}`);
+    }
+    let build = overviewBuilds.get(cacheKey);
+    if (!build) {
+        build = buildManagerOverviewPayload(args.actor).finally(() => {
+            overviewBuilds.delete(cacheKey);
+        });
+        overviewBuilds.set(cacheKey, build);
+    }
+    const payload = await build;
+    writeOverviewMemory(cacheKey, payload, cacheTtlMs);
+    try {
+        const redis = await (0, redis_1.getRedisClient)();
+        if (redis) {
+            await (0, redis_1.withRedisTimeout)("manager:overview:set", () => redis.set(getOverviewRedisKey(cacheKey), JSON.stringify(payload), "EX", Math.max(1, Math.floor(cacheTtlMs / 1000))));
+        }
+    }
+    catch (err) {
+        console.error(`[overview-cache] redis write failed: ${err?.message || "unknown"}`);
+    }
+    return { payload, cache: "MISS", ttlMs: cacheTtlMs };
+}
+async function listDriversPayload(args) {
+    const role = args.actor.role;
+    const warehouseId = args.actor.warehouseId ?? null;
+    const cacheKey = JSON.stringify({ role: role ?? null, warehouseId });
+    const cacheTtlMs = Math.min(Math.max(Number(process.env.MANAGER_DRIVERS_CACHE_TTL_MS || 120000), 5000), 300000);
+    const memoryHit = driversCache.get(cacheKey);
+    if (memoryHit && Date.now() < memoryHit.expiresAt) {
+        return { payload: memoryHit.payload, cache: "HIT", ttlMs: cacheTtlMs };
+    }
+    if (memoryHit && Date.now() < memoryHit.staleUntil) {
+        if (!driverBuilds.has(cacheKey)) {
+            const build = buildDriverListPayload({ role, warehouseId })
+                .then(async (payload) => {
+                writeDriversMemory(cacheKey, payload, cacheTtlMs);
+                const redis = await (0, redis_1.getRedisClient)();
+                if (redis) {
+                    await (0, redis_1.withRedisTimeout)("manager:drivers:bg-set", () => redis.set(getDriversRedisKey(cacheKey), JSON.stringify(payload), "EX", Math.max(1, Math.floor(cacheTtlMs / 1000))));
+                }
+                return payload;
+            })
+                .catch((err) => {
+                console.error(`[drivers-cache] background refresh failed: ${err?.message || "unknown"}`);
+                return memoryHit.payload;
+            })
+                .finally(() => {
+                driverBuilds.delete(cacheKey);
+            });
+            driverBuilds.set(cacheKey, build);
+        }
+        return { payload: memoryHit.payload, cache: "STALE", ttlMs: cacheTtlMs };
+    }
+    if (memoryHit)
+        driversCache.delete(cacheKey);
+    try {
+        const redis = await (0, redis_1.getRedisClient)();
+        if (redis) {
+            const redisHit = await (0, redis_1.withRedisTimeout)("manager:drivers:get", () => redis.get(getDriversRedisKey(cacheKey)));
+            if (redisHit) {
+                const payload = JSON.parse(redisHit);
+                writeDriversMemory(cacheKey, payload, cacheTtlMs);
+                return { payload, cache: "HIT", ttlMs: cacheTtlMs };
+            }
+        }
+    }
+    catch (err) {
+        console.error(`[drivers-cache] redis read failed: ${err?.message || "unknown"}`);
+    }
+    let build = driverBuilds.get(cacheKey);
+    if (!build) {
+        build = buildDriverListPayload({ role, warehouseId }).finally(() => {
+            driverBuilds.delete(cacheKey);
+        });
+        driverBuilds.set(cacheKey, build);
+    }
+    const payload = await build;
+    writeDriversMemory(cacheKey, payload, cacheTtlMs);
+    try {
+        const redis = await (0, redis_1.getRedisClient)();
+        if (redis) {
+            await (0, redis_1.withRedisTimeout)("manager:drivers:set", () => redis.set(getDriversRedisKey(cacheKey), JSON.stringify(payload), "EX", Math.max(1, Math.floor(cacheTtlMs / 1000))));
+        }
+    }
+    catch (err) {
+        console.error(`[drivers-cache] redis write failed: ${err?.message || "unknown"}`);
+    }
+    return { payload, cache: "MISS", ttlMs: cacheTtlMs };
+}

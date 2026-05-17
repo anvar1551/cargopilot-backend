@@ -9,6 +9,7 @@
     "worker:labels": "ts-node-dev --respawn --transpile-only src/workers/order-label.worker.ts",
     "worker:labels:once": "ts-node-dev --transpile-only src/workers/order-label.worker.ts --once",
     "bootstrap:erp-access": "ts-node-dev --transpile-only src/scripts/bootstrap-erp-access.ts",
+    "smoke:payments-local": "ts-node-dev --transpile-only src/scripts/payments-local-smoke.ts",
     "build": "tsc",
     "start": "node dist/src/index.js",
     "start:worker:analytics": "node dist/src/workers/analytics.worker.js",

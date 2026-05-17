@@ -1,11 +1,10 @@
-import { NextFunction, Request, Response } from "express";
 import jwt from "jsonwebtoken";
 import prisma from "../config/prismaClient";
-import { AppRole } from "@prisma/client";
+import { isActorRole } from "../modules/identity-access";
 
 type JwtPayload = {
   id: string;
-  role?: AppRole;
+  role?: string;
   customerEntityId?: string | null;
   email?: string;
   name?: string;
@@ -63,7 +62,7 @@ function resolveLookupMode() {
 
 function buildUserFromToken(decoded: JwtPayload): Express.User | null {
   if (!decoded?.id || !decoded?.role) return null;
-  if (!Object.values(AppRole).includes(decoded.role)) return null;
+  if (!isActorRole(decoded.role)) return null;
 
   return {
     id: decoded.id,
@@ -91,11 +90,6 @@ async function loadUserFromDb(userId: string) {
   if (!user) return null;
   writeCachedUser(user);
   return user;
-}
-
-function getBearerToken(req: Request) {
-  const header = req.headers.authorization;
-  return getBearerTokenFromHeader(header);
 }
 
 function getBearerTokenFromHeader(header: string | undefined) {
@@ -147,27 +141,4 @@ export async function resolveAuthenticatedUserFromAuthHeader(
   const token = getBearerTokenFromHeader(authorizationHeader);
   if (!token) return null;
   return resolveUserFromToken(token);
-}
-
-export function auth(requiredRoles: string[] = []) {
-  return async (req: Request, res: Response, next: NextFunction) => {
-    const token = getBearerToken(req);
-    if (!token)
-      return res.status(401).json({ error: "Invalid or missing token" });
-
-    try {
-      const user = await resolveUserFromToken(token);
-      if (!user) return res.status(401).json({ error: "Unauthorized" });
-
-      req.user = user;
-
-      if (requiredRoles.length > 0 && !requiredRoles.includes(user.role)) {
-        return res.status(403).json({ error: "Forbidden" });
-      }
-
-      next();
-    } catch (e) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-  };
 }

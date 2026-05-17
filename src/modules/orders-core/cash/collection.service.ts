@@ -10,7 +10,7 @@ import {
 } from "@prisma/client";
 
 import prisma from "../../../config/prismaClient";
-import { enqueueCargoPilotDomainEventsTx } from "../../../features/manager/analyticsOutbox";
+import { enqueueCargoPilotDomainEventsTx } from "../../analytics-core/infrastructure/analyticsOutbox";
 import { getOrderById } from "../repo";
 import { OrderActor, orderError } from "../shared";
 

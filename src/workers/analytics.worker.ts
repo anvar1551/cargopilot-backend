@@ -5,29 +5,28 @@ import {
   getDomainEventsStreamKey,
   type CargoPilotDomainEvent,
   type CargoPilotDomainEventType,
-} from "../features/manager/analyticsEvents";
+} from "../modules/analytics-core/realtime/analyticsEvents";
 import {
   getAnalyticsFinanceQueueV2,
   getAnalyticsSummaryV2,
   getAnalyticsTrendV2,
   getAnalyticsWarningsV2,
-} from "../features/manager/analyticsV2";
-import { invalidateNamespaceCaches } from "../features/manager/analyticsV2Cache";
-import { clearAnalyticsReadModelBySection, type AnalyticsReadSection } from "../features/manager/analyticsReadModel";
+} from "../modules/analytics-core/application/analyticsV2";
+import { clearAnalyticsReadModelBySection, type AnalyticsReadSection } from "../modules/analytics-core/infrastructure/analyticsReadModel";
 import {
   publishAnalyticsInvalidation,
   type AnalyticsRefreshSection,
-} from "../features/manager/analyticsV2Realtime";
+} from "../modules/analytics-core/realtime/analyticsV2Realtime";
 import {
   recordAnalyticsWorkerConsumed,
   recordAnalyticsWorkerError,
   recordAnalyticsWorkerRebuild,
 } from "../features/observability/opsMetrics";
-import { invalidateSupportCache } from "../features/support/supportCache";
+import { invalidateSupportCache } from "../modules/support-core/infrastructure/supportCache";
 import {
   publishSupportRefresh,
   type SupportRefreshReason,
-} from "../features/support/supportRealtime";
+} from "../modules/support-core/realtime/supportRealtime";
 
 const GROUP_NAME = process.env.ANALYTICS_WORKER_GROUP || "cp_analytics_workers";
 const CONSUMER_NAME =
@@ -165,19 +164,8 @@ async function rebuildDirtySections() {
   dirtySections.clear();
 
   try {
-    const shouldClearBeforeRebuild =
-      process.env.ANALYTICS_WORKER_CLEAR_BEFORE_REBUILD !== "false";
-    if (shouldClearBeforeRebuild) {
-      for (const section of sections) {
-        await invalidateNamespaceCaches(section);
-        await clearAnalyticsReadModelBySection(toReadModelSection(section));
-      }
-    } else {
-      // Even in "soft" mode we must clear v3 read-model keys first;
-      // otherwise getAnalytics* may return stale cache-hit and skip rebuild.
-      for (const section of sections) {
-        await clearAnalyticsReadModelBySection(toReadModelSection(section));
-      }
+    for (const section of sections) {
+      await clearAnalyticsReadModelBySection(toReadModelSection(section));
     }
 
     const defaultRangeDays = Math.max(
@@ -209,13 +197,6 @@ async function rebuildDirtySections() {
         scope,
       });
     }
-
-    // Clear legacy v2 namespace cache after rebuild so request-path fallbacks
-    // cannot keep serving stale payloads.
-    for (const section of sections) {
-      await invalidateNamespaceCaches(section);
-    }
-
     totalRebuilds += 1;
     recordAnalyticsWorkerRebuild();
     await publishAnalyticsInvalidation("worker_rebuild", {

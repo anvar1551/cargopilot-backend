@@ -1,6 +1,6 @@
 import { OrderLegStatus, Prisma, TransportMode } from "@prisma/client";
 import prisma from "../../config/prismaClient";
-import { enqueueCargoPilotDomainEventsTx } from "../../features/manager/analyticsOutbox";
+import { enqueueCargoPilotDomainEventsTx } from "../analytics-core/infrastructure/analyticsOutbox";
 import { orderError } from "../orders-core/shared";
 import {
   ensureOrderExists,

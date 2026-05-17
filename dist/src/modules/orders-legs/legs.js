@@ -7,7 +7,7 @@ exports.listOrderLegs = listOrderLegs;
 exports.upsertOrderLeg = upsertOrderLeg;
 const client_1 = require("@prisma/client");
 const prismaClient_1 = __importDefault(require("../../config/prismaClient"));
-const analyticsOutbox_1 = require("../../features/manager/analyticsOutbox");
+const analyticsOutbox_1 = require("../analytics-core/infrastructure/analyticsOutbox");
 const shared_1 = require("../orders-core/shared");
 const shared_2 = require("./shared");
 async function listOrderLegs(orderId) {

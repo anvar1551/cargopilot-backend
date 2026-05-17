@@ -2,7 +2,7 @@ import prisma from "../../../config/prismaClient";
 import { OrderStatus, Prisma } from "@prisma/client";
 
 import { buildInitialOrderCashCollections } from "../cash";
-import { enqueueCargoPilotDomainEventsTx } from "../../../features/manager/analyticsOutbox";
+import { enqueueCargoPilotDomainEventsTx } from "../../analytics-core/infrastructure/analyticsOutbox";
 import { resolveOrderSlaSnapshot } from "../sla";
 import { CreateOrderRepoPayload } from "../domain/orderCreate.mapper";
 import { OrderActor, orderError } from "../shared";

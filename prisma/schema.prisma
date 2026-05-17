@@ -274,6 +274,7 @@ enum ScopeResource {
   drivers
   warehouses
   customers
+  payments
 }
 
 enum ScopeType {
@@ -344,6 +345,44 @@ enum OrderDocumentFormat {
   other
 }
 
+enum PaymentProvider {
+  CLICK
+  PAYME
+  UZUM
+  STRIPE
+}
+
+enum PaymentEnvironment {
+  TEST
+  PRODUCTION
+}
+
+enum PaymentIntentStatus {
+  PENDING
+  REQUIRES_ACTION
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  CANCELED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum PaymentAttemptStatus {
+  CREATED
+  SENT
+  ACCEPTED
+  REJECTED
+  ERROR
+}
+
+enum PaymentWebhookProcessStatus {
+  RECEIVED
+  PROCESSED
+  IGNORED_DUPLICATE
+  FAILED
+}
+
 model Organization {
   id   String           @id @default(uuid()) @db.Uuid
   name String
@@ -365,6 +404,10 @@ model Organization {
   assignedOrders         Order[]           @relation("OrderAssignedOrganization")
   ownedSupportTickets    SupportTicket[]   @relation("SupportTicketOwnerOrganization")
   assignedSupportTickets SupportTicket[]   @relation("SupportTicketAssignedOrganization")
+  paymentProviderConfigs PaymentProviderConfig[]
+  paymentIntents         PaymentIntent[]
+  paymentWebhookEvents   PaymentWebhookEvent[]
+  paymentLedgerEntries   PaymentLedgerEntry[]
 
   @@index([type, isActive])
   @@index([parentOrgId])
@@ -606,6 +649,8 @@ model Order {
   legs              OrderLeg[]
   pricingComponents PricingComponent[]
   documents         OrderDocument[]
+  paymentIntents    PaymentIntent[]
+  paymentLedgerEntries PaymentLedgerEntry[]
 
   // ---------------- Attempt counters ----------------
   pickupAttemptCount   Int @default(0)
@@ -668,6 +713,117 @@ model Order {
   @@index([referenceId])
   @@index([ownerOrgId, status, createdAt])
   @@index([assignedOrgId, status, createdAt])
+}
+
+model PaymentProviderConfig {
+  id              String             @id @default(uuid()) @db.Uuid
+  companyId       String             @db.Uuid
+  company         Organization       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  provider        PaymentProvider
+  environment     PaymentEnvironment @default(TEST)
+  isEnabled       Boolean            @default(true)
+  merchantId      String?
+  serviceId       String?
+  accountId       String?
+  secretEncrypted String
+  secretMasked    String
+  callbackPath    String
+  createdByUserId String?            @db.Uuid
+  updatedByUserId String?            @db.Uuid
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  paymentIntents  PaymentIntent[]
+
+  @@unique([companyId, provider, environment], map: "uniq_provider_per_company_env")
+  @@index([companyId, isEnabled])
+}
+
+model PaymentIntent {
+  id                  String             @id @default(uuid()) @db.Uuid
+  companyId           String             @db.Uuid
+  company             Organization       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  orderId             String             @db.Uuid
+  order               Order              @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  provider            PaymentProvider
+  providerConfigId    String             @db.Uuid
+  providerConfig      PaymentProviderConfig @relation(fields: [providerConfigId], references: [id], onDelete: Cascade)
+  environment         PaymentEnvironment
+  amountMinor         BigInt
+  currency            String
+  status              PaymentIntentStatus @default(PENDING)
+  providerPaymentId   String?
+  providerInvoiceId   String?
+  providerCheckoutUrl String?
+  idempotencyKey      String
+  metadataJson        Json?
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+  attempts            PaymentAttempt[]
+  webhooks            PaymentWebhookEvent[]
+  ledgerEntries       PaymentLedgerEntry[]
+
+  @@unique([companyId, idempotencyKey], map: "uniq_intent_idempotency_per_company")
+  @@index([companyId, orderId])
+  @@index([companyId, status])
+}
+
+model PaymentAttempt {
+  id              String               @id @default(uuid()) @db.Uuid
+  paymentIntentId String               @db.Uuid
+  paymentIntent   PaymentIntent        @relation(fields: [paymentIntentId], references: [id], onDelete: Cascade)
+  provider        PaymentProvider
+  status          PaymentAttemptStatus @default(CREATED)
+  requestJson     Json?
+  responseJson    Json?
+  errorCode       String?
+  errorMessage    String?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  @@index([paymentIntentId, createdAt])
+}
+
+model PaymentWebhookEvent {
+  id             String                      @id @default(uuid()) @db.Uuid
+  companyId      String?                     @db.Uuid
+  company        Organization?               @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  provider       PaymentProvider
+  environment    PaymentEnvironment
+  externalEventId String?
+  idempotencyKey String
+  signatureValid Boolean                     @default(false)
+  processStatus  PaymentWebhookProcessStatus @default(RECEIVED)
+  headersJson    Json?
+  payloadJson    Json
+  errorMessage   String?
+  receivedAt     DateTime                    @default(now())
+  processedAt    DateTime?
+  paymentIntentId String?                    @db.Uuid
+  paymentIntent  PaymentIntent?              @relation(fields: [paymentIntentId], references: [id], onDelete: SetNull)
+
+  @@unique([provider, environment, idempotencyKey], map: "uniq_webhook_provider_env_idempotency")
+  @@index([provider, receivedAt])
+  @@index([companyId, processStatus])
+}
+
+model PaymentLedgerEntry {
+  id              String          @id @default(uuid()) @db.Uuid
+  companyId       String          @db.Uuid
+  company         Organization    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  paymentIntentId String          @db.Uuid
+  paymentIntent   PaymentIntent   @relation(fields: [paymentIntentId], references: [id], onDelete: Cascade)
+  orderId         String          @db.Uuid
+  order           Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  entryType       String
+  amountMinor     BigInt
+  currency        String
+  provider        PaymentProvider
+  reference       String?
+  occurredAt      DateTime        @default(now())
+  createdAt       DateTime        @default(now())
+
+  @@index([companyId, orderId])
+  @@index([companyId, occurredAt])
 }
 
 model OrderLeg {

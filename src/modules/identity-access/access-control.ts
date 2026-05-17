@@ -210,3 +210,24 @@ export async function buildSupportScopeWhere(
 
   return orWhere<Prisma.SupportTicketWhereInput>(clauses) ?? { id: "__no_access__" };
 }
+
+export async function buildCustomerEntityScopeWhere(
+  user: AuthUser,
+): Promise<Prisma.CustomerEntityWhereInput | null> {
+  const resolved = await loadResolvedAccess(user);
+  if (!resolved.hasBindings) {
+    return { id: "__no_access__" };
+  }
+
+  const scopes = resolvedScopes(resolved, ScopeResource.customers);
+  if (scopes.includes(ScopeType.global)) return {};
+
+  const clauses: Prisma.CustomerEntityWhereInput[] = [];
+  for (const scope of scopes) {
+    if (scope === ScopeType.own && user.customerEntityId) {
+      clauses.push({ id: user.customerEntityId });
+    }
+  }
+
+  return orWhere<Prisma.CustomerEntityWhereInput>(clauses) ?? { id: "__no_access__" };
+}

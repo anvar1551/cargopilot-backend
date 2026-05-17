@@ -1,18 +1,13 @@
-import { NextFunction, Request, Response } from "express";
 import {
   publishCargoPilotDomainEvent,
   type CargoPilotDomainEventType,
-} from "../features/manager/analyticsEvents";
-import { publishAnalyticsInvalidation } from "../features/manager/analyticsV2Realtime";
+} from "../modules/analytics-core/realtime/analyticsEvents";
+import { publishAnalyticsInvalidation } from "../modules/analytics-core/realtime/analyticsV2Realtime";
 
 type Reason = "order_mutation" | "invoice_mutation" | "cash_mutation";
-type ReasonResolver = Reason | ((req: Request) => Reason);
+type MutationRequestView = { method: string; path: string };
 
-function isMutatingMethod(method: string) {
-  return method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE";
-}
-
-function inferEventType(reason: Reason, req: Request): CargoPilotDomainEventType {
+function inferEventType(reason: Reason, req: MutationRequestView): CargoPilotDomainEventType {
   const path = req.path.toLowerCase();
 
   if (reason === "cash_mutation") {
@@ -60,10 +55,7 @@ export async function emitAnalyticsInvalidationForMutation(args: FastMutationEmi
           : "global";
 
     await publishCargoPilotDomainEvent({
-      type: inferEventType(args.reason, {
-        method: args.method,
-        path: args.path,
-      } as Request),
+      type: inferEventType(args.reason, { method: args.method, path: args.path }),
       tenantScope,
       entityId: args.entityId?.trim() || null,
       payload: {
@@ -73,29 +65,4 @@ export async function emitAnalyticsInvalidationForMutation(args: FastMutationEmi
       },
     });
   }
-}
-
-export function analyticsInvalidateOnSuccess(reason: ReasonResolver) {
-  return (req: Request, res: Response, next: NextFunction) => {
-    if (!isMutatingMethod(req.method)) {
-      return next();
-    }
-
-    res.on("finish", () => {
-      if (res.statusCode < 200 || res.statusCode >= 400) return;
-      const resolved = typeof reason === "function" ? reason(req) : reason;
-      void emitAnalyticsInvalidationForMutation({
-        reason: resolved,
-        method: req.method,
-        path: req.path,
-        user: req.user,
-        entityId:
-          typeof req.params?.id === "string" && req.params.id.trim()
-            ? req.params.id
-            : null,
-      });
-    });
-
-    return next();
-  };
 }

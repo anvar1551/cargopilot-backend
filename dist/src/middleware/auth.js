@@ -4,10 +4,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.resolveAuthenticatedUserFromAuthHeader = resolveAuthenticatedUserFromAuthHeader;
-exports.auth = auth;
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const prismaClient_1 = __importDefault(require("../config/prismaClient"));
-const client_1 = require("@prisma/client");
+const identity_access_1 = require("../modules/identity-access");
 const authUserCache = new Map();
 const authCacheTtlMs = Math.max(10000, Number(process.env.AUTH_USER_CACHE_TTL_MS || 300000));
 const authCacheCleanup = setInterval(() => {
@@ -47,7 +46,7 @@ function resolveLookupMode() {
 function buildUserFromToken(decoded) {
     if (!decoded?.id || !decoded?.role)
         return null;
-    if (!Object.values(client_1.AppRole).includes(decoded.role))
+    if (!(0, identity_access_1.isActorRole)(decoded.role))
         return null;
     return {
         id: decoded.id,
@@ -74,10 +73,6 @@ async function loadUserFromDb(userId) {
         return null;
     writeCachedUser(user);
     return user;
-}
-function getBearerToken(req) {
-    const header = req.headers.authorization;
-    return getBearerTokenFromHeader(header);
 }
 function getBearerTokenFromHeader(header) {
     if (!header)
@@ -124,24 +119,4 @@ async function resolveAuthenticatedUserFromAuthHeader(authorizationHeader) {
     if (!token)
         return null;
     return resolveUserFromToken(token);
-}
-function auth(requiredRoles = []) {
-    return async (req, res, next) => {
-        const token = getBearerToken(req);
-        if (!token)
-            return res.status(401).json({ error: "Invalid or missing token" });
-        try {
-            const user = await resolveUserFromToken(token);
-            if (!user)
-                return res.status(401).json({ error: "Unauthorized" });
-            req.user = user;
-            if (requiredRoles.length > 0 && !requiredRoles.includes(user.role)) {
-                return res.status(403).json({ error: "Forbidden" });
-            }
-            next();
-        }
-        catch (e) {
-            return res.status(401).json({ error: "Unauthorized" });
-        }
-    };
 }

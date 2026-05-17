@@ -11,7 +11,7 @@ const crypto_1 = require("crypto");
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const socket_io_1 = require("socket.io");
 const prismaClient_1 = __importDefault(require("../../config/prismaClient"));
-const notificationService_1 = require("../../services/notifications/notificationService");
+const notificationService_1 = require("../../modules/notifications-core/application/notificationService");
 let io = null;
 function toAllowedOriginMatcher(origins) {
     const cleaned = origins

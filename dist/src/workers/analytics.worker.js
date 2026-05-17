@@ -7,14 +7,13 @@ exports.startAnalyticsWorker = startAnalyticsWorker;
 require("dotenv/config");
 const prismaClient_1 = __importDefault(require("../config/prismaClient"));
 const redis_1 = require("../config/redis");
-const analyticsEvents_1 = require("../features/manager/analyticsEvents");
-const analyticsV2_1 = require("../features/manager/analyticsV2");
-const analyticsV2Cache_1 = require("../features/manager/analyticsV2Cache");
-const analyticsReadModel_1 = require("../features/manager/analyticsReadModel");
-const analyticsV2Realtime_1 = require("../features/manager/analyticsV2Realtime");
+const analyticsEvents_1 = require("../modules/analytics-core/realtime/analyticsEvents");
+const analyticsV2_1 = require("../modules/analytics-core/application/analyticsV2");
+const analyticsReadModel_1 = require("../modules/analytics-core/infrastructure/analyticsReadModel");
+const analyticsV2Realtime_1 = require("../modules/analytics-core/realtime/analyticsV2Realtime");
 const opsMetrics_1 = require("../features/observability/opsMetrics");
-const supportCache_1 = require("../features/support/supportCache");
-const supportRealtime_1 = require("../features/support/supportRealtime");
+const supportCache_1 = require("../modules/support-core/infrastructure/supportCache");
+const supportRealtime_1 = require("../modules/support-core/realtime/supportRealtime");
 const GROUP_NAME = process.env.ANALYTICS_WORKER_GROUP || "cp_analytics_workers";
 const CONSUMER_NAME = process.env.ANALYTICS_WORKER_CONSUMER ||
     `${process.env.HOSTNAME || "analytics"}-${process.pid}`;
@@ -128,19 +127,8 @@ async function rebuildDirtySections() {
     const sections = Array.from(dirtySections);
     dirtySections.clear();
     try {
-        const shouldClearBeforeRebuild = process.env.ANALYTICS_WORKER_CLEAR_BEFORE_REBUILD !== "false";
-        if (shouldClearBeforeRebuild) {
-            for (const section of sections) {
-                await (0, analyticsV2Cache_1.invalidateNamespaceCaches)(section);
-                await (0, analyticsReadModel_1.clearAnalyticsReadModelBySection)(toReadModelSection(section));
-            }
-        }
-        else {
-            // Even in "soft" mode we must clear v3 read-model keys first;
-            // otherwise getAnalytics* may return stale cache-hit and skip rebuild.
-            for (const section of sections) {
-                await (0, analyticsReadModel_1.clearAnalyticsReadModelBySection)(toReadModelSection(section));
-            }
+        for (const section of sections) {
+            await (0, analyticsReadModel_1.clearAnalyticsReadModelBySection)(toReadModelSection(section));
         }
         const defaultRangeDays = Math.max(7, Math.min(180, Number(process.env.ANALYTICS_V3_DEFAULT_RANGE_DAYS || 30)));
         const defaultPageSize = Math.max(5, Math.min(200, Number(process.env.ANALYTICS_V3_DEFAULT_QUEUE_PAGE_SIZE || 20)));
@@ -163,11 +151,6 @@ async function rebuildDirtySections() {
                 queueHolderTypes: [],
                 scope,
             });
-        }
-        // Clear legacy v2 namespace cache after rebuild so request-path fallbacks
-        // cannot keep serving stale payloads.
-        for (const section of sections) {
-            await (0, analyticsV2Cache_1.invalidateNamespaceCaches)(section);
         }
         totalRebuilds += 1;
         (0, opsMetrics_1.recordAnalyticsWorkerRebuild)();

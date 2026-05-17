@@ -1,11 +1,10 @@
-import "express";
-import type { AppRole } from "@prisma/client";
+import type { ActorRole } from "../modules/identity-access";
 
 declare global {
   namespace Express {
     interface User {
       id: string;
-      role: AppRole;
+      role: ActorRole;
       customerEntityId?: string | null;
       email: string;
       name: string;

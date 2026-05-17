@@ -7,6 +7,7 @@ exports.hasPermission = hasPermission;
 exports.authorize = authorize;
 exports.buildOrderScopeWhere = buildOrderScopeWhere;
 exports.buildSupportScopeWhere = buildSupportScopeWhere;
+exports.buildCustomerEntityScopeWhere = buildCustomerEntityScopeWhere;
 const client_1 = require("@prisma/client");
 const prismaClient_1 = __importDefault(require("../../config/prismaClient"));
 const accessCache = new Map();
@@ -172,6 +173,22 @@ async function buildSupportScopeWhere(user) {
             clauses.push({
                 OR: [{ ownerOrgId: { in: orgIds } }, { assignedOrgId: { in: orgIds } }],
             });
+        }
+    }
+    return orWhere(clauses) ?? { id: "__no_access__" };
+}
+async function buildCustomerEntityScopeWhere(user) {
+    const resolved = await loadResolvedAccess(user);
+    if (!resolved.hasBindings) {
+        return { id: "__no_access__" };
+    }
+    const scopes = resolvedScopes(resolved, client_1.ScopeResource.customers);
+    if (scopes.includes(client_1.ScopeType.global))
+        return {};
+    const clauses = [];
+    for (const scope of scopes) {
+        if (scope === client_1.ScopeType.own && user.customerEntityId) {
+            clauses.push({ id: user.customerEntityId });
         }
     }
     return orWhere(clauses) ?? { id: "__no_access__" };

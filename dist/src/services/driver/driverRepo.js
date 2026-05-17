@@ -1,42 +1,17 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __exportStar = (this && this.__exportStar) || function(m, exports) {
+    for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports, p)) __createBinding(exports, m, p);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.listAllDrivers = void 0;
-const client_1 = require("@prisma/client");
-const prismaClient_1 = __importDefault(require("../../config/prismaClient"));
-const listAllDrivers = async () => {
-    const rows = await prismaClient_1.default.user.findMany({
-        where: { role: "driver" },
-        select: {
-            id: true,
-            name: true,
-            email: true,
-            role: true,
-            warehouseId: true,
-            driverType: true,
-            warehouseAccesses: {
-                select: {
-                    warehouseId: true,
-                },
-            },
-        },
-    });
-    return rows.map((driver) => {
-        const warehouseIds = Array.from(new Set([
-            driver.warehouseId ?? null,
-            ...driver.warehouseAccesses.map((entry) => entry.warehouseId),
-        ].filter((value) => Boolean(value))));
-        return {
-            id: driver.id,
-            name: driver.name,
-            email: driver.email,
-            role: driver.role,
-            warehouseId: driver.warehouseId ?? null,
-            warehouseIds,
-            driverType: driver.driverType === client_1.DriverType.linehaul ? "linehaul" : "local",
-        };
-    });
-};
-exports.listAllDrivers = listAllDrivers;
+__exportStar(require("../../modules/driver-core/application/driverRepo"), exports);

@@ -1,17 +1,21 @@
 import { randomUUID } from "crypto";
 import type { Server as HttpServer } from "http";
 import jwt from "jsonwebtoken";
-import { AppRole, NotificationType } from "@prisma/client";
+import { NotificationType } from "@prisma/client";
 import { Server, Socket } from "socket.io";
 
 import prisma from "../../config/prismaClient";
-import { countUnreadUserNotifications, createUserNotification } from "../../services/notifications/notificationService";
+import type { ActorRole } from "../../modules/identity-access";
+import {
+  countUnreadUserNotifications,
+  createUserNotification,
+} from "../../modules/notifications-core/application/notificationService";
 
 type AuthSocket = Socket & {
   data: {
     user?: {
       id: string;
-      role: AppRole;
+      role: ActorRole;
       warehouseId?: string | null;
     };
   };

@@ -10,7 +10,7 @@ exports.listCashQueueForActor = listCashQueueForActor;
 exports.getCashQueueSummaryForActor = getCashQueueSummaryForActor;
 const client_1 = require("@prisma/client");
 const prismaClient_1 = __importDefault(require("../../../config/prismaClient"));
-const analyticsOutbox_1 = require("../../../features/manager/analyticsOutbox");
+const analyticsOutbox_1 = require("../../analytics-core/infrastructure/analyticsOutbox");
 const repo_1 = require("../repo");
 const shared_1 = require("../shared");
 async function loadOrderContext(tx, orderId) {

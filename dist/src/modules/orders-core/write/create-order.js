@@ -5,7 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.createOrderForActor = createOrderForActor;
 const prismaClient_1 = __importDefault(require("../../../config/prismaClient"));
-const invoiceRepo_1 = require("../../../services/invoice/invoiceRepo");
+const invoiceRepo_1 = require("../../invoice-core/application/invoiceRepo");
 const repo_1 = require("../repo");
 const orderCreate_mapper_1 = require("../domain/orderCreate.mapper");
 const shared_1 = require("../shared");

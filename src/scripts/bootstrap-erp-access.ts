@@ -1,8 +1,13 @@
-import { AppRole, ScopeResource, ScopeType } from "@prisma/client";
+import "dotenv/config";
+import { ScopeResource, ScopeType } from "@prisma/client";
 import prisma from "../config/prismaClient";
+import { type ActorRole, ROLE_CUSTOMER, ROLE_DRIVER, ROLE_MANAGER, ROLE_WAREHOUSE } from "../modules/identity-access";
 
 const ROOT_ORG_CODE = "CP_ROOT";
 const MANAGER_ROLE_CODE = "manager_global";
+const DRIVER_ROLE_CODE = "driver_ops";
+const WAREHOUSE_ROLE_CODE = "warehouse_ops";
+const CUSTOMER_ROLE_CODE = "customer_portal";
 
 type PermissionSeed = {
   code: string;
@@ -60,6 +65,72 @@ const permissionSeeds: PermissionSeed[] = [
     action: "write",
     description: "Create/update pricing regions, SLA rules/policy, zone matrix, and tariffs",
   },
+  {
+    code: "users.manage",
+    resource: "users",
+    action: "manage",
+    description: "Create/list/delete users and assign operational access",
+  },
+  {
+    code: "drivers.read",
+    resource: "drivers",
+    action: "read",
+    description: "Read driver roster and operational state",
+  },
+  {
+    code: "drivers.manage",
+    resource: "drivers",
+    action: "manage",
+    description: "Update driver profile, warehouse access, and operational settings",
+  },
+  {
+    code: "drivers.telemetry",
+    resource: "drivers",
+    action: "telemetry",
+    description: "Publish location/presence and read driver presence data",
+  },
+  {
+    code: "customers.read",
+    resource: "customers",
+    action: "read",
+    description: "Read customer entities in scoped context",
+  },
+  {
+    code: "customers.write",
+    resource: "customers",
+    action: "write",
+    description: "Create/update customer entities in scoped context",
+  },
+  {
+    code: "payments.providers.read",
+    resource: "payments",
+    action: "providers.read",
+    description: "Read configured payment providers in scoped context",
+  },
+  {
+    code: "payments.providers.manage",
+    resource: "payments",
+    action: "providers.manage",
+    description: "Create/update provider credentials and payment settings",
+  },
+  {
+    code: "payments.intents.create",
+    resource: "payments",
+    action: "intents.create",
+    description: "Create payment intents for scoped orders",
+  },
+  {
+    code: "payments.intents.read",
+    resource: "payments",
+    action: "intents.read",
+    description: "Read payment intents and attempts in scope",
+  },
+  {
+    code: "payments.refunds.create",
+    resource: "payments",
+    action: "refunds.create",
+    description: "Create payment refunds for scoped intents",
+  },
 ];
 
 async function ensureRootOrganization() {
@@ -106,24 +177,29 @@ async function ensurePermissions() {
   return permissions;
 }
 
-async function ensureManagerRole(permissionIds: string[]) {
+async function ensureSystemRole(args: {
+  code: string;
+  name: string;
+  permissionIds: string[];
+  scopePolicies: Array<{ resource: ScopeResource; scopeType: ScopeType }>;
+}) {
   let role = await prisma.accessRole.findFirst({
-    where: { code: MANAGER_ROLE_CODE, isSystem: true },
+    where: { code: args.code, isSystem: true },
     select: { id: true },
   });
 
   if (!role) {
     role = await prisma.accessRole.create({
       data: {
-        code: MANAGER_ROLE_CODE,
-        name: "Manager (Global)",
+        code: args.code,
+        name: args.name,
         isSystem: true,
       },
       select: { id: true },
     });
   }
 
-  for (const permissionId of permissionIds) {
+  for (const permissionId of args.permissionIds) {
     await prisma.rolePermission.upsert({
       where: {
         roleId_permissionId: {
@@ -139,86 +215,174 @@ async function ensureManagerRole(permissionIds: string[]) {
     });
   }
 
-  await prisma.dataScopePolicy.upsert({
-    where: {
-      roleId_resource: {
-        roleId: role.id,
-        resource: ScopeResource.orders,
+  for (const policy of args.scopePolicies) {
+    await prisma.dataScopePolicy.upsert({
+      where: {
+        roleId_resource: {
+          roleId: role.id,
+          resource: policy.resource,
+        },
       },
-    },
-    create: {
-      roleId: role.id,
-      resource: ScopeResource.orders,
-      scopeType: ScopeType.global,
-    },
-    update: {
-      scopeType: ScopeType.global,
-    },
-  });
-
-  await prisma.dataScopePolicy.upsert({
-    where: {
-      roleId_resource: {
+      create: {
         roleId: role.id,
-        resource: ScopeResource.support,
+        resource: policy.resource,
+        scopeType: policy.scopeType,
       },
-    },
-    create: {
-      roleId: role.id,
-      resource: ScopeResource.support,
-      scopeType: ScopeType.global,
-    },
-    update: {
-      scopeType: ScopeType.global,
-    },
-  });
+      update: {
+        scopeType: policy.scopeType,
+      },
+    });
+  }
 
   return role.id;
 }
 
-async function bindExistingManagers(roleId: string, rootOrgId: string) {
-  const managers = await prisma.user.findMany({
-    where: { role: AppRole.manager },
+async function bindExistingUsersByRole(args: {
+  appRole: ActorRole;
+  roleId: string;
+  rootOrgId: string;
+}) {
+  const users = await prisma.user.findMany({
+    where: { role: args.appRole },
     select: { id: true, homeOrgId: true },
   });
 
-  for (const manager of managers) {
-    if (!manager.homeOrgId) {
+  for (const user of users) {
+    if (!user.homeOrgId) {
       await prisma.user.update({
-        where: { id: manager.id },
-        data: { homeOrgId: rootOrgId },
+        where: { id: user.id },
+        data: { homeOrgId: args.rootOrgId },
       });
     }
 
     await prisma.userRoleBinding.upsert({
       where: {
         userId_roleId_orgId: {
-          userId: manager.id,
-          roleId,
-          orgId: rootOrgId,
+          userId: user.id,
+          roleId: args.roleId,
+          orgId: args.rootOrgId,
         },
       },
       create: {
-        userId: manager.id,
-        roleId,
-        orgId: rootOrgId,
+        userId: user.id,
+        roleId: args.roleId,
+        orgId: args.rootOrgId,
       },
       update: {},
     });
   }
 
-  return managers.length;
+  return users.length;
 }
 
 async function main() {
   console.log("[erp-bootstrap] starting");
   const rootOrgId = await ensureRootOrganization();
   const permissions = await ensurePermissions();
-  const managerRoleId = await ensureManagerRole(permissions.map((item) => item.id));
-  const boundCount = await bindExistingManagers(managerRoleId, rootOrgId);
+  const permissionByCode = new Map(permissions.map((item) => [item.code, item.id] as const));
+
+  const mapPermissionIds = (codes: string[]) =>
+    codes
+      .map((code) => permissionByCode.get(code))
+      .filter((value): value is string => Boolean(value));
+
+  const managerRoleId = await ensureSystemRole({
+    code: MANAGER_ROLE_CODE,
+    name: "Manager (Global)",
+    permissionIds: mapPermissionIds([
+      "orders.read",
+      "orders.write",
+      "orders.export",
+      "support.read",
+      "support.create",
+      "support.update",
+      "pricing.read",
+      "pricing.write",
+      "users.manage",
+      "drivers.read",
+      "drivers.manage",
+      "drivers.telemetry",
+      "customers.read",
+      "customers.write",
+      "payments.providers.read",
+      "payments.providers.manage",
+      "payments.intents.create",
+      "payments.intents.read",
+      "payments.refunds.create",
+    ]),
+    scopePolicies: [
+      { resource: ScopeResource.orders, scopeType: ScopeType.global },
+      { resource: ScopeResource.support, scopeType: ScopeType.global },
+      { resource: ScopeResource.drivers, scopeType: ScopeType.global },
+      { resource: ScopeResource.customers, scopeType: ScopeType.global },
+      { resource: ScopeResource.payments, scopeType: ScopeType.global },
+    ],
+  });
+
+  const driverRoleId = await ensureSystemRole({
+    code: DRIVER_ROLE_CODE,
+    name: "Driver (Operations)",
+    permissionIds: mapPermissionIds([
+      "orders.read",
+      "orders.write",
+      "support.read",
+      "support.create",
+      "support.update",
+      "drivers.telemetry",
+    ]),
+    scopePolicies: [
+      { resource: ScopeResource.orders, scopeType: ScopeType.assigned },
+      { resource: ScopeResource.support, scopeType: ScopeType.own },
+      { resource: ScopeResource.drivers, scopeType: ScopeType.own },
+    ],
+  });
+
+  const warehouseRoleId = await ensureSystemRole({
+    code: WAREHOUSE_ROLE_CODE,
+    name: "Warehouse (Operations)",
+    permissionIds: mapPermissionIds([
+      "orders.read",
+      "orders.write",
+      "support.read",
+      "support.create",
+      "support.update",
+      "drivers.read",
+    ]),
+    scopePolicies: [
+      { resource: ScopeResource.orders, scopeType: ScopeType.organization },
+      { resource: ScopeResource.support, scopeType: ScopeType.organization },
+      { resource: ScopeResource.drivers, scopeType: ScopeType.organization },
+    ],
+  });
+
+  const customerRoleId = await ensureSystemRole({
+    code: CUSTOMER_ROLE_CODE,
+    name: "Customer (Portal)",
+    permissionIds: mapPermissionIds([
+      "orders.read",
+      "orders.write",
+      "support.read",
+      "support.create",
+      "customers.read",
+      "payments.intents.read",
+    ]),
+    scopePolicies: [
+      { resource: ScopeResource.orders, scopeType: ScopeType.own },
+      { resource: ScopeResource.support, scopeType: ScopeType.own },
+      { resource: ScopeResource.customers, scopeType: ScopeType.own },
+      { resource: ScopeResource.payments, scopeType: ScopeType.own },
+    ],
+  });
+
+  const [boundManagers, boundDrivers, boundWarehouses, boundCustomers] = await Promise.all([
+    bindExistingUsersByRole({ appRole: ROLE_MANAGER, roleId: managerRoleId, rootOrgId }),
+    bindExistingUsersByRole({ appRole: ROLE_DRIVER, roleId: driverRoleId, rootOrgId }),
+    bindExistingUsersByRole({ appRole: ROLE_WAREHOUSE, roleId: warehouseRoleId, rootOrgId }),
+    bindExistingUsersByRole({ appRole: ROLE_CUSTOMER, roleId: customerRoleId, rootOrgId }),
+  ]);
 
   console.log(
-    `[erp-bootstrap] done rootOrg=${rootOrgId} managerRole=${managerRoleId} managersBound=${boundCount}`,
+    `[erp-bootstrap] done rootOrg=${rootOrgId} managerRole=${managerRoleId} driverRole=${driverRoleId} warehouseRole=${warehouseRoleId} customerRole=${customerRoleId} managersBound=${boundManagers} driversBound=${boundDrivers} warehousesBound=${boundWarehouses} customersBound=${boundCustomers}`,
   );
 }
 
