@@ -1,7 +1,7 @@
 import "dotenv/config";
 import Fastify from "fastify";
 import prisma from "./config/prismaClient";
-import { initRealtimeHub } from "./features/realtime/realtimeHub";
+import { initRealtimeHub } from "./modules/realtime-core/realtimeHub";
 import { startNotificationRetentionWorker } from "./modules/notifications-core/application/notificationRetention";
 import { ensureAnalyticsInvalidationConsumer } from "./modules/analytics-core/realtime/analyticsV2Realtime";
 import { startAnalyticsWorker } from "./workers/analytics.worker";

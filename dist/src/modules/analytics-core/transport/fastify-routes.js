@@ -4,7 +4,7 @@ const analyticsV2_1 = require("../application/analyticsV2");
 const analyticsV2Realtime_1 = require("../realtime/analyticsV2Realtime");
 const analyticsEvents_1 = require("../realtime/analyticsEvents");
 const authFastify_1 = require("../../../middleware/authFastify");
-const opsMetrics_1 = require("../../../features/observability/opsMetrics");
+const opsMetrics_1 = require("../../../modules/observability-core/application/opsMetrics");
 function asStringArray(value) {
     if (!value)
         return [];

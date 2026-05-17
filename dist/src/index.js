@@ -6,7 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
 const fastify_1 = __importDefault(require("fastify"));
 const prismaClient_1 = __importDefault(require("./config/prismaClient"));
-const realtimeHub_1 = require("./features/realtime/realtimeHub");
+const realtimeHub_1 = require("./modules/realtime-core/realtimeHub");
 const notificationRetention_1 = require("./modules/notifications-core/application/notificationRetention");
 const analyticsV2Realtime_1 = require("./modules/analytics-core/realtime/analyticsV2Realtime");
 const analytics_worker_1 = require("./workers/analytics.worker");

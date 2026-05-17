@@ -17,7 +17,7 @@ import {
   recordAnalyticsRequest,
   recordSseConnected,
   recordSseDisconnected,
-} from "../../../features/observability/opsMetrics";
+} from "../../../modules/observability-core/application/opsMetrics";
 
 function asStringArray(value: unknown): string[] {
   if (!value) return [];

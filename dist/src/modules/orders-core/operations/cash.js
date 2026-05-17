@@ -9,7 +9,7 @@ exports.collectCashBulkForActor = collectCashBulkForActor;
 exports.handoffCashBulkForActor = handoffCashBulkForActor;
 exports.settleCashBulkForActor = settleCashBulkForActor;
 const client_1 = require("@prisma/client");
-const realtimeHub_1 = require("../../../features/realtime/realtimeHub");
+const realtimeHub_1 = require("../../../modules/realtime-core/realtimeHub");
 const cash_1 = require("../cash");
 const shared_1 = require("../shared");
 function parseKind(value) {

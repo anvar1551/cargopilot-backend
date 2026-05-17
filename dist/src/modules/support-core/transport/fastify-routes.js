@@ -5,7 +5,7 @@ const authFastify_1 = require("../../../middleware/authFastify");
 const identity_access_1 = require("../../identity-access");
 const supportService_1 = require("../application/supportService");
 const supportRealtime_1 = require("../realtime/supportRealtime");
-const opsMetrics_1 = require("../../../features/observability/opsMetrics");
+const opsMetrics_1 = require("../../../modules/observability-core/application/opsMetrics");
 function actorFromRequest(request) {
     return {
         id: request.user?.id || "",

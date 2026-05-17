@@ -2,7 +2,7 @@ import { OrderStatus, ReasonCode } from "@prisma/client";
 import {
   emitDriverNotification,
   emitDriverOrderUpdate,
-} from "../../../features/realtime/realtimeHub";
+} from "../../../modules/realtime-core/realtimeHub";
 import {
   assignDriversBulk as assignDriversBulkDomain,
   updateDriverOrderStatus,

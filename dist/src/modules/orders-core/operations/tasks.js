@@ -4,7 +4,7 @@ exports.assignDriversBulkForActor = void 0;
 exports.assignTasksBulkForActor = assignTasksBulkForActor;
 exports.updateStatusBulkForActor = updateStatusBulkForActor;
 exports.updateDriverStatusForActor = updateDriverStatusForActor;
-const realtimeHub_1 = require("../../../features/realtime/realtimeHub");
+const realtimeHub_1 = require("../../../modules/realtime-core/realtimeHub");
 const order_status_1 = require("./order-status");
 const shared_1 = require("../shared");
 function humanizeStatus(status) {

@@ -1,7 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const client_1 = require("@prisma/client");
-const realtimeHub_1 = require("../../../features/realtime/realtimeHub");
+const realtimeHub_1 = require("../../../modules/realtime-core/realtimeHub");
 const authFastify_1 = require("../../../middleware/authFastify");
 const identity_access_1 = require("../../identity-access");
 const shared_1 = require("../../orders-core/shared");

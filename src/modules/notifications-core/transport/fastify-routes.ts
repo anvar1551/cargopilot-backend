@@ -1,7 +1,7 @@
 import { NotificationType } from "@prisma/client";
 import { FastifyPluginAsync } from "fastify";
 
-import { emitDriverUnreadCount } from "../../../features/realtime/realtimeHub";
+import { emitDriverUnreadCount } from "../../../modules/realtime-core/realtimeHub";
 import { fastifyAuth } from "../../../middleware/authFastify";
 import { hasPermission } from "../../identity-access";
 import { requireOrderActor } from "../../orders-core/shared";
@@ -110,4 +110,3 @@ const notificationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 };
 
 export default notificationsFastifyRoutes;
-

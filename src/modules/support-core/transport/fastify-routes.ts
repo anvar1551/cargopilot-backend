@@ -25,7 +25,7 @@ import {
 import {
   recordSseConnected,
   recordSseDisconnected,
-} from "../../../features/observability/opsMetrics";
+} from "../../../modules/observability-core/application/opsMetrics";
 
 type EnumLike = Record<string, string>;
 

@@ -21,7 +21,7 @@ import {
   recordAnalyticsWorkerConsumed,
   recordAnalyticsWorkerError,
   recordAnalyticsWorkerRebuild,
-} from "../features/observability/opsMetrics";
+} from "../modules/observability-core/application/opsMetrics";
 import { invalidateSupportCache } from "../modules/support-core/infrastructure/supportCache";
 import {
   publishSupportRefresh,

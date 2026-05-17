@@ -2,7 +2,7 @@ import { CashCollectionKind, CashCollectionStatus } from "@prisma/client";
 import {
   emitDriverNotification,
   emitDriverOrderUpdate,
-} from "../../../features/realtime/realtimeHub";
+} from "../../../modules/realtime-core/realtimeHub";
 import {
   collectOrderCash,
   getCashQueueSummaryForActor,

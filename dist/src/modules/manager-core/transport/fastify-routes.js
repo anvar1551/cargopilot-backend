@@ -1,7 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const authFastify_1 = require("../../../middleware/authFastify");
-const opsMetrics_1 = require("../../../features/observability/opsMetrics");
+const opsMetrics_1 = require("../../../modules/observability-core/application/opsMetrics");
 const managerController_1 = require("../application/managerController");
 const managerFastifyRoutes = async (fastify) => {
     fastify.get("/overview", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "orders.read" }) }, async (request, reply) => {

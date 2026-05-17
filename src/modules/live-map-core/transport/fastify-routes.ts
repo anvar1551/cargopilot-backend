@@ -12,7 +12,10 @@ import {
 import {
   getLiveMapSnapshot,
 } from "../application/liveMapService";
-import { recordSseConnected, recordSseDisconnected } from "../../../features/observability/opsMetrics";
+import {
+  recordSseConnected,
+  recordSseDisconnected,
+} from "../../../modules/observability-core/application/opsMetrics";
 import type {
   LiveMapViewport,
   ManagerLiveMapSnapshot,

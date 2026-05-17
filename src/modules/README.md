@@ -4,8 +4,7 @@ This directory is the target structure for CargoPilot ERP modules.
 
 Rules:
 - New cross-cutting business logic goes to `src/modules/<module-name>/`.
-- `src/features/*` may keep temporary compatibility wrappers during migration.
-- Controllers/services should import module APIs from `src/modules/*`, not from `src/features/*`.
+- Runtime code should import module APIs from `src/modules/*` only.
 - Each module should expose a small public API through `index.ts`.
 
 Current module foundation:

@@ -9,7 +9,7 @@ exports.runOrderLabelQueueTick = runOrderLabelQueueTick;
 const path_1 = __importDefault(require("path"));
 const client_1 = require("@prisma/client");
 const prismaClient_1 = __importDefault(require("../../../config/prismaClient"));
-const labelService_1 = require("../../../features/label/labelService");
+const labelService_1 = require("../../../modules/labels-core/application/labelService");
 const uploadLabel_1 = require("../../../utils/uploadLabel");
 const shared_1 = require("../shared");
 function parsePositiveInt(value, fallback) {

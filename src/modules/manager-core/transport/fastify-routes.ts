@@ -1,6 +1,6 @@
 import { FastifyPluginAsync } from "fastify";
 import { fastifyAuth } from "../../../middleware/authFastify";
-import { getOpsMetricsSnapshot } from "../../../features/observability/opsMetrics";
+import { getOpsMetricsSnapshot } from "../../../modules/observability-core/application/opsMetrics";
 import { getManagerOverviewPayload, listDriversPayload } from "../application/managerController";
 
 const managerFastifyRoutes: FastifyPluginAsync = async (fastify) => {

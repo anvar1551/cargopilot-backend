@@ -1,7 +1,7 @@
 import path from "path";
 import { OrderLabelJobStatus } from "@prisma/client";
 import prisma from "../../../config/prismaClient";
-import { generateLabelPDF } from "../../../features/label/labelService";
+import { generateLabelPDF } from "../../../modules/labels-core/application/labelService";
 import { uploadLabel } from "../../../utils/uploadLabel";
 import { orderError } from "../shared";
 

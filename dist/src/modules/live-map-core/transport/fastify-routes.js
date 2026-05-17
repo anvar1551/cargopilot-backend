@@ -6,7 +6,7 @@ const authFastify_1 = require("../../../middleware/authFastify");
 const identity_access_1 = require("../../identity-access");
 const liveMapStore_1 = require("../infrastructure/liveMapStore");
 const liveMapService_1 = require("../application/liveMapService");
-const opsMetrics_1 = require("../../../features/observability/opsMetrics");
+const opsMetrics_1 = require("../../../modules/observability-core/application/opsMetrics");
 const snapshotCache = new Map();
 const snapshotBuilds = new Map();
 const snapshotGc = setInterval(() => {
