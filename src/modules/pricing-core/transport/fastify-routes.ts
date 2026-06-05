@@ -1,18 +1,20 @@
 import { FastifyPluginAsync } from "fastify";
 import { ZodError } from "zod";
-import { fastifyAuth } from "../../../middleware/authFastify";
+import { fastifyAuth } from "../../../modules/identity-access/transport/fastify-auth";
 import {
   backfillOrderSlaSnapshots,
   createDeliverySlaRule,
   createPricingRegion,
   createTariffPlan,
   getOperationalSlaPolicy,
+  getPricingCatalog,
   getTariffPlanById,
   listDeliverySlaRules,
   listPricingRegions,
   listTariffPlans,
   listZoneMatrix,
   quoteTariff,
+  quoteTariffOptions,
   updateDeliverySlaRule,
   updateOperationalSlaPolicy,
   updatePricingRegion,
@@ -31,6 +33,7 @@ import {
   listZoneMatrixQuerySchema,
   pricingRegionIdParamSchema,
   quoteTariffSchema,
+  quoteTariffOptionsSchema,
   tariffPlanIdParamSchema,
   updateDeliverySlaRuleSchema,
   updateOperationalSlaPolicySchema,
@@ -54,6 +57,19 @@ function sendError(reply: any, error: unknown, fallback: string) {
 }
 
 const pricingFastifyRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.get(
+    "/catalog",
+    { preHandler: fastifyAuth({ permission: "pricing.read" }) },
+    async (_request, reply) => {
+      try {
+        const catalog = await getPricingCatalog();
+        return reply.send(catalog);
+      } catch (error) {
+        return sendError(reply, error, "Failed to fetch pricing catalog");
+      }
+    },
+  );
+
   fastify.get(
     "/regions",
     { preHandler: fastifyAuth({ permission: "pricing.read" }) },
@@ -281,6 +297,24 @@ const pricingFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.send(quote);
       } catch (error) {
         return sendError(reply, error, "Failed to quote tariff plan");
+      }
+    },
+  );
+
+  fastify.post(
+    "/quote-options",
+    { preHandler: fastifyAuth({ permission: "pricing.read" }) },
+    async (request, reply) => {
+      try {
+        const parsed = quoteTariffOptionsSchema.parse(request.body);
+        const input = {
+          ...parsed,
+          customerEntityId: parsed.customerEntityId ?? request.user?.customerEntityId ?? null,
+        };
+        const options = await quoteTariffOptions(input);
+        return reply.send(options);
+      } catch (error) {
+        return sendError(reply, error, "Failed to fetch quote options");
       }
     },
   );

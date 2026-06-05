@@ -1,2 +1,2 @@
 export * from "./access-control";
-export * from "./actor-role";
+export * from "./types";

@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "crypto";
 import "dotenv/config";
+import Stripe from "stripe";
 
-type Provider = "CLICK" | "PAYME" | "UZUM";
+type Provider = "CLICK" | "PAYME" | "UZUM" | "STRIPE";
 type IntentResponse = {
   paymentIntentId: string;
   status: string;
@@ -32,6 +33,8 @@ const PAYME_SECRET = process.env.SMOKE_PAYME_SECRET?.trim() || "";
 const UZUM_SECRET = process.env.SMOKE_UZUM_SECRET?.trim() || "";
 const UZUM_SERVICE_ID = process.env.SMOKE_UZUM_SERVICE_ID?.trim() || "";
 const UZUM_AUTH_USER = process.env.SMOKE_UZUM_AUTH_USER?.trim() || "";
+
+const STRIPE_WEBHOOK_SECRET = process.env.SMOKE_STRIPE_WEBHOOK_SECRET?.trim() || "";
 
 function requireBaseEnv() {
   const missing: string[] = [];
@@ -255,6 +258,58 @@ async function runUzum() {
   }
 }
 
+async function runStripe() {
+  if (!STRIPE_WEBHOOK_SECRET) {
+    console.log("[STRIPE] skipped: SMOKE_STRIPE_WEBHOOK_SECRET missing");
+    return;
+  }
+
+  const intent = await createIntent("STRIPE");
+  const eventPayload = {
+    id: `evt_smoke_${Date.now()}`,
+    object: "event",
+    type: "checkout.session.completed",
+    livemode: false,
+    data: {
+      object: {
+        id: `cs_test_smoke_${Date.now()}`,
+        object: "checkout.session",
+        payment_intent: `pi_smoke_${Date.now()}`,
+        payment_status: "paid",
+        metadata: {
+          paymentIntentId: intent.paymentIntentId,
+          orderId: ORDER_ID,
+          companyId: COMPANY_ID,
+        },
+      },
+    },
+  };
+  const payload = JSON.stringify(eventPayload);
+  const signature = Stripe.webhooks.generateTestHeaderString({
+    payload,
+    secret: STRIPE_WEBHOOK_SECRET,
+  });
+
+  const callback = await api<Record<string, unknown>>("/payments/stripe/callback", {
+    method: "POST",
+    auth: false,
+    headers: {
+      "Stripe-Signature": signature,
+      "Content-Type": "application/json",
+    },
+    body: payload,
+  });
+
+  const refreshed = await fetchIntent(intent.paymentIntentId);
+  const ok =
+    callback.status < 300 &&
+    (refreshed.statusCanonical === "succeeded" || refreshed.status === "SUCCEEDED");
+  console.log(`[STRIPE] ${ok ? "PASS" : "FAIL"} callback=${callback.status} status=${refreshed.status}`);
+  if (!ok) {
+    console.log("[STRIPE] callback body:", callback.data);
+  }
+}
+
 async function main() {
   requireBaseEnv();
   console.log("== CargoPilot payments local smoke ==");
@@ -266,6 +321,7 @@ async function main() {
   await runClick();
   await runPayme();
   await runUzum();
+  await runStripe();
 
   console.log("== done ==");
 }
@@ -274,4 +330,3 @@ main().catch((error) => {
   console.error("[payments-local-smoke] failed:", error instanceof Error ? error.message : error);
   process.exitCode = 1;
 });
-

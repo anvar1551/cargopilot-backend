@@ -1,20 +1,29 @@
-import type { ActorRole } from "../modules/identity-access";
+export {};
 
 declare global {
   namespace Express {
     interface User {
       id: string;
-      role: ActorRole;
-      customerEntityId?: string | null;
+      membershipId: string;
+      companyId: string;
+      branchId: string | null;
       email: string;
       name: string;
       warehouseId: string | null;
-    }
-
-    interface Request {
-      user?: User;
+      customerEntityId: string | null;
+      roleCodes: string[];
+      permissionCodes: string[];
+      scopes: Array<{
+        scopeType:
+          | "company"
+          | "branch"
+          | "warehouse"
+          | "agent"
+          | "pickup_point"
+          | "carrier"
+          | "client";
+        scopeRefId: string;
+      }>;
     }
   }
 }
-
-export {};

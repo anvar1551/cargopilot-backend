@@ -1,5 +1,7 @@
 import { createHash } from "crypto";
 import { getRedisClient, getRedisPrefix, withRedisTimeout } from "../../../config/redis";
+import { analyticsConfig } from "../config/analyticsConfig";
+import { analyticsLogger } from "../config/analyticsLogger";
 
 export type AnalyticsReadSection = "summary" | "trend" | "warnings" | "finance-queue";
 
@@ -31,10 +33,7 @@ const cleanupTimer = setInterval(() => {
 cleanupTimer.unref();
 
 function withJitter(ttlMs: number) {
-  const jitterPct = Math.min(
-    Math.max(Number(process.env.ANALYTICS_V3_CACHE_JITTER_PCT || 0.15), 0),
-    0.45,
-  );
+  const jitterPct = analyticsConfig.cache.jitterPct;
   const jitter = ttlMs * jitterPct;
   const min = ttlMs - jitter;
   const max = ttlMs + jitter;
@@ -104,9 +103,11 @@ async function getSectionVersion(section: AnalyticsReadSection) {
       value: fallback,
       expiresAt: Date.now() + SECTION_VERSION_TTL_MS,
     });
-    console.error(
-      `[analytics-v3] version fallback ${section}: ${err?.message || "unknown"}`,
-    );
+    analyticsLogger.throttledWarn(`read-model-version-fallback-${section}`, "read model version fallback", {
+      error: err,
+      meta: { section },
+      throttleMs: 60_000,
+    });
     return fallback;
   }
 }
@@ -119,10 +120,7 @@ async function resolveVersionedKey(baseKey: string): Promise<string> {
 }
 
 function writeMemory<T>(key: string, payload: T, ttlMs: number) {
-  const staleMs = Math.max(
-    ttlMs,
-    Number(process.env.ANALYTICS_V3_READ_MODEL_STALE_MS || 15 * 60_000),
-  );
+  const staleMs = Math.max(ttlMs, analyticsConfig.cache.staleMs);
   const now = Date.now();
   memoryStore.set(key, {
     payload,
@@ -187,10 +185,13 @@ export async function readAnalyticsReadModel<T>(baseKey: string): Promise<T | nu
       return memoryHit?.payload ?? null;
     }
     const parsed = JSON.parse(raw) as T;
-    writeMemory(key, parsed, Math.max(1_000, Number(process.env.ANALYTICS_V3_MEMORY_TTL_MS || 30_000)));
+    writeMemory(key, parsed, analyticsConfig.cache.memoryTtlMs);
     return parsed;
   } catch (err: any) {
-    console.error(`[analytics-v3] read model read failed: ${err?.message || "unknown"}`);
+    analyticsLogger.throttledWarn("read-model-read-failed", "read model read failed", {
+      error: err,
+      throttleMs: 60_000,
+    });
     return memoryHit?.payload ?? null;
   }
 }
@@ -213,10 +214,13 @@ export async function writeAnalyticsReadModel<T>(args: {
         JSON.stringify(args.payload),
         "EX",
         Math.max(1, Math.floor(ttlMs / 1000)),
-      ),
+        ),
     );
   } catch (err: any) {
-    console.error(`[analytics-v3] read model write failed: ${err?.message || "unknown"}`);
+    analyticsLogger.throttledWarn("read-model-write-failed", "read model write failed", {
+      error: err,
+      throttleMs: 60_000,
+    });
   }
 }
 
@@ -280,7 +284,7 @@ export async function readThroughAnalyticsProjection<T>(args: {
 
     const waitMaxMs = Math.min(
       lockMs,
-      Math.max(100, Number(process.env.ANALYTICS_V3_LOCK_WAIT_MS || 800)),
+      analyticsConfig.cache.lockWaitMs,
     );
     const started = Date.now();
     while (Date.now() - started < waitMaxMs) {
@@ -295,7 +299,10 @@ export async function readThroughAnalyticsProjection<T>(args: {
     await writeAnalyticsReadModel({ key: args.key, payload, ttlMs: args.ttlMs });
     return { payload, cacheHit: false };
   } catch (err: any) {
-    console.error(`[analytics-v3] read-through fallback: ${err?.message || "unknown"}`);
+    analyticsLogger.throttledWarn("read-through-fallback", "read-through fallback triggered", {
+      error: err,
+      throttleMs: 60_000,
+    });
     const payload = await args.buildFromDb();
     await writeAnalyticsReadModel({ key: args.key, payload, ttlMs: args.ttlMs });
     return { payload, cacheHit: false };
@@ -327,6 +334,10 @@ export async function clearAnalyticsReadModelBySection(section: AnalyticsReadSec
       expiresAt: Date.now() + SECTION_VERSION_TTL_MS,
     });
   } catch (err: any) {
-    console.error(`[analytics-v3] clear section failed: ${err?.message || "unknown"}`);
+    analyticsLogger.throttledWarn(`read-model-clear-failed-${section}`, "read model section clear failed", {
+      error: err,
+      meta: { section },
+      throttleMs: 60_000,
+    });
   }
 }

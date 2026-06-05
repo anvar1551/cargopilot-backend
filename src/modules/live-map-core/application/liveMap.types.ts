@@ -1,4 +1,3 @@
-import type { ActorRole } from "../../identity-access";
 
 export type LiveMapDriverStatus = "online" | "idle" | "stale" | "offline";
 
@@ -100,8 +99,10 @@ export type LiveMapEvent = (
 ) & { id?: string };
 
 export type LiveMapActor = {
-  role: ActorRole;
+  userId: string;
   warehouseId: string | null;
+  roleCodes: string[];
+  permissionCodes: string[];
 };
 
 export type LiveMapViewport = {

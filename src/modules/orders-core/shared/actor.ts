@@ -1,9 +1,24 @@
 export type OrderActor = {
   id: string;
-  role?: string | null;
-  userRole?: string | null;
+  membershipId?: string | null;
+  companyId?: string | null;
+  branchId?: string | null;
+  roleCodes?: string[];
+  permissionCodes?: string[];
+  scopes?: Array<{
+    scopeType:
+      | "company"
+      | "branch"
+      | "warehouse"
+      | "agent"
+      | "pickup_point"
+      | "carrier"
+      | "client";
+    scopeRefId: string;
+  }>;
   tenantScope?: string | null;
   warehouseId?: string | null;
+  customerEntityId?: string | null;
 };
 
 function parsePositiveInt(value: string | undefined, fallback: number) {
@@ -21,9 +36,27 @@ export const ORDER_BULK_MAX_IDS = parsePositiveInt(
 type AuthLikeUser =
   | {
       id?: string | null;
-      role?: string | null;
+      membershipId?: string | null;
+      companyId?: string | null;
+      branchId?: string | null;
+      roleCodes?: string[] | null;
+      permissionCodes?: string[] | null;
+      scopes?:
+        | Array<{
+            scopeType:
+              | "company"
+              | "branch"
+              | "warehouse"
+              | "agent"
+              | "pickup_point"
+              | "carrier"
+              | "client";
+            scopeRefId: string;
+          }>
+        | null;
       tenantScope?: string | null;
       warehouseId?: string | null;
+      customerEntityId?: string | null;
     }
   | null
   | undefined;
@@ -44,10 +77,15 @@ export function toOrderActor(user: AuthLikeUser): OrderActor | null {
   if (!user?.id) return null;
   return {
     id: user.id,
-    role: typeof user.role === "string" ? user.role : null,
-    userRole: typeof user.role === "string" ? user.role : null,
+    membershipId: user.membershipId ?? null,
+    companyId: user.companyId ?? null,
+    branchId: user.branchId ?? null,
+    roleCodes: Array.isArray(user.roleCodes) ? user.roleCodes : [],
+    permissionCodes: Array.isArray(user.permissionCodes) ? user.permissionCodes : [],
+    scopes: Array.isArray(user.scopes) ? user.scopes : [],
     tenantScope: typeof user.tenantScope === "string" ? user.tenantScope : null,
     warehouseId: user.warehouseId ?? null,
+    customerEntityId: user.customerEntityId ?? null,
   };
 }
 

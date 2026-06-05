@@ -3,6 +3,8 @@ import { createHash } from "crypto";
 import prisma from "../../../config/prismaClient";
 import { getRedisClient, getRedisPrefix, withRedisTimeout } from "../../../config/redis";
 import { getAnalyticsSummaryV2 } from "../../analytics-core/application/analyticsV2";
+import { analyticsConfig } from "../../analytics-core/config/analyticsConfig";
+import { analyticsLogger } from "../../analytics-core/config/analyticsLogger";
 import { subscribeAnalyticsInvalidation } from "../../analytics-core/realtime/analyticsV2Realtime";
 
 export type ManagerOverviewPayload = {
@@ -29,9 +31,14 @@ export type DriverListPayload = Array<{
 
 type ManagerActor = {
   id?: string | null;
-  role?: string | null;
+  roleCodes?: string[];
+  permissionCodes?: string[];
   warehouseId?: string | null;
 };
+
+function hasPermission(actor: ManagerActor, permission: string) {
+  return Array.isArray(actor.permissionCodes) && actor.permissionCodes.includes(permission);
+}
 
 const overviewCache = new Map<
   string,
@@ -76,7 +83,11 @@ function clearManagerOverviewCache() {
         : undefined,
     )
     .catch((err: any) => {
-      console.error(`[overview-cache] redis clear failed: ${err?.message || "unknown"}`);
+      analyticsLogger.throttledWarn(
+        "manager-overview-clear-redis-failed",
+        "manager overview redis clear failed",
+        { error: err, throttleMs: 60_000 },
+      );
     });
 }
 
@@ -102,12 +113,9 @@ function writeDriversMemory(key: string, payload: DriverListPayload, ttlMs: numb
 
 async function buildManagerOverviewPayload(actor: ManagerActor): Promise<ManagerOverviewPayload> {
   const summary = await getAnalyticsSummaryV2({
-    rangeDays: Math.max(
-      7,
-      Math.min(180, Number(process.env.ANALYTICS_V3_DEFAULT_RANGE_DAYS || 30)),
-    ),
+    rangeDays: analyticsConfig.defaults.rangeDays,
     scope: {
-      role: actor.role ?? "manager",
+      role: hasPermission(actor, "drivers.manage") ? "manager" : "warehouse",
       warehouseId: actor.warehouseId ?? null,
       userId: actor.id ?? null,
     },
@@ -132,13 +140,15 @@ async function buildManagerOverviewPayload(actor: ManagerActor): Promise<Manager
 }
 
 async function buildDriverListPayload(args: {
-  role?: string | null;
+  actor: ManagerActor;
   warehouseId?: string | null;
 }): Promise<DriverListPayload> {
+  const warehouseScoped =
+    Boolean(args.actor.warehouseId) && !hasPermission(args.actor, "drivers.manage");
   const drivers = await prisma.user.findMany({
     where: {
-      role: "driver",
-      ...(args.role === "warehouse"
+      driverType: { not: null },
+      ...(warehouseScoped
         ? args.warehouseId
           ? {
               OR: [
@@ -230,7 +240,11 @@ export async function getManagerOverviewPayload(args: {
           return payload;
         })
         .catch((err: any) => {
-          console.error(`[overview-cache] background refresh failed: ${err?.message || "unknown"}`);
+          analyticsLogger.throttledWarn(
+            "manager-overview-background-refresh-failed",
+            "manager overview background refresh failed",
+            { error: err, throttleMs: 60_000 },
+          );
           return memoryHit.payload;
         })
         .finally(() => {
@@ -255,7 +269,11 @@ export async function getManagerOverviewPayload(args: {
       }
     }
   } catch (err: any) {
-    console.error(`[overview-cache] redis read failed: ${err?.message || "unknown"}`);
+    analyticsLogger.throttledWarn(
+      "manager-overview-redis-read-failed",
+      "manager overview redis read failed",
+      { error: err, throttleMs: 60_000 },
+    );
   }
 
   let build = overviewBuilds.get(cacheKey);
@@ -282,7 +300,11 @@ export async function getManagerOverviewPayload(args: {
       );
     }
   } catch (err: any) {
-    console.error(`[overview-cache] redis write failed: ${err?.message || "unknown"}`);
+    analyticsLogger.throttledWarn(
+      "manager-overview-redis-write-failed",
+      "manager overview redis write failed",
+      { error: err, throttleMs: 60_000 },
+    );
   }
 
   return { payload, cache: "MISS", ttlMs: cacheTtlMs };
@@ -291,9 +313,10 @@ export async function getManagerOverviewPayload(args: {
 export async function listDriversPayload(args: {
   actor: ManagerActor;
 }): Promise<{ payload: DriverListPayload; cache: "HIT" | "MISS" | "STALE"; ttlMs: number }> {
-  const role = args.actor.role;
+  const warehouseScoped =
+    Boolean(args.actor.warehouseId) && !hasPermission(args.actor, "drivers.manage");
   const warehouseId = args.actor.warehouseId ?? null;
-  const cacheKey = JSON.stringify({ role: role ?? null, warehouseId });
+  const cacheKey = JSON.stringify({ warehouseScoped, warehouseId });
   const cacheTtlMs = Math.min(
     Math.max(Number(process.env.MANAGER_DRIVERS_CACHE_TTL_MS || 120_000), 5_000),
     300_000,
@@ -305,7 +328,7 @@ export async function listDriversPayload(args: {
   }
   if (memoryHit && Date.now() < memoryHit.staleUntil) {
     if (!driverBuilds.has(cacheKey)) {
-      const build = buildDriverListPayload({ role, warehouseId })
+      const build = buildDriverListPayload({ actor: args.actor, warehouseId })
         .then(async (payload) => {
           writeDriversMemory(cacheKey, payload, cacheTtlMs);
           const redis = await getRedisClient();
@@ -322,7 +345,11 @@ export async function listDriversPayload(args: {
           return payload;
         })
         .catch((err: any) => {
-          console.error(`[drivers-cache] background refresh failed: ${err?.message || "unknown"}`);
+          analyticsLogger.throttledWarn(
+            "manager-drivers-background-refresh-failed",
+            "manager drivers background refresh failed",
+            { error: err, throttleMs: 60_000 },
+          );
           return memoryHit.payload;
         })
         .finally(() => {
@@ -347,12 +374,16 @@ export async function listDriversPayload(args: {
       }
     }
   } catch (err: any) {
-    console.error(`[drivers-cache] redis read failed: ${err?.message || "unknown"}`);
+    analyticsLogger.throttledWarn(
+      "manager-drivers-redis-read-failed",
+      "manager drivers redis read failed",
+      { error: err, throttleMs: 60_000 },
+    );
   }
 
   let build = driverBuilds.get(cacheKey);
   if (!build) {
-    build = buildDriverListPayload({ role, warehouseId }).finally(() => {
+    build = buildDriverListPayload({ actor: args.actor, warehouseId }).finally(() => {
       driverBuilds.delete(cacheKey);
     });
     driverBuilds.set(cacheKey, build);
@@ -374,7 +405,11 @@ export async function listDriversPayload(args: {
       );
     }
   } catch (err: any) {
-    console.error(`[drivers-cache] redis write failed: ${err?.message || "unknown"}`);
+    analyticsLogger.throttledWarn(
+      "manager-drivers-redis-write-failed",
+      "manager drivers redis write failed",
+      { error: err, throttleMs: 60_000 },
+    );
   }
 
   return { payload, cache: "MISS", ttlMs: cacheTtlMs };

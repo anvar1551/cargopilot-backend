@@ -41,7 +41,7 @@ function buildExpectedCollection(
             ? "COD expected for this order"
             : "Service charge expected for this order",
         actorId: actor?.id ?? null,
-        actorRole: (actor?.userRole ?? actor?.role ?? null) as any,
+        actorRole: null,
         toHolderType: CashHolderType.none,
         toHolderName: "Not collected yet",
       },

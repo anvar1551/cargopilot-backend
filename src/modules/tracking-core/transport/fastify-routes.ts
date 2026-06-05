@@ -1,7 +1,7 @@
 import { FastifyPluginAsync } from "fastify";
 
 import prisma from "../../../config/prismaClient";
-import { fastifyAuth } from "../../../middleware/authFastify";
+import { fastifyAuth } from "../../../modules/identity-access/transport/fastify-auth";
 import { buildOrderScopeWhere } from "../../identity-access";
 import { getTrackingByOrderId } from "../application/trackingRepo";
 
@@ -14,7 +14,7 @@ function isUuid(value: string) {
 const trackingFastifyRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get(
     "/:id",
-    { preHandler: fastifyAuth({ permission: "orders.read" }) },
+    { preHandler: fastifyAuth({ permission: "shipment.view" }) },
     async (request, reply) => {
       try {
         const orderId = String((request.params as any)?.id ?? "").trim();

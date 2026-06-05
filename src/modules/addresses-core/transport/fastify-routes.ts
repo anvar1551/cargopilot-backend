@@ -2,7 +2,7 @@ import { FastifyPluginAsync } from "fastify";
 import { z, ZodError } from "zod";
 
 import prisma from "../../../config/prismaClient";
-import { fastifyAuth } from "../../../middleware/authFastify";
+import { fastifyAuth } from "../../../modules/identity-access/transport/fastify-auth";
 import { buildCustomerEntityScopeWhere } from "../../identity-access";
 import { listAddresses } from "../application/addressRepo";
 

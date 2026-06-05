@@ -93,7 +93,7 @@ function parseOrderListParams(query: ListOrdersQuery): Parameters<typeof listOrd
 }
 
 async function resolveOrderReadScope(actor: OrdersCoreActor) {
-  await authorize(actor, "orders.read");
+  await authorize(actor, "shipment.view");
   return buildOrderScopeWhere(actor);
 }
 
@@ -115,7 +115,7 @@ export async function getOrderForActor(args: { actor: OrdersCoreActor; orderId: 
 }
 
 export async function listDriverWorkloadForActor(actor: OrdersCoreActor) {
-  await authorize(actor, "orders.read");
+  await authorize(actor, "shipment.view");
   return listDriverWorkloads();
 }
 
@@ -125,7 +125,7 @@ export async function exportOrdersCsvForActor(args: {
 }) {
   const { actor, query } = args;
 
-  await authorize(actor, "orders.export");
+  await authorize(actor, "shipment.export");
 
   const enforcedScopeWhere = await buildOrderScopeWhere(actor);
   const exportParams = {
@@ -174,7 +174,7 @@ export async function exportOrdersCsvForActor(args: {
     promiseDate: order.promiseDate ? new Date(order.promiseDate).toISOString() : "",
     customerName: order.customer?.name ?? "",
     customerEmail: order.customer?.email ?? "",
-    customerRole: order.customer?.role ?? "",
+    customerRole: order.customer?.driverType ? "driver" : "",
     customerEntityName: order.customerEntity?.name ?? "",
     customerEntityCompany: order.customerEntity?.companyName ?? "",
     customerEntityEmail: order.customerEntity?.email ?? "",
@@ -223,6 +223,7 @@ export async function exportOrdersCsvForActor(args: {
       : "",
     codAmount: order.codAmount ?? "",
     currency: order.currency ?? "",
+    paymentState: order.paymentState ?? "",
     paymentType: order.paymentType ?? "",
     deliveryChargePaidBy: order.deliveryChargePaidBy ?? "",
     codPaidStatus: order.codPaidStatus ?? "",
@@ -247,3 +248,5 @@ export async function exportOrdersCsvForActor(args: {
     filename: `orders-export-${stamp}.csv`,
   };
 }
+
+

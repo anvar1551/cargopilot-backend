@@ -3,12 +3,25 @@ import { z } from "zod";
 
 const providerEnum = z.nativeEnum(PaymentProvider);
 const environmentEnum = z.nativeEnum(PaymentEnvironment);
+const supportedCurrencyEnum = z.enum(["UZS", "USD", "CNY"]);
 
 export const listProviderConfigsQuerySchema = z.object({
   companyId: z.string().uuid().optional(),
   provider: providerEnum.optional(),
   environment: environmentEnum.optional(),
   enabledOnly: z.coerce.boolean().optional(),
+});
+
+export const listAvailableProvidersQuerySchema = z.object({
+  companyId: z.string().uuid().optional(),
+  environment: environmentEnum.optional(),
+});
+
+export const upsertCompanyPaymentSettingSchema = z.object({
+  companyId: z.string().uuid(),
+  onlinePaymentsEnabled: z.boolean(),
+  defaultProvider: providerEnum.optional().nullable(),
+  allowProviderOverride: z.boolean().optional(),
 });
 
 export const upsertProviderConfigSchema = z.object({
@@ -39,7 +52,11 @@ export const createPaymentIntentSchema = z.object({
   companyId: z.string().uuid(),
   orderId: z.string().uuid(),
   amountMinor: z.coerce.bigint().gt(0n),
-  currency: z.string().trim().min(3).max(8),
+  currency: z
+    .string()
+    .trim()
+    .transform((value) => value.toUpperCase())
+    .pipe(supportedCurrencyEnum),
   provider: providerEnum.optional(),
   idempotencyKey: z.string().trim().min(8).max(128),
   returnUrl: z.string().url().optional(),

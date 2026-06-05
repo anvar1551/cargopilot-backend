@@ -1,6 +1,7 @@
 import prisma from "../../../config/prismaClient";
 import { z } from "zod";
 import {
+  PaymentProvider,
   PaymentType,
   PaidBy,
   PaidStatus,
@@ -13,6 +14,9 @@ import {
   type ServiceTypeValue,
   normalizeServiceTypeInput,
 } from "./order.constants";
+import { TARIFF_TRANSPORT_MODES } from "../../pricing-core/shared/validation";
+
+const SUPPORTED_ORDER_CURRENCIES = ["UZS", "USD", "CNY"] as const;
 
 /**
  * Helpers
@@ -169,6 +173,14 @@ export const createOrderPayloadSchema = z
         (v) => v == null || v >= 0,
         "itemValue must be >= 0",
       ),
+
+      transportMode: z
+        .string()
+        .optional()
+        .nullable()
+        .transform((value) => String(value || "").trim().toUpperCase() || "ROAD")
+        .pipe(z.enum(TARIFF_TRANSPORT_MODES))
+        .default("ROAD"),
     }),
 
     payment: z
@@ -177,6 +189,11 @@ export const createOrderPayloadSchema = z
           .enum(["CASH", "CARD", "COD", "TRANSFER", "OTHER"])
           .optional()
           .nullable(),
+        provider: z
+          .enum(["CLICK", "PAYME", "UZUM", "STRIPE"])
+          .optional()
+          .nullable(),
+        idempotencyKey: z.string().trim().min(8).max(128).optional().nullable(),
 
         deliveryChargePaidBy: z
           .enum(["SENDER", "RECIPIENT", "COMPANY"])
@@ -260,7 +277,25 @@ export const createOrderPayloadSchema = z
           path: ["shipment", "currency"],
           message: "Currency is required for COD",
         });
+      } else if (!SUPPORTED_ORDER_CURRENCIES.includes(cur.trim().toUpperCase() as (typeof SUPPORTED_ORDER_CURRENCIES)[number])) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["shipment", "currency"],
+          message: `Currency must be one of: ${SUPPORTED_ORDER_CURRENCIES.join(", ")}`,
+        });
       }
+    }
+
+    const anyCurrency = v.shipment?.currency;
+    if (
+      anyCurrency &&
+      !SUPPORTED_ORDER_CURRENCIES.includes(anyCurrency.trim().toUpperCase() as (typeof SUPPORTED_ORDER_CURRENCIES)[number])
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["shipment", "currency"],
+        message: `Currency must be one of: ${SUPPORTED_ORDER_CURRENCIES.join(", ")}`,
+      });
     }
   });
 
@@ -299,11 +334,14 @@ export type CreateOrderRepoPayload = {
   receiverAddressId?: string | null;
 
   serviceType?: ServiceTypeValue | null;
+  transportMode?: string | null;
   weightKg?: number | null;
   codAmount?: number | null;
   currency?: string | null;
 
   paymentType?: PaymentType | null;
+  paymentProvider?: PaymentProvider | null;
+  paymentIntentIdempotencyKey?: string | null;
   deliveryChargePaidBy?: PaidBy | null;
   ifRecipientNotAvailable?: RecipientUnavailableAction | null;
 
@@ -493,14 +531,13 @@ export async function mapCreateOrderDtoToRepoPayload(
     receiverAddressId,
 
     serviceType: dto.shipment?.serviceType ?? DEFAULT_SERVICE_TYPE,
+    transportMode: dto.shipment?.transportMode?.trim().toUpperCase() ?? "ROAD",
     weightKg: dto.shipment?.weightKg ?? null,
 
     codAmount: dto.shipment?.codEnabled
       ? (dto.shipment?.codAmount ?? null)
       : null,
-    currency: dto.shipment?.codEnabled
-      ? (dto.shipment?.currency ?? null)
-      : null,
+    currency: dto.shipment?.currency?.trim().toUpperCase() ?? null,
 
     pieceTotal: dto.shipment?.pieceTotal ?? null,
     parcels: dto.shipment?.parcels ?? null,
@@ -510,16 +547,19 @@ export async function mapCreateOrderDtoToRepoPayload(
     shipmentInsurance: dto.shipment?.shipmentInsurance ?? false,
     itemValue: dto.shipment?.itemValue ?? null,
 
-    paymentType: (dto.payment?.paymentType as PaymentType) ?? null,
-    deliveryChargePaidBy: (dto.payment?.deliveryChargePaidBy as PaidBy) ?? null,
+    paymentType: (dto.payment?.paymentType as PaymentType) ?? PaymentType.CASH,
+    paymentProvider: (dto.payment?.provider as PaymentProvider) ?? null,
+    paymentIntentIdempotencyKey: dto.payment?.idempotencyKey?.trim() ?? null,
+    deliveryChargePaidBy:
+      (dto.payment?.deliveryChargePaidBy as PaidBy) ?? PaidBy.SENDER,
     ifRecipientNotAvailable:
       (dto.payment?.ifRecipientNotAvailable as RecipientUnavailableAction) ??
-      null,
+      RecipientUnavailableAction.CALL_SENDER,
 
     codPaidStatus: (dto.payment?.codPaidStatus as PaidStatus) ?? null,
     serviceCharge: dto.payment?.serviceCharge ?? null,
     serviceChargePaidStatus:
-      (dto.payment?.serviceChargePaidStatus as PaidStatus) ?? null,
+      (dto.payment?.serviceChargePaidStatus as PaidStatus) ?? PaidStatus.NOT_PAID,
 
     plannedPickupAt: dto.schedule?.plannedPickupAt ?? null,
     plannedDeliveryAt: dto.schedule?.plannedDeliveryAt ?? null,

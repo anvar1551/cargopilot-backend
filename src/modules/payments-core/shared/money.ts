@@ -3,8 +3,6 @@ export type ProviderAmountTarget = "CLICK" | "PAYME" | "UZUM";
 const CURRENCY_EXPONENT: Record<string, number> = {
   UZS: 2,
   USD: 2,
-  EUR: 2,
-  RUB: 2,
   CNY: 2,
 };
 
@@ -45,4 +43,3 @@ export function formatProviderAmount(
   // during create intent, keep minor unit representation for metadata.
   return amountMinor.toString();
 }
-

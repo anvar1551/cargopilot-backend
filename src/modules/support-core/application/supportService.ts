@@ -13,7 +13,8 @@ import { enqueueCargoPilotDomainEventTx } from "../../analytics-core/infrastruct
 
 type Actor = {
   id: string;
-  role?: string;
+  roleCodes?: string[];
+  permissionCodes?: string[];
   name?: string;
   email?: string;
 };
@@ -47,7 +48,6 @@ export type SupportAssignee = {
   id: string;
   name: string;
   email: string;
-  role: string;
 };
 
 function scheduleSupportRefresh(
@@ -64,7 +64,10 @@ function scheduleSupportRefresh(
 }
 
 function supportTenantScope(actor: Actor) {
-  return actor.role ? `role:${actor.role}` : "role:manager";
+  if (Array.isArray(actor.roleCodes) && actor.roleCodes.length > 0) {
+    return `role:${actor.roleCodes.slice().sort().join("|")}`;
+  }
+  return actor.id ? `user:${actor.id}` : "global";
 }
 
 async function enqueueSupportTicketChangedTx(
@@ -83,7 +86,7 @@ async function enqueueSupportTicketChangedTx(
     payload: {
       reason: args.reason,
       actorId: actorId(args.actor),
-      actorRole: args.actor.role ?? null,
+      actorRole: null,
       ...(args.payload ?? {}),
     },
   });
@@ -139,8 +142,22 @@ function actorId(actor: Actor) {
 }
 
 function getAuthorType(actor: Actor): SupportTicketAuthorType {
-  if (actor.role === "driver") return SupportTicketAuthorType.driver;
-  if (actor.role === "customer") return SupportTicketAuthorType.customer;
+  const roles = new Set(
+    Array.isArray(actor.roleCodes)
+      ? actor.roleCodes.map((value) => String(value || "").trim().toLowerCase())
+      : [],
+  );
+  const permissions = new Set(
+    Array.isArray(actor.permissionCodes)
+      ? actor.permissionCodes.map((value) => String(value || "").trim())
+      : [],
+  );
+  if (roles.has("driver") || permissions.has("drivers.telemetry")) {
+    return SupportTicketAuthorType.driver;
+  }
+  if (roles.has("customer") || roles.has("client")) {
+    return SupportTicketAuthorType.customer;
+  }
   return SupportTicketAuthorType.support;
 }
 
@@ -697,12 +714,17 @@ export async function createSupportTicket(input: CreateSupportTicketInput, actor
 export async function listSupportAssignees(): Promise<SupportAssignee[]> {
   const users = await prisma.user.findMany({
     where: {
-      roleBindings: {
+      memberships: {
         some: {
-          role: {
-            rolePermissions: {
-              some: {
-                permission: { code: "support.update" },
+          status: "active",
+          roles: {
+            some: {
+              role: {
+                rolePermissions: {
+                  some: {
+                    permission: { key: "support.assign" },
+                  },
+                },
               },
             },
           },
@@ -710,7 +732,7 @@ export async function listSupportAssignees(): Promise<SupportAssignee[]> {
       },
     },
     orderBy: [{ name: "asc" }, { email: "asc" }],
-    select: { id: true, name: true, email: true, role: true },
+    select: { id: true, name: true, email: true },
     distinct: ["id"],
     take: 200,
   });
@@ -892,3 +914,4 @@ export async function archiveResolvedSupportTickets(days = 30) {
   }
   return result.count;
 }
+

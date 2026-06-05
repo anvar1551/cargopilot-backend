@@ -1,7 +1,7 @@
 import { CustomerType } from "@prisma/client";
 import { FastifyPluginAsync } from "fastify";
 import { ZodError, z } from "zod";
-import { fastifyAuth } from "../../../middleware/authFastify";
+import { fastifyAuth } from "../../../modules/identity-access/transport/fastify-auth";
 import { buildCustomerEntityScopeWhere } from "../../identity-access";
 import {
   createCustomerEntity,
@@ -60,16 +60,14 @@ const customersFastifyRoutes: FastifyPluginAsync = async (fastify) => {
             : undefined;
         const page = (request.query as any)?.page ? Number((request.query as any).page) : undefined;
         const limit = (request.query as any)?.limit ? Number((request.query as any).limit) : undefined;
-        const scopeWhere = (await buildCustomerEntityScopeWhere(request.user!)) ?? {
-          id: "__no_access__",
-        };
+        const scopeWhere = await buildCustomerEntityScopeWhere(request.user!);
 
         const result = await listCustomerEntities({
           q,
           type,
           page,
           limit,
-          where: scopeWhere,
+          where: scopeWhere ?? undefined,
         });
         return reply.send(result);
       } catch (err: any) {
@@ -90,11 +88,20 @@ const customersFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         const customer = await getCustomerEntityById(id);
         if (!customer) return reply.code(404).send({ error: "Not found" });
 
-        if (scopeWhere && scopeWhere.id === "__no_access__") {
-          return reply.code(403).send({ error: "Forbidden" });
-        }
-        if (scopeWhere?.id && scopeWhere.id !== customer.id) {
-          return reply.code(403).send({ error: "Forbidden" });
+        if (scopeWhere?.id) {
+          const scopedId = scopeWhere.id as unknown;
+          if (
+            typeof scopedId === "object" &&
+            scopedId !== null &&
+            "in" in (scopedId as Record<string, unknown>)
+          ) {
+            const scopedIds = (scopedId as { in?: unknown }).in;
+            if (Array.isArray(scopedIds) && !scopedIds.includes(customer.id)) {
+              return reply.code(403).send({ error: "Forbidden" });
+            }
+          } else if (typeof scopedId === "string" && scopedId !== customer.id) {
+            return reply.code(403).send({ error: "Forbidden" });
+          }
         }
 
         return reply.send(customer);

@@ -1,9 +1,9 @@
 import { createHash } from "crypto";
 import { FastifyPluginAsync } from "fastify";
 
-import { getRedisClient, getRedisPrefix } from "../../../config/redis";
-import { fastifyAuth } from "../../../middleware/authFastify";
-import { hasPermission, ROLE_WAREHOUSE, type ActorRole } from "../../identity-access";
+import { getRedisClient, getRedisPrefix, withRedisTimeout } from "../../../config/redis";
+import { fastifyAuth } from "../../../modules/identity-access/transport/fastify-auth";
+import { hasPermission } from "../../identity-access";
 import {
   replayLiveMapEventsFromRedis,
   replayLiveMapEventsSince,
@@ -20,6 +20,10 @@ import type {
   LiveMapViewport,
   ManagerLiveMapSnapshot,
 } from "../application/liveMap.types";
+
+function isWritableStream(stream: NodeJS.WritableStream & { destroyed?: boolean }) {
+  return !stream.destroyed && (stream as any).writable !== false;
+}
 
 const snapshotCache = new Map<
   string,
@@ -73,15 +77,21 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | nul
 }
 
 function actorFromRequest(request: any) {
-  const role = request.user?.role as ActorRole | undefined;
   const warehouseId = request.user?.warehouseId ?? null;
   const userId = request.user?.id as string | undefined;
-  if (!role || !userId) return null;
-  return { role, warehouseId, userId };
+  if (!userId) return null;
+  return {
+    userId,
+    warehouseId,
+    roleCodes: Array.isArray(request.user?.roleCodes) ? request.user.roleCodes : [],
+    permissionCodes: Array.isArray(request.user?.permissionCodes)
+      ? request.user.permissionCodes
+      : [],
+  };
 }
 
-function getScopeKey(role: ActorRole, warehouseId: string | null) {
-  return `${role}:${warehouseId ?? "all"}`;
+function getScopeKey(scopeTag: string, warehouseId: string | null) {
+  return `${scopeTag}:${warehouseId ?? "all"}`;
 }
 
 function toViewportBucketKey(viewport: LiveMapViewport | null) {
@@ -95,8 +105,8 @@ function toViewportBucketKey(viewport: LiveMapViewport | null) {
   ].join(",");
 }
 
-function getSnapshotCacheKey(role: ActorRole, warehouseId: string | null, viewport: LiveMapViewport | null) {
-  return `${getScopeKey(role, warehouseId)}:${toViewportBucketKey(viewport)}`;
+function getSnapshotCacheKey(scopeTag: string, warehouseId: string | null, viewport: LiveMapViewport | null) {
+  return `${getScopeKey(scopeTag, warehouseId)}:${toViewportBucketKey(viewport)}`;
 }
 
 function getSnapshotRedisKey(cacheKey: string) {
@@ -120,7 +130,11 @@ async function readSnapshotCache(cacheKey: string) {
   try {
     const redis = await getRedisClient();
     if (!redis) return null;
-    const redisHit = await redis.get(getSnapshotRedisKey(cacheKey));
+    const redisHit = await withRedisTimeout(
+      "live-map:snapshot-cache:get",
+      () => redis.get(getSnapshotRedisKey(cacheKey)),
+      Math.max(500, Number(process.env.LIVE_MAP_REDIS_SNAPSHOT_CACHE_TIMEOUT_MS || 1500)),
+    );
     if (!redisHit) return null;
     return {
       payload: JSON.parse(redisHit) as ManagerLiveMapSnapshot,
@@ -145,7 +159,11 @@ async function writeSnapshotCache(cacheKey: string, payload: ManagerLiveMapSnaps
     const redis = await getRedisClient();
     if (!redis) return;
     const ttlSec = Math.max(1, Math.floor(ttlMs / 1000));
-    await redis.set(getSnapshotRedisKey(cacheKey), JSON.stringify(payload), "EX", ttlSec);
+    await withRedisTimeout(
+      "live-map:snapshot-cache:set",
+      () => redis.set(getSnapshotRedisKey(cacheKey), JSON.stringify(payload), "EX", ttlSec),
+      Math.max(500, Number(process.env.LIVE_MAP_REDIS_SNAPSHOT_CACHE_TIMEOUT_MS || 1500)),
+    );
   } catch (err: any) {
     console.error(`[live-map-cache] redis write failed: ${err?.message || "unknown"}`);
   }
@@ -161,11 +179,14 @@ const liveMapFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         const actor = actorFromRequest(request);
         if (!actor) return reply.code(401).send({ error: "Unauthorized" });
 
-        const allowed = await hasPermission(request.user!, "orders.read");
+        const allowed = await hasPermission(request.user!, "shipment.view");
         if (!allowed) return reply.code(403).send({ error: "Forbidden" });
 
         const viewport = parseViewport((request.query ?? {}) as Record<string, unknown>);
-        const cacheKey = getSnapshotCacheKey(actor.role, actor.warehouseId, viewport);
+        const scopeTag = actor.permissionCodes.includes("drivers.manage")
+          ? "global"
+          : "warehouse";
+        const cacheKey = getSnapshotCacheKey(scopeTag, actor.warehouseId, viewport);
         const cacheTtlMs = Math.min(
           Math.max(Number(process.env.LIVE_MAP_SNAPSHOT_CACHE_TTL_MS || 45_000), 1_000),
           120_000,
@@ -181,10 +202,7 @@ const liveMapFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 
         let build = snapshotBuilds.get(cacheKey);
         if (!build) {
-          build = getLiveMapSnapshot({
-            actor: { role: actor.role, warehouseId: actor.warehouseId },
-            viewport,
-          });
+          build = getLiveMapSnapshot({ actor, viewport });
           snapshotBuilds.set(cacheKey, build);
           build
             .then((snapshot) => writeSnapshotCache(cacheKey, snapshot, cacheTtlMs))
@@ -230,7 +248,7 @@ const liveMapFastifyRoutes: FastifyPluginAsync = async (fastify) => {
       const actor = actorFromRequest(request);
       if (!actor) return reply.code(401).send({ error: "Unauthorized" });
 
-      const allowed = await hasPermission(request.user!, "orders.read");
+      const allowed = await hasPermission(request.user!, "shipment.view");
       if (!allowed) return reply.code(403).send({ error: "Forbidden" });
 
       const viewport = parseViewport((request.query ?? {}) as Record<string, unknown>);
@@ -238,6 +256,7 @@ const liveMapFastifyRoutes: FastifyPluginAsync = async (fastify) => {
       const lastEventId = String(
         request.headers["last-event-id"] || request.headers["Last-Event-ID"] || "",
       ).trim();
+      let disconnected = false;
 
       reply.header("Content-Type", "text/event-stream");
       reply.header("Cache-Control", "no-cache, no-transform");
@@ -246,12 +265,27 @@ const liveMapFastifyRoutes: FastifyPluginAsync = async (fastify) => {
       reply.raw.flushHeaders?.();
       recordSseConnected({ stream: "live-map", clientKey });
 
-      reply.raw.write(
-        `event: ready\ndata: ${JSON.stringify({
-          connectedAt: new Date().toISOString(),
-          resumedFrom: lastEventId || null,
-        })}\n\n`,
-      );
+      try {
+        if (!isWritableStream(reply.raw)) {
+          if (!disconnected) {
+            disconnected = true;
+            recordSseDisconnected("live-map");
+          }
+          return reply.hijack();
+        }
+        reply.raw.write(
+          `event: ready\ndata: ${JSON.stringify({
+            connectedAt: new Date().toISOString(),
+            resumedFrom: lastEventId || null,
+          })}\n\n`,
+        );
+      } catch {
+        if (!disconnected) {
+          disconnected = true;
+          recordSseDisconnected("live-map");
+        }
+        return reply.hijack();
+      }
 
       const redisReplayEvents = await replayLiveMapEventsFromRedis({
         lastEventId,
@@ -263,8 +297,13 @@ const liveMapFastifyRoutes: FastifyPluginAsync = async (fastify) => {
       const replayLimit = Math.max(10, Number(process.env.LIVE_MAP_STREAM_REPLAY_MAX_EVENTS || 300));
       const replaySlice = replayEvents.slice(-replayLimit);
       replaySlice.forEach((event) => {
-        reply.raw.write(`id: ${event.id || ""}\n`);
-        reply.raw.write(`event: live-map\ndata: ${JSON.stringify(event)}\n\n`);
+        if (!isWritableStream(reply.raw)) return;
+        try {
+          reply.raw.write(`id: ${event.id || ""}\n`);
+          reply.raw.write(`event: live-map\ndata: ${JSON.stringify(event)}\n\n`);
+        } catch {
+          // ignore broken connection during replay
+        }
       });
 
       if (replayEvents.length > replaySlice.length) {
@@ -278,11 +317,16 @@ const liveMapFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 
       const heartbeatMs = Math.max(10_000, Number(process.env.LIVE_MAP_STREAM_HEARTBEAT_MS || 25_000));
       const heartbeat = setInterval(() => {
-        reply.raw.write(`: keepalive ${Date.now()}\n\n`);
+        if (!isWritableStream(reply.raw)) return;
+        try {
+          reply.raw.write(`: keepalive ${Date.now()}\n\n`);
+        } catch {
+          // ignore broken connection during heartbeat
+        }
       }, heartbeatMs);
 
       const unsubscribe = subscribeLiveMapEvents((event) => {
-        if (actor.role === ROLE_WAREHOUSE && actor.warehouseId) {
+        if (!actor.permissionCodes.includes("drivers.manage") && actor.warehouseId) {
           if (event.type !== "driver_location_upsert") return;
           const eventWarehouseId = event.payload.warehouseId;
           if (eventWarehouseId && eventWarehouseId !== actor.warehouseId) return;
@@ -290,15 +334,25 @@ const liveMapFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         if (viewport && event.type === "driver_location_upsert") {
           if (!isInViewport(event.payload.lat, event.payload.lng, viewport)) return;
         }
-        reply.raw.write(`id: ${event.id || ""}\n`);
-        reply.raw.write(`event: live-map\ndata: ${JSON.stringify(event)}\n\n`);
+        if (!isWritableStream(reply.raw)) return;
+        try {
+          reply.raw.write(`id: ${event.id || ""}\n`);
+          reply.raw.write(`event: live-map\ndata: ${JSON.stringify(event)}\n\n`);
+        } catch {
+          // ignore broken connection during push
+        }
       });
 
-      request.raw.on("close", () => {
+      const onClose = () => {
+        if (disconnected) return;
+        disconnected = true;
         recordSseDisconnected("live-map");
         clearInterval(heartbeat);
         unsubscribe();
-      });
+      };
+      request.raw.on("close", onClose);
+      reply.raw.on("close", onClose);
+      reply.raw.on("error", onClose);
 
       return reply.hijack();
     },
@@ -306,3 +360,4 @@ const liveMapFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 };
 
 export default liveMapFastifyRoutes;
+

@@ -2,7 +2,7 @@ import { FastifyPluginAsync } from "fastify";
 
 import prisma from "../../../config/prismaClient";
 import { presignGetObject } from "../../../utils/s3Presign";
-import { fastifyAuth } from "../../../middleware/authFastify";
+import { fastifyAuth } from "../../../modules/identity-access/transport/fastify-auth";
 import { buildOrderScopeWhere } from "../../identity-access";
 
 const invoiceFastifyRoutes: FastifyPluginAsync = async (fastify) => {

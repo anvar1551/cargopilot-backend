@@ -5,7 +5,7 @@ import {
   SupportTicketStatus,
 } from "@prisma/client";
 
-import { fastifyAuth } from "../../../middleware/authFastify";
+import { fastifyAuth } from "../../../modules/identity-access/transport/fastify-auth";
 import { buildSupportScopeWhere } from "../../identity-access";
 import {
   addSupportTicketMessage,
@@ -27,12 +27,17 @@ import {
   recordSseDisconnected,
 } from "../../../modules/observability-core/application/opsMetrics";
 
+function isWritableStream(stream: NodeJS.WritableStream & { destroyed?: boolean }) {
+  return !stream.destroyed && (stream as any).writable !== false;
+}
+
 type EnumLike = Record<string, string>;
 
 function actorFromRequest(request: any) {
   return {
     id: request.user?.id || "",
-    role: request.user?.role,
+    roleCodes: Array.isArray(request.user?.roleCodes) ? request.user.roleCodes : [],
+    permissionCodes: Array.isArray(request.user?.permissionCodes) ? request.user.permissionCodes : [],
     name: request.user?.name,
     email: request.user?.email,
   };
@@ -67,7 +72,7 @@ function sendError(reply: any, err: any, fallbackMessage: string) {
 const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get(
     "/stream",
-    { preHandler: fastifyAuth({ permission: "support.read" }) },
+    { preHandler: fastifyAuth({ permission: "support.view" }) },
     async (request, reply) => {
       reply.header("Content-Type", "text/event-stream");
       reply.header("Cache-Control", "no-cache, no-transform");
@@ -79,21 +84,33 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
       const lastEventId = String(
         request.headers["last-event-id"] || request.headers["Last-Event-ID"] || "",
       ).trim();
+      let disconnected = false;
 
       recordSseConnected({ stream: "support", clientKey });
       let closed = false;
 
       const send = (event: string, payload: unknown, id?: string | null) => {
-        if (closed) return;
-        if (id) reply.raw.write(`id: ${id}\n`);
-        reply.raw.write(`event: ${event}\n`);
-        reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
+        if (closed || !isWritableStream(reply.raw)) return false;
+        try {
+          if (id) reply.raw.write(`id: ${id}\n`);
+          reply.raw.write(`event: ${event}\n`);
+          reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
+          return true;
+        } catch {
+          return false;
+        }
       };
 
-      send("ready", {
+      if (!send("ready", {
         connectedAt: new Date().toISOString(),
         resumedFrom: lastEventId || null,
-      });
+      })) {
+        if (!disconnected) {
+          disconnected = true;
+          recordSseDisconnected("support");
+        }
+        return reply.hijack();
+      }
 
       const redisReplayEvents = await replaySupportRefreshFromRedis({
         lastEventId,
@@ -120,19 +137,31 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       const heartbeat = setInterval(() => {
-        if (!closed) reply.raw.write(`: ping ${Date.now()}\n\n`);
+        if (closed || !isWritableStream(reply.raw)) return;
+        try {
+          reply.raw.write(`: ping ${Date.now()}\n\n`);
+        } catch {
+          closed = true;
+        }
       }, Math.max(10_000, Number(process.env.SUPPORT_STREAM_HEARTBEAT_MS || 25_000)));
 
       const unsubscribe = subscribeSupportRefresh((event) => {
-        send("support-refresh", event, event.id);
+        const sent = send("support-refresh", event, event.id);
+        if (!sent) closed = true;
       });
 
-      request.raw.on("close", () => {
+      const onClose = () => {
+        if (disconnected) return;
+        disconnected = true;
         closed = true;
         recordSseDisconnected("support");
         clearInterval(heartbeat);
         unsubscribe();
-      });
+      };
+
+      request.raw.on("close", onClose);
+      reply.raw.on("close", onClose);
+      reply.raw.on("error", onClose);
 
       return reply.hijack();
     },
@@ -140,7 +169,7 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.get(
     "/assignees",
-    { preHandler: fastifyAuth({ permission: "support.read" }) },
+    { preHandler: fastifyAuth({ permission: "support.view" }) },
     async (_request, reply) => {
       try {
         const assignees = await listSupportAssignees();
@@ -153,7 +182,7 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.get(
     "/tickets",
-    { preHandler: fastifyAuth({ permission: "support.read" }) },
+    { preHandler: fastifyAuth({ permission: "support.view" }) },
     async (request, reply) => {
       const startedAt = Date.now();
       try {
@@ -188,7 +217,7 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post(
     "/tickets",
-    { preHandler: fastifyAuth({ permission: "support.create" }) },
+    { preHandler: fastifyAuth({ permission: "support.createTicket" }) },
     async (request, reply) => {
       try {
         const body = (request.body ?? {}) as Record<string, unknown>;
@@ -233,7 +262,7 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.get(
     "/tickets/:id",
-    { preHandler: fastifyAuth({ permission: "support.read" }) },
+    { preHandler: fastifyAuth({ permission: "support.view" }) },
     async (request, reply) => {
       const startedAt = Date.now();
       try {
@@ -277,8 +306,7 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
   );
 
   fastify.patch(
-    "/tickets/:id/assign",
-    { preHandler: fastifyAuth({ permission: "support.update" }) },
+    "/tickets/:id/assign", { preHandler: fastifyAuth({ permission: "support.assign" }) },
     async (request, reply) => {
       try {
         const body = (request.body ?? {}) as Record<string, unknown>;
@@ -343,8 +371,7 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
   );
 
   fastify.post(
-    "/tickets/:id/escalate",
-    { preHandler: fastifyAuth({ permission: "support.update" }) },
+    "/tickets/:id/escalate", { preHandler: fastifyAuth({ permission: "support.escalate" }) },
     async (request, reply) => {
       try {
         const ticket = await updateSupportTicketStatus(
@@ -361,3 +388,5 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 };
 
 export default supportFastifyRoutes;
+
+

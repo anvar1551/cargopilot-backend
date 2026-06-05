@@ -1,4 +1,4 @@
-# Payments Integration Quickstart (Click / Payme / Uzum)
+# Payments Integration Quickstart (Click / Payme / Uzum / Stripe)
 
 This document gives copy-paste examples to test CargoPilot payment integrations quickly.
 
@@ -31,7 +31,34 @@ $env:ORDER_ID="YOUR_ORDER_UUID"
 
 ---
 
-## 2) Configure providers
+## 2) Configure company payment policy
+
+Read policy:
+
+```bash
+curl "$API_URL/settings/payments/policy?companyId=$COMPANY_ID" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Update policy:
+
+```bash
+curl -X PUT "$API_URL/settings/payments/policy" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "companyId":"'"$COMPANY_ID"'",
+    "onlinePaymentsEnabled":true,
+    "defaultProvider":"CLICK",
+    "allowProviderOverride":true
+  }'
+```
+
+Note: effective online payments still depend on global env switch `PAYMENTS_ENABLED=true`.
+
+---
+
+## 3) Configure providers
 
 ## Click
 
@@ -45,6 +72,7 @@ curl -X POST "$API_URL/settings/payments/providers" \
     "environment":"TEST",
     "merchantId":"CLICK_MERCHANT_ID",
     "serviceId":"CLICK_SERVICE_ID",
+    "accountId":"CLICK_MERCHANT_USER_ID",
     "secret":"CLICK_SECRET",
     "isEnabled":true
   }'
@@ -85,9 +113,36 @@ curl -X POST "$API_URL/settings/payments/providers" \
   }'
 ```
 
+## Stripe
+
+```bash
+curl -X POST "$API_URL/settings/payments/providers" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "companyId":"'"$COMPANY_ID"'",
+    "provider":"STRIPE",
+    "environment":"TEST",
+    "serviceId":"STRIPE_WEBHOOK_SECRET_WHSEC",
+    "secret":"STRIPE_SECRET_KEY_SK_TEST",
+    "isEnabled":true
+  }'
+```
+
 ---
 
-## 3) Create payment intent
+## 4) List active providers for checkout step
+
+```bash
+curl "$API_URL/payments/providers/available?companyId=$COMPANY_ID&environment=TEST" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Use this endpoint after order creation to render provider picker in UI.
+
+---
+
+## 5) Create payment intent
 
 Use same endpoint for all providers:
 
@@ -114,12 +169,16 @@ Provider conversion is handled server-side:
 - Click -> numeric **major** amount sent to API
 - Payme -> integer **minor** amount for checkout param `a`
 - Uzum -> webhook-driven; intent stores expected minor amount for verification/audit
+- Stripe -> Checkout Session with amount in **minor** units and signed webhook confirmation
 
 For Payme:
 - change `"provider":"PAYME"`
 
 For Uzum:
 - change `"provider":"UZUM"`
+
+For Stripe:
+- change `"provider":"STRIPE"`
 
 Then fetch intent:
 
@@ -130,7 +189,7 @@ curl "$API_URL/payments/intents/INTENT_UUID_HERE" \
 
 ---
 
-## 4) Webhook simulation
+## 6) Webhook simulation
 
 ## 4.1 Click callback simulation
 
@@ -211,6 +270,20 @@ curl -X POST "$API_URL/payments/uzum/callback" \
   }'
 ```
 
+## 4.4 Stripe callback simulation
+
+Use Stripe CLI to forward signed test webhooks:
+
+```bash
+stripe listen --forward-to localhost:4000/api/payments/stripe/callback
+```
+
+Then complete checkout from `checkoutUrl` or trigger:
+
+```bash
+stripe trigger checkout.session.completed
+```
+
 ---
 
 ## 5) Verify final status
@@ -226,6 +299,7 @@ Expected:
 - Click action=1 success -> `SUCCEEDED`
 - Payme PerformTransaction -> `SUCCEEDED`
 - Uzum status CONFIRMED -> `SUCCEEDED`
+- Stripe checkout.session.completed -> `SUCCEEDED`
 
 ---
 

@@ -49,7 +49,9 @@ function valueAsNumber(record: Record<string, unknown>, key: string): number | n
 
 function headersForClick(config: ResolvedProviderConfig) {
   const timestamp = Math.floor(Date.now() / 1000).toString();
-  const auth = `${config.merchantId}:${sha1(`${timestamp}${config.secretPlain}`)}:${timestamp}`;
+  // CLICK Merchant API requires Auth in format:
+  // merchant_user_id:digest:timestamp (digest = sha1(timestamp + secret_key)).
+  const auth = `${config.accountId}:${sha1(`${timestamp}${config.secretPlain}`)}:${timestamp}`;
   return {
     Accept: "application/json",
     "Content-Type": "application/json",
@@ -58,8 +60,10 @@ function headersForClick(config: ResolvedProviderConfig) {
 }
 
 function throwIfMissingConfig(config: ResolvedProviderConfig) {
-  if (!config.merchantId || !config.serviceId) {
-    throw new Error("Click provider config requires merchantId and serviceId");
+  if (!config.merchantId || !config.serviceId || !config.accountId) {
+    throw new Error(
+      "Click provider config requires merchantId, serviceId, and accountId (merchant_user_id)",
+    );
   }
 }
 

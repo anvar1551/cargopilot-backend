@@ -10,6 +10,7 @@ import {
 } from "../../domain/contracts";
 import { ClickProviderAdapter } from "./clickAdapter";
 import { PaymeProviderAdapter } from "./paymeAdapter";
+import { StripeProviderAdapter } from "./stripeAdapter";
 import { UzumProviderAdapter } from "./uzumAdapter";
 
 export type ResolvedProviderConfig = Pick<
@@ -71,6 +72,7 @@ export interface PaymentProviderAdapter {
   verifyWebhook(input: ProviderWebhookInput & {
     config: ResolvedProviderConfig;
     intent?: PaymentIntent | null;
+    rawBody?: string | Buffer;
   }): Promise<VerifyWebhookResult>;
 }
 
@@ -111,7 +113,11 @@ class NotImplementedProviderAdapter implements PaymentProviderAdapter {
   }
 
   async verifyWebhook(
-    input: ProviderWebhookInput & { config: ResolvedProviderConfig; intent?: PaymentIntent | null },
+    input: ProviderWebhookInput & {
+      config: ResolvedProviderConfig;
+      intent?: PaymentIntent | null;
+      rawBody?: string | Buffer;
+    },
   ) {
     const idempotencyKey =
       (typeof input.headers["x-idempotency-key"] === "string"
@@ -130,7 +136,7 @@ const adapters = new Map<PaymentProvider, PaymentProviderAdapter>([
   [PaymentProvider.CLICK, new ClickProviderAdapter()],
   [PaymentProvider.PAYME, new PaymeProviderAdapter()],
   [PaymentProvider.UZUM, new UzumProviderAdapter()],
-  [PaymentProvider.STRIPE, new NotImplementedProviderAdapter(PaymentProvider.STRIPE)],
+  [PaymentProvider.STRIPE, new StripeProviderAdapter()],
 ]);
 
 export function getPaymentProviderAdapter(provider: PaymentProvider): PaymentProviderAdapter {

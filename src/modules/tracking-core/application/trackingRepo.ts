@@ -4,7 +4,7 @@ const userLiteSelect = {
   id: true,
   name: true,
   email: true,
-  role: true,
+  driverType: true,
 };
 
 export async function getTrackingByOrderId(orderId: string) {
@@ -18,4 +18,3 @@ export async function getTrackingByOrderId(orderId: string) {
     orderBy: { timestamp: "asc" },
   });
 }
-

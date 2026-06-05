@@ -9,7 +9,7 @@ This phase adds production-safe backend primitives for manager live tracking:
 
 ## Endpoints
 
-### `GET /api/manager/live-map/snapshot`
+### `GET /api/live-map/snapshot`
 - Roles: `manager`, `warehouse`
 - Response shape matches frontend live-map contract:
   - `generatedAt`
@@ -18,7 +18,7 @@ This phase adds production-safe backend primitives for manager live tracking:
   - `warehouses[]`
   - `isMock` (always `false` in backend snapshot)
 
-### `GET /api/manager/live-map/stream`
+### `GET /api/live-map/stream`
 - Roles: `manager`, `warehouse`
 - Content-Type: `text/event-stream`
 - Events:
@@ -67,4 +67,5 @@ This phase adds production-safe backend primitives for manager live tracking:
   - `idle` <= 180s
   - `stale` <= 600s
   - `offline` > 600s
+
 

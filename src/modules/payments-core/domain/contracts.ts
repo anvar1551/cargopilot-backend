@@ -1,8 +1,6 @@
-import {
-  PaymentEnvironment,
-  PaymentIntentStatus,
-  PaymentProvider,
-} from "@prisma/client";
+import { PaymentEnvironment, PaymentIntentStatus, PaymentProvider } from "@prisma/client";
+
+export type ProviderCode = PaymentProvider;
 
 export type CanonicalPaymentStatus =
   | "pending"
@@ -14,40 +12,22 @@ export type CanonicalPaymentStatus =
   | "refunded"
   | "partially_refunded";
 
-export type ProviderCode = PaymentProvider;
-
 export type CreatePaymentIntentInput = {
   companyId: string;
   orderId: string;
+  provider?: ProviderCode;
   amountMinor: bigint;
   currency: string;
-  provider?: ProviderCode;
   idempotencyKey: string;
   returnUrl?: string;
   metadata?: Record<string, unknown>;
 };
 
-export type CreatePaymentIntentResult = {
-  paymentIntentId: string;
-  status: CanonicalPaymentStatus;
-  checkoutUrl?: string | null;
-  providerPaymentId?: string | null;
-};
-
-export type RefundInput = {
-  companyId: string;
-  paymentIntentId: string;
-  amountMinor?: bigint;
-  reason?: string;
-  idempotencyKey: string;
-};
-
 export type ProviderWebhookInput = {
-  provider: ProviderCode;
-  headers: Record<string, string | string[] | undefined>;
-  body: unknown;
-  rawBody?: string;
+  provider: PaymentProvider;
   environment: PaymentEnvironment;
+  body: Record<string, unknown>;
+  headers: Record<string, string | string[] | undefined>;
 };
 
 export function toCanonicalStatus(status: PaymentIntentStatus): CanonicalPaymentStatus {

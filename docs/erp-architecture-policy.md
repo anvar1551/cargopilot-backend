@@ -1,12 +1,13 @@
 # CargoPilot ERP Architecture Policy (Locked)
 
-Last updated: 2026-05-14
+Last updated: 2026-05-22
 Scope: backend foundation for CargoPilot growth from parcel flow app to logistics ERP platform.
 Status: mandatory engineering policy for all new work.
 
 Related mandatory guardrails:
 
 - `docs/engineering-guardrails.md`
+- `docs/pricing-real-world-architecture.md`
 
 ## 1) Locked stack
 
@@ -133,6 +134,49 @@ Rules:
 - Original amounts are immutable.
 - Consolidation to report currency is deterministic.
 - All financial commands are idempotent + audited.
+
+### 7.1 Active currency set (current phase)
+
+Current operational currencies are locked to:
+
+- `UZS`
+- `USD`
+- `CNY`
+
+Rules:
+
+- All new command validation must reject unsupported currencies.
+- Frontend selectors must expose only supported currencies in this phase.
+- Additional currencies can be added only by explicit policy update + migration.
+
+### 7.2 Leg-based pricing and payment flow (implementation contract)
+
+For international orders (example: China -> Uzbekistan), pricing must be leg-based:
+
+1. Build `OrderLeg` entries for operational segments (pickup/export/linehaul/import/last-mile as applicable).
+2. Price each leg with applicable regional/service/mode rules.
+3. Persist every charge as immutable `PricingComponent` with:
+   - `orderId`
+   - `legId` (nullable only for order-level adjustments)
+   - `componentType`
+   - `originalAmount`
+   - `originalCurrency`
+   - `fxRate` + `fxAsOf`
+   - `baseAmount` (report currency)
+4. Compute payable totals by deterministic aggregation of components (server-side only).
+5. Create `PaymentIntent` from computed totals (never from client-trusted raw amount).
+6. On successful provider webhook:
+   - set order payment state
+   - reconcile cash-custody/service-charge state consistently
+   - record idempotent audit trail/event log
+
+### 7.3 Rollout order (mandatory)
+
+1. Enforce `UZS/USD/CNY` in API + UI.
+2. Enable leg-aware component creation for new orders.
+3. Switch payment intent amount source to component aggregation.
+4. Add reprice versioning (new quote version, no mutation of historical components).
+5. Expand reporting to aggregate by original and base currencies.
 
 ## 8) Performance and reliability SLO targets
 

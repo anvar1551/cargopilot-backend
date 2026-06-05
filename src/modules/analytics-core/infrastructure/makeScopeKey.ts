@@ -6,5 +6,5 @@ export function makeScopeKey(args: {
   if (args.role === "warehouse" && args.warehouseId) {
     return `warehouse:${args.warehouseId}`;
   }
-  return `role:${args.role || "manager"}`;
+  return `role:${args.role || "global"}`;
 }

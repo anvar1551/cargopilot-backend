@@ -10,6 +10,9 @@ import { requireOrderActor } from "../shared";
 import {
   enqueueOrderLabelJob,
   generateAndAttachParcelLabelsForOrder,
+  isOrderLabelAutoFallbackEnabled,
+  resolveOrderLabelMode,
+  scheduleOrderLabelAutoFallback,
 } from "../label";
 
 const IMPORT_TEMPLATE_COLUMNS = [
@@ -192,7 +195,7 @@ function mapCsvRowToCreateOrderDto(
       weightKg: v.weightKg || undefined,
       codEnabled: parseBoolean(v.codEnabled),
       codAmount: v.codAmount || undefined,
-      currency: v.currency || "EUR",
+      currency: v.currency || "UZS",
       parcels: [{ weightKg: v.weightKg || undefined }],
       pieceTotal: v.pieceTotal || 1,
       fragile: parseBoolean(v.fragile),
@@ -327,9 +330,8 @@ export async function importOrdersFromCsv(args: {
   );
 
   const createdOrders = [];
-  const rawLabelMode = process.env.ORDER_LABEL_MODE;
-  const labelMode =
-    rawLabelMode === "async" || rawLabelMode === "queue" ? rawLabelMode : "sync";
+  const labelMode = resolveOrderLabelMode(process.env.ORDER_LABEL_MODE, "sync");
+  const autoLabelFallback = isOrderLabelAutoFallbackEnabled();
 
   for (const row of parsedRows) {
     const dto = mapCsvRowToCreateOrderDto(row, args.customerEntityId);
@@ -340,7 +342,21 @@ export async function importOrdersFromCsv(args: {
     createdOrders.push(order);
 
     if (labelMode === "queue") {
-      await enqueueOrderLabelJob(order.id);
+      try {
+        await enqueueOrderLabelJob(order.id);
+      } catch (queueErr) {
+        if (!autoLabelFallback) throw queueErr;
+        console.error(
+          `Label enqueue failed for imported order ${order.id}, falling back to inline generation:`,
+          queueErr,
+        );
+        await generateAndAttachParcelLabelsForOrder(order.id);
+        continue;
+      }
+
+      if (autoLabelFallback) {
+        scheduleOrderLabelAutoFallback(order.id);
+      }
     } else if (labelMode === "async") {
       void generateAndAttachParcelLabelsForOrder(order.id).catch((labelErr) => {
         console.error(`Label generation failed for imported order ${order.id}:`, labelErr);
@@ -375,7 +391,7 @@ export function getOrderImportTemplateCsv() {
     "1",
     "false",
     "",
-    "EUR",
+    "UZS",
     "CASH",
     "SENDER",
     "28000",

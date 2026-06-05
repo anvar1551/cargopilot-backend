@@ -1,5 +1,7 @@
 import { EventEmitter } from "events";
-import { getRedisClient, getRedisPrefix } from "../../../config/redis";
+import { createRedisClient, getRedisClient, getRedisPrefix } from "../../../config/redis";
+import { analyticsConfig } from "../config/analyticsConfig";
+import { analyticsLogger } from "../config/analyticsLogger";
 
 export type AnalyticsInvalidationReason =
   | "order_mutation"
@@ -26,7 +28,7 @@ export type AnalyticsInvalidationEvent = {
 
 const emitter = new EventEmitter();
 const STREAM_MAX_LEN = 10_000;
-const EVENT_BUFFER_LIMIT = Math.max(100, Number(process.env.ANALYTICS_V2_STREAM_REPLAY_BUFFER || 1000));
+const EVENT_BUFFER_LIMIT = analyticsConfig.stream.replayBufferLimit;
 let consumerStarted = false;
 let streamLastId = "$";
 let localEventSeq = 0;
@@ -70,11 +72,38 @@ function appendRecentEvent(event: AnalyticsInvalidationEvent) {
 }
 
 async function startStreamConsumer() {
-  const redis = await getRedisClient();
+  const createStreamRedis = () =>
+    createRedisClient({
+      connectTimeout: 3000,
+      enableOfflineQueue: true,
+      maxRetriesPerRequest: null,
+      lazyConnect: true,
+      // Blocking stream reads should not be capped by commandTimeout.
+      commandTimeout: null,
+    });
+
+  let redis = createStreamRedis();
   if (!redis) return;
+  await redis.connect().catch(() => undefined);
 
   while (true) {
     try {
+      if (!redis) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        redis = createStreamRedis();
+        if (redis) {
+          await redis.connect().catch(() => undefined);
+        }
+        continue;
+      }
+      if (redis.status !== "ready" && redis.status !== "connect") {
+        await redis.connect().catch(() => undefined);
+      }
+      if (redis.status !== "ready") {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        continue;
+      }
+
       const results = (await redis.xread(
         "COUNT",
         100,
@@ -103,7 +132,19 @@ async function startStreamConsumer() {
         }
       }
     } catch (err: any) {
-      console.error(`[analytics-v2] stream read error: ${err?.message || "unknown"}`);
+      analyticsLogger.throttledError("stream-read-error", "stream read error", {
+        error: err,
+        throttleMs: 30_000,
+      });
+      try {
+        redis?.disconnect();
+      } catch {
+        // noop
+      }
+      redis = createStreamRedis();
+      if (redis) {
+        await redis.connect().catch(() => undefined);
+      }
       await new Promise((resolve) => setTimeout(resolve, 2000));
     }
   }
@@ -161,7 +202,10 @@ export async function publishAnalyticsInvalidation(
       JSON.stringify(event),
     );
   } catch (err: any) {
-    console.error(`[analytics-v2] stream publish failed: ${err?.message || "unknown"}`);
+    analyticsLogger.throttledWarn("stream-publish-failed", "stream publish failed", {
+      error: err,
+      throttleMs: 60_000,
+    });
   }
 }
 
@@ -201,7 +245,10 @@ export async function replayAnalyticsInvalidationFromRedis(args: {
       })
       .filter((item): item is AnalyticsInvalidationEvent => Boolean(item));
   } catch (err: any) {
-    console.error(`[analytics-v2] replay from redis failed: ${err?.message || "unknown"}`);
+    analyticsLogger.throttledWarn("stream-replay-failed", "stream replay from redis failed", {
+      error: err,
+      throttleMs: 60_000,
+    });
     return [] as AnalyticsInvalidationEvent[];
   }
 }

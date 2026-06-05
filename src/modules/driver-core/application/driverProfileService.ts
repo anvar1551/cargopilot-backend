@@ -24,9 +24,9 @@ export async function updateDriverProfileById(driverId: string, body: unknown) {
   const input = updateDriverSchema.parse(body ?? {});
   const driver = await prisma.user.findUnique({
     where: { id: normalizedDriverId },
-    select: { id: true, role: true },
+    select: { id: true, driverType: true },
   });
-  if (!driver || driver.role !== "driver") {
+  if (!driver || !driver.driverType) {
     const err = new Error("Driver not found") as Error & { statusCode?: number };
     err.statusCode = 404;
     throw err;
@@ -94,7 +94,6 @@ export async function updateDriverProfileById(driverId: string, body: unknown) {
         id: true,
         name: true,
         email: true,
-        role: true,
         warehouseId: true,
         driverType: true,
         warehouseAccesses: {
@@ -124,7 +123,7 @@ export async function updateDriverProfileById(driverId: string, body: unknown) {
     id: updated.id,
     name: updated.name,
     email: updated.email,
-    role: updated.role,
+    role: "driver",
     warehouseId: updated.warehouseId ?? null,
     warehouseIds,
     driverType: updated.driverType === DriverType.linehaul ? "linehaul" : "local",

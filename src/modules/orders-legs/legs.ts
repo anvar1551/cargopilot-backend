@@ -105,7 +105,7 @@ export async function upsertOrderLeg(
           mode: leg.mode,
           status: leg.status,
           actorId: actor?.id ?? null,
-          actorRole: actor?.role ?? null,
+          actorRole: null,
         },
       },
     ]);

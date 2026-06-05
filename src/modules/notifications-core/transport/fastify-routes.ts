@@ -2,7 +2,7 @@ import { NotificationType } from "@prisma/client";
 import { FastifyPluginAsync } from "fastify";
 
 import { emitDriverUnreadCount } from "../../../modules/realtime-core/realtimeHub";
-import { fastifyAuth } from "../../../middleware/authFastify";
+import { fastifyAuth } from "../../../modules/identity-access/transport/fastify-auth";
 import { hasPermission } from "../../identity-access";
 import { requireOrderActor } from "../../orders-core/shared";
 import {

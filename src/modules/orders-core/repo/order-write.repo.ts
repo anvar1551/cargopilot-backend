@@ -1,5 +1,5 @@
 import prisma from "../../../config/prismaClient";
-import { OrderStatus, Prisma } from "@prisma/client";
+import { OrderPaymentState, OrderStatus, Prisma } from "@prisma/client";
 
 import { buildInitialOrderCashCollections } from "../cash";
 import { enqueueCargoPilotDomainEventsTx } from "../../analytics-core/infrastructure/analyticsOutbox";
@@ -8,7 +8,6 @@ import { CreateOrderRepoPayload } from "../domain/orderCreate.mapper";
 import { OrderActor, orderError } from "../shared";
 import { userLiteSelect } from "./order-repo.shared";
 
-type TrackingActorRole = "customer" | "driver" | "warehouse" | "manager";
 
 function sanitizeSnapshot(s: any) {
   if (!s || typeof s !== "object") return null;
@@ -93,17 +92,7 @@ async function assertFkExistsTx(
   }
 }
 
-function normalizeActorRoleForTracking(
-  role: string | null | undefined,
-): TrackingActorRole | null {
-  if (
-    role === "customer" ||
-    role === "driver" ||
-    role === "warehouse" ||
-    role === "manager"
-  ) {
-    return role;
-  }
+function normalizeActorRoleForTracking(): null {
   return null;
 }
 
@@ -269,6 +258,7 @@ export const createOrder = async (
         receiverPhone2: payload.receiverPhone2 ?? null,
         receiverPhone3: payload.receiverPhone3 ?? null,
         receiverAddress: payload.receiverAddress ?? null,
+        ownerOrgId: actor?.companyId ?? null,
         customerEntityId: payload.customerEntityId ?? null,
         senderAddressId,
         receiverAddressId,
@@ -277,6 +267,7 @@ export const createOrder = async (
         currency: payload.currency ?? null,
         weightKg: payload.weightKg ?? null,
         paymentType: payload.paymentType ?? null,
+        paymentState: OrderPaymentState.UNPAID,
         deliveryChargePaidBy: payload.deliveryChargePaidBy ?? null,
         ifRecipientNotAvailable: payload.ifRecipientNotAvailable ?? null,
         codPaidStatus: payload.codPaidStatus ?? null,
@@ -307,7 +298,7 @@ export const createOrder = async (
             status: OrderStatus.pending,
             note: "Order created",
             actorId: actor?.id ?? null,
-            actorRole: normalizeActorRoleForTracking(actor?.userRole),
+            actorRole: normalizeActorRoleForTracking(),
             warehouseId: actor?.warehouseId ?? null,
             region: null,
           },
@@ -355,7 +346,7 @@ export const createOrder = async (
           source: "createOrder",
           orderNumber: created.orderNumber,
           actorId: actor?.id ?? null,
-          actorRole: normalizeActorRoleForTracking(actor?.userRole),
+          actorRole: normalizeActorRoleForTracking(),
         },
       },
     ]);

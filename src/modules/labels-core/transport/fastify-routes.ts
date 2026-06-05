@@ -1,19 +1,24 @@
 import { FastifyPluginAsync } from "fastify";
 import prisma from "../../../config/prismaClient";
-import { fastifyAuth } from "../../../middleware/authFastify";
+import { fastifyAuth } from "../../../modules/identity-access/transport/fastify-auth";
+import { buildOrderScopeWhere } from "../../identity-access";
 import { presignGetObject } from "../../../utils/s3Presign";
 
 const labelsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get(
     "/orders/:id/url",
-    { preHandler: fastifyAuth({ permission: "orders.read" }) },
+    { preHandler: fastifyAuth({ permission: "shipment.view" }) },
     async (request, reply) => {
       try {
         const orderId = String((request.params as any)?.id || "").trim();
         const user = request.user!;
+        const scopedWhere = await buildOrderScopeWhere(user);
+        if (!scopedWhere) {
+          return reply.code(403).send({ error: "Forbidden" });
+        }
 
-        const order = await prisma.order.findUnique({
-          where: { id: orderId },
+        const order = await prisma.order.findFirst({
+          where: { id: orderId, ...scopedWhere },
           select: {
             id: true,
             customerId: true,
@@ -35,15 +40,6 @@ const labelsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         });
 
         if (!order) return reply.code(404).send({ error: "Order not found" });
-
-        if (user.role === "customer") {
-          const allowed =
-            (user.customerEntityId && order.customerEntityId === user.customerEntityId) ||
-            order.customerId === user.id;
-          if (!allowed) return reply.code(403).send({ error: "Forbidden" });
-        } else if (user.role === "driver" && order.assignedDriverId !== user.id) {
-          return reply.code(403).send({ error: "Forbidden" });
-        }
 
         const parcelLabels = order.parcels.filter((p) => Boolean(p.labelKey));
         if (parcelLabels.length === 0 && order.labelKey) {
@@ -74,3 +70,4 @@ const labelsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 };
 
 export default labelsFastifyRoutes;
+

@@ -2,6 +2,8 @@ import { createHash } from "crypto";
 import { PaidStatus, Prisma } from "@prisma/client";
 import prisma from "../../../config/prismaClient";
 import { makeScopeKey } from "../infrastructure/makeScopeKey";
+import { analyticsConfig } from "../config/analyticsConfig";
+import { analyticsLogger } from "../config/analyticsLogger";
 import {
   readThroughAnalyticsProjection,
   getFinanceQueueReadModelKey,
@@ -130,7 +132,7 @@ let cachedPolicy: {
 };
 
 async function getSlaPolicy() {
-  const dbPolicyEnabled = process.env.ANALYTICS_SLA_POLICY_DB_ENABLED === "true";
+  const dbPolicyEnabled = analyticsConfig.slaPolicyDbEnabled;
   if (Date.now() < cachedPolicy.expiresAt) {
     return {
       staleHours: cachedPolicy.staleHours,
@@ -171,7 +173,10 @@ async function getSlaPolicy() {
         error?.code === "P2022" ||
         /OperationalSlaPolicy/i.test(String(error?.message ?? ""));
       if (!knownSchemaMismatch) {
-        console.error(`[analytics-v2] sla policy load failed: ${error?.message || "unknown"}`);
+        analyticsLogger.throttledWarn("sla-policy-load", "sla policy load failed", {
+          error,
+          throttleMs: 60_000,
+        });
       }
     }
   }
@@ -250,7 +255,7 @@ export async function getAnalyticsSummaryV2(params: SummaryParams) {
   const rangeDays = clampInt(params.rangeDays ?? 30, 7, 180, 30);
   const staleHours = clampInt(params.staleHours ?? policy.staleHours, 6, 720, policy.staleHours);
   const scopeKey = makeScopeKey(params.scope);
-  const ttlMs = Number(process.env.ANALYTICS_V2_SUMMARY_TTL_MS || 60_000);
+  const ttlMs = analyticsConfig.cache.summaryTtlMs;
   const readModelKey = getSummaryReadModelKey({
     scope: scopeKey,
     rangeDays,
@@ -455,7 +460,7 @@ export async function getAnalyticsSummaryV2(params: SummaryParams) {
 export async function getAnalyticsTrendV2(params: TrendParams) {
   const rangeDays = clampInt(params.rangeDays ?? 30, 7, 180, 30);
   const scopeKey = makeScopeKey(params.scope);
-  const ttlMs = Number(process.env.ANALYTICS_V2_TREND_TTL_MS || 60_000);
+  const ttlMs = analyticsConfig.cache.trendTtlMs;
   const readModelKey = getTrendReadModelKey({
     scope: scopeKey,
     rangeDays,
@@ -525,7 +530,7 @@ export async function getAnalyticsWarningsV2(params: WarningsParams) {
   const rangeDays = clampInt(params.rangeDays ?? 30, 7, 180, 30);
   const staleHours = clampInt(params.staleHours ?? policy.staleHours, 6, 720, policy.staleHours);
   const scopeKey = makeScopeKey(params.scope);
-  const ttlMs = Number(process.env.ANALYTICS_V2_WARNINGS_TTL_MS || 60_000);
+  const ttlMs = analyticsConfig.cache.warningsTtlMs;
   const readModelKey = getWarningsReadModelKey({
     scope: scopeKey,
     rangeDays,
@@ -633,7 +638,7 @@ export async function getAnalyticsFinanceQueueV2(params: QueueParams) {
   const queuePage = Math.max(Number(params.queuePage ?? 1) || 1, 1);
   const queueOffset = (queuePage - 1) * queuePageSize;
   const scopeKey = makeScopeKey(params.scope);
-  const ttlMs = Number(process.env.ANALYTICS_V2_FINANCE_QUEUE_TTL_MS || 60_000);
+  const ttlMs = analyticsConfig.cache.financeQueueTtlMs;
 
   const queueStatuses = Array.from(
     new Set((params.queueStatuses ?? []).filter((v) => v === "expected" || v === "held")),

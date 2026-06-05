@@ -17,6 +17,8 @@ type RunQueueTickArgs = {
   batchSize?: number;
 };
 
+export type OrderLabelMode = "sync" | "async" | "queue";
+
 export type LabelQueueTickResult = {
   claimed: number;
   completed: number;
@@ -28,6 +30,27 @@ function parsePositiveInt(value: string | undefined, fallback: number) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return Math.floor(parsed);
+}
+
+export function resolveOrderLabelMode(
+  rawMode: string | undefined,
+  fallback: OrderLabelMode = "queue",
+): OrderLabelMode {
+  return rawMode === "sync" || rawMode === "async" || rawMode === "queue"
+    ? rawMode
+    : fallback;
+}
+
+export function isOrderLabelAutoFallbackEnabled() {
+  return process.env.ORDER_LABEL_AUTO_FALLBACK !== "false";
+}
+
+function resolveFallbackDelayMs() {
+  return parsePositiveInt(process.env.ORDER_LABEL_FALLBACK_DELAY_MS, 15000);
+}
+
+function resolveStaleProcessingMs() {
+  return parsePositiveInt(process.env.ORDER_LABEL_STALE_PROCESSING_MS, 300000);
 }
 
 function buildRetryDelayMs(attempt: number) {
@@ -149,6 +172,85 @@ export async function enqueueOrderLabelJob(orderId: string) {
       lockedBy: null,
     },
   });
+}
+
+async function hasMissingParcelLabels(orderId: string) {
+  const unlabeled = await prisma.parcel.count({
+    where: {
+      orderId,
+      OR: [{ labelKey: null }, { labelKey: "" }],
+    },
+  });
+
+  return unlabeled > 0;
+}
+
+export async function shouldRunOrderLabelAutoFallback(orderId: string) {
+  const missingLabels = await hasMissingParcelLabels(orderId);
+  if (!missingLabels) return false;
+
+  const job = await prisma.orderLabelJob.findUnique({
+    where: { orderId },
+    select: {
+      status: true,
+      lockedAt: true,
+    },
+  });
+
+  if (!job) return true;
+  if (job.status === OrderLabelJobStatus.completed) return false;
+
+  if (job.status === OrderLabelJobStatus.processing && job.lockedAt) {
+    const staleAfterMs = resolveStaleProcessingMs();
+    const lockAgeMs = Date.now() - job.lockedAt.getTime();
+    return lockAgeMs >= staleAfterMs;
+  }
+
+  return true;
+}
+
+export async function runOrderLabelAutoFallback(orderId: string) {
+  const shouldRun = await shouldRunOrderLabelAutoFallback(orderId);
+  if (!shouldRun) return false;
+
+  await generateAndAttachParcelLabelsForOrder(orderId);
+
+  await prisma.orderLabelJob.updateMany({
+    where: {
+      orderId,
+      status: {
+        in: [
+          OrderLabelJobStatus.pending,
+          OrderLabelJobStatus.failed,
+          OrderLabelJobStatus.processing,
+        ],
+      },
+    },
+    data: {
+      status: OrderLabelJobStatus.completed,
+      error: "Completed by auto-fallback",
+      lockedAt: null,
+      lockedBy: null,
+      availableAt: new Date(),
+    },
+  });
+
+  return true;
+}
+
+export function scheduleOrderLabelAutoFallback(orderId: string, delayMs?: number) {
+  if (!isOrderLabelAutoFallbackEnabled()) return;
+
+  const waitMs = Math.max(1000, delayMs ?? resolveFallbackDelayMs());
+  const timer = setTimeout(() => {
+    void runOrderLabelAutoFallback(orderId).catch((error) => {
+      console.error(
+        `[order-label] auto fallback failed for order ${orderId}:`,
+        error,
+      );
+    });
+  }, waitMs);
+  timer.unref?.();
 }
 
 async function claimOrderLabelJobs(workerId: string, batchSize: number): Promise<LabelJobLike[]> {

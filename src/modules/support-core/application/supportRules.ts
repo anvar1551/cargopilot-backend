@@ -6,10 +6,24 @@ import { createSupportTicket } from "./supportService";
 let started = false;
 let running = false;
 let debounceTimer: NodeJS.Timeout | null = null;
+const infoLogState = new Map<string, number>();
+let lastErrorLogAt = 0;
 
 function numberFromEnv(name: string, fallback: number) {
   const value = Number(process.env[name]);
   return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function shouldLogInfo(reason: string) {
+  const minIntervalMs = Math.max(
+    10_000,
+    numberFromEnv("SUPPORT_RULES_LOG_MIN_INTERVAL_MS", 5 * 60_000),
+  );
+  const now = Date.now();
+  const last = infoLogState.get(reason) ?? 0;
+  if (now - last < minIntervalMs) return false;
+  infoLogState.set(reason, now);
+  return true;
 }
 
 async function createStalePendingTickets() {
@@ -53,7 +67,8 @@ async function createStalePendingTickets() {
       },
       {
         id: "",
-        role: "manager",
+        roleCodes: ["manager"],
+        permissionCodes: [],
         name: "CargoPilot Auto Triage",
         email: "system@cargopilot.local",
       },
@@ -68,11 +83,15 @@ export async function runSupportAutoTriage(reason = "manual") {
   running = true;
   try {
     const createdOrSeen = await createStalePendingTickets();
-    if (createdOrSeen > 0) {
+    if (createdOrSeen > 0 && shouldLogInfo(reason)) {
       console.log(`[support-rules] reason=${reason} staleOrders=${createdOrSeen}`);
     }
   } catch (err: any) {
-    console.error(`[support-rules] failed: ${err?.message || "unknown"}`);
+    const now = Date.now();
+    if (now - lastErrorLogAt >= 30_000) {
+      lastErrorLogAt = now;
+      console.error(`[support-rules] failed: ${err?.message || "unknown"}`);
+    }
   } finally {
     running = false;
   }
@@ -92,7 +111,11 @@ export function startSupportRulesWorker() {
   started = true;
 
   subscribeAnalyticsInvalidation((event) => {
-    if (event.reason === "order_mutation" || event.reason === "worker_rebuild") {
+    const includeWorkerRebuild = process.env.SUPPORT_RULES_TRIGGER_ON_WORKER_REBUILD === "true";
+    if (
+      event.reason === "order_mutation" ||
+      (includeWorkerRebuild && event.reason === "worker_rebuild")
+    ) {
       scheduleSupportAutoTriage(event.reason);
     }
   });

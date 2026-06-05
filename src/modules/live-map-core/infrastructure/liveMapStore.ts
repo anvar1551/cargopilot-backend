@@ -1,6 +1,6 @@
 // Modernized: ioredis + Hash storage + Redis Streams
 import { EventEmitter } from "events";
-import { getRedisClient, getRedisPrefix, withRedisTimeout } from "../../../config/redis";
+import { createRedisClient, getRedisClient, getRedisPrefix, withRedisTimeout } from "../../../config/redis";
 import type {
   DriverLocationRecord,
   DriverPresenceRecord,
@@ -194,11 +194,36 @@ function writeMemoryPresence(record: DriverPresenceRecord) {
 }
 
 async function startStreamConsumer() {
-  const redis = await getRedisClient();
+  const createStreamRedis = () =>
+    createRedisClient({
+      connectTimeout: 3000,
+      enableOfflineQueue: true,
+      maxRetriesPerRequest: null,
+      lazyConnect: true,
+      commandTimeout: null,
+    });
+  let redis = createStreamRedis();
   if (!redis) return;
+  await redis.connect().catch(() => undefined);
 
   while (true) {
     try {
+      if (!redis) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        redis = createStreamRedis();
+        if (redis) {
+          await redis.connect().catch(() => undefined);
+        }
+        continue;
+      }
+      if (redis.status !== "ready" && redis.status !== "connect") {
+        await redis.connect().catch(() => undefined);
+      }
+      if (redis.status !== "ready") {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        continue;
+      }
+
       const results = (await redis.xread(
         "COUNT",
         100,
@@ -227,6 +252,15 @@ async function startStreamConsumer() {
       }
     } catch (err: any) {
       console.error(`[live-map] stream read error: ${err?.message}`);
+      try {
+        redis?.disconnect();
+      } catch {
+        // noop
+      }
+      redis = createStreamRedis();
+      if (redis) {
+        await redis.connect().catch(() => undefined);
+      }
       await new Promise((resolve) => setTimeout(resolve, 2000));
     }
   }
@@ -274,19 +308,22 @@ export async function readDriverIdsInViewport(viewport: {
   const redis = await getRedisClient();
   if (!redis) return [];
   try {
-    const ids = (await withRedisTimeout("live-map:geo-search-ids", () =>
-      redis.call(
-        "GEOSEARCH",
-        getGeoIndexKey(),
-        "FROMLONLAT",
-        String(centerLng),
-        String(centerLat),
-        "BYBOX",
-        String(widthM),
-        String(heightM),
-        "m",
-        "ASC",
-      ) as Promise<string[]>,
+    const ids = (await withRedisTimeout(
+      "live-map:geo-search-ids",
+      () =>
+        redis.call(
+          "GEOSEARCH",
+          getGeoIndexKey(),
+          "FROMLONLAT",
+          String(centerLng),
+          String(centerLat),
+          "BYBOX",
+          String(widthM),
+          String(heightM),
+          "m",
+          "ASC",
+        ) as Promise<string[]>,
+      Math.max(1500, Number(process.env.LIVE_MAP_REDIS_GEO_TIMEOUT_MS || 2500)),
     )) as string[];
     return Array.from(new Set(ids)).filter(Boolean);
   } catch (err: any) {
@@ -339,7 +376,11 @@ export async function readDriverLocations(driverIds: string[]) {
     if (redis) {
       const pipe = redis.pipeline();
       redisKeys.forEach((key) => pipe.hgetall(key));
-      const results = await withRedisTimeout("live-map:hgetall-locations", () => pipe.exec());
+      const results = await withRedisTimeout(
+        "live-map:hgetall-locations",
+        () => pipe.exec(),
+        Math.max(1500, Number(process.env.LIVE_MAP_REDIS_LOCATIONS_TIMEOUT_MS || 2500)),
+      );
 
       if (results) {
         results.forEach((entry, index) => {
@@ -456,7 +497,11 @@ export async function readDriverPresences(driverIds: string[]) {
     if (redis) {
       const pipe = redis.pipeline();
       redisKeys.forEach((key) => pipe.hgetall(key));
-      const rows = await withRedisTimeout("live-map:hgetall-presences", () => pipe.exec());
+      const rows = await withRedisTimeout(
+        "live-map:hgetall-presences",
+        () => pipe.exec(),
+        Math.max(1500, Number(process.env.LIVE_MAP_REDIS_PRESENCES_TIMEOUT_MS || 2500)),
+      );
 
       if (rows) {
         rows.forEach((entry, index) => {

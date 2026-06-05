@@ -1,11 +1,12 @@
 import type { FastifyPluginAsync } from "fastify";
 import { ZodError } from "zod";
-import { fastifyAuth } from "../../../middleware/authFastify";
+import { fastifyAuth } from "../../../modules/identity-access/transport/fastify-auth";
 import { hasPermission } from "../../identity-access";
 import {
   getDriverPresence,
   heartbeatDriverPresence,
   ingestDriverLocation,
+  ingestDriverTelemetry,
   setDriverPresence,
 } from "../../live-map-core/application/liveMapService";
 import {
@@ -14,11 +15,17 @@ import {
 } from "../application/driverProfileService";
 
 function liveMapActorFromRequest(request: any) {
-  const role = request.user?.role as Express.User["role"] | undefined;
   const warehouseId = request.user?.warehouseId ?? null;
   const userId = request.user?.id as string | undefined;
-  if (!role || !userId) return null;
-  return { role, warehouseId, userId };
+  if (!userId) return null;
+  return {
+    userId,
+    warehouseId,
+    roleCodes: Array.isArray(request.user?.roleCodes) ? request.user.roleCodes : [],
+    permissionCodes: Array.isArray(request.user?.permissionCodes)
+      ? request.user.permissionCodes
+      : [],
+  };
 }
 
 function sendLiveMapActionError(reply: any, err: any, fallbackMessage: string) {
@@ -97,6 +104,26 @@ const driverFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.send(result);
       } catch (err: any) {
         return sendLiveMapActionError(reply, err, "Failed to ingest driver location");
+      }
+    },
+  );
+
+  fastify.post(
+    "/telemetry",
+    { preHandler: fastifyAuth() },
+    async (request, reply) => {
+      const actor = liveMapActorFromRequest(request);
+      if (!actor) return reply.code(401).send({ error: "Unauthorized" });
+      const [canTelemetry, canManage] = await Promise.all([
+        hasPermission(request.user!, "drivers.telemetry"),
+        hasPermission(request.user!, "drivers.manage"),
+      ]);
+      if (!canTelemetry && !canManage) return reply.code(403).send({ error: "Forbidden" });
+      try {
+        const result = await ingestDriverTelemetry({ actor, body: request.body });
+        return reply.send(result);
+      } catch (err: any) {
+        return sendLiveMapActionError(reply, err, "Failed to ingest driver telemetry");
       }
     },
   );

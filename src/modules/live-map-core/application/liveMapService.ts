@@ -1,12 +1,6 @@
-import { DriverType, OrderStatus, Prisma } from "@prisma/client";
+import { DriverType, MembershipStatus, OrderStatus, Prisma } from "@prisma/client";
 import { z } from "zod";
 import prisma from "../../../config/prismaClient";
-import {
-  ROLE_DRIVER,
-  ROLE_MANAGER,
-  ROLE_WAREHOUSE,
-  type ActorRole,
-} from "../../identity-access";
 import {
   publishLiveMapEvent,
   readDriverLocation,
@@ -29,6 +23,10 @@ import type {
   ManagerLiveMapSnapshot,
   ManagerLiveMapWarehouse,
 } from "./liveMap.types";
+
+function hasPermission(actor: LiveMapActor, permission: string) {
+  return Array.isArray(actor.permissionCodes) && actor.permissionCodes.includes(permission);
+}
 
 const DEFAULT_CENTER = {
   lat: 41.2995,
@@ -68,10 +66,11 @@ function readIntEnv(name: string, fallback: number, min: number, max: number) {
 
 type DriverProfile = {
   id: string;
-  role: ActorRole;
+  driverType: DriverType | null;
   warehouseId: string | null;
   liveLocationEnabled: boolean;
   liveLocationUpdatedAt: Date;
+  hasDriverCapability: boolean;
 };
 
 const driverProfileCache = new Map<string, { expiresAt: number; profile: DriverProfile }>();
@@ -100,6 +99,52 @@ function writeCachedDriverProfile(profile: DriverProfile) {
   });
 }
 
+const DRIVER_PERMISSION_KEYS = ["drivers.telemetry"] as const;
+const DRIVER_EXCLUDED_PERMISSION_KEYS = ["drivers.manage", "policy.override"] as const;
+
+async function hasDriverCapability(userId: string) {
+  const memberships = await prisma.companyMembership.findMany({
+    where: {
+      userId,
+      status: MembershipStatus.active,
+    },
+    select: {
+      roles: {
+        select: {
+          role: {
+            select: {
+              rolePermissions: {
+                select: {
+                  permission: {
+                    select: {
+                      key: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const permissionSet = new Set<string>();
+  for (const membership of memberships) {
+    for (const membershipRole of membership.roles) {
+      for (const rolePermission of membershipRole.role.rolePermissions) {
+        permissionSet.add(rolePermission.permission.key);
+      }
+    }
+  }
+
+  if (!permissionSet.has("drivers.telemetry")) return false;
+  for (const forbidden of DRIVER_EXCLUDED_PERMISSION_KEYS) {
+    if (permissionSet.has(forbidden)) return false;
+  }
+  return true;
+}
+
 async function getDriverProfile(driverId: string) {
   const cached = readCachedDriverProfile(driverId);
   if (cached) return cached;
@@ -108,15 +153,21 @@ async function getDriverProfile(driverId: string) {
     where: { id: driverId },
     select: {
       id: true,
-      role: true,
+      driverType: true,
       warehouseId: true,
       liveLocationEnabled: true,
       liveLocationUpdatedAt: true,
     },
   });
   if (!profile) return null;
-  writeCachedDriverProfile(profile);
-  return profile;
+
+  const next: DriverProfile = {
+    ...profile,
+    hasDriverCapability:
+      profile.driverType != null ? true : await hasDriverCapability(profile.id),
+  };
+  writeCachedDriverProfile(next);
+  return next;
 }
 
 const liveMapOrderStatuses: OrderStatus[] = [
@@ -151,6 +202,44 @@ const driverPresenceHeartbeatSchema = z.object({
   recordedAt: z.string().datetime().optional(),
   driverId: z.string().uuid().optional(),
 });
+
+const driverTelemetrySchema = z
+  .object({
+    lat: z.number().gte(-90).lte(90).optional(),
+    lng: z.number().gte(-180).lte(180).optional(),
+    speedKmh: z.number().min(0).max(220).optional(),
+    headingDeg: z.number().min(0).max(360).optional(),
+    accuracyM: z.number().min(0).max(5000).optional(),
+    recordedAt: z.string().datetime().optional(),
+    orderId: z.string().uuid().optional(),
+    driverId: z.string().uuid().optional(),
+  })
+  .superRefine((value, ctx) => {
+    const hasLat = typeof value.lat === "number";
+    const hasLng = typeof value.lng === "number";
+    const hasLocation = hasLat && hasLng;
+
+    if (hasLat !== hasLng) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "lat and lng must be provided together",
+      });
+    }
+
+    if (!hasLocation) {
+      if (
+        typeof value.speedKmh === "number" ||
+        typeof value.headingDeg === "number" ||
+        typeof value.accuracyM === "number" ||
+        typeof value.orderId === "string"
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "location details require lat and lng",
+        });
+      }
+    }
+  });
 
 const driverPresenceQuerySchema = z.object({
   driverId: z.string().uuid().optional(),
@@ -309,7 +398,7 @@ function resolveTargetDriverId(args: {
 }) {
   const { actor, requestedDriverId } = args;
 
-  if (actor.role === ROLE_MANAGER) {
+  if (hasPermission(actor, "drivers.manage")) {
     if (requestedDriverId) return requestedDriverId;
     throw new Error("driverId is required for manager action");
   }
@@ -333,14 +422,16 @@ export async function getLiveMapSnapshot(args: {
   const recentHours = readIntEnv("LIVE_MAP_RECENT_HOURS", 24, 1, 24 * 14);
   const recentFrom = new Date(Date.now() - recentHours * 60 * 60 * 1000);
 
+  const warehouseScoped =
+    Boolean(actor.warehouseId) && !hasPermission(actor, "drivers.manage");
   const warehouseScope: Prisma.OrderWhereInput =
-    actor.role === ROLE_WAREHOUSE
+    warehouseScoped
       ? actor.warehouseId
         ? { currentWarehouseId: actor.warehouseId }
         : { currentWarehouseId: "__warehouse_scope_no_access__" }
       : {};
   const driverScope: Prisma.UserWhereInput =
-    actor.role === ROLE_WAREHOUSE
+    warehouseScoped
       ? actor.warehouseId
         ? {
             OR: [
@@ -352,7 +443,7 @@ export async function getLiveMapSnapshot(args: {
         : { id: "__warehouse_scope_no_access__" }
       : {};
   const warehouseListScope: Prisma.WarehouseWhereInput =
-    actor.role === ROLE_WAREHOUSE
+    warehouseScoped
       ? actor.warehouseId
         ? { id: actor.warehouseId }
         : { id: "__warehouse_scope_no_access__" }
@@ -472,6 +563,57 @@ export async function getLiveMapSnapshot(args: {
     0,
     maxDrivers,
   );
+  const driverEligibilityWhere: Prisma.UserWhereInput = {
+    OR: [
+      { driverType: { not: null } },
+      {
+        AND: [
+          {
+            memberships: {
+              some: {
+                status: MembershipStatus.active,
+                roles: {
+                  some: {
+                    role: {
+                      rolePermissions: {
+                        some: {
+                          permission: {
+                            key: { in: [...DRIVER_PERMISSION_KEYS] },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          {
+            NOT: {
+              memberships: {
+                some: {
+                  status: MembershipStatus.active,
+                  roles: {
+                    some: {
+                      role: {
+                        rolePermissions: {
+                          some: {
+                            permission: {
+                              key: { in: [...DRIVER_EXCLUDED_PERMISSION_KEYS] },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        ],
+      },
+    ],
+  };
 
   let driverRows: Array<{
     id: string;
@@ -487,8 +629,7 @@ export async function getLiveMapSnapshot(args: {
   if (!viewport) {
     driverRows = await prisma.user.findMany({
       where: {
-        role: ROLE_DRIVER,
-        ...driverScope,
+        AND: [driverEligibilityWhere, driverScope],
       },
       select: {
         id: true,
@@ -505,37 +646,64 @@ export async function getLiveMapSnapshot(args: {
       },
       take: maxDrivers,
     });
-  } else if (prioritizedDriverIds.length > 0) {
-    driverRows = await prisma.user.findMany({
-      where: {
-        role: ROLE_DRIVER,
-        ...driverScope,
-        id: { in: prioritizedDriverIds },
-      },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        createdAt: true,
-        warehouseId: true,
-        driverType: true,
-        liveLocationEnabled: true,
-        liveLocationUpdatedAt: true,
-      },
-      orderBy: {
-        createdAt: "desc",
-      },
-      take: maxDrivers,
-    });
+  } else {
+    const prioritizedDriverRows =
+      prioritizedDriverIds.length > 0
+        ? await prisma.user.findMany({
+            where: {
+              AND: [driverEligibilityWhere, driverScope, { id: { in: prioritizedDriverIds } }],
+            },
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              createdAt: true,
+              warehouseId: true,
+              driverType: true,
+              liveLocationEnabled: true,
+              liveLocationUpdatedAt: true,
+            },
+            orderBy: {
+              createdAt: "desc",
+            },
+            take: maxDrivers,
+          })
+        : [];
+
+    if (prioritizedDriverRows.length > 0) {
+      driverRows = prioritizedDriverRows;
+    } else {
+      // Viewport fallback: include eligible drivers even before their first location ping
+      // so operators can still discover and monitor newly onboarded drivers.
+      driverRows = await prisma.user.findMany({
+        where: {
+          AND: [driverEligibilityWhere, driverScope],
+        },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          createdAt: true,
+          warehouseId: true,
+          driverType: true,
+          liveLocationEnabled: true,
+          liveLocationUpdatedAt: true,
+        },
+        orderBy: {
+          createdAt: "desc",
+        },
+        take: maxDrivers,
+      });
+    }
   }
 
   const driverIds = driverRows.map((driver) => driver.id);
   const [driverLocations, driverPresences] = await Promise.all([
-    viewport ? readDriverLocationsInViewport(viewport) : readDriverLocations(driverIds),
+    readDriverLocations(driverIds),
     readDriverPresences(driverIds),
   ]);
 
-  const drivers: ManagerLiveMapDriver[] = driverRows.map((driver) => {
+  const drivers: ManagerLiveMapDriver[] = driverRows.flatMap((driver) => {
     const seed = hashString(driver.id);
     const assignedOrder = orderByAssignedDriver.get(driver.id) ?? null;
     const location = driverLocations.get(driver.id) ?? null;
@@ -552,6 +720,13 @@ export async function getLiveMapSnapshot(args: {
             ? orderCoords[seed % orderCoords.length]
             : DEFAULT_CENTER;
 
+    // In RBAC mode, telemetry-capable non-driver profiles are included only after
+    // they publish a real location (or are explicitly assigned), to avoid showing
+    // admin/operator users as pseudo-drivers.
+    if (driver.driverType == null && !location && !assignedOrder) {
+      return [];
+    }
+
     const liveEnabled = presence?.enabled ?? driver.liveLocationEnabled ?? true;
     const heartbeatAt = pickLatestIso([location?.recordedAt ?? null, presence?.heartbeatAt ?? null]);
     const status = deriveDriverStatus(heartbeatAt, liveEnabled);
@@ -560,7 +735,7 @@ export async function getLiveMapSnapshot(args: {
       driver.liveLocationUpdatedAt?.toISOString() ??
       driver.createdAt.toISOString();
 
-    return {
+    return [{
       id: driver.id,
       name: driver.name,
       email: driver.email,
@@ -581,7 +756,7 @@ export async function getLiveMapSnapshot(args: {
       driverType: driver.driverType === DriverType.linehaul ? "linehaul" : "local",
       activeOrderId: location?.orderId ?? assignedOrder?.id ?? null,
       seed,
-    };
+    }];
   });
 
   const viewportFilteredOrders = viewport
@@ -629,71 +804,112 @@ export async function ingestDriverLocation(args: {
   body: unknown;
 }) {
   const parsed = driverLocationSchema.parse(args.body);
-  const role = args.actor.role;
+  return ingestDriverTelemetry({
+    actor: args.actor,
+    body: {
+      ...parsed,
+      lat: parsed.lat,
+      lng: parsed.lng,
+    },
+  });
+}
 
-  let targetDriverId = args.actor.userId;
-  if (role === ROLE_MANAGER && parsed.driverId) {
-    targetDriverId = parsed.driverId;
-  }
-  if (role !== ROLE_MANAGER && parsed.driverId && parsed.driverId !== args.actor.userId) {
-    throw new Error("Driver cannot submit location for a different driver");
-  }
-
-  const recordedAt = parsed.recordedAt ? new Date(parsed.recordedAt) : new Date();
-  if (Number.isNaN(recordedAt.getTime())) {
-    throw new Error("Invalid recordedAt timestamp");
-  }
+export async function ingestDriverTelemetry(args: {
+  actor: LiveMapActor & { userId: string };
+  body: unknown;
+}) {
+  const parsed = driverTelemetrySchema.parse(args.body);
+  const targetDriverId = resolveTargetDriverId({
+    actor: args.actor,
+    requestedDriverId: parsed.driverId,
+  });
 
   const targetDriver = await getDriverProfile(targetDriverId);
-  if (!targetDriver || targetDriver.role !== ROLE_DRIVER) {
+  if (!targetDriver || (targetDriver.driverType == null && !targetDriver.hasDriverCapability)) {
     throw new Error("Target driver not found");
   }
 
-  const previousLocation = await readDriverLocation(targetDriver.id);
-  const location: DriverLocationRecord = {
+  const heartbeatAt = parsed.recordedAt
+    ? new Date(parsed.recordedAt).toISOString()
+    : new Date().toISOString();
+
+  const hasLocation = typeof parsed.lat === "number" && typeof parsed.lng === "number";
+  let location: DriverLocationRecord | null = null;
+  let broadcasted = false;
+
+  const previousLocation = hasLocation
+    ? await readDriverLocation(targetDriver.id)
+    : null;
+
+  if (hasLocation) {
+    location = {
+      driverId: targetDriver.id,
+      warehouseId: targetDriver.warehouseId ?? null,
+      lat: parsed.lat as number,
+      lng: parsed.lng as number,
+      speedKmh: parsed.speedKmh ?? 0,
+      headingDeg: parsed.headingDeg ?? 0,
+      accuracyM: parsed.accuracyM ?? null,
+      recordedAt: heartbeatAt,
+      orderId: parsed.orderId ?? null,
+    };
+    await upsertDriverLocation(location);
+  }
+
+  const touchedPresence = await touchDriverPresenceHeartbeat({
     driverId: targetDriver.id,
-    warehouseId: targetDriver.warehouseId ?? null,
-    lat: parsed.lat,
-    lng: parsed.lng,
-    speedKmh: parsed.speedKmh ?? 0,
-    headingDeg: parsed.headingDeg ?? 0,
-    accuracyM: parsed.accuracyM ?? null,
-    recordedAt: recordedAt.toISOString(),
-    orderId: parsed.orderId ?? null,
+    heartbeatAt,
+  });
+
+  const nextPresence: DriverPresenceRecord = {
+    ...touchedPresence,
+    enabled: targetDriver.liveLocationEnabled,
   };
+  await upsertDriverPresence(nextPresence);
 
-  await upsertDriverLocation(location);
-  const presence = await touchDriverPresenceHeartbeat({
-    driverId: targetDriver.id,
-    heartbeatAt: location.recordedAt,
-  });
-  const status = deriveDriverStatus(presence.heartbeatAt ?? location.recordedAt, targetDriver.liveLocationEnabled);
+  const status = deriveDriverStatus(
+    nextPresence.heartbeatAt ?? heartbeatAt,
+    nextPresence.enabled,
+  );
 
-  const shouldBroadcast = shouldBroadcastLocationDelta({
-    previous: previousLocation,
-    current: location,
-  });
-
-  if (shouldBroadcast) {
+  if (location) {
+    const shouldBroadcast = shouldBroadcastLocationDelta({
+      previous: previousLocation,
+      current: location,
+    });
+    if (shouldBroadcast) {
+      await publishLiveMapEvent({
+        type: "driver_location_upsert",
+        at: heartbeatAt,
+        payload: {
+          ...location,
+          status,
+          liveEnabled: nextPresence.enabled,
+          heartbeatAt: nextPresence.heartbeatAt,
+          seq: Date.now(),
+        },
+      });
+      broadcasted = true;
+    }
+  } else {
     await publishLiveMapEvent({
-      type: "driver_location_upsert",
-      at: new Date().toISOString(),
+      type: "driver_presence_heartbeat",
+      at: heartbeatAt,
       payload: {
-        ...location,
-        status,
-        liveEnabled: targetDriver.liveLocationEnabled,
-        heartbeatAt: presence.heartbeatAt,
-        seq: Date.now(),
+        driverId: targetDriver.id,
+        heartbeatAt,
       },
     });
+    broadcasted = true;
   }
 
   return {
     ok: true,
     location,
+    presence: nextPresence,
     status,
-    liveEnabled: targetDriver.liveLocationEnabled,
-    broadcasted: shouldBroadcast,
+    liveEnabled: nextPresence.enabled,
+    broadcasted,
   };
 }
 
@@ -708,7 +924,7 @@ export async function getDriverPresence(args: {
   });
 
   const targetDriver = await getDriverProfile(targetDriverId);
-  if (!targetDriver || targetDriver.role !== ROLE_DRIVER) {
+  if (!targetDriver || (targetDriver.driverType == null && !targetDriver.hasDriverCapability)) {
     throw new Error("Target driver not found");
   }
 
@@ -740,7 +956,7 @@ export async function setDriverPresence(args: {
   });
 
   const targetDriver = await getDriverProfile(targetDriverId);
-  if (!targetDriver || targetDriver.role !== ROLE_DRIVER) {
+  if (!targetDriver || (targetDriver.driverType == null && !targetDriver.hasDriverCapability)) {
     throw new Error("Target driver not found");
   }
 
@@ -753,13 +969,16 @@ export async function setDriverPresence(args: {
     },
     select: {
       id: true,
-      role: true,
+      driverType: true,
       warehouseId: true,
       liveLocationEnabled: true,
       liveLocationUpdatedAt: true,
     },
   });
-  writeCachedDriverProfile(updatedDriver);
+  writeCachedDriverProfile({
+    ...updatedDriver,
+    hasDriverCapability: targetDriver.hasDriverCapability,
+  });
 
   const presences = await readDriverPresences([updatedDriver.id]);
   const currentPresence = presences.get(updatedDriver.id) ?? null;
@@ -792,45 +1011,16 @@ export async function heartbeatDriverPresence(args: {
   body: unknown;
 }) {
   const parsed = driverPresenceHeartbeatSchema.parse(args.body);
-  const targetDriverId = resolveTargetDriverId({
+  const result = await ingestDriverTelemetry({
     actor: args.actor,
-    requestedDriverId: parsed.driverId,
-  });
-
-  const targetDriver = await getDriverProfile(targetDriverId);
-  if (!targetDriver || targetDriver.role !== ROLE_DRIVER) {
-    throw new Error("Target driver not found");
-  }
-
-  const heartbeatAt = parsed.recordedAt
-    ? new Date(parsed.recordedAt).toISOString()
-    : new Date().toISOString();
-
-  const touched = await touchDriverPresenceHeartbeat({
-    driverId: targetDriver.id,
-    heartbeatAt,
-  });
-
-  const nextPresence: DriverPresenceRecord = {
-    ...touched,
-    enabled: targetDriver.liveLocationEnabled,
-  };
-  await upsertDriverPresence(nextPresence);
-
-  const status = deriveDriverStatus(nextPresence.heartbeatAt, nextPresence.enabled);
-
-  await publishLiveMapEvent({
-    type: "driver_presence_heartbeat",
-    at: heartbeatAt,
-    payload: {
-      driverId: targetDriver.id,
-      heartbeatAt,
+    body: {
+      recordedAt: parsed.recordedAt,
+      driverId: parsed.driverId,
     },
   });
-
   return {
     ok: true,
-    presence: nextPresence,
-    status,
+    presence: result.presence,
+    status: result.status,
   };
 }

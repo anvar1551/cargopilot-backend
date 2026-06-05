@@ -1,0 +1,2 @@
+-- RenameIndex
+ALTER INDEX "IntegrationCanonicalEvent_aggregateType_aggregateId_eventType_i" RENAME TO "IntegrationCanonicalEvent_aggregateType_aggregateId_eventTy_idx";

@@ -2,12 +2,15 @@ import { FastifyPluginAsync } from "fastify";
 import { ZodError } from "zod";
 import { parse as parseQueryString } from "querystring";
 
-import { fastifyAuth } from "../../../middleware/authFastify";
+import { fastifyAuth } from "../../../modules/identity-access/transport/fastify-auth";
 import {
   createPaymentIntentForActor,
   createRefundForActor,
+  getCompanyPaymentPolicyForActor,
   getPaymentIntentForActor,
   handleProviderWebhook,
+  upsertCompanyPaymentPolicyForActor,
+  listAvailableProvidersForActor,
   listProviderConfigsForActor,
   patchProviderConfigForActor,
   testProviderConfigForActor,
@@ -16,11 +19,13 @@ import {
 import {
   createPaymentIntentSchema,
   listProviderConfigsQuerySchema,
+  listAvailableProvidersQuerySchema,
   patchProviderConfigSchema,
   paymentIntentIdParamsSchema,
   paymentWebhookSchema,
   providerConfigIdParamsSchema,
   refundPaymentSchema,
+  upsertCompanyPaymentSettingSchema,
   upsertProviderConfigSchema,
 } from "../shared/validation";
 import { PaymentProvider } from "@prisma/client";
@@ -36,6 +41,58 @@ function sendError(reply: any, error: unknown, fallback: string) {
 }
 
 const paymentsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.get(
+    "/settings/payments/policy",
+    { preHandler: fastifyAuth({ permission: "payments.providers.read" }) },
+    async (request, reply) => {
+      try {
+        const query = listAvailableProvidersQuerySchema.parse(request.query ?? {});
+        const result = await getCompanyPaymentPolicyForActor({
+          user: request.user!,
+          companyId: query.companyId,
+        });
+        return reply.send(result);
+      } catch (error) {
+        return sendError(reply, error, "Failed to load payment policy");
+      }
+    },
+  );
+
+  fastify.put(
+    "/settings/payments/policy",
+    { preHandler: fastifyAuth({ permission: "payments.providers.manage" }) },
+    async (request, reply) => {
+      try {
+        const body = upsertCompanyPaymentSettingSchema.parse(request.body ?? {});
+        const result = await upsertCompanyPaymentPolicyForActor({
+          user: request.user!,
+          ...body,
+        });
+        return reply.send(result);
+      } catch (error) {
+        return sendError(reply, error, "Failed to update payment policy");
+      }
+    },
+  );
+
+  fastify.get(
+    "/payments/providers/available",
+    { preHandler: fastifyAuth({ permission: "payments.intents.create" }) },
+    async (request, reply) => {
+      try {
+        const query = listAvailableProvidersQuerySchema.parse(request.query ?? {});
+        const result = await listAvailableProvidersForActor({
+          user: request.user!,
+          companyId: query.companyId,
+          environment: query.environment,
+        });
+        return reply.send(result);
+      } catch (error) {
+        return sendError(reply, error, "Failed to load available payment providers");
+      }
+    },
+  );
+
   fastify.get(
     "/settings/payments/providers",
     { preHandler: fastifyAuth({ permission: "payments.providers.read" }) },
@@ -136,7 +193,7 @@ const paymentsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post(
     "/payments/intents/:id/refund",
-    { preHandler: fastifyAuth({ permission: "payments.refunds.create" }) },
+    { preHandler: fastifyAuth({ permission: "finance.refund" }) },
     async (request, reply) => {
       try {
         const params = paymentIntentIdParamsSchema.parse(request.params);
@@ -171,17 +228,25 @@ const paymentsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 
   async function handleWebhookByProvider(provider: PaymentProvider, request: any, reply: any) {
     try {
-      const parsedBody = parseWebhookBody(request.body ?? {});
+      const rawBody =
+        typeof request.body === "string" || Buffer.isBuffer(request.body)
+          ? request.body
+          : undefined;
+      const parsedBody = parseWebhookBody(
+        Buffer.isBuffer(request.body) ? request.body.toString("utf8") : request.body ?? {},
+      );
       const body =
         provider === PaymentProvider.CLICK ||
         provider === PaymentProvider.PAYME ||
-        provider === PaymentProvider.UZUM
+        provider === PaymentProvider.UZUM ||
+        provider === PaymentProvider.STRIPE
           ? parsedBody
           : paymentWebhookSchema.parse(parsedBody);
       const result = await handleProviderWebhook({
         provider,
         body,
         headers: request.headers ?? {},
+        rawBody,
       });
       return reply.send(result);
     } catch (error) {
@@ -198,6 +263,20 @@ const paymentsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post("/payments/uzum/callback", async (request, reply) =>
     handleWebhookByProvider(PaymentProvider.UZUM, request, reply),
   );
+
+  await fastify.register(async (stripeWebhookScope) => {
+    stripeWebhookScope.removeAllContentTypeParsers();
+    stripeWebhookScope.addContentTypeParser(
+      "*",
+      { parseAs: "buffer" },
+      (_request, body, done) => done(null, body),
+    );
+
+    stripeWebhookScope.post("/payments/stripe/callback", async (request, reply) =>
+      handleWebhookByProvider(PaymentProvider.STRIPE, request, reply),
+    );
+  });
 };
 
 export default paymentsFastifyRoutes;
+

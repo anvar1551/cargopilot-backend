@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 import path from "path";
-import { PutObjectCommand } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 
 import prisma from "../../../config/prismaClient";
 import { s3 } from "../../../config/s3";
@@ -35,7 +35,6 @@ type ProofBundle = {
 
 type ProofReaderUser = Express.User;
 
-type TrackingActorRole = "customer" | "driver" | "warehouse" | "manager";
 
 type SubmitProofInput = {
   actor: OrderActor;
@@ -160,16 +159,7 @@ function parseProofStage(value: unknown, fallback: ProofStage = "delivery"): Pro
   return fallback;
 }
 
-function normalizeActorRoleForTracking(role: string | null | undefined): TrackingActorRole | null {
-  if (!role) return null;
-  if (
-    role === "customer" ||
-    role === "driver" ||
-    role === "warehouse" ||
-    role === "manager"
-  ) {
-    return role;
-  }
+function normalizeActorRoleForTracking(): null {
   return null;
 }
 
@@ -379,44 +369,56 @@ export async function submitProofForActor(input: SubmitProofInput) {
   const proofTimestamp = parseDateOrNow(body.savedAt);
   const stageLabel = stage === "pickup" ? "Pickup" : "Delivery";
 
-  const result = await prisma.$transaction(async (tx) => {
-    const photoAttachment = await tx.orderAttachment.create({
-      data: {
-        orderId: order.id,
-        key: photoKey,
-        fileName: file.originalname || `${stage}-proof-photo${photoExt}`,
-        mimeType: file.mimetype || "image/jpeg",
-        size: file.size ?? null,
-      },
-    });
+  let result: {
+    photoAttachment: { id: string; key: string; mimeType: string | null; size: number | null };
+    signatureAttachment: { id: string; key: string; mimeType: string | null; size: number | null };
+  };
+  try {
+    result = await prisma.$transaction(async (tx) => {
+      const photoAttachment = await tx.orderAttachment.create({
+        data: {
+          orderId: order.id,
+          key: photoKey,
+          fileName: file.originalname || `${stage}-proof-photo${photoExt}`,
+          mimeType: file.mimetype || "image/jpeg",
+          size: file.size ?? null,
+        },
+      });
 
-    const signatureAttachment = await tx.orderAttachment.create({
-      data: {
-        orderId: order.id,
-        key: signatureKey,
-        fileName: `${stage}-signature-${proofId}.svg`,
-        mimeType: "image/svg+xml",
-        size: Buffer.byteLength(signatureSvg, "utf8"),
-      },
-    });
+      const signatureAttachment = await tx.orderAttachment.create({
+        data: {
+          orderId: order.id,
+          key: signatureKey,
+          fileName: `${stage}-signature-${proofId}.svg`,
+          mimeType: "image/svg+xml",
+          size: Buffer.byteLength(signatureSvg, "utf8"),
+        },
+      });
 
-    await tx.tracking.create({
-      data: {
-        orderId: order.id,
-        status: null,
-        reasonCode: null,
-        note: `${stageLabel} proof uploaded (signed by: ${signedBy})`,
-        region: null,
-        warehouseId: order.currentWarehouseId ?? null,
-        actorId: actor.id,
-        actorRole: normalizeActorRoleForTracking(actor.userRole),
-        parcelId: null,
-        timestamp: proofTimestamp,
-      },
-    });
+      await tx.tracking.create({
+        data: {
+          orderId: order.id,
+          status: null,
+          reasonCode: null,
+          note: `${stageLabel} proof uploaded (signed by: ${signedBy})`,
+          region: null,
+          warehouseId: order.currentWarehouseId ?? null,
+          actorId: actor.id,
+          actorRole: normalizeActorRoleForTracking(),
+          parcelId: null,
+          timestamp: proofTimestamp,
+        },
+      });
 
-    return { photoAttachment, signatureAttachment };
-  });
+      return { photoAttachment, signatureAttachment };
+    });
+  } catch (error) {
+    await Promise.allSettled([
+      s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: photoKey })),
+      s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: signatureKey })),
+    ]);
+    throw error;
+  }
 
   return {
     success: true,

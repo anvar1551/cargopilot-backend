@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
 import { getRedisClient, getRedisPrefix } from "../../../config/redis";
+import { analyticsLogger } from "../config/analyticsLogger";
 
 export type CargoPilotDomainEventType =
   | "order_created"
@@ -82,6 +83,9 @@ export async function publishCargoPilotDomainEvent(
   try {
     await appendCargoPilotDomainEvent(event);
   } catch (err: any) {
-    console.error(`[analytics-events] publish failed: ${err?.message || "unknown"}`);
+    analyticsLogger.throttledWarn("domain-event-publish-failed", "domain event publish failed", {
+      error: err,
+      throttleMs: 60_000,
+    });
   }
 }

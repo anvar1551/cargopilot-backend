@@ -1,394 +1,129 @@
 import "dotenv/config";
-import { ScopeResource, ScopeType } from "@prisma/client";
+import bcrypt from "bcryptjs";
 import prisma from "../config/prismaClient";
-import { type ActorRole, ROLE_CUSTOMER, ROLE_DRIVER, ROLE_MANAGER, ROLE_WAREHOUSE } from "../modules/identity-access";
+import { SYSTEM_PERMISSIONS } from "../modules/identity-access/permission-registry";
 
-const ROOT_ORG_CODE = "CP_ROOT";
-const MANAGER_ROLE_CODE = "manager_global";
-const DRIVER_ROLE_CODE = "driver_ops";
-const WAREHOUSE_ROLE_CODE = "warehouse_ops";
-const CUSTOMER_ROLE_CODE = "customer_portal";
+const ROOT_COMPANY_CODE = "CP_ROOT";
+const SUPER_ADMIN_ROLE_CODE = String(process.env.ERP_SUPER_ADMIN_ROLE_CODE ?? "super_admin")
+  .trim()
+  .toLowerCase();
+const ERP_OWNER_EMAIL = String(process.env.ERP_OWNER_EMAIL ?? "").trim().toLowerCase();
+const ERP_OWNER_PASSWORD = String(process.env.ERP_OWNER_PASSWORD ?? "").trim();
+const ERP_OWNER_NAME = String(process.env.ERP_OWNER_NAME ?? "Super Admin").trim();
 
-type PermissionSeed = {
-  code: string;
-  resource: string;
-  action: string;
-  description: string;
-};
-
-const permissionSeeds: PermissionSeed[] = [
-  {
-    code: "orders.read",
-    resource: "orders",
-    action: "read",
-    description: "Read order list/detail in scoped context",
-  },
-  {
-    code: "orders.write",
-    resource: "orders",
-    action: "write",
-    description: "Create/update scoped order operational data",
-  },
-  {
-    code: "orders.export",
-    resource: "orders",
-    action: "export",
-    description: "Export scoped orders to CSV and operational extracts",
-  },
-  {
-    code: "support.read",
-    resource: "support",
-    action: "read",
-    description: "Read support tickets in scoped context",
-  },
-  {
-    code: "support.create",
-    resource: "support",
-    action: "create",
-    description: "Create support tickets",
-  },
-  {
-    code: "support.update",
-    resource: "support",
-    action: "update",
-    description: "Update support ticket workflow/messages/notes",
-  },
-  {
-    code: "pricing.read",
-    resource: "pricing",
-    action: "read",
-    description: "Read pricing regions, SLA rules/policy, tariffs, and quote views",
-  },
-  {
-    code: "pricing.write",
-    resource: "pricing",
-    action: "write",
-    description: "Create/update pricing regions, SLA rules/policy, zone matrix, and tariffs",
-  },
-  {
-    code: "users.manage",
-    resource: "users",
-    action: "manage",
-    description: "Create/list/delete users and assign operational access",
-  },
-  {
-    code: "drivers.read",
-    resource: "drivers",
-    action: "read",
-    description: "Read driver roster and operational state",
-  },
-  {
-    code: "drivers.manage",
-    resource: "drivers",
-    action: "manage",
-    description: "Update driver profile, warehouse access, and operational settings",
-  },
-  {
-    code: "drivers.telemetry",
-    resource: "drivers",
-    action: "telemetry",
-    description: "Publish location/presence and read driver presence data",
-  },
-  {
-    code: "customers.read",
-    resource: "customers",
-    action: "read",
-    description: "Read customer entities in scoped context",
-  },
-  {
-    code: "customers.write",
-    resource: "customers",
-    action: "write",
-    description: "Create/update customer entities in scoped context",
-  },
-  {
-    code: "payments.providers.read",
-    resource: "payments",
-    action: "providers.read",
-    description: "Read configured payment providers in scoped context",
-  },
-  {
-    code: "payments.providers.manage",
-    resource: "payments",
-    action: "providers.manage",
-    description: "Create/update provider credentials and payment settings",
-  },
-  {
-    code: "payments.intents.create",
-    resource: "payments",
-    action: "intents.create",
-    description: "Create payment intents for scoped orders",
-  },
-  {
-    code: "payments.intents.read",
-    resource: "payments",
-    action: "intents.read",
-    description: "Read payment intents and attempts in scope",
-  },
-  {
-    code: "payments.refunds.create",
-    resource: "payments",
-    action: "refunds.create",
-    description: "Create payment refunds for scoped intents",
-  },
-];
-
-async function ensureRootOrganization() {
+async function ensureRootCompany() {
   const existing = await prisma.organization.findFirst({
-    where: { code: ROOT_ORG_CODE },
+    where: { code: ROOT_COMPANY_CODE, type: "company" },
     select: { id: true },
   });
-
   if (existing) return existing.id;
-
   const created = await prisma.organization.create({
-    data: {
-      name: "CargoPilot Root",
-      code: ROOT_ORG_CODE,
-      type: "company",
-      isActive: true,
-    },
+    data: { code: ROOT_COMPANY_CODE, name: "CargoPilot Root", type: "company", isActive: true },
     select: { id: true },
   });
-
   return created.id;
 }
 
 async function ensurePermissions() {
-  const permissions = [];
-  for (const seed of permissionSeeds) {
-    const permission = await prisma.accessPermission.upsert({
-      where: { code: seed.code },
-      create: {
-        code: seed.code,
-        resource: seed.resource,
-        action: seed.action,
-        description: seed.description,
-      },
-      update: {
-        resource: seed.resource,
-        action: seed.action,
-        description: seed.description,
-      },
-      select: { id: true, code: true },
+  for (const permission of SYSTEM_PERMISSIONS) {
+    await prisma.permission.upsert({
+      where: { key: permission.key },
+      create: permission,
+      update: permission,
     });
-    permissions.push(permission);
   }
-  return permissions;
 }
 
-async function ensureSystemRole(args: {
-  code: string;
-  name: string;
-  permissionIds: string[];
-  scopePolicies: Array<{ resource: ScopeResource; scopeType: ScopeType }>;
-}) {
-  let role = await prisma.accessRole.findFirst({
-    where: { code: args.code, isSystem: true },
+async function ensureSuperAdminRole(companyId: string) {
+  let role = await prisma.role.findFirst({
+    where: { companyId: null, code: SUPER_ADMIN_ROLE_CODE },
     select: { id: true },
   });
-
   if (!role) {
-    role = await prisma.accessRole.create({
+    role = await prisma.role.create({
       data: {
-        code: args.code,
-        name: args.name,
+        companyId: null,
+        code: SUPER_ADMIN_ROLE_CODE,
+        name: "Super Admin",
         isSystem: true,
+        isOwnerRole: true,
       },
       select: { id: true },
     });
   }
 
-  for (const permissionId of args.permissionIds) {
+  const permissions = await prisma.permission.findMany({ select: { id: true } });
+  for (const permission of permissions) {
     await prisma.rolePermission.upsert({
       where: {
-        roleId_permissionId: {
-          roleId: role.id,
-          permissionId,
-        },
+        roleId_permissionId: { roleId: role.id, permissionId: permission.id },
       },
-      create: {
-        roleId: role.id,
-        permissionId,
-      },
+      create: { roleId: role.id, permissionId: permission.id },
       update: {},
     });
   }
-
-  for (const policy of args.scopePolicies) {
-    await prisma.dataScopePolicy.upsert({
-      where: {
-        roleId_resource: {
-          roleId: role.id,
-          resource: policy.resource,
-        },
-      },
-      create: {
-        roleId: role.id,
-        resource: policy.resource,
-        scopeType: policy.scopeType,
-      },
-      update: {
-        scopeType: policy.scopeType,
-      },
-    });
-  }
-
   return role.id;
 }
 
-async function bindExistingUsersByRole(args: {
-  appRole: ActorRole;
-  roleId: string;
-  rootOrgId: string;
-}) {
-  const users = await prisma.user.findMany({
-    where: { role: args.appRole },
-    select: { id: true, homeOrgId: true },
+async function ensureOwnerUser() {
+  if (!ERP_OWNER_EMAIL) throw new Error("ERP_OWNER_EMAIL is required");
+  const existing = await prisma.user.findUnique({
+    where: { email: ERP_OWNER_EMAIL },
+    select: { id: true },
+  });
+  if (existing) return existing.id;
+  if (!ERP_OWNER_PASSWORD) {
+    throw new Error("ERP_OWNER_PASSWORD is required to create ERP owner");
+  }
+  const password = await bcrypt.hash(ERP_OWNER_PASSWORD, 10);
+  const created = await prisma.user.create({
+    data: { name: ERP_OWNER_NAME, email: ERP_OWNER_EMAIL, password },
+    select: { id: true },
+  });
+  return created.id;
+}
+
+async function bindOwnerToCompany(args: { userId: string; companyId: string; roleId: string }) {
+  const membership = await prisma.companyMembership.upsert({
+    where: { userId_companyId: { userId: args.userId, companyId: args.companyId } },
+    create: { userId: args.userId, companyId: args.companyId, status: "active" },
+    update: { status: "active" },
+    select: { id: true },
   });
 
-  for (const user of users) {
-    if (!user.homeOrgId) {
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { homeOrgId: args.rootOrgId },
-      });
-    }
+  await prisma.membershipRole.upsert({
+    where: {
+      membershipId_roleId: { membershipId: membership.id, roleId: args.roleId },
+    },
+    create: { membershipId: membership.id, roleId: args.roleId },
+    update: {},
+  });
 
-    await prisma.userRoleBinding.upsert({
-      where: {
-        userId_roleId_orgId: {
-          userId: user.id,
-          roleId: args.roleId,
-          orgId: args.rootOrgId,
-        },
+  await prisma.membershipScope.upsert({
+    where: {
+      membershipId_scopeType_scopeRefId: {
+        membershipId: membership.id,
+        scopeType: "company",
+        scopeRefId: args.companyId,
       },
-      create: {
-        userId: user.id,
-        roleId: args.roleId,
-        orgId: args.rootOrgId,
-      },
-      update: {},
-    });
-  }
-
-  return users.length;
+    },
+    create: { membershipId: membership.id, scopeType: "company", scopeRefId: args.companyId },
+    update: {},
+  });
 }
 
 async function main() {
-  console.log("[erp-bootstrap] starting");
-  const rootOrgId = await ensureRootOrganization();
-  const permissions = await ensurePermissions();
-  const permissionByCode = new Map(permissions.map((item) => [item.code, item.id] as const));
-
-  const mapPermissionIds = (codes: string[]) =>
-    codes
-      .map((code) => permissionByCode.get(code))
-      .filter((value): value is string => Boolean(value));
-
-  const managerRoleId = await ensureSystemRole({
-    code: MANAGER_ROLE_CODE,
-    name: "Manager (Global)",
-    permissionIds: mapPermissionIds([
-      "orders.read",
-      "orders.write",
-      "orders.export",
-      "support.read",
-      "support.create",
-      "support.update",
-      "pricing.read",
-      "pricing.write",
-      "users.manage",
-      "drivers.read",
-      "drivers.manage",
-      "drivers.telemetry",
-      "customers.read",
-      "customers.write",
-      "payments.providers.read",
-      "payments.providers.manage",
-      "payments.intents.create",
-      "payments.intents.read",
-      "payments.refunds.create",
-    ]),
-    scopePolicies: [
-      { resource: ScopeResource.orders, scopeType: ScopeType.global },
-      { resource: ScopeResource.support, scopeType: ScopeType.global },
-      { resource: ScopeResource.drivers, scopeType: ScopeType.global },
-      { resource: ScopeResource.customers, scopeType: ScopeType.global },
-      { resource: ScopeResource.payments, scopeType: ScopeType.global },
-    ],
-  });
-
-  const driverRoleId = await ensureSystemRole({
-    code: DRIVER_ROLE_CODE,
-    name: "Driver (Operations)",
-    permissionIds: mapPermissionIds([
-      "orders.read",
-      "orders.write",
-      "support.read",
-      "support.create",
-      "support.update",
-      "drivers.telemetry",
-    ]),
-    scopePolicies: [
-      { resource: ScopeResource.orders, scopeType: ScopeType.assigned },
-      { resource: ScopeResource.support, scopeType: ScopeType.own },
-      { resource: ScopeResource.drivers, scopeType: ScopeType.own },
-    ],
-  });
-
-  const warehouseRoleId = await ensureSystemRole({
-    code: WAREHOUSE_ROLE_CODE,
-    name: "Warehouse (Operations)",
-    permissionIds: mapPermissionIds([
-      "orders.read",
-      "orders.write",
-      "support.read",
-      "support.create",
-      "support.update",
-      "drivers.read",
-    ]),
-    scopePolicies: [
-      { resource: ScopeResource.orders, scopeType: ScopeType.organization },
-      { resource: ScopeResource.support, scopeType: ScopeType.organization },
-      { resource: ScopeResource.drivers, scopeType: ScopeType.organization },
-    ],
-  });
-
-  const customerRoleId = await ensureSystemRole({
-    code: CUSTOMER_ROLE_CODE,
-    name: "Customer (Portal)",
-    permissionIds: mapPermissionIds([
-      "orders.read",
-      "orders.write",
-      "support.read",
-      "support.create",
-      "customers.read",
-      "payments.intents.read",
-    ]),
-    scopePolicies: [
-      { resource: ScopeResource.orders, scopeType: ScopeType.own },
-      { resource: ScopeResource.support, scopeType: ScopeType.own },
-      { resource: ScopeResource.customers, scopeType: ScopeType.own },
-      { resource: ScopeResource.payments, scopeType: ScopeType.own },
-    ],
-  });
-
-  const [boundManagers, boundDrivers, boundWarehouses, boundCustomers] = await Promise.all([
-    bindExistingUsersByRole({ appRole: ROLE_MANAGER, roleId: managerRoleId, rootOrgId }),
-    bindExistingUsersByRole({ appRole: ROLE_DRIVER, roleId: driverRoleId, rootOrgId }),
-    bindExistingUsersByRole({ appRole: ROLE_WAREHOUSE, roleId: warehouseRoleId, rootOrgId }),
-    bindExistingUsersByRole({ appRole: ROLE_CUSTOMER, roleId: customerRoleId, rootOrgId }),
-  ]);
-
-  console.log(
-    `[erp-bootstrap] done rootOrg=${rootOrgId} managerRole=${managerRoleId} driverRole=${driverRoleId} warehouseRole=${warehouseRoleId} customerRole=${customerRoleId} managersBound=${boundManagers} driversBound=${boundDrivers} warehousesBound=${boundWarehouses} customersBound=${boundCustomers}`,
-  );
+  const companyId = await ensureRootCompany();
+  await ensurePermissions();
+  const roleId = await ensureSuperAdminRole(companyId);
+  const userId = await ensureOwnerUser();
+  await bindOwnerToCompany({ userId, companyId, roleId });
+  console.log(`[erp-bootstrap] done company=${companyId} owner=${userId} role=${roleId}`);
 }
 
 main()
-  .catch((error) => {
-    console.error("[erp-bootstrap] failed", error);
+  .catch((err) => {
+    console.error("[erp-bootstrap] failed", err);
     process.exitCode = 1;
   })
   .finally(async () => {

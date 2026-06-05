@@ -1,7 +1,15 @@
 import {
+  CashCollectionEventType,
+  CashCollectionKind,
+  CashCollectionStatus,
+  CashHolderType,
+  PaidBy,
+  PaidStatus,
+  OrderPaymentState,
   PaymentAttemptStatus,
   PaymentEnvironment,
   PaymentIntentStatus,
+  PaymentType,
   PaymentProvider,
   PaymentWebhookProcessStatus,
   Prisma,
@@ -26,6 +34,77 @@ function callbackPathForProvider(provider: PaymentProvider) {
   return `/api/payments/${provider.toLowerCase()}/callback`;
 }
 
+function isGlobalPaymentsEnabled() {
+  return process.env.PAYMENTS_ENABLED === "true";
+}
+
+function normalizedOrNull(value: string | null | undefined): string | null {
+  const next = value?.trim();
+  return next ? next : null;
+}
+
+function normalizedOrUndefined(value: string | null | undefined): string | undefined {
+  const next = normalizedOrNull(value);
+  return next ?? undefined;
+}
+
+function collectProviderConfigIssues(args: {
+  provider: PaymentProvider;
+  merchantId?: string | null;
+  serviceId?: string | null;
+  accountId?: string | null;
+  secret?: string | null;
+}) {
+  const merchantId = normalizedOrUndefined(args.merchantId);
+  const serviceId = normalizedOrUndefined(args.serviceId);
+  const accountId = normalizedOrUndefined(args.accountId);
+  const secret = normalizedOrUndefined(args.secret);
+  const issues: string[] = [];
+
+  if (!secret || secret.length < 4) issues.push("secret is required and must be at least 4 chars");
+
+  if (args.provider === PaymentProvider.CLICK) {
+    if (!merchantId) issues.push("merchantId is required for CLICK");
+    if (!serviceId) issues.push("serviceId is required for CLICK");
+    if (!accountId) issues.push("accountId (merchant_user_id) is required for CLICK");
+  }
+
+  if (args.provider === PaymentProvider.PAYME) {
+    if (!merchantId) issues.push("merchantId (cashbox ID) is required for PAYME");
+  }
+
+  if (args.provider === PaymentProvider.UZUM) {
+    if (!serviceId) issues.push("serviceId is required for UZUM");
+    if (!accountId) issues.push("accountId (BasicAuth username) is required for UZUM");
+  }
+
+  if (args.provider === PaymentProvider.STRIPE) {
+    if (!secret?.startsWith("sk_")) {
+      issues.push("secret must be a Stripe secret key (sk_...) for STRIPE");
+    }
+    if (!serviceId?.startsWith("whsec_")) {
+      issues.push("serviceId must be Stripe webhook secret (whsec_...) for STRIPE");
+    }
+  }
+
+  return issues;
+}
+
+function assertProviderConfigValid(args: {
+  provider: PaymentProvider;
+  merchantId?: string | null;
+  serviceId?: string | null;
+  accountId?: string | null;
+  secret?: string | null;
+}) {
+  const issues = collectProviderConfigIssues(args);
+  if (issues.length === 0) return;
+  const err = new Error(issues.join("; ")) as Error & { statusCode: number; issues?: string[] };
+  err.statusCode = 400;
+  err.issues = issues;
+  throw err;
+}
+
 function parseObjectRecord(input: unknown): Record<string, unknown> {
   if (!input) return {};
   if (typeof input === "string") {
@@ -44,6 +123,12 @@ function objectStringField(input: Record<string, unknown>, key: string): string 
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "bigint") return String(value);
   return undefined;
+}
+
+function nestedObjectField(input: Record<string, unknown>, key: string): Record<string, unknown> {
+  const value = input[key];
+  if (value && typeof value === "object") return value as Record<string, unknown>;
+  return {};
 }
 
 function toResolvedProviderConfig(
@@ -75,11 +160,19 @@ function toResolvedProviderConfig(
 }
 
 async function getBoundOrgIds(userId: string) {
-  const bindings = await prisma.userRoleBinding.findMany({
-    where: { userId },
-    select: { orgId: true },
+  const memberships = await prisma.companyMembership.findMany({
+    where: { userId, status: "active" },
+    select: {
+      companyId: true,
+      scopes: { select: { scopeRefId: true } },
+    },
   });
-  return new Set(bindings.map((item) => item.orgId));
+  const ids = new Set<string>();
+  for (const membership of memberships) {
+    ids.add(membership.companyId);
+    for (const scope of membership.scopes) ids.add(scope.scopeRefId);
+  }
+  return ids;
 }
 
 async function assertCompanyAccess(args: {
@@ -94,6 +187,108 @@ async function assertCompanyAccess(args: {
   const err = new Error("Forbidden for this company") as Error & { statusCode: number };
   err.statusCode = 403;
   throw err;
+}
+
+export async function getCompanyPaymentPolicyForActor(args: {
+  user: AuthUser;
+  companyId?: string;
+}) {
+  await authorize(args.user, "payments.providers.read");
+  const companyId = (args.companyId ?? args.user.companyId ?? "").trim();
+  if (!companyId) {
+    const err = new Error("companyId is required") as Error & { statusCode: number };
+    err.statusCode = 400;
+    throw err;
+  }
+
+  await assertCompanyAccess({
+    user: args.user,
+    companyId,
+    permission: "payments.providers.read",
+  });
+
+  const setting = await prisma.companyPaymentSetting.findUnique({
+    where: { companyId },
+    select: {
+      id: true,
+      companyId: true,
+      onlinePaymentsEnabled: true,
+      defaultProvider: true,
+      allowProviderOverride: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+
+  return {
+    companyId,
+    globalPaymentsEnabled: isGlobalPaymentsEnabled(),
+    onlinePaymentsEnabled: setting?.onlinePaymentsEnabled ?? true,
+    effectiveOnlinePaymentsEnabled:
+      isGlobalPaymentsEnabled() && (setting?.onlinePaymentsEnabled ?? true),
+    defaultProvider: setting?.defaultProvider ?? null,
+    allowProviderOverride: setting?.allowProviderOverride ?? true,
+    createdAt: setting?.createdAt ?? null,
+    updatedAt: setting?.updatedAt ?? null,
+  };
+}
+
+export async function upsertCompanyPaymentPolicyForActor(args: {
+  user: AuthUser;
+  companyId: string;
+  onlinePaymentsEnabled: boolean;
+  defaultProvider?: PaymentProvider | null;
+  allowProviderOverride?: boolean;
+}) {
+  await assertCompanyAccess({
+    user: args.user,
+    companyId: args.companyId,
+    permission: "payments.providers.manage",
+  });
+
+  const setting = await prisma.companyPaymentSetting.upsert({
+    where: { companyId: args.companyId },
+    create: {
+      companyId: args.companyId,
+      onlinePaymentsEnabled: args.onlinePaymentsEnabled,
+      defaultProvider: args.defaultProvider ?? null,
+      allowProviderOverride: args.allowProviderOverride ?? true,
+      createdByUserId: args.user.id,
+      updatedByUserId: args.user.id,
+    },
+    update: {
+      onlinePaymentsEnabled: args.onlinePaymentsEnabled,
+      defaultProvider: args.defaultProvider ?? null,
+      allowProviderOverride: args.allowProviderOverride ?? true,
+      updatedByUserId: args.user.id,
+    },
+    select: {
+      id: true,
+      companyId: true,
+      onlinePaymentsEnabled: true,
+      defaultProvider: true,
+      allowProviderOverride: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+
+  return {
+    ...setting,
+    globalPaymentsEnabled: isGlobalPaymentsEnabled(),
+    effectiveOnlinePaymentsEnabled:
+      isGlobalPaymentsEnabled() && setting.onlinePaymentsEnabled,
+  };
+}
+
+export async function isCompanyOnlinePaymentsAllowed(companyId: string) {
+  const setting = await prisma.companyPaymentSetting.findUnique({
+    where: { companyId },
+    select: {
+      onlinePaymentsEnabled: true,
+    },
+  });
+  return isGlobalPaymentsEnabled() && (setting?.onlinePaymentsEnabled ?? true);
 }
 
 function canonicalToIntentStatus(status?: string): PaymentIntentStatus | undefined {
@@ -116,6 +311,158 @@ function canonicalToIntentStatus(status?: string): PaymentIntentStatus | undefin
       return PaymentIntentStatus.PENDING;
     default:
       return undefined;
+  }
+}
+
+function mapIntentStatusToOrderPaymentState(status: PaymentIntentStatus): OrderPaymentState {
+  switch (status) {
+    case PaymentIntentStatus.SUCCEEDED:
+      return OrderPaymentState.PAID;
+    case PaymentIntentStatus.REFUNDED:
+    case PaymentIntentStatus.PARTIALLY_REFUNDED:
+      return OrderPaymentState.REFUNDED;
+    case PaymentIntentStatus.FAILED:
+    case PaymentIntentStatus.CANCELED:
+      return OrderPaymentState.FAILED;
+    case PaymentIntentStatus.PENDING:
+    case PaymentIntentStatus.REQUIRES_ACTION:
+    case PaymentIntentStatus.PROCESSING:
+    default:
+      return OrderPaymentState.PENDING;
+  }
+}
+
+async function reconcileOrderServiceChargeAfterOnlinePayment(
+  tx: Prisma.TransactionClient,
+  args: {
+    orderId: string;
+    intentStatus: PaymentIntentStatus;
+    actorId?: string | null;
+  },
+) {
+  if (args.intentStatus !== PaymentIntentStatus.SUCCEEDED) return;
+
+  const order = await tx.order.findUnique({
+    where: { id: args.orderId },
+    select: {
+      id: true,
+      paymentType: true,
+      serviceCharge: true,
+      serviceChargePaidStatus: true,
+      deliveryChargePaidBy: true,
+      currency: true,
+    },
+  });
+  if (!order) return;
+
+  const isOnlinePayment =
+    order.paymentType === PaymentType.CARD || order.paymentType === PaymentType.TRANSFER;
+  if (!isOnlinePayment) return;
+
+  const serviceChargeAmount = Number(order.serviceCharge ?? 0);
+  if (!Number.isFinite(serviceChargeAmount) || serviceChargeAmount <= 0) return;
+
+  const serviceChargeExpectedFromSender =
+    order.deliveryChargePaidBy === PaidBy.SENDER ||
+    order.deliveryChargePaidBy === PaidBy.RECIPIENT;
+  if (!serviceChargeExpectedFromSender) return;
+
+  const now = new Date();
+  const existing = await tx.cashCollection.findUnique({
+    where: {
+      orderId_kind: {
+        orderId: order.id,
+        kind: CashCollectionKind.service_charge,
+      },
+    },
+    select: {
+      id: true,
+      status: true,
+      expectedAmount: true,
+      collectedAmount: true,
+      currency: true,
+      currentHolderType: true,
+      currentHolderUserId: true,
+      currentHolderWarehouseId: true,
+      currentHolderLabel: true,
+      collectedAt: true,
+    },
+  });
+
+  const settledAmount = Number(
+    existing?.collectedAmount ?? existing?.expectedAmount ?? serviceChargeAmount,
+  );
+  const nextAmount =
+    Number.isFinite(settledAmount) && settledAmount > 0 ? settledAmount : serviceChargeAmount;
+
+  if (!existing) {
+    await tx.cashCollection.create({
+      data: {
+        orderId: order.id,
+        kind: CashCollectionKind.service_charge,
+        status: CashCollectionStatus.settled,
+        expectedAmount: serviceChargeAmount,
+        collectedAmount: nextAmount,
+        currency: order.currency ?? "UZS",
+        currentHolderType: CashHolderType.finance,
+        currentHolderLabel: "Online payment",
+        collectedAt: now,
+        settledAt: now,
+        events: {
+          create: {
+            eventType: CashCollectionEventType.settled,
+            amount: nextAmount,
+            note: "Service charge settled via online payment provider",
+            actorId: args.actorId ?? null,
+            actorRole: null,
+            toHolderType: CashHolderType.finance,
+            toHolderName: "Online payment",
+          },
+        },
+      },
+    });
+  } else if (existing.status !== CashCollectionStatus.settled) {
+    await tx.cashCollection.update({
+      where: { id: existing.id },
+      data: {
+        status: CashCollectionStatus.settled,
+        expectedAmount:
+          Number.isFinite(Number(existing.expectedAmount)) && Number(existing.expectedAmount) > 0
+            ? Number(existing.expectedAmount)
+            : serviceChargeAmount,
+        collectedAmount: nextAmount,
+        currency: existing.currency ?? order.currency ?? "UZS",
+        currentHolderType: CashHolderType.finance,
+        currentHolderUserId: null,
+        currentHolderWarehouseId: null,
+        currentHolderLabel: "Online payment",
+        collectedAt: existing.collectedAt ?? now,
+        settledAt: now,
+        events: {
+          create: {
+            eventType: CashCollectionEventType.settled,
+            amount: nextAmount,
+            note: "Service charge settled via online payment provider",
+            fromHolderType: existing.currentHolderType,
+            fromHolderId: existing.currentHolderUserId ?? existing.currentHolderWarehouseId ?? null,
+            fromHolderName: existing.currentHolderLabel ?? null,
+            toHolderType: CashHolderType.finance,
+            toHolderName: "Online payment",
+            actorId: args.actorId ?? null,
+            actorRole: null,
+          },
+        },
+      },
+    });
+  }
+
+  if (order.serviceChargePaidStatus !== PaidStatus.PAID) {
+    await tx.order.update({
+      where: { id: order.id },
+      data: {
+        serviceChargePaidStatus: PaidStatus.PAID,
+      },
+    });
   }
 }
 
@@ -160,6 +507,80 @@ export async function listProviderConfigsForActor(args: {
   });
 }
 
+export async function listAvailableProvidersForActor(args: {
+  user: AuthUser;
+  companyId?: string;
+  environment?: PaymentEnvironment;
+}) {
+  await authorize(args.user, "payments.intents.create");
+
+  const targetCompanyId = (args.companyId ?? args.user.companyId ?? "").trim();
+  if (!targetCompanyId) {
+    const err = new Error("companyId is required") as Error & { statusCode: number };
+    err.statusCode = 400;
+    throw err;
+  }
+
+  await assertCompanyAccess({
+    user: args.user,
+    companyId: targetCompanyId,
+    permission: "payments.intents.create",
+  });
+
+  const policy = await prisma.companyPaymentSetting.findUnique({
+    where: { companyId: targetCompanyId },
+    select: {
+      onlinePaymentsEnabled: true,
+      defaultProvider: true,
+      allowProviderOverride: true,
+    },
+  });
+  const effectiveEnabled =
+    isGlobalPaymentsEnabled() && (policy?.onlinePaymentsEnabled ?? true);
+  if (!effectiveEnabled) return [];
+
+  const rows = await prisma.paymentProviderConfig.findMany({
+    where: {
+      companyId: targetCompanyId,
+      isEnabled: true,
+      ...(args.environment ? { environment: args.environment } : null),
+    },
+    orderBy: [{ provider: "asc" }, { environment: "asc" }],
+    select: {
+      id: true,
+      provider: true,
+      environment: true,
+      callbackPath: true,
+      merchantId: true,
+      serviceId: true,
+      accountId: true,
+      updatedAt: true,
+    },
+  });
+
+  const mapped = rows.map((row) => ({
+    id: row.id,
+    provider: row.provider,
+    environment: row.environment,
+    callbackPath: row.callbackPath,
+    integrationMode:
+      row.provider === PaymentProvider.UZUM ? "webhook" : ("redirect" as "webhook" | "redirect"),
+    supportsCheckoutRedirect: row.provider !== PaymentProvider.UZUM,
+    configuredFields: {
+      merchantId: Boolean(row.merchantId),
+      serviceId: Boolean(row.serviceId),
+      accountId: Boolean(row.accountId),
+    },
+    updatedAt: row.updatedAt,
+  }));
+
+  if (!policy?.defaultProvider) return mapped;
+
+  const preferred = mapped.filter((item) => item.provider === policy.defaultProvider);
+  const others = mapped.filter((item) => item.provider !== policy.defaultProvider);
+  return [...preferred, ...others];
+}
+
 export async function upsertProviderConfigForActor(args: {
   user: AuthUser;
   companyId: string;
@@ -177,8 +598,21 @@ export async function upsertProviderConfigForActor(args: {
     permission: "payments.providers.manage",
   });
 
-  const secretEncrypted = encryptSecret(args.secret.trim());
-  const secretMasked = maskSecret(args.secret.trim());
+  const merchantId = normalizedOrNull(args.merchantId);
+  const serviceId = normalizedOrNull(args.serviceId);
+  const accountId = normalizedOrNull(args.accountId);
+  const secretRaw = args.secret.trim();
+
+  assertProviderConfigValid({
+    provider: args.provider,
+    merchantId,
+    serviceId,
+    accountId,
+    secret: secretRaw,
+  });
+
+  const secretEncrypted = encryptSecret(secretRaw);
+  const secretMasked = maskSecret(secretRaw);
 
   return prisma.paymentProviderConfig.upsert({
     where: {
@@ -193,9 +627,9 @@ export async function upsertProviderConfigForActor(args: {
       provider: args.provider,
       environment: args.environment,
       isEnabled: args.isEnabled ?? true,
-      merchantId: args.merchantId?.trim() || null,
-      serviceId: args.serviceId?.trim() || null,
-      accountId: args.accountId?.trim() || null,
+      merchantId,
+      serviceId,
+      accountId,
       secretEncrypted,
       secretMasked,
       callbackPath: callbackPathForProvider(args.provider),
@@ -204,9 +638,9 @@ export async function upsertProviderConfigForActor(args: {
     },
     update: {
       isEnabled: args.isEnabled ?? true,
-      merchantId: args.merchantId?.trim() || null,
-      serviceId: args.serviceId?.trim() || null,
-      accountId: args.accountId?.trim() || null,
+      merchantId,
+      serviceId,
+      accountId,
       secretEncrypted,
       secretMasked,
       callbackPath: callbackPathForProvider(args.provider),
@@ -273,13 +707,29 @@ export async function patchProviderConfigForActor(args: {
     : existing.secretEncrypted;
   const secretMasked = nextSecretRaw ? maskSecret(nextSecretRaw) : existing.secretMasked;
 
+  const nextMerchantId =
+    args.merchantId === undefined ? existing.merchantId : normalizedOrNull(args.merchantId);
+  const nextServiceId =
+    args.serviceId === undefined ? existing.serviceId : normalizedOrNull(args.serviceId);
+  const nextAccountId =
+    args.accountId === undefined ? existing.accountId : normalizedOrNull(args.accountId);
+  const nextSecret = nextSecretRaw ?? decryptSecret(secretEncrypted);
+
+  assertProviderConfigValid({
+    provider: existing.provider,
+    merchantId: nextMerchantId,
+    serviceId: nextServiceId,
+    accountId: nextAccountId,
+    secret: nextSecret,
+  });
+
   return prisma.paymentProviderConfig.update({
     where: { id: existing.id },
     data: {
       isEnabled: args.isEnabled ?? existing.isEnabled,
-      merchantId: args.merchantId?.trim() ?? existing.merchantId,
-      serviceId: args.serviceId?.trim() ?? existing.serviceId,
-      accountId: args.accountId?.trim() ?? existing.accountId,
+      merchantId: nextMerchantId,
+      serviceId: nextServiceId,
+      accountId: nextAccountId,
       environment: args.environment ?? existing.environment,
       secretEncrypted,
       secretMasked,
@@ -332,7 +782,16 @@ export async function testProviderConfigForActor(args: { user: AuthUser; id: str
     permission: "payments.providers.manage",
   });
 
-  const canDecrypt = Boolean(decryptSecret(config.secretEncrypted));
+  const decryptedSecret = decryptSecret(config.secretEncrypted);
+  const issues = collectProviderConfigIssues({
+    provider: config.provider,
+    merchantId: config.merchantId,
+    serviceId: config.serviceId,
+    accountId: config.accountId,
+    secret: decryptedSecret,
+  });
+  const healthy = issues.length === 0;
+
   return {
     id: config.id,
     provider: config.provider,
@@ -343,7 +802,8 @@ export async function testProviderConfigForActor(args: { user: AuthUser; id: str
     serviceId: config.serviceId,
     accountId: config.accountId,
     secretMasked: config.secretMasked,
-    healthy: canDecrypt,
+    healthy,
+    issues,
   };
 }
 
@@ -381,6 +841,15 @@ async function resolveActiveConfig(args: {
     err.statusCode = 400;
     throw err;
   }
+
+  assertProviderConfigValid({
+    provider: explicit.provider,
+    merchantId: explicit.merchantId,
+    serviceId: explicit.serviceId,
+    accountId: explicit.accountId,
+    secret: decryptSecret(explicit.secretEncrypted),
+  });
+
   return explicit;
 }
 
@@ -394,6 +863,30 @@ export async function createPaymentIntentForActor(args: {
     permission: "payments.intents.create",
   });
 
+  const policy = await prisma.companyPaymentSetting.findUnique({
+    where: { companyId: args.input.companyId },
+    select: {
+      onlinePaymentsEnabled: true,
+      defaultProvider: true,
+      allowProviderOverride: true,
+    },
+  });
+  const effectiveEnabled =
+    isGlobalPaymentsEnabled() && (policy?.onlinePaymentsEnabled ?? true);
+  if (!effectiveEnabled) {
+    const err = new Error("Online payments are disabled for this company") as Error & {
+      statusCode: number;
+    };
+    err.statusCode = 409;
+    throw err;
+  }
+
+  const requestedProvider = args.input.provider;
+  const providerToUse =
+    requestedProvider && (policy?.allowProviderOverride ?? true)
+      ? requestedProvider
+      : (policy?.defaultProvider ?? requestedProvider);
+
   const existing = await prisma.paymentIntent.findUnique({
     where: {
       companyId_idempotencyKey: {
@@ -403,12 +896,28 @@ export async function createPaymentIntentForActor(args: {
     },
     select: {
       id: true,
+      orderId: true,
       status: true,
       providerCheckoutUrl: true,
       providerPaymentId: true,
     },
   });
   if (existing) {
+    if (existing.orderId !== args.input.orderId) {
+      const err = new Error(
+        "Idempotency key is already used for a different order",
+      ) as Error & { statusCode: number };
+      err.statusCode = 409;
+      throw err;
+    }
+
+    await prisma.order.update({
+      where: { id: args.input.orderId },
+      data: {
+        paymentState: mapIntentStatusToOrderPaymentState(existing.status),
+      },
+    });
+
     return {
       paymentIntentId: existing.id,
       status: toCanonicalStatus(existing.status),
@@ -430,7 +939,7 @@ export async function createPaymentIntentForActor(args: {
 
   const config = await resolveActiveConfig({
     companyId: args.input.companyId,
-    provider: args.input.provider,
+    provider: providerToUse,
   });
   const resolvedConfig = toResolvedProviderConfig(config);
   const adapter = getPaymentProviderAdapter(config.provider);
@@ -497,6 +1006,13 @@ export async function createPaymentIntentForActor(args: {
         providerPaymentId: providerResult?.providerPaymentId,
         providerInvoiceId: providerResult?.providerInvoiceId,
         providerCheckoutUrl: providerResult?.checkoutUrl,
+      },
+    });
+
+    await tx.order.update({
+      where: { id: args.input.orderId },
+      data: {
+        paymentState: mapIntentStatusToOrderPaymentState(nextIntentStatus),
       },
     });
   });
@@ -603,6 +1119,24 @@ async function resolveWebhookContext(args: {
     objectStringField(accountRecord, "order_id") ||
     objectStringField(accountRecord, "paymentIntentId") ||
     objectStringField(accountRecord, "payment_intent_id");
+  const stripeEventData = nestedObjectField(args.bodyRecord, "data");
+  const stripeEventObject = nestedObjectField(stripeEventData, "object");
+  const stripeEventMetadata = nestedObjectField(stripeEventObject, "metadata");
+  const stripeEventType = objectStringField(args.bodyRecord, "type") ?? "";
+  const stripePaymentIntentRef = objectStringField(stripeEventObject, "payment_intent");
+  const stripeIntentIdFromMetadata = objectStringField(
+    stripeEventMetadata,
+    "paymentIntentId",
+  );
+  const stripeIntentIdFromClientRef = objectStringField(
+    stripeEventObject,
+    "client_reference_id",
+  );
+  const stripeOrderIdFromMetadata = objectStringField(stripeEventMetadata, "orderId");
+  const stripeCompanyIdFromMetadata = objectStringField(
+    stripeEventMetadata,
+    "companyId",
+  );
   let intent = null as null | Prisma.PaymentIntentGetPayload<{
     include: { providerConfig: true };
   }>;
@@ -639,6 +1173,48 @@ async function resolveWebhookContext(args: {
       include: { providerConfig: true },
     });
   }
+  if (
+    !intent &&
+    args.provider === PaymentProvider.STRIPE &&
+    stripeIntentIdFromMetadata
+  ) {
+    intent = await prisma.paymentIntent.findUnique({
+      where: { id: stripeIntentIdFromMetadata },
+      include: { providerConfig: true },
+    });
+  }
+  if (
+    !intent &&
+    args.provider === PaymentProvider.STRIPE &&
+    stripeIntentIdFromClientRef
+  ) {
+    intent = await prisma.paymentIntent.findUnique({
+      where: { id: stripeIntentIdFromClientRef },
+      include: { providerConfig: true },
+    });
+  }
+  if (
+    !intent &&
+    args.provider === PaymentProvider.STRIPE &&
+    stripePaymentIntentRef &&
+    stripeEventType.startsWith("payment_intent.")
+  ) {
+    intent = await prisma.paymentIntent.findFirst({
+      where: { providerPaymentId: stripePaymentIntentRef },
+      include: { providerConfig: true },
+    });
+  }
+  if (
+    !intent &&
+    args.provider === PaymentProvider.STRIPE &&
+    stripeOrderIdFromMetadata
+  ) {
+    intent = await prisma.paymentIntent.findFirst({
+      where: { orderId: stripeOrderIdFromMetadata },
+      orderBy: { createdAt: "desc" },
+      include: { providerConfig: true },
+    });
+  }
 
   if (intent?.providerConfig) {
     return {
@@ -657,7 +1233,8 @@ async function resolveWebhookContext(args: {
     };
   }
 
-  const companyId = objectStringField(args.bodyRecord, "companyId");
+  const companyId =
+    objectStringField(args.bodyRecord, "companyId") || stripeCompanyIdFromMetadata;
   if (!companyId) {
     const err = new Error("Webhook payload does not identify company/payment intent") as Error & {
       statusCode: number;
@@ -678,9 +1255,16 @@ export async function handleProviderWebhook(args: {
   provider: PaymentProvider;
   body: unknown;
   headers: Record<string, unknown>;
+  rawBody?: string | Buffer;
 }) {
   const bodyRecord = parseObjectRecord(args.body);
-  const environment = parsePaymentEnvironment(objectStringField(bodyRecord, "environment"));
+  const stripeLiveMode = bodyRecord["livemode"];
+  const environment =
+    args.provider === PaymentProvider.STRIPE && typeof stripeLiveMode === "boolean"
+      ? stripeLiveMode
+        ? PaymentEnvironment.PRODUCTION
+        : PaymentEnvironment.TEST
+      : parsePaymentEnvironment(objectStringField(bodyRecord, "environment"));
   const { intent, config } = await resolveWebhookContext({
     provider: args.provider,
     bodyRecord,
@@ -695,6 +1279,7 @@ export async function handleProviderWebhook(args: {
     headers: args.headers as Record<string, string | string[] | undefined>,
     config,
     intent,
+    rawBody: args.rawBody,
   });
 
   const mappedIntentStatus = canonicalToIntentStatus(verification.mappedStatus);
@@ -739,13 +1324,31 @@ export async function handleProviderWebhook(args: {
     });
 
     if (verification.isValid && intentId && mappedIntentStatus) {
-      await tx.paymentIntent.update({
+      const updatedIntent = await tx.paymentIntent.update({
         where: { id: intentId },
         data: {
           status: mappedIntentStatus,
           providerPaymentId: verification.providerPaymentId,
         },
+        select: {
+          orderId: true,
+          status: true,
+        },
       });
+
+      await tx.order.update({
+        where: { id: updatedIntent.orderId },
+        data: {
+          paymentState: mapIntentStatusToOrderPaymentState(updatedIntent.status),
+        },
+      });
+
+      await reconcileOrderServiceChargeAfterOnlinePayment(tx, {
+        orderId: updatedIntent.orderId,
+        intentStatus: updatedIntent.status,
+        actorId: null,
+      });
+
       await tx.paymentAttempt.create({
         data: {
           paymentIntentId: intentId,

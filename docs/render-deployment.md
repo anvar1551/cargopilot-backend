@@ -48,11 +48,14 @@ You must provide these at creation time:
 
 Payments are disabled by default in the blueprint.
 
-If you enable Stripe later, add these env vars to `cargopilot-api`:
+If you enable payments later:
 
-- `STRIPE_SECRET_KEY`
-- `STRIPE_WEBHOOK_SECRET`
-- `PAYMENTS_ENABLED=true`
+- set `PAYMENTS_ENABLED=true` in `cargopilot-api`
+- configure provider credentials from admin UI (`Billing & Pricing` -> `Payment Providers`)
+- for Stripe, use:
+  - `Secret` = `sk_...`
+  - `Webhook Secret (serviceId)` = `whsec_...`
+  - callback endpoint: `/api/payments/stripe/callback`
 
 ## After deploy
 

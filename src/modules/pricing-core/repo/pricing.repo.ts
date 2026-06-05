@@ -7,11 +7,16 @@ import {
   CreatePricingRegionInput,
   CreateTariffPlanInput,
   QuoteTariffInput,
+  QuoteTariffOptionsInput,
+  TARIFF_COVERAGE_TYPES,
+  TARIFF_PRICING_STRATEGIES,
+  TARIFF_TRANSPORT_MODES,
   UpdateOperationalSlaPolicyInput,
   UpdateDeliverySlaRuleInput,
   UpdatePricingRegionInput,
   UpdateTariffPlanInput,
   UpsertZoneMatrixInput,
+  normalizeCountryCode,
   normalizeTariffCode,
 } from "../shared/validation";
 
@@ -60,10 +65,97 @@ function toNumber(value: unknown) {
   return Number.isFinite(number) ? number : null;
 }
 
+function roundTo2(value: number) {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+type TransitLegRateConfig = {
+  sequence: number;
+  legCode: string;
+  label: string | null;
+  mode: string | null;
+  originCountryCode: string | null;
+  destinationCountryCode: string | null;
+  ratePerKg: number;
+  minCharge: number;
+  flatFee: number;
+};
+
+function normalizeTransitLegRates(raw: unknown): TransitLegRateConfig[] {
+  if (!raw || typeof raw !== "object") return [];
+  const value = raw as { legs?: unknown };
+  if (!Array.isArray(value.legs)) return [];
+
+  return value.legs
+    .map((leg) => {
+      if (!leg || typeof leg !== "object") return null;
+      const item = leg as Record<string, unknown>;
+      const sequence = Number(item.sequence);
+      const legCode = String(item.legCode ?? "")
+        .trim()
+        .toLowerCase();
+      const ratePerKg = toNumber(item.ratePerKg);
+      if (
+        !Number.isInteger(sequence) ||
+        sequence < 1 ||
+        !legCode ||
+        ratePerKg === null ||
+        ratePerKg < 0
+      ) {
+        return null;
+      }
+
+      const minCharge = Math.max(0, toNumber(item.minCharge) ?? 0);
+      const flatFee = Math.max(0, toNumber(item.flatFee) ?? 0);
+      return {
+        sequence,
+        legCode,
+        label: item.label ? String(item.label).trim() || null : null,
+        mode: item.mode ? String(item.mode).trim().toUpperCase() || null : null,
+        originCountryCode: normalizeCountryCode(item.originCountryCode as string | null),
+        destinationCountryCode: normalizeCountryCode(
+          item.destinationCountryCode as string | null,
+        ),
+        ratePerKg,
+        minCharge,
+        flatFee,
+      };
+    })
+    .filter((item): item is TransitLegRateConfig => Boolean(item))
+    .sort((left, right) => left.sequence - right.sequence);
+}
+
+function resolveTransitLegCharge(weightKg: number, leg: TransitLegRateConfig) {
+  const variable = roundTo2(weightKg * leg.ratePerKg);
+  return roundTo2(Math.max(variable, leg.minCharge) + leg.flatFee);
+}
+
+function resolveCoverageType(params: {
+  originCountryCode?: string | null;
+  destinationCountryCode?: string | null;
+}) {
+  const origin = normalizeCountryCode(params.originCountryCode);
+  const destination = normalizeCountryCode(params.destinationCountryCode);
+  if (origin && destination && origin !== destination) return "international" as const;
+  return "domestic" as const;
+}
+
+function isCountryMatch(
+  planCountryCode: string | null | undefined,
+  quoteCountryCode: string | null | undefined,
+) {
+  if (!planCountryCode) return true;
+  if (!quoteCountryCode) return false;
+  return planCountryCode.trim().toUpperCase() === quoteCountryCode.trim().toUpperCase();
+}
+
 type TariffPlanForQuote = {
   id: string;
   name: string;
   code?: string | null;
+  pricingStrategy: "FIXED_LANE" | "LEG_TRANSIT";
+  transitPricingConfig?: unknown;
+  coverageType: "domestic" | "international";
   currency: string;
   priceType: string;
   customerEntityId?: string | null;
@@ -564,11 +656,24 @@ export async function createTariffPlan(input: CreateTariffPlanInput) {
     }
   }
 
+  const normalizedOriginCountryCode =
+    input.coverageType === "international"
+      ? normalizeCountryCode(input.originCountryCode)
+      : null;
+  const normalizedDestinationCountryCode =
+    input.coverageType === "international"
+      ? normalizeCountryCode(input.destinationCountryCode)
+      : null;
+
   return db.$transaction(async (tx: any) => {
     if (input.isDefault) {
       await tx.tariffPlan.updateMany({
         where: {
           serviceType: input.serviceType,
+          coverageType: input.coverageType,
+          transportMode: input.transportMode,
+          originCountryCode: normalizedOriginCountryCode,
+          destinationCountryCode: normalizedDestinationCountryCode,
           customerEntityId: input.customerEntityId ?? null,
           isDefault: true,
         },
@@ -584,6 +689,15 @@ export async function createTariffPlan(input: CreateTariffPlanInput) {
         status: input.status,
         serviceType: input.serviceType,
         priceType: input.priceType,
+        pricingStrategy: input.pricingStrategy,
+        coverageType: input.coverageType,
+        transportMode: input.transportMode,
+        originCountryCode: normalizedOriginCountryCode,
+        destinationCountryCode: normalizedDestinationCountryCode,
+        transitPricingConfig:
+          input.pricingStrategy === "LEG_TRANSIT"
+            ? { legs: input.transitLegRates ?? [] }
+            : null,
         currency: input.currency.toUpperCase(),
         priority: input.priority,
         isDefault: input.isDefault,
@@ -633,12 +747,25 @@ export async function updateTariffPlan(id: string, input: UpdateTariffPlanInput)
     }
   }
 
+  const normalizedOriginCountryCode =
+    input.coverageType === "international"
+      ? normalizeCountryCode(input.originCountryCode)
+      : null;
+  const normalizedDestinationCountryCode =
+    input.coverageType === "international"
+      ? normalizeCountryCode(input.destinationCountryCode)
+      : null;
+
   return db.$transaction(async (tx: any) => {
     if (input.isDefault) {
       await tx.tariffPlan.updateMany({
         where: {
           id: { not: id },
           serviceType: input.serviceType,
+          coverageType: input.coverageType,
+          transportMode: input.transportMode,
+          originCountryCode: normalizedOriginCountryCode,
+          destinationCountryCode: normalizedDestinationCountryCode,
           customerEntityId: input.customerEntityId ?? null,
           isDefault: true,
         },
@@ -659,6 +786,15 @@ export async function updateTariffPlan(id: string, input: UpdateTariffPlanInput)
         status: input.status,
         serviceType: input.serviceType,
         priceType: input.priceType,
+        pricingStrategy: input.pricingStrategy,
+        coverageType: input.coverageType,
+        transportMode: input.transportMode,
+        originCountryCode: normalizedOriginCountryCode,
+        destinationCountryCode: normalizedDestinationCountryCode,
+        transitPricingConfig:
+          input.pricingStrategy === "LEG_TRANSIT"
+            ? { legs: input.transitLegRates ?? [] }
+            : null,
         currency: input.currency.toUpperCase(),
         priority: input.priority,
         isDefault: input.isDefault,
@@ -687,6 +823,9 @@ export async function updateTariffPlan(id: string, input: UpdateTariffPlanInput)
 export async function listTariffPlans(params: {
   status?: "draft" | "active" | "archived";
   serviceType?: string;
+  pricingStrategy?: "FIXED_LANE" | "LEG_TRANSIT";
+  coverageType?: "domestic" | "international";
+  transportMode?: string;
   customerEntityId?: string;
   q?: string;
 }) {
@@ -696,6 +835,13 @@ export async function listTariffPlans(params: {
     where: {
       ...(params.status ? { status: params.status } : {}),
       ...(params.serviceType ? { serviceType: params.serviceType } : {}),
+      ...(params.pricingStrategy
+        ? { pricingStrategy: params.pricingStrategy }
+        : {}),
+      ...(params.coverageType ? { coverageType: params.coverageType } : {}),
+      ...(params.transportMode
+        ? { transportMode: params.transportMode.trim().toUpperCase() }
+        : {}),
       ...(params.customerEntityId
         ? { customerEntityId: params.customerEntityId }
         : {}),
@@ -733,6 +879,14 @@ export async function getTariffPlanById(id: string) {
       },
     },
   });
+}
+
+export async function getPricingCatalog() {
+  return {
+    coverageTypes: [...TARIFF_COVERAGE_TYPES],
+    pricingStrategies: [...TARIFF_PRICING_STRATEGIES],
+    transportModes: [...TARIFF_TRANSPORT_MODES],
+  };
 }
 
 export async function resolveOrderSlaSnapshot(input: {
@@ -845,6 +999,17 @@ export async function quoteTariff(input: QuoteTariffInput) {
   const weightKg = toNumber(input.weightKg);
   const originQuery = input.originQuery?.trim() ?? "";
   const destinationQuery = input.destinationQuery?.trim() ?? "";
+  const originCountryCode = normalizeCountryCode(input.originCountryCode);
+  const destinationCountryCode = normalizeCountryCode(input.destinationCountryCode);
+  const inferredCoverageType = resolveCoverageType({
+    originCountryCode,
+    destinationCountryCode,
+  });
+  const hasBothCountries = Boolean(originCountryCode && destinationCountryCode);
+  const coverageCandidates = hasBothCountries
+    ? [inferredCoverageType]
+    : (["domestic", "international"] as const);
+  const transportMode = input.transportMode?.trim().toUpperCase() || "ROAD";
 
   if (!weightKg || !originQuery || !destinationQuery) {
     return {
@@ -897,6 +1062,8 @@ export async function quoteTariff(input: QuoteTariffInput) {
     where: {
       status: "active",
       serviceType: input.serviceType as ServiceType,
+      coverageType: { in: coverageCandidates as any },
+      transportMode,
       OR: input.customerEntityId
         ? [{ customerEntityId: input.customerEntityId }, { customerEntityId: null }]
         : [{ customerEntityId: null }],
@@ -909,7 +1076,16 @@ export async function quoteTariff(input: QuoteTariffInput) {
     },
   });
 
-  const plan = sortTariffPlans(plans, input.customerEntityId)[0] ?? null;
+  const filteredPlans = plans.filter((plan: any) => {
+    if (plan.coverageType !== "international") return true;
+    if (!hasBothCountries) return true;
+    return (
+      isCountryMatch(plan.originCountryCode, originCountryCode) &&
+      isCountryMatch(plan.destinationCountryCode, destinationCountryCode)
+    );
+  });
+
+  const plan = sortTariffPlans(filteredPlans, input.customerEntityId)[0] ?? null;
   if (!plan) {
     return {
       quoteAvailable: false,
@@ -926,6 +1102,113 @@ export async function quoteTariff(input: QuoteTariffInput) {
         name: routeContext.destinationRegion!.name,
       },
       zone: routeContext.zoneEntry.zone,
+      coverageType: inferredCoverageType,
+      transportMode,
+    } as const;
+  }
+
+  if (plan.pricingStrategy === "LEG_TRANSIT") {
+    const transitLegs = normalizeTransitLegRates(plan.transitPricingConfig);
+    if (transitLegs.length === 0) {
+      return {
+        quoteAvailable: false,
+        reason: "transit_leg_config_missing",
+        serviceType: input.serviceType,
+        originRegion: {
+          id: routeContext.originRegion!.id,
+          code: routeContext.originRegion!.code,
+          name: routeContext.originRegion!.name,
+        },
+        destinationRegion: {
+          id: routeContext.destinationRegion!.id,
+          code: routeContext.destinationRegion!.code,
+          name: routeContext.destinationRegion!.name,
+        },
+        zone: routeContext.zoneEntry.zone,
+        tariffPlan: {
+          id: plan.id,
+          name: plan.name,
+          code: plan.code ?? null,
+        },
+        coverageType: plan.coverageType,
+        transportMode,
+      } as const;
+    }
+
+    const legBreakdown = transitLegs.map((leg) => ({
+      sequence: leg.sequence,
+      legCode: leg.legCode,
+      label: leg.label,
+      mode: leg.mode,
+      originCountryCode: leg.originCountryCode,
+      destinationCountryCode: leg.destinationCountryCode,
+      ratePerKg: leg.ratePerKg,
+      minCharge: leg.minCharge,
+      flatFee: leg.flatFee,
+      charge: resolveTransitLegCharge(weightKg, leg),
+    }));
+
+    const serviceCharge = roundTo2(
+      legBreakdown.reduce((sum, leg) => sum + leg.charge, 0),
+    );
+    if (serviceCharge <= 0) {
+      return {
+        quoteAvailable: false,
+        reason: "transit_leg_config_invalid",
+        serviceType: input.serviceType,
+        originRegion: {
+          id: routeContext.originRegion!.id,
+          code: routeContext.originRegion!.code,
+          name: routeContext.originRegion!.name,
+        },
+        destinationRegion: {
+          id: routeContext.destinationRegion!.id,
+          code: routeContext.destinationRegion!.code,
+          name: routeContext.destinationRegion!.name,
+        },
+        zone: routeContext.zoneEntry.zone,
+        tariffPlan: {
+          id: plan.id,
+          name: plan.name,
+          code: plan.code ?? null,
+        },
+        coverageType: plan.coverageType,
+        transportMode,
+      } as const;
+    }
+
+    return {
+      quoteAvailable: true,
+      reason: null,
+      serviceType: input.serviceType,
+      weightKg,
+      currency: plan.currency,
+      serviceCharge,
+      originRegion: {
+        id: routeContext.originRegion!.id,
+        code: routeContext.originRegion!.code,
+        name: routeContext.originRegion!.name,
+      },
+      destinationRegion: {
+        id: routeContext.destinationRegion!.id,
+        code: routeContext.destinationRegion!.code,
+        name: routeContext.destinationRegion!.name,
+      },
+      zone: routeContext.zoneEntry.zone,
+      coverageType: plan.coverageType,
+      transportMode,
+      tariffPlan: {
+        id: plan.id,
+        name: plan.name,
+        code: plan.code ?? null,
+        priceType: plan.priceType,
+        pricingStrategy: plan.pricingStrategy,
+        priority: plan.priority,
+        isDefault: plan.isDefault,
+        customerEntityId: plan.customerEntityId ?? null,
+      },
+      legBreakdown,
+      matchedRate: null,
     } as const;
   }
 
@@ -965,6 +1248,8 @@ export async function quoteTariff(input: QuoteTariffInput) {
         name: plan.name,
         code: plan.code ?? null,
       },
+      coverageType: plan.coverageType,
+      transportMode,
     } as const;
   }
 
@@ -986,11 +1271,14 @@ export async function quoteTariff(input: QuoteTariffInput) {
       name: routeContext.destinationRegion!.name,
     },
     zone: routeContext.zoneEntry.zone,
+    coverageType: plan.coverageType,
+    transportMode,
     tariffPlan: {
       id: plan.id,
       name: plan.name,
       code: plan.code ?? null,
       priceType: plan.priceType,
+      pricingStrategy: plan.pricingStrategy,
       priority: plan.priority,
       isDefault: plan.isDefault,
       customerEntityId: plan.customerEntityId ?? null,
@@ -1002,5 +1290,35 @@ export async function quoteTariff(input: QuoteTariffInput) {
       weightToKg: toNumber(matchedRate.weightToKg),
       price: toNumber(matchedRate.price),
     },
+  } as const;
+}
+
+export async function quoteTariffOptions(input: QuoteTariffOptionsInput) {
+  const results = await Promise.all(
+    TARIFF_TRANSPORT_MODES.map(async (transportMode) => {
+      const quote = await quoteTariff({
+        ...input,
+        transportMode,
+      });
+      return {
+        transportMode,
+        ...quote,
+      };
+    }),
+  );
+
+  const available = results
+    .filter((item) => item.quoteAvailable)
+    .sort((left, right) => {
+      const leftPrice = Number(left.serviceCharge ?? Number.POSITIVE_INFINITY);
+      const rightPrice = Number(right.serviceCharge ?? Number.POSITIVE_INFINITY);
+      if (leftPrice !== rightPrice) return leftPrice - rightPrice;
+      return left.transportMode.localeCompare(right.transportMode);
+    });
+
+  return {
+    availableModes: available.map((item) => item.transportMode),
+    options: results,
+    recommendedTransportMode: available[0]?.transportMode ?? null,
   } as const;
 }

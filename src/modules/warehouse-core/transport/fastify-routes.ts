@@ -1,5 +1,5 @@
 import { FastifyPluginAsync } from "fastify";
-import { fastifyAuth } from "../../../middleware/authFastify";
+import { fastifyAuth } from "../../../modules/identity-access/transport/fastify-auth";
 import {
   createWarehouse,
   getWarehouseById,
@@ -19,7 +19,7 @@ function parseCoordinate(value: unknown, axis: "lat" | "lng") {
 const warehouseFastifyRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post(
     "/",
-    { preHandler: fastifyAuth({ permission: "orders.write" }) },
+    { preHandler: fastifyAuth({ permission: "shipment.update" }) },
     async (request, reply) => {
       try {
         const body = (request.body ?? {}) as Record<string, unknown>;
@@ -48,7 +48,7 @@ const warehouseFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.get(
     "/",
-    { preHandler: fastifyAuth({ permission: "orders.read" }) },
+    { preHandler: fastifyAuth({ permission: "shipment.view" }) },
     async (_request, reply) => {
       try {
         const warehouses = await listWarehouses();
@@ -62,7 +62,7 @@ const warehouseFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.get(
     "/:id",
-    { preHandler: fastifyAuth({ permission: "orders.read" }) },
+    { preHandler: fastifyAuth({ permission: "shipment.view" }) },
     async (request, reply) => {
       try {
         const id = String((request.params as any)?.id || "").trim();
@@ -78,7 +78,7 @@ const warehouseFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.put(
     "/:id",
-    { preHandler: fastifyAuth({ permission: "orders.write" }) },
+    { preHandler: fastifyAuth({ permission: "shipment.update" }) },
     async (request, reply) => {
       try {
         const id = String((request.params as any)?.id || "").trim();
@@ -112,3 +112,4 @@ const warehouseFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 };
 
 export default warehouseFastifyRoutes;
+

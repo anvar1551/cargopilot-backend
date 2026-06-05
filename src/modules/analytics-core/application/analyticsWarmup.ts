@@ -4,6 +4,8 @@ import {
   getAnalyticsTrendV2,
   getAnalyticsWarningsV2,
 } from "./analyticsV2";
+import { analyticsConfig } from "../config/analyticsConfig";
+import { analyticsLogger } from "../config/analyticsLogger";
 
 const defaultScope = {
   role: "manager",
@@ -11,18 +13,9 @@ const defaultScope = {
   userId: null as string | null,
 };
 
-const warmupRangeDays = Math.max(
-  7,
-  Math.min(180, Number(process.env.ANALYTICS_V3_DEFAULT_RANGE_DAYS || 30)),
-);
-const warmupStaleHours = Math.max(
-  6,
-  Math.min(720, Number(process.env.ANALYTICS_WARMUP_STALE_HOURS || 48)),
-);
-const warmupQueuePageSize = Math.max(
-  5,
-  Math.min(200, Number(process.env.ANALYTICS_V3_DEFAULT_QUEUE_PAGE_SIZE || 20)),
-);
+const warmupRangeDays = analyticsConfig.defaults.rangeDays;
+const warmupStaleHours = analyticsConfig.defaults.staleHours;
+const warmupQueuePageSize = analyticsConfig.defaults.queuePageSize;
 
 let warmupInFlight = false;
 
@@ -59,29 +52,26 @@ async function runWarmupPass() {
 }
 
 export function startAnalyticsWarmupLoop() {
-  const enabled = process.env.ANALYTICS_WARMUP_ENABLED !== "false";
+  const enabled = analyticsConfig.warmup.enabled;
   if (!enabled) return;
 
-  const intervalMs = Math.max(
-    60_000,
-    Number(process.env.ANALYTICS_WARMUP_INTERVAL_MS || 240_000),
-  );
+  const intervalMs = analyticsConfig.warmup.intervalMs;
 
   const trigger = async (source: "startup" | "interval") => {
     try {
       await runWarmupPass();
       if (source === "startup") {
-        console.log("[analytics-warmup] startup pass completed");
+        analyticsLogger.info("warmup startup pass completed");
       }
     } catch (err: any) {
-      console.error(`[analytics-warmup] ${source} pass failed: ${err?.message || "unknown"}`);
+      analyticsLogger.throttledError(`warmup-${source}-failed`, `${source} warmup pass failed`, {
+        error: err,
+        throttleMs: 60_000,
+      });
     }
   };
 
-  const startupDelayMs = Math.max(
-    0,
-    Number(process.env.ANALYTICS_WARMUP_STARTUP_DELAY_MS || 30_000),
-  );
+  const startupDelayMs = analyticsConfig.warmup.startupDelayMs;
   const startupTimer = setTimeout(() => {
     void trigger("startup");
   }, startupDelayMs);

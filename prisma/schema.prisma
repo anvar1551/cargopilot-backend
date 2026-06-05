@@ -14,13 +14,6 @@ generator client {
   provider = "prisma-client-js"
 }
 
-enum AppRole {
-  customer
-  driver
-  warehouse
-  manager
-}
-
 enum OrderStatus {
   pending
   assigned
@@ -133,6 +126,14 @@ enum PaidStatus {
   PARTIAL
 }
 
+enum OrderPaymentState {
+  UNPAID
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
 enum ServiceType {
   DOOR_TO_DOOR
   DOOR_TO_POINT
@@ -194,6 +195,25 @@ enum PricingPlanStatus {
 enum TariffPriceType {
   bucket
   linear
+}
+
+enum TariffPricingStrategy {
+  FIXED_LANE
+  LEG_TRANSIT
+}
+
+enum TariffCoverageType {
+  domestic
+  international
+}
+
+enum TariffTransportMode {
+  ROAD
+  AIR
+  SEA
+  RAIL
+  COURIER
+  MULTIMODAL
 }
 
 enum OrderSlaSource {
@@ -267,23 +287,20 @@ enum OrganizationType {
   client
 }
 
-enum ScopeResource {
-  orders
-  finance
-  support
-  drivers
-  warehouses
-  customers
-  payments
+enum MembershipStatus {
+  active
+  invited
+  suspended
 }
 
-enum ScopeType {
-  own
+enum MembershipScopeType {
+  company
   branch
-  organization
-  subtree
-  assigned
-  global
+  warehouse
+  agent
+  pickup_point
+  carrier
+  client
 }
 
 enum TransportMode {
@@ -303,6 +320,14 @@ enum OrderLegStatus {
   completed
   cancelled
   exception
+}
+
+enum CarrierBookingStatus {
+  not_requested
+  requested
+  booked
+  failed
+  cancelled
 }
 
 enum PricingComponentType {
@@ -383,6 +408,52 @@ enum PaymentWebhookProcessStatus {
   FAILED
 }
 
+enum IntegrationDomain {
+  carrier
+  sms
+  payment
+  webhook_sink
+}
+
+enum IntegrationProviderStatus {
+  active
+  paused
+  disabled
+}
+
+enum IntegrationEnvironment {
+  sandbox
+  production
+}
+
+enum IntegrationOutboxStatus {
+  pending
+  processing
+  sent
+  failed
+  dead_letter
+}
+
+enum IntegrationAttemptOutcome {
+  success
+  retry
+  dead_letter
+  failed
+}
+
+enum IntegrationEventSource {
+  outbound_response
+  inbound_webhook
+}
+
+enum IntegrationEventProcessStatus {
+  pending
+  processing
+  processed
+  failed
+  ignored
+}
+
 model Organization {
   id   String           @id @default(uuid()) @db.Uuid
   name String
@@ -397,45 +468,68 @@ model Organization {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  roles                  AccessRole[]
-  userRoleBindings       UserRoleBinding[]
-  userHomeOrgs           User[]            @relation("UserHomeOrganization")
-  ownedOrders            Order[]           @relation("OrderOwnerOrganization")
-  assignedOrders         Order[]           @relation("OrderAssignedOrganization")
-  ownedSupportTickets    SupportTicket[]   @relation("SupportTicketOwnerOrganization")
-  assignedSupportTickets SupportTicket[]   @relation("SupportTicketAssignedOrganization")
-  paymentProviderConfigs PaymentProviderConfig[]
-  paymentIntents         PaymentIntent[]
-  paymentWebhookEvents   PaymentWebhookEvent[]
-  paymentLedgerEntries   PaymentLedgerEntry[]
+  roles                    Role[]
+  companyMemberships       CompanyMembership[]       @relation("CompanyMembershipCompany")
+  branchMemberships        CompanyMembership[]       @relation("CompanyMembershipBranch")
+  ownedOrders              Order[]                   @relation("OrderOwnerOrganization")
+  assignedOrders           Order[]                   @relation("OrderAssignedOrganization")
+  ownedSupportTickets      SupportTicket[]           @relation("SupportTicketOwnerOrganization")
+  assignedSupportTickets   SupportTicket[]           @relation("SupportTicketAssignedOrganization")
+  paymentProviderConfigs   PaymentProviderConfig[]
+  companyPaymentSetting    CompanyPaymentSetting?
+  paymentIntents           PaymentIntent[]
+  paymentWebhookEvents     PaymentWebhookEvent[]
+  paymentLedgerEntries     PaymentLedgerEntry[]
+  integrationProviders     IntegrationProvider[]
+  integrationOutbox        IntegrationOutbox[]
+  integrationWebhookEvents IntegrationWebhookEvent[]
 
   @@index([type, isActive])
   @@index([parentOrgId])
 }
 
-model AccessRole {
+model CompanyPaymentSetting {
+  id String @id @default(uuid()) @db.Uuid
+
+  companyId String       @unique @db.Uuid
+  company   Organization @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  onlinePaymentsEnabled Boolean          @default(true)
+  defaultProvider       PaymentProvider?
+  allowProviderOverride Boolean          @default(true)
+
+  createdByUserId String?  @db.Uuid
+  updatedByUserId String?  @db.Uuid
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([onlinePaymentsEnabled, updatedAt])
+}
+
+model Role {
   id   String @id @default(uuid()) @db.Uuid
   code String
   name String
 
-  org   Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
-  orgId String?       @db.Uuid
+  companyId String?       @db.Uuid
+  company   Organization? @relation(fields: [companyId], references: [id], onDelete: SetNull)
 
-  isSystem  Boolean  @default(false)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  isSystem    Boolean  @default(false)
+  isOwnerRole Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  rolePermissions  RolePermission[]
-  userRoleBindings UserRoleBinding[]
-  scopePolicies    DataScopePolicy[]
+  rolePermissions RolePermission[]
+  membershipRoles MembershipRole[]
 
-  @@unique([orgId, code])
+  @@unique([companyId, code])
   @@index([code])
+  @@index([companyId, isSystem])
 }
 
-model AccessPermission {
+model Permission {
   id          String  @id @default(uuid()) @db.Uuid
-  code        String  @unique
+  key         String  @unique
   resource    String
   action      String
   description String?
@@ -451,10 +545,10 @@ model AccessPermission {
 model RolePermission {
   id String @id @default(uuid()) @db.Uuid
 
-  roleId       String           @db.Uuid
-  role         AccessRole       @relation(fields: [roleId], references: [id], onDelete: Cascade)
-  permissionId String           @db.Uuid
-  permission   AccessPermission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  roleId       String     @db.Uuid
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionId String     @db.Uuid
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
 
@@ -462,40 +556,59 @@ model RolePermission {
   @@index([permissionId])
 }
 
-model UserRoleBinding {
+model CompanyMembership {
   id String @id @default(uuid()) @db.Uuid
 
   userId String @db.Uuid
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  roleId String     @db.Uuid
-  role   AccessRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  companyId String       @db.Uuid
+  company   Organization @relation("CompanyMembershipCompany", fields: [companyId], references: [id], onDelete: Cascade)
 
-  orgId String       @db.Uuid
-  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  branchId String?       @db.Uuid
+  branch   Organization? @relation("CompanyMembershipBranch", fields: [branchId], references: [id], onDelete: SetNull)
+
+  status MembershipStatus @default(active)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([userId, roleId, orgId])
-  @@index([roleId])
-  @@index([orgId])
+  roles  MembershipRole[]
+  scopes MembershipScope[]
+
+  @@unique([userId, companyId])
+  @@index([companyId, status])
+  @@index([branchId])
 }
 
-model DataScopePolicy {
+model MembershipRole {
   id String @id @default(uuid()) @db.Uuid
 
-  roleId    String        @db.Uuid
-  role      AccessRole    @relation(fields: [roleId], references: [id], onDelete: Cascade)
-  resource  ScopeResource
-  scopeType ScopeType
+  membershipId String            @db.Uuid
+  membership   CompanyMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  roleId       String            @db.Uuid
+  role         Role              @relation(fields: [roleId], references: [id], onDelete: Cascade)
 
-  constraintsJson Json?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt DateTime @default(now())
 
-  @@unique([roleId, resource])
-  @@index([resource, scopeType])
+  @@unique([membershipId, roleId])
+  @@index([roleId])
+}
+
+model MembershipScope {
+  id String @id @default(uuid()) @db.Uuid
+
+  membershipId String              @db.Uuid
+  membership   CompanyMembership   @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  scopeType    MembershipScopeType
+  scopeRefId   String              @db.Uuid
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([membershipId, scopeType, scopeRefId])
+  @@index([scopeType, scopeRefId])
+  @@index([membershipId])
 }
 
 model User {
@@ -504,14 +617,10 @@ model User {
   email    String @unique
   password String
 
-  role                  AppRole     @default(customer)
   driverType            DriverType?
-  liveLocationEnabled   Boolean     @default(true)
-  liveLocationUpdatedAt DateTime    @default(now())
-
-  homeOrgId    String?           @db.Uuid
-  homeOrg      Organization?     @relation("UserHomeOrganization", fields: [homeOrgId], references: [id], onDelete: SetNull)
-  roleBindings UserRoleBinding[]
+  liveLocationEnabled   Boolean             @default(true)
+  liveLocationUpdatedAt DateTime            @default(now())
+  memberships           CompanyMembership[]
 
   // ✅ link user -> customer entity (person/company)
   customerEntityId String?         @db.Uuid
@@ -534,9 +643,8 @@ model User {
   createdOrderDocuments     OrderDocument[]       @relation("OrderDocumentCreatedBy")
   refreshSessions           UserRefreshSession[]
 
-  @@index([role, createdAt])
-  @@index([role, warehouseId, createdAt])
-  @@index([homeOrgId])
+  @@index([createdAt])
+  @@index([warehouseId, createdAt])
 }
 
 model Warehouse {
@@ -639,17 +747,17 @@ model Order {
   labelKey String?
 
   // ---------------- Relations ----------------
-  parcels           Parcel[]
-  trackingEvents    Tracking[]
-  labelJob          OrderLabelJob?
-  invoice           Invoice?
-  attachments       OrderAttachment[]
-  cashCollections   CashCollection[]
-  supportTickets    SupportTicket[]
-  legs              OrderLeg[]
-  pricingComponents PricingComponent[]
-  documents         OrderDocument[]
-  paymentIntents    PaymentIntent[]
+  parcels              Parcel[]
+  trackingEvents       Tracking[]
+  labelJob             OrderLabelJob?
+  invoice              Invoice?
+  attachments          OrderAttachment[]
+  cashCollections      CashCollection[]
+  supportTickets       SupportTicket[]
+  legs                 OrderLeg[]
+  pricingComponents    PricingComponent[]
+  documents            OrderDocument[]
+  paymentIntents       PaymentIntent[]
   paymentLedgerEntries PaymentLedgerEntry[]
 
   // ---------------- Attempt counters ----------------
@@ -671,6 +779,7 @@ model Order {
 
   // ---------------- Payment (competitor) ----------------
   paymentType             PaymentType?
+  paymentState            OrderPaymentState           @default(UNPAID)
   deliveryChargePaidBy    PaidBy?
   ifRecipientNotAvailable RecipientUnavailableAction?
 
@@ -701,6 +810,7 @@ model Order {
   @@index([status])
   @@index([status, createdAt])
   @@index([status, updatedAt])
+  @@index([paymentState, createdAt])
   @@index([status, expectedDeliveryAt])
   @@index([expectedDeliveryAt])
   @@index([slaRuleId])
@@ -739,25 +849,25 @@ model PaymentProviderConfig {
 }
 
 model PaymentIntent {
-  id                  String             @id @default(uuid()) @db.Uuid
-  companyId           String             @db.Uuid
-  company             Organization       @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  orderId             String             @db.Uuid
-  order               Order              @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  id                  String                @id @default(uuid()) @db.Uuid
+  companyId           String                @db.Uuid
+  company             Organization          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  orderId             String                @db.Uuid
+  order               Order                 @relation(fields: [orderId], references: [id], onDelete: Cascade)
   provider            PaymentProvider
-  providerConfigId    String             @db.Uuid
+  providerConfigId    String                @db.Uuid
   providerConfig      PaymentProviderConfig @relation(fields: [providerConfigId], references: [id], onDelete: Cascade)
   environment         PaymentEnvironment
   amountMinor         BigInt
   currency            String
-  status              PaymentIntentStatus @default(PENDING)
+  status              PaymentIntentStatus   @default(PENDING)
   providerPaymentId   String?
   providerInvoiceId   String?
   providerCheckoutUrl String?
   idempotencyKey      String
   metadataJson        Json?
-  createdAt           DateTime            @default(now())
-  updatedAt           DateTime            @updatedAt
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
   attempts            PaymentAttempt[]
   webhooks            PaymentWebhookEvent[]
   ledgerEntries       PaymentLedgerEntry[]
@@ -784,22 +894,22 @@ model PaymentAttempt {
 }
 
 model PaymentWebhookEvent {
-  id             String                      @id @default(uuid()) @db.Uuid
-  companyId      String?                     @db.Uuid
-  company        Organization?               @relation(fields: [companyId], references: [id], onDelete: SetNull)
-  provider       PaymentProvider
-  environment    PaymentEnvironment
+  id              String                      @id @default(uuid()) @db.Uuid
+  companyId       String?                     @db.Uuid
+  company         Organization?               @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  provider        PaymentProvider
+  environment     PaymentEnvironment
   externalEventId String?
-  idempotencyKey String
-  signatureValid Boolean                     @default(false)
-  processStatus  PaymentWebhookProcessStatus @default(RECEIVED)
-  headersJson    Json?
-  payloadJson    Json
-  errorMessage   String?
-  receivedAt     DateTime                    @default(now())
-  processedAt    DateTime?
-  paymentIntentId String?                    @db.Uuid
-  paymentIntent  PaymentIntent?              @relation(fields: [paymentIntentId], references: [id], onDelete: SetNull)
+  idempotencyKey  String
+  signatureValid  Boolean                     @default(false)
+  processStatus   PaymentWebhookProcessStatus @default(RECEIVED)
+  headersJson     Json?
+  payloadJson     Json
+  errorMessage    String?
+  receivedAt      DateTime                    @default(now())
+  processedAt     DateTime?
+  paymentIntentId String?                     @db.Uuid
+  paymentIntent   PaymentIntent?              @relation(fields: [paymentIntentId], references: [id], onDelete: SetNull)
 
   @@unique([provider, environment, idempotencyKey], map: "uniq_webhook_provider_env_idempotency")
   @@index([provider, receivedAt])
@@ -826,6 +936,186 @@ model PaymentLedgerEntry {
   @@index([companyId, occurredAt])
 }
 
+model IntegrationProvider {
+  id              String                    @id @default(uuid()) @db.Uuid
+  companyId       String                    @db.Uuid
+  company         Organization              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  domain          IntegrationDomain
+  providerCode    String
+  status          IntegrationProviderStatus @default(active)
+  environment     IntegrationEnvironment    @default(sandbox)
+  capabilities    String[]                  @default([])
+  rateLimitRps    Int?
+  timeoutMs       Int                       @default(10000)
+  retryPolicyId   String?
+  secretRef       String?
+  createdByUserId String?                   @db.Uuid
+  updatedByUserId String?                   @db.Uuid
+  createdAt       DateTime                  @default(now())
+  updatedAt       DateTime                  @updatedAt
+
+  secrets         IntegrationProviderSecret[]
+  outboxRecords   IntegrationOutbox[]
+  webhookEvents   IntegrationWebhookEvent[]
+  canonicalEvents IntegrationCanonicalEvent[]
+
+  @@unique([companyId, domain, providerCode, environment], map: "uniq_integration_provider_company_domain_code_env")
+  @@index([companyId, domain, status])
+  @@index([providerCode, environment, status])
+}
+
+model IntegrationProviderSecret {
+  id                  String              @id @default(uuid()) @db.Uuid
+  providerId          String              @db.Uuid
+  provider            IntegrationProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  keyVersion          Int                 @default(1)
+  encryptedSecretJson String
+  secretMasked        String?
+  rotatedAt           DateTime?
+  createdByUserId     String?             @db.Uuid
+  createdAt           DateTime            @default(now())
+
+  @@unique([providerId, keyVersion], map: "uniq_integration_provider_secret_version")
+  @@index([providerId, createdAt])
+}
+
+model IntegrationOutbox {
+  id             String                  @id @default(uuid()) @db.Uuid
+  companyId      String                  @db.Uuid
+  company        Organization            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  providerId     String?                 @db.Uuid
+  provider       IntegrationProvider?    @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  domain         IntegrationDomain
+  providerCode   String
+  environment    IntegrationEnvironment  @default(sandbox)
+  aggregateType  String?
+  aggregateId    String?
+  operation      String?
+  eventType      String
+  status         IntegrationOutboxStatus @default(pending)
+  maxAttempts    Int                     @default(10)
+  attemptCount   Int                     @default(0)
+  nextAttemptAt  DateTime                @default(now())
+  lastAttemptAt  DateTime?
+  lastError      String?
+  idempotencyKey String
+  payload        Json
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+
+  attempts IntegrationDeliveryAttempt[]
+
+  @@unique([companyId, providerCode, idempotencyKey], map: "uniq_integration_outbox_company_provider_idempotency")
+  @@index([status, nextAttemptAt, createdAt])
+  @@index([companyId, domain, status, nextAttemptAt])
+  @@index([providerId, status, nextAttemptAt])
+  @@index([aggregateType, aggregateId, operation])
+}
+
+model IntegrationDeliveryAttempt {
+  id                String                    @id @default(uuid()) @db.Uuid
+  outboxId          String                    @db.Uuid
+  outbox            IntegrationOutbox         @relation(fields: [outboxId], references: [id], onDelete: Cascade)
+  attemptNo         Int
+  outcome           IntegrationAttemptOutcome
+  statusCode        Int?
+  retryable         Boolean                   @default(false)
+  errorMessage      String?
+  providerRequestId String?
+  requestJson       Json?
+  responseJson      Json?
+  startedAt         DateTime
+  finishedAt        DateTime
+  createdAt         DateTime                  @default(now())
+
+  @@unique([outboxId, attemptNo], map: "uniq_integration_delivery_attempt_outbox_attempt")
+  @@index([outboxId, createdAt])
+  @@index([outcome, createdAt])
+}
+
+model IntegrationWebhookEvent {
+  id                String                 @id @default(uuid()) @db.Uuid
+  companyId         String?                @db.Uuid
+  company           Organization?          @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  providerId        String?                @db.Uuid
+  provider          IntegrationProvider?   @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  domain            IntegrationDomain
+  providerCode      String
+  environment       IntegrationEnvironment @default(sandbox)
+  providerEventId   String
+  signatureVerified Boolean                @default(false)
+  rawBody           String
+  rawBodySha256     String
+  headersJson       Json?
+  ipAddress         String?
+  userAgent         String?
+  receivedAt        DateTime               @default(now())
+  processedAt       DateTime?
+
+  canonicalEvent  IntegrationWebhookCanonicalEvent?
+  canonicalEvents IntegrationCanonicalEvent[]
+
+  @@unique([providerId, providerEventId], map: "uniq_integration_webhook_provider_event")
+  @@index([companyId, receivedAt])
+  @@index([providerId, receivedAt])
+  @@index([domain, providerCode, receivedAt])
+}
+
+model IntegrationWebhookCanonicalEvent {
+  id             String                  @id @default(uuid()) @db.Uuid
+  webhookEventId String                  @unique @db.Uuid
+  webhookEvent   IntegrationWebhookEvent @relation(fields: [webhookEventId], references: [id], onDelete: Cascade)
+  providerCode   String
+  domain         IntegrationDomain
+  eventType      String
+  occurredAt     DateTime
+  companyId      String?                 @db.Uuid
+  aggregateType  String?
+  aggregateId    String?
+  payloadJson    Json
+  createdAt      DateTime                @default(now())
+
+  @@index([providerCode, eventType, occurredAt])
+  @@index([companyId, occurredAt])
+  @@index([aggregateType, aggregateId, occurredAt])
+}
+
+model IntegrationCanonicalEvent {
+  id     String                        @id @default(uuid()) @db.Uuid
+  source IntegrationEventSource
+  status IntegrationEventProcessStatus @default(pending)
+
+  companyId      String?                  @db.Uuid
+  providerId     String?                  @db.Uuid
+  provider       IntegrationProvider?     @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  webhookEventId String?                  @db.Uuid
+  webhookEvent   IntegrationWebhookEvent? @relation(fields: [webhookEventId], references: [id], onDelete: SetNull)
+  outboxId       String?                  @db.Uuid
+
+  domain        IntegrationDomain
+  providerCode  String
+  eventType     String
+  aggregateType String?
+  aggregateId   String?
+  payloadJson   Json
+  occurredAt    DateTime
+
+  processAttempts Int       @default(0)
+  lastError       String?
+  lockedAt        DateTime?
+  processedAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([outboxId], map: "uniq_integration_canonical_event_outbox")
+  @@unique([webhookEventId], map: "uniq_integration_canonical_event_webhook")
+  @@unique([source, providerCode, eventType, aggregateType, aggregateId, occurredAt], map: "uniq_integration_canonical_event_identity")
+  @@index([status, occurredAt, createdAt])
+  @@index([companyId, domain, status])
+  @@index([providerId, status, occurredAt])
+  @@index([aggregateType, aggregateId, eventType])
+}
+
 model OrderLeg {
   id String @id @default(uuid()) @db.Uuid
 
@@ -845,9 +1135,15 @@ model OrderLeg {
   toWarehouseId   String?    @db.Uuid
   toWarehouse     Warehouse? @relation("OrderLegToWarehouse", fields: [toWarehouseId], references: [id], onDelete: SetNull)
 
-  carrierCode String?
-  carrierRef  String?
-  vehicleRef  String?
+  carrierCode           String?
+  carrierRef            String?
+  carrierProviderId     String?              @db.Uuid
+  carrierBookingStatus  CarrierBookingStatus @default(not_requested)
+  carrierTrackingNumber String?
+  carrierBookingError   String?
+  carrierBookedAt       DateTime?
+  carrierLastStatusAt   DateTime?
+  vehicleRef            String?
 
   plannedDepartureAt DateTime?
   plannedArrivalAt   DateTime?
@@ -869,6 +1165,9 @@ model OrderLeg {
   @@index([mode, status])
   @@index([fromWarehouseId])
   @@index([toWarehouseId])
+  @@index([carrierProviderId])
+  @@index([carrierBookingStatus, updatedAt])
+  @@index([carrierRef])
 }
 
 model PricingComponent {
@@ -965,24 +1264,32 @@ model ZoneMatrixEntry {
 }
 
 model TariffPlan {
-  id               String            @id @default(uuid()) @db.Uuid
-  name             String
-  code             String?           @unique
-  description      String?
-  status           PricingPlanStatus @default(draft)
-  serviceType      ServiceType
-  priceType        TariffPriceType   @default(bucket)
-  currency         String            @default("UZS")
-  priority         Int               @default(0)
-  isDefault        Boolean           @default(false)
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
-  customerEntityId String?           @db.Uuid
-  customerEntity   CustomerEntity?   @relation(fields: [customerEntityId], references: [id])
-  rates            TariffRate[]
+  id                     String                @id @default(uuid()) @db.Uuid
+  name                   String
+  code                   String?               @unique
+  description            String?
+  status                 PricingPlanStatus     @default(draft)
+  serviceType            ServiceType
+  priceType              TariffPriceType       @default(bucket)
+  pricingStrategy        TariffPricingStrategy @default(FIXED_LANE)
+  coverageType           TariffCoverageType    @default(domestic)
+  transportMode          TariffTransportMode   @default(ROAD)
+  originCountryCode      String?
+  destinationCountryCode String?
+  transitPricingConfig   Json?
+  currency               String                @default("UZS")
+  priority               Int                   @default(0)
+  isDefault              Boolean               @default(false)
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+  customerEntityId       String?               @db.Uuid
+  customerEntity         CustomerEntity?       @relation(fields: [customerEntityId], references: [id])
+  rates                  TariffRate[]
 
   @@index([status, serviceType, priority])
   @@index([customerEntityId, status])
+  @@index([coverageType, transportMode, status])
+  @@index([originCountryCode, destinationCountryCode])
 }
 
 model TariffRate {
@@ -1086,9 +1393,9 @@ model CashCollectionEvent {
   toHolderId   String?
   toHolderName String?
 
-  actorId   String?  @db.Uuid
-  actor     User?    @relation("CashCollectionEventActor", fields: [actorId], references: [id])
-  actorRole AppRole?
+  actorId   String? @db.Uuid
+  actor     User?   @relation("CashCollectionEventActor", fields: [actorId], references: [id])
+  actorRole String?
 
   createdAt DateTime @default(now())
 
@@ -1132,9 +1439,9 @@ model Tracking {
   warehouseId String?    @db.Uuid
   warehouse   Warehouse? @relation(fields: [warehouseId], references: [id])
 
-  actorId   String?  @db.Uuid
-  actor     User?    @relation("TrackingActor", fields: [actorId], references: [id])
-  actorRole AppRole?
+  actorId   String? @db.Uuid
+  actor     User?   @relation("TrackingActor", fields: [actorId], references: [id])
+  actorRole String?
 
   parcelId String? @db.Uuid
   parcel   Parcel? @relation("ParcelTracking", fields: [parcelId], references: [id])
