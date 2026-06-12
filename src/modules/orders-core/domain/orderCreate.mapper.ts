@@ -1,4 +1,3 @@
-import prisma from "../../../config/prismaClient";
 import { z } from "zod";
 import {
   PaymentProvider,
@@ -17,6 +16,17 @@ import {
 import { TARIFF_TRANSPORT_MODES } from "../../pricing-core/shared/validation";
 
 const SUPPORTED_ORDER_CURRENCIES = ["UZS", "USD", "CNY"] as const;
+
+type PrismaClientInstance = typeof import("../../../config/prismaClient").default;
+
+let prismaClientPromise: Promise<PrismaClientInstance> | null = null;
+
+async function getPrismaClient() {
+  prismaClientPromise ??= import("../../../config/prismaClient").then(
+    (module) => module.default,
+  );
+  return prismaClientPromise;
+}
 
 /**
  * Helpers
@@ -399,6 +409,7 @@ export async function mapCreateOrderDtoToRepoPayload(
 
   // ✅ optional resolve from address book IDs
   if (senderAddressId || receiverAddressId) {
+    const prisma = await getPrismaClient();
     const [resolvedSenderAddr, resolvedReceiverAddr] = await Promise.all([
       senderAddressId
         ? prisma.address.findFirst({

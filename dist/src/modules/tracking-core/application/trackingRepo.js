@@ -9,7 +9,7 @@ const userLiteSelect = {
     id: true,
     name: true,
     email: true,
-    role: true,
+    driverType: true,
 };
 async function getTrackingByOrderId(orderId) {
     return prismaClient_1.default.tracking.findMany({

@@ -6,6 +6,9 @@ import {
   createDeliverySlaRule,
   createPricingRegion,
   createTariffPlan,
+  deleteDeliverySlaRule,
+  deletePricingRegion,
+  deleteTariffPlan,
   getOperationalSlaPolicy,
   getPricingCatalog,
   getTariffPlanById,
@@ -113,6 +116,20 @@ const pricingFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     },
   );
 
+  fastify.delete(
+    "/regions/:id",
+    { preHandler: fastifyAuth({ permission: "pricing.write" }) },
+    async (request, reply) => {
+      try {
+        const { id } = pricingRegionIdParamSchema.parse(request.params);
+        const result = await deletePricingRegion(id);
+        return reply.send(result);
+      } catch (error) {
+        return sendError(reply, error, "Failed to delete pricing region");
+      }
+    },
+  );
+
   fastify.get(
     "/sla-rules",
     { preHandler: fastifyAuth({ permission: "pricing.read" }) },
@@ -152,6 +169,20 @@ const pricingFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.send(rule);
       } catch (error) {
         return sendError(reply, error, "Failed to update delivery SLA rule");
+      }
+    },
+  );
+
+  fastify.delete(
+    "/sla-rules/:id",
+    { preHandler: fastifyAuth({ permission: "pricing.write" }) },
+    async (request, reply) => {
+      try {
+        const { id } = deliverySlaRuleIdParamSchema.parse(request.params);
+        const result = await deleteDeliverySlaRule(id);
+        return reply.send(result);
+      } catch (error) {
+        return sendError(reply, error, "Failed to delete delivery SLA rule");
       }
     },
   );
@@ -279,6 +310,20 @@ const pricingFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.send(plan);
       } catch (error) {
         return sendError(reply, error, "Failed to update tariff plan");
+      }
+    },
+  );
+
+  fastify.delete(
+    "/tariff-plans/:id",
+    { preHandler: fastifyAuth({ permission: "pricing.write" }) },
+    async (request, reply) => {
+      try {
+        const { id } = tariffPlanIdParamSchema.parse(request.params);
+        const result = await deleteTariffPlan(id);
+        return reply.send(result);
+      } catch (error) {
+        return sendError(reply, error, "Failed to delete tariff plan");
       }
     },
   );

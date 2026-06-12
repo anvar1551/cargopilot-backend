@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { PaymentType } from "@prisma/client";
+import { PaymentType, TransportMode } from "@prisma/client";
 import { createOrder, getOrderById } from "../repo";
 import {
   CreateOrderRepoPayload,
@@ -19,6 +19,7 @@ import {
   scheduleOrderLabelAutoFallback,
 } from "../label";
 import {
+  autoBookCarrierForOrder,
   resolvePayableTotalFromPricing,
   seedInitialServiceChargePricing,
 } from "../../orders-legs";
@@ -37,6 +38,7 @@ type RuleQuoteResult =
       serviceCharge: number;
       tariffPlan?: {
         pricingStrategy?: string | null;
+        routeTemplateId?: string | null;
       } | null;
       legBreakdown?: Array<{
         charge?: number | null;
@@ -97,6 +99,14 @@ function resolveTransportMode(
     : "ROAD";
 }
 
+function toOrderLegTransportMode(value: TariffTransportMode): TransportMode {
+  if (value === "AIR") return TransportMode.air;
+  if (value === "SEA") return TransportMode.sea;
+  if (value === "RAIL") return TransportMode.rail;
+  if (value === "MULTIMODAL") return TransportMode.multimodal;
+  return TransportMode.road;
+}
+
 function buildLegQuoteQueries(
   serviceType: CreateOrderRepoPayload["serviceType"],
   originQuery: string,
@@ -126,6 +136,7 @@ function buildLegQuoteQueries(
 
 async function computeRuleQuoteForOrder(
   payload: CreateOrderRepoPayload,
+  companyId?: string | null,
 ): Promise<{
   main: RuleQuoteResult;
   perLegRuleAmountsMajor: number[] | null;
@@ -146,6 +157,7 @@ async function computeRuleQuoteForOrder(
   }
 
   const mainQuote = (await quoteTariff({
+    companyId: companyId ?? null,
     customerEntityId: payload.customerEntityId ?? null,
     serviceType,
     weightKg,
@@ -180,6 +192,7 @@ async function computeRuleQuoteForOrder(
     legQueries.map((legQuery) =>
       quoteTariff({
         customerEntityId: payload.customerEntityId ?? null,
+        companyId: companyId ?? null,
         serviceType,
         weightKg,
         originQuery: legQuery.originQuery,
@@ -230,7 +243,8 @@ export async function createOrderForActor(args: CreateOrderForActorArgs) {
     effectivePaymentType === PaymentType.CARD ||
     effectivePaymentType === PaymentType.TRANSFER;
 
-  const ruleQuoteBundle = await computeRuleQuoteForOrder(mapped);
+  const actorCompanyId = actor.companyId?.trim() || null;
+  const ruleQuoteBundle = await computeRuleQuoteForOrder(mapped, actorCompanyId);
   if (ruleQuoteBundle.main.quoteAvailable) {
     mapped.serviceCharge = ruleQuoteBundle.main.serviceCharge;
     mapped.currency = ruleQuoteBundle.main.currency;
@@ -244,6 +258,13 @@ export async function createOrderForActor(args: CreateOrderForActorArgs) {
   }
 
   const repoPayload = mapped as CreateOrderRepoPayload;
+  const originCountryCode = resolveOriginCountryCode(mapped);
+  const destinationCountryCode = resolveDestinationCountryCode(mapped);
+  const linehaulMode = toOrderLegTransportMode(resolveTransportMode(mapped));
+  const routeTemplateId =
+    ruleQuoteBundle.main.quoteAvailable
+      ? ruleQuoteBundle.main.tariffPlan?.routeTemplateId ?? null
+      : null;
   const order = await createOrder(user.id, repoPayload, actor);
   let labelWarning: string | null = null;
   let pricingWarning: string | null = null;
@@ -256,12 +277,34 @@ export async function createOrderForActor(args: CreateOrderForActorArgs) {
         currency: mapped.currency ?? "UZS",
         serviceType: mapped.serviceType ?? null,
         perLegRuleAmountsMajor: ruleQuoteBundle.perLegRuleAmountsMajor,
+        originCountryCode,
+        destinationCountryCode,
+        linehaulMode,
+        routeTemplateId,
       },
       actor,
     );
   } catch (pricingErr: any) {
     pricingWarning = pricingErr?.message ?? "Failed to seed pricing components";
     console.error(`Pricing component seed failed for order ${order.id}:`, pricingErr);
+  }
+
+  let carrierRoutingWarning: string | null = null;
+  try {
+    const autoBookResults = await autoBookCarrierForOrder({
+      orderId: order.id,
+      actor,
+    });
+    const failedMatches = autoBookResults.filter(
+      (item) => item.matched && !item.booked && item.skippedReason !== "matched rule has autoBook disabled",
+    );
+    if (failedMatches.length > 0) {
+      carrierRoutingWarning = "Carrier routing matched but auto-booking was not completed for every leg";
+    }
+  } catch (carrierRoutingErr: any) {
+    carrierRoutingWarning =
+      carrierRoutingErr?.message ?? "Carrier routing auto-book failed";
+    console.error(`Carrier auto-book failed for order ${order.id}:`, carrierRoutingErr);
   }
 
   const runLabelWork = async () => {
@@ -303,7 +346,7 @@ export async function createOrderForActor(args: CreateOrderForActorArgs) {
     });
   }
 
-  const companyId = actor.companyId?.trim() ?? "";
+  const companyId = actorCompanyId ?? "";
   const companyPaymentsAllowed = companyId
     ? await isCompanyOnlinePaymentsAllowed(companyId)
     : false;
@@ -313,7 +356,7 @@ export async function createOrderForActor(args: CreateOrderForActorArgs) {
       statusCode: 201,
       payload: {
         order,
-        warning: labelWarning ?? pricingWarning,
+        warning: labelWarning ?? pricingWarning ?? carrierRoutingWarning,
         message:
           blockLabelWork
             ? labelWarning
@@ -371,7 +414,7 @@ export async function createOrderForActor(args: CreateOrderForActorArgs) {
       order: fresh,
       paymentIntent,
       paymentUrl: paymentIntent.checkoutUrl ?? null,
-      warning: labelWarning ?? pricingWarning,
+      warning: labelWarning ?? pricingWarning ?? carrierRoutingWarning,
       message:
         blockLabelWork
           ? labelWarning

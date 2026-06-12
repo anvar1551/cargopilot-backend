@@ -153,6 +153,7 @@ type TariffPlanForQuote = {
   id: string;
   name: string;
   code?: string | null;
+  routeTemplateId?: string | null;
   pricingStrategy: "FIXED_LANE" | "LEG_TRANSIT";
   transitPricingConfig?: unknown;
   coverageType: "domestic" | "international";
@@ -190,6 +191,17 @@ function sortTariffPlans(
 
     return new Date(right.createdAt ?? 0).getTime() - new Date(left.createdAt ?? 0).getTime();
   });
+}
+
+async function assertRouteTemplateExists(routeTemplateId?: string | null) {
+  if (!routeTemplateId) return;
+  const routeTemplate = await db.routeTemplate.findUnique({
+    where: { id: routeTemplateId },
+    select: { id: true },
+  });
+  if (!routeTemplate) {
+    throw orderError("routeTemplateId not found", 400);
+  }
 }
 
 type PricingRegionLite = {
@@ -422,6 +434,65 @@ export async function updatePricingRegion(
   });
 }
 
+export async function deletePricingRegion(id: string) {
+  const existing = await db.pricingRegion.findUnique({
+    where: { id },
+    select: { id: true, name: true },
+  });
+
+  if (!existing) {
+    throw orderError("Pricing region not found", 404);
+  }
+
+  return db.$transaction(async (tx: any) => {
+    const relatedSlaRules = await tx.deliverySlaRule.findMany({
+      where: {
+        OR: [{ originRegionId: id }, { destinationRegionId: id }],
+      },
+      select: { id: true },
+    });
+    const relatedSlaRuleIds = relatedSlaRules.map((rule: { id: string }) => rule.id);
+
+    const ordersDetached = relatedSlaRuleIds.length
+      ? (
+          await tx.order.updateMany({
+            where: { slaRuleId: { in: relatedSlaRuleIds } },
+            data: { slaRuleId: null },
+          })
+        ).count
+      : 0;
+
+    const slaRulesDeleted = relatedSlaRuleIds.length
+      ? (
+          await tx.deliverySlaRule.deleteMany({
+            where: { id: { in: relatedSlaRuleIds } },
+          })
+        ).count
+      : 0;
+
+    const zoneEntriesDeleted = (
+      await tx.zoneMatrixEntry.deleteMany({
+        where: {
+          OR: [{ originRegionId: id }, { destinationRegionId: id }],
+        },
+      })
+    ).count;
+
+    await tx.pricingRegion.delete({ where: { id } });
+
+    return {
+      deleted: true,
+      id,
+      name: existing.name,
+      cleanup: {
+        zoneEntriesDeleted,
+        slaRulesDeleted,
+        ordersDetached,
+      },
+    };
+  });
+}
+
 export async function createDeliverySlaRule(input: CreateDeliverySlaRuleInput) {
   await assertDeliverySlaRuleReferences(input);
 
@@ -479,28 +550,62 @@ export async function updateDeliverySlaRule(
   });
 }
 
+export async function deleteDeliverySlaRule(id: string) {
+  const existing = await db.deliverySlaRule.findUnique({
+    where: { id },
+    select: { id: true, name: true },
+  });
+
+  if (!existing) {
+    throw orderError("Delivery SLA rule not found", 404);
+  }
+
+  return db.$transaction(async (tx: any) => {
+    const ordersDetached = (
+      await tx.order.updateMany({
+        where: { slaRuleId: id },
+        data: { slaRuleId: null },
+      })
+    ).count;
+
+    await tx.deliverySlaRule.delete({ where: { id } });
+
+    return {
+      deleted: true,
+      id,
+      name: existing.name,
+      cleanup: { ordersDetached },
+    };
+  });
+}
+
 export async function listDeliverySlaRules(params: {
   q?: string;
   serviceType?: string;
   isActive?: boolean;
+  cursor?: string;
+  limit?: number;
 }) {
   const q = params.q?.trim();
+  const limit = Math.min(Math.max(Number(params.limit ?? 0), 1), 100);
+  const usePagination = Boolean(params.limit);
+  const where = {
+    ...(typeof params.isActive === "boolean"
+      ? { isActive: params.isActive }
+      : {}),
+    ...(params.serviceType ? { serviceType: params.serviceType } : {}),
+    ...(q
+      ? {
+          OR: [
+            { name: { contains: q, mode: "insensitive" } },
+            { description: { contains: q, mode: "insensitive" } },
+          ],
+        }
+      : {}),
+  };
 
-  return db.deliverySlaRule.findMany({
-    where: {
-      ...(typeof params.isActive === "boolean"
-        ? { isActive: params.isActive }
-        : {}),
-      ...(params.serviceType ? { serviceType: params.serviceType } : {}),
-      ...(q
-        ? {
-            OR: [
-              { name: { contains: q, mode: "insensitive" } },
-              { description: { contains: q, mode: "insensitive" } },
-            ],
-          }
-        : {}),
-    },
+  const rows = await db.deliverySlaRule.findMany({
+    where,
     include: {
       originRegion: true,
       destinationRegion: true,
@@ -510,7 +615,27 @@ export async function listDeliverySlaRules(params: {
       { priority: "desc" },
       { createdAt: "desc" },
     ],
+    ...(usePagination
+      ? {
+          take: limit + 1,
+          ...(params.cursor ? { cursor: { id: params.cursor }, skip: 1 } : {}),
+        }
+      : {}),
   });
+  if (!usePagination) return rows;
+
+  const pageRows = rows.slice(0, limit);
+  const hasNextPage = rows.length > limit;
+  const total = await db.deliverySlaRule.count({ where });
+  return {
+    data: pageRows,
+    total,
+    pageInfo: {
+      limit,
+      hasNextPage,
+      nextCursor: hasNextPage ? pageRows[pageRows.length - 1]?.id ?? null : null,
+    },
+  };
 }
 
 export async function getOperationalSlaPolicy() {
@@ -548,26 +673,51 @@ export async function updateOperationalSlaPolicy(
 export async function listPricingRegions(params: {
   q?: string;
   isActive?: boolean;
+  cursor?: string;
+  limit?: number;
 }) {
   const q = params.q?.trim();
+  const limit = Math.min(Math.max(Number(params.limit ?? 0), 1), 100);
+  const usePagination = Boolean(params.limit);
+  const where = {
+    ...(typeof params.isActive === "boolean"
+      ? { isActive: params.isActive }
+      : {}),
+    ...(q
+      ? {
+          OR: [
+            { code: { contains: q, mode: "insensitive" } },
+            { name: { contains: q, mode: "insensitive" } },
+            { aliases: { has: q } },
+          ],
+        }
+      : {}),
+  };
 
-  return db.pricingRegion.findMany({
-    where: {
-      ...(typeof params.isActive === "boolean"
-        ? { isActive: params.isActive }
-        : {}),
-      ...(q
-        ? {
-            OR: [
-              { code: { contains: q, mode: "insensitive" } },
-              { name: { contains: q, mode: "insensitive" } },
-              { aliases: { has: q } },
-            ],
-          }
-        : {}),
-    },
+  const rows = await db.pricingRegion.findMany({
+    where,
     orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+    ...(usePagination
+      ? {
+          take: limit + 1,
+          ...(params.cursor ? { cursor: { id: params.cursor }, skip: 1 } : {}),
+        }
+      : {}),
   });
+  if (!usePagination) return rows;
+
+  const pageRows = rows.slice(0, limit);
+  const hasNextPage = rows.length > limit;
+  const total = await db.pricingRegion.count({ where });
+  return {
+    data: pageRows,
+    total,
+    pageInfo: {
+      limit,
+      hasNextPage,
+      nextCursor: hasNextPage ? pageRows[pageRows.length - 1]?.id ?? null : null,
+    },
+  };
 }
 
 export async function upsertZoneMatrix(input: UpsertZoneMatrixInput) {
@@ -645,6 +795,8 @@ export async function listZoneMatrix(params: {
 }
 
 export async function createTariffPlan(input: CreateTariffPlanInput) {
+  await assertRouteTemplateExists(input.routeTemplateId ?? null);
+
   if (input.customerEntityId) {
     const customerEntity = await db.customerEntity.findUnique({
       where: { id: input.customerEntityId },
@@ -694,6 +846,7 @@ export async function createTariffPlan(input: CreateTariffPlanInput) {
         transportMode: input.transportMode,
         originCountryCode: normalizedOriginCountryCode,
         destinationCountryCode: normalizedDestinationCountryCode,
+        routeTemplateId: input.routeTemplateId ?? null,
         transitPricingConfig:
           input.pricingStrategy === "LEG_TRANSIT"
             ? { legs: input.transitLegRates ?? [] }
@@ -715,6 +868,9 @@ export async function createTariffPlan(input: CreateTariffPlanInput) {
         customerEntity: {
           select: { id: true, name: true, type: true },
         },
+        routeTemplate: {
+          select: { id: true, name: true, code: true, companyId: true },
+        },
         rates: {
           orderBy: [{ zone: "asc" }, { weightFromKg: "asc" }],
         },
@@ -724,6 +880,8 @@ export async function createTariffPlan(input: CreateTariffPlanInput) {
 }
 
 export async function updateTariffPlan(id: string, input: UpdateTariffPlanInput) {
+  await assertRouteTemplateExists(input.routeTemplateId ?? null);
+
   const existing = await db.tariffPlan.findUnique({
     where: { id },
     select: {
@@ -791,6 +949,7 @@ export async function updateTariffPlan(id: string, input: UpdateTariffPlanInput)
         transportMode: input.transportMode,
         originCountryCode: normalizedOriginCountryCode,
         destinationCountryCode: normalizedDestinationCountryCode,
+        routeTemplateId: input.routeTemplateId ?? null,
         transitPricingConfig:
           input.pricingStrategy === "LEG_TRANSIT"
             ? { legs: input.transitLegRates ?? [] }
@@ -812,11 +971,42 @@ export async function updateTariffPlan(id: string, input: UpdateTariffPlanInput)
         customerEntity: {
           select: { id: true, name: true, type: true },
         },
+        routeTemplate: {
+          select: { id: true, name: true, code: true, companyId: true },
+        },
         rates: {
           orderBy: [{ zone: "asc" }, { weightFromKg: "asc" }],
         },
       },
     });
+  });
+}
+
+export async function deleteTariffPlan(id: string) {
+  const existing = await db.tariffPlan.findUnique({
+    where: { id },
+    select: { id: true, name: true },
+  });
+
+  if (!existing) {
+    throw orderError("Tariff plan not found", 404);
+  }
+
+  return db.$transaction(async (tx: any) => {
+    const ratesDeleted = (
+      await tx.tariffRate.deleteMany({
+        where: { tariffPlanId: id },
+      })
+    ).count;
+
+    await tx.tariffPlan.delete({ where: { id } });
+
+    return {
+      deleted: true,
+      id,
+      name: existing.name,
+      cleanup: { ratesDeleted },
+    };
   });
 }
 
@@ -827,44 +1017,74 @@ export async function listTariffPlans(params: {
   coverageType?: "domestic" | "international";
   transportMode?: string;
   customerEntityId?: string;
+  routeTemplateId?: string;
   q?: string;
+  cursor?: string;
+  limit?: number;
 }) {
   const q = params.q?.trim();
+  const limit = Math.min(Math.max(Number(params.limit ?? 0), 1), 100);
+  const usePagination = Boolean(params.limit);
+  const where = {
+    ...(params.status ? { status: params.status } : {}),
+    ...(params.serviceType ? { serviceType: params.serviceType } : {}),
+    ...(params.pricingStrategy
+      ? { pricingStrategy: params.pricingStrategy }
+      : {}),
+    ...(params.coverageType ? { coverageType: params.coverageType } : {}),
+    ...(params.transportMode
+      ? { transportMode: params.transportMode.trim().toUpperCase() }
+      : {}),
+    ...(params.customerEntityId
+      ? { customerEntityId: params.customerEntityId }
+      : {}),
+    ...(params.routeTemplateId ? { routeTemplateId: params.routeTemplateId } : {}),
+    ...(q
+      ? {
+          OR: [
+            { name: { contains: q, mode: "insensitive" } },
+            { code: { contains: q, mode: "insensitive" } },
+            { description: { contains: q, mode: "insensitive" } },
+          ],
+        }
+      : {}),
+  };
 
-  return db.tariffPlan.findMany({
-    where: {
-      ...(params.status ? { status: params.status } : {}),
-      ...(params.serviceType ? { serviceType: params.serviceType } : {}),
-      ...(params.pricingStrategy
-        ? { pricingStrategy: params.pricingStrategy }
-        : {}),
-      ...(params.coverageType ? { coverageType: params.coverageType } : {}),
-      ...(params.transportMode
-        ? { transportMode: params.transportMode.trim().toUpperCase() }
-        : {}),
-      ...(params.customerEntityId
-        ? { customerEntityId: params.customerEntityId }
-        : {}),
-      ...(q
-        ? {
-            OR: [
-              { name: { contains: q, mode: "insensitive" } },
-              { code: { contains: q, mode: "insensitive" } },
-              { description: { contains: q, mode: "insensitive" } },
-            ],
-          }
-        : {}),
-    },
+  const rows = await db.tariffPlan.findMany({
+    where,
     include: {
       customerEntity: {
         select: { id: true, name: true, type: true },
+      },
+      routeTemplate: {
+        select: { id: true, name: true, code: true, companyId: true },
       },
       _count: {
         select: { rates: true },
       },
     },
     orderBy: [{ priority: "desc" }, { createdAt: "desc" }],
+    ...(usePagination
+      ? {
+          take: limit + 1,
+          ...(params.cursor ? { cursor: { id: params.cursor }, skip: 1 } : {}),
+        }
+      : {}),
   });
+  if (!usePagination) return rows;
+
+  const pageRows = rows.slice(0, limit);
+  const hasNextPage = rows.length > limit;
+  const total = await db.tariffPlan.count({ where });
+  return {
+    data: pageRows,
+    total,
+    pageInfo: {
+      limit,
+      hasNextPage,
+      nextCursor: hasNextPage ? pageRows[pageRows.length - 1]?.id ?? null : null,
+    },
+  };
 }
 
 export async function getTariffPlanById(id: string) {
@@ -873,6 +1093,13 @@ export async function getTariffPlanById(id: string) {
     include: {
       customerEntity: {
         select: { id: true, name: true, type: true },
+      },
+      routeTemplate: {
+        include: {
+          legs: {
+            orderBy: [{ sequence: "asc" }, { createdAt: "asc" }],
+          },
+        },
       },
       rates: {
         orderBy: [{ zone: "asc" }, { weightFromKg: "asc" }],
@@ -1067,6 +1294,18 @@ export async function quoteTariff(input: QuoteTariffInput) {
       OR: input.customerEntityId
         ? [{ customerEntityId: input.customerEntityId }, { customerEntityId: null }]
         : [{ customerEntityId: null }],
+      ...(input.companyId
+        ? {
+            AND: [
+              {
+                OR: [
+                  { routeTemplateId: null },
+                  { routeTemplate: { companyId: input.companyId } },
+                ],
+              },
+            ],
+          }
+        : {}),
     },
     include: {
       rates: {
@@ -1129,6 +1368,7 @@ export async function quoteTariff(input: QuoteTariffInput) {
           id: plan.id,
           name: plan.name,
           code: plan.code ?? null,
+          routeTemplateId: plan.routeTemplateId ?? null,
         },
         coverageType: plan.coverageType,
         transportMode,
@@ -1171,6 +1411,7 @@ export async function quoteTariff(input: QuoteTariffInput) {
           id: plan.id,
           name: plan.name,
           code: plan.code ?? null,
+          routeTemplateId: plan.routeTemplateId ?? null,
         },
         coverageType: plan.coverageType,
         transportMode,
@@ -1201,6 +1442,7 @@ export async function quoteTariff(input: QuoteTariffInput) {
         id: plan.id,
         name: plan.name,
         code: plan.code ?? null,
+        routeTemplateId: plan.routeTemplateId ?? null,
         priceType: plan.priceType,
         pricingStrategy: plan.pricingStrategy,
         priority: plan.priority,
@@ -1247,6 +1489,7 @@ export async function quoteTariff(input: QuoteTariffInput) {
         id: plan.id,
         name: plan.name,
         code: plan.code ?? null,
+        routeTemplateId: plan.routeTemplateId ?? null,
       },
       coverageType: plan.coverageType,
       transportMode,
@@ -1277,6 +1520,7 @@ export async function quoteTariff(input: QuoteTariffInput) {
       id: plan.id,
       name: plan.name,
       code: plan.code ?? null,
+      routeTemplateId: plan.routeTemplateId ?? null,
       priceType: plan.priceType,
       pricingStrategy: plan.pricingStrategy,
       priority: plan.priority,

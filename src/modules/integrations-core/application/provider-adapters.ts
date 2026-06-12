@@ -1,6 +1,3 @@
-import http from "http";
-import https from "https";
-import { URL } from "url";
 import type {
   CarrierAdapter,
   CarrierCreateShipmentInput,
@@ -11,6 +8,7 @@ import type {
   SmsSendInput,
 } from "../domain/ports";
 import type { IntegrationRequestContext, IntegrationResult } from "../domain/types";
+import { integrationHttpJson } from "./integration-http-client";
 
 type HttpAdapterConfig = {
   providerCode: string;
@@ -48,14 +46,6 @@ function pickString(source: unknown, keys: string[]): string | null {
     if (typeof value === "number" || typeof value === "bigint") return String(value);
   }
   return null;
-}
-
-function parseJsonSafe(raw: string): unknown {
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return raw;
-  }
 }
 
 function mapHttpResult<T>(args: {
@@ -100,48 +90,17 @@ async function requestJson(args: {
   body?: unknown;
 }): Promise<HttpResponsePayload> {
   const url = new URL(args.path, args.config.baseUrl);
-  const transport = url.protocol === "https:" ? https : http;
-  const bodyText = args.method === "GET" ? "" : JSON.stringify(args.body ?? {});
-  const headers = buildHeaders(args.config, args.context);
-  if (args.method !== "GET") {
-    headers["content-length"] = String(Buffer.byteLength(bodyText, "utf8"));
-  }
-
-  return await new Promise<HttpResponsePayload>((resolve, reject) => {
-    const request = transport.request(
-      {
-        method: args.method,
-        protocol: url.protocol,
-        hostname: url.hostname,
-        port: url.port || undefined,
-        path: `${url.pathname}${url.search}`,
-        headers,
-      },
-      (response) => {
-        const chunks: Buffer[] = [];
-        response.on("data", (chunk) =>
-          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)),
-        );
-        response.on("end", () => {
-          const raw = Buffer.concat(chunks).toString("utf8");
-          resolve({
-            statusCode: Number(response.statusCode || 0),
-            body: raw ? parseJsonSafe(raw) : null,
-          });
-        });
-      },
-    );
-
-    request.setTimeout(args.config.timeoutMs, () => {
-      request.destroy(new Error(`provider request timed out after ${args.config.timeoutMs}ms`));
-    });
-
-    request.on("error", (error) => reject(error));
-    if (args.method !== "GET") {
-      request.write(bodyText);
-    }
-    request.end();
+  const response = await integrationHttpJson({
+    url: url.toString(),
+    method: args.method,
+    headers: buildHeaders(args.config, args.context),
+    body: args.body,
+    timeoutMs: args.config.timeoutMs,
   });
+  return {
+    statusCode: response.statusCode,
+    body: response.body,
+  };
 }
 
 function normalizeParcels(value: unknown) {
@@ -493,6 +452,18 @@ export function normalizeProviderCode(value: string) {
   return String(value || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "_");
 }
 
+export function isProviderEnvFallbackEnabled() {
+  const value = String(process.env.INTEGRATION_ALLOW_ENV_PROVIDER_FALLBACK || "")
+    .trim()
+    .toLowerCase();
+  return value === "1" || value === "true" || value === "yes";
+}
+
+function readProviderEnvValue(key: string) {
+  if (!isProviderEnvFallbackEnabled()) return "";
+  return String(process.env[key] || "").trim();
+}
+
 export function resolveProviderHttpConfig(args: {
   domain: "carrier" | "sms";
   providerCode: string;
@@ -503,24 +474,24 @@ export function resolveProviderHttpConfig(args: {
   const domainPrefix = args.domain === "carrier" ? "CARRIER" : "SMS";
   const baseUrl =
     String(args.secretConfig?.baseUrl || args.secretConfig?.endpointUrl || "").trim() ||
-    String(process.env[`INTEGRATION_${domainPrefix}_BASE_URL_${suffix}`] || "").trim() ||
-    String(process.env[`INTEGRATION_PROVIDER_BASE_URL_${suffix}`] || "").trim();
+    readProviderEnvValue(`INTEGRATION_${domainPrefix}_BASE_URL_${suffix}`) ||
+    readProviderEnvValue(`INTEGRATION_PROVIDER_BASE_URL_${suffix}`);
   if (!baseUrl) return null;
 
   const token =
     String(args.secretConfig?.token || "").trim() ||
-    String(process.env[`INTEGRATION_${domainPrefix}_TOKEN_${suffix}`] || "").trim() ||
-    String(process.env[`INTEGRATION_PROVIDER_TOKEN_${suffix}`] || "").trim() ||
+    readProviderEnvValue(`INTEGRATION_${domainPrefix}_TOKEN_${suffix}`) ||
+    readProviderEnvValue(`INTEGRATION_PROVIDER_TOKEN_${suffix}`) ||
     null;
   const apiKey =
     String(args.secretConfig?.apiKey || "").trim() ||
-    String(process.env[`INTEGRATION_${domainPrefix}_API_KEY_${suffix}`] || "").trim() ||
-    String(process.env[`INTEGRATION_PROVIDER_API_KEY_${suffix}`] || "").trim() ||
+    readProviderEnvValue(`INTEGRATION_${domainPrefix}_API_KEY_${suffix}`) ||
+    readProviderEnvValue(`INTEGRATION_PROVIDER_API_KEY_${suffix}`) ||
     null;
   const apiKeyHeader =
     String(args.secretConfig?.apiKeyHeader || "").trim() ||
-    String(process.env[`INTEGRATION_${domainPrefix}_API_KEY_HEADER_${suffix}`] || "").trim() ||
-    String(process.env[`INTEGRATION_PROVIDER_API_KEY_HEADER_${suffix}`] || "").trim() ||
+    readProviderEnvValue(`INTEGRATION_${domainPrefix}_API_KEY_HEADER_${suffix}`) ||
+    readProviderEnvValue(`INTEGRATION_PROVIDER_API_KEY_HEADER_${suffix}`) ||
     null;
 
   return {

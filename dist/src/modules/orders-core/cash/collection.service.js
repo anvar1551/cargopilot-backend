@@ -43,13 +43,13 @@ async function findCollection(tx, orderId, kind) {
         },
         include: {
             currentHolderUser: {
-                select: { id: true, name: true, email: true, role: true },
+                select: { id: true, name: true, email: true, driverType: true },
             },
             currentHolderWarehouse: true,
             events: {
                 include: {
                     actor: {
-                        select: { id: true, name: true, email: true, role: true },
+                        select: { id: true, name: true, email: true, driverType: true },
                     },
                 },
                 orderBy: { createdAt: "asc" },
@@ -123,18 +123,12 @@ async function loadCollection(tx, orderId, kind) {
     return collection;
 }
 function assertActorCanAccessOrder(order, actor) {
-    if (actor.role === "manager")
+    if (order.assignedDriverId === actor.id)
         return;
-    if (actor.role === "driver") {
-        if (order.assignedDriverId === actor.id)
-            return;
-        throw (0, shared_1.orderError)("Only the assigned driver can update cash for this order", 403);
-    }
-    if (actor.role === "warehouse") {
-        if (actor.warehouseId && order.currentWarehouseId === actor.warehouseId)
-            return;
-        throw (0, shared_1.orderError)("Warehouse user can only update cash for orders at their location", 403);
-    }
+    if (actor.warehouseId && order.currentWarehouseId === actor.warehouseId)
+        return;
+    if (hasPermission(actor, "finance.settleCash"))
+        return;
     throw (0, shared_1.orderError)("Forbidden", 403);
 }
 function assertCollectionMutable(collection) {
@@ -161,9 +155,9 @@ async function resolveActorWarehouse(tx, actor) {
 async function resolveDriver(tx, driverId) {
     const driver = await tx.user.findUnique({
         where: { id: driverId },
-        select: { id: true, name: true, role: true },
+        select: { id: true, name: true, driverType: true },
     });
-    if (!driver || driver.role !== "driver") {
+    if (!driver || !driver.driverType) {
         throw (0, shared_1.orderError)("Driver not found", 404);
     }
     return { id: driver.id, name: driver.name };
@@ -196,8 +190,11 @@ function resolveActorTenantScope(actor) {
     }
     return `user:${actor.id}`;
 }
+function hasPermission(actor, permission) {
+    return Array.isArray(actor.permissionCodes) && actor.permissionCodes.includes(permission);
+}
 function toAuditActorRole(actor) {
-    return (actor.userRole ?? actor.role ?? null);
+    return null;
 }
 async function collectOrderCash(params) {
     const { orderId, kind, actor } = params;
@@ -210,7 +207,9 @@ async function collectOrderCash(params) {
         let holderUserId = null;
         let holderWarehouseId = null;
         let holderLabel = null;
-        if (actor.role === "driver") {
+        const actorIsAssignedDriver = order.assignedDriverId === actor.id;
+        const actorIsWarehouseContext = Boolean(actor.warehouseId) && order.currentWarehouseId === actor.warehouseId;
+        if (actorIsAssignedDriver) {
             if (collection.status === client_1.CashCollectionStatus.held &&
                 collection.currentHolderType !== client_1.CashHolderType.driver) {
                 throw (0, shared_1.orderError)("Driver cannot collect cash already held by another location or person", 403);
@@ -224,7 +223,7 @@ async function collectOrderCash(params) {
             holderUserId = actor.id;
             holderLabel = collection.currentHolderUser?.name ?? "Driver";
         }
-        else if (actor.role === "warehouse") {
+        else if (actorIsWarehouseContext) {
             if (collection.status === client_1.CashCollectionStatus.held &&
                 collection.currentHolderType === client_1.CashHolderType.driver) {
                 throw (0, shared_1.orderError)("Warehouse must accept driver cash through handoff, not direct collection", 400);
@@ -314,13 +313,17 @@ async function handoffOrderCash(params) {
         if (collection.status !== client_1.CashCollectionStatus.held) {
             throw (0, shared_1.orderError)("Only held cash can be handed off", 400);
         }
-        if (actor.role === "driver") {
+        const actorIsAssignedDriver = order.assignedDriverId === actor.id;
+        const actorIsWarehouseContext = Boolean(actor.warehouseId) &&
+            (collection.currentHolderWarehouseId === actor.warehouseId ||
+                order.currentWarehouseId === actor.warehouseId);
+        if (actorIsAssignedDriver) {
             if (collection.currentHolderType !== client_1.CashHolderType.driver ||
                 collection.currentHolderUserId !== actor.id) {
                 throw (0, shared_1.orderError)("Driver can only hand off cash currently held by them", 403);
             }
         }
-        if (actor.role === "warehouse") {
+        if (actorIsWarehouseContext) {
             if (!actor.warehouseId ||
                 collection.currentHolderWarehouseId !== actor.warehouseId) {
                 throw (0, shared_1.orderError)("Warehouse can only hand off cash currently held at their location", 403);
@@ -340,8 +343,7 @@ async function handoffOrderCash(params) {
             nextHolderLabel = driver.name ?? "Driver";
         }
         else {
-            const warehouseId = params.toWarehouseId ??
-                (actor.role === "warehouse" ? actor.warehouseId ?? null : null);
+            const warehouseId = params.toWarehouseId ?? actor.warehouseId ?? null;
             if (!warehouseId) {
                 throw (0, shared_1.orderError)("toWarehouseId is required when handing off to a location", 400);
             }
@@ -404,7 +406,7 @@ async function handoffOrderCash(params) {
 }
 async function settleOrderCash(params) {
     const { orderId, kind, actor } = params;
-    if (actor.role !== "manager") {
+    if (!hasPermission(actor, "finance.settleCash")) {
         throw (0, shared_1.orderError)("Only managers can settle cash to finance", 403);
     }
     await prismaClient_1.default.$transaction(async (tx) => {
@@ -497,10 +499,10 @@ function buildQueueWhere(actor, filters) {
             },
         });
     }
-    if (actor.role === "manager") {
+    if (hasPermission(actor, "finance.viewLedger") || hasPermission(actor, "finance.settleCash")) {
         return and.length === 1 ? and[0] : { AND: and };
     }
-    if (actor.role === "warehouse") {
+    if (actor.warehouseId) {
         if (!actor.warehouseId) {
             throw (0, shared_1.orderError)("Warehouse user has no attached location", 403);
         }
@@ -515,10 +517,10 @@ function buildQueueWhere(actor, filters) {
     throw (0, shared_1.orderError)("Forbidden", 403);
 }
 function buildQueueScopeSql(actor) {
-    if (actor.role === "manager") {
+    if (hasPermission(actor, "finance.viewLedger") || hasPermission(actor, "finance.settleCash")) {
         return client_1.Prisma.sql `1=1`;
     }
-    if (actor.role === "warehouse") {
+    if (actor.warehouseId) {
         if (!actor.warehouseId) {
             throw (0, shared_1.orderError)("Warehouse user has no attached location", 403);
         }
@@ -550,7 +552,7 @@ async function listCashQueueForActor(params) {
                     },
                 },
                 currentHolderUser: {
-                    select: { id: true, name: true, email: true, role: true },
+                    select: { id: true, name: true, email: true, driverType: true },
                 },
                 currentHolderWarehouse: {
                     select: { id: true, name: true, type: true, location: true, region: true },
@@ -584,7 +586,7 @@ async function listCashQueueForActor(params) {
                     id: row.currentHolderUser.id,
                     name: row.currentHolderUser.name,
                     email: row.currentHolderUser.email,
-                    role: row.currentHolderUser.role,
+                    role: row.currentHolderUser.driverType ? "driver" : "staff",
                 }
                 : null,
             currentHolderWarehouse: row.currentHolderWarehouse
@@ -599,10 +601,10 @@ async function listCashQueueForActor(params) {
             updatedAt,
             ageHours,
             canCollect: row.status === client_1.CashCollectionStatus.expected &&
-                (actor.role === "manager" || actor.role === "warehouse"),
+                (hasPermission(actor, "shipment.update") || hasPermission(actor, "finance.settleCash")),
             canHandoff: row.status === client_1.CashCollectionStatus.held &&
-                (actor.role === "manager" || actor.role === "warehouse"),
-            canSettle: row.status === client_1.CashCollectionStatus.held && actor.role === "manager",
+                (hasPermission(actor, "shipment.update") || hasPermission(actor, "finance.settleCash")),
+            canSettle: row.status === client_1.CashCollectionStatus.held && hasPermission(actor, "finance.settleCash"),
         };
     });
     return {

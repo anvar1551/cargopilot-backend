@@ -1,17 +1,22 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const zod_1 = require("zod");
-const authFastify_1 = require("../../../middleware/authFastify");
-const identity_access_1 = require("../../identity-access");
+const fastify_auth_1 = require("../../../modules/identity-access/transport/fastify-auth");
 const liveMapService_1 = require("../../live-map-core/application/liveMapService");
 const driverProfileService_1 = require("../application/driverProfileService");
 function liveMapActorFromRequest(request) {
-    const role = request.user?.role;
     const warehouseId = request.user?.warehouseId ?? null;
     const userId = request.user?.id;
-    if (!role || !userId)
+    if (!userId)
         return null;
-    return { role, warehouseId, userId };
+    return {
+        userId,
+        warehouseId,
+        roleCodes: Array.isArray(request.user?.roleCodes) ? request.user.roleCodes : [],
+        permissionCodes: Array.isArray(request.user?.permissionCodes)
+            ? request.user.permissionCodes
+            : [],
+    };
 }
 function sendLiveMapActionError(reply, err, fallbackMessage) {
     if (err instanceof zod_1.ZodError) {
@@ -35,7 +40,7 @@ function sendLiveMapActionError(reply, err, fallbackMessage) {
     return reply.code(400).send({ error: err?.message || fallbackMessage });
 }
 const driverFastifyRoutes = async (fastify) => {
-    fastify.get("/", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "drivers.manage" }) }, async (request, reply) => {
+    fastify.get("/", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "drivers.manage" }) }, async (request, reply) => {
         try {
             const drivers = await (0, driverProfileService_1.listDriversView)();
             return reply.send(drivers);
@@ -44,7 +49,7 @@ const driverFastifyRoutes = async (fastify) => {
             return reply.code(500).send({ error: err?.message || "Failed to fetch drivers" });
         }
     });
-    fastify.put("/:id", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "drivers.manage" }) }, async (request, reply) => {
+    fastify.put("/:id", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "drivers.manage" }) }, async (request, reply) => {
         try {
             const payload = await (0, driverProfileService_1.updateDriverProfileById)(String(request.params?.id || ""), request.body ?? {});
             return reply.send(payload);
@@ -61,16 +66,10 @@ const driverFastifyRoutes = async (fastify) => {
             });
         }
     });
-    fastify.post("/location", { preHandler: (0, authFastify_1.fastifyAuth)() }, async (request, reply) => {
+    fastify.post("/location", { preHandler: (0, fastify_auth_1.fastifyAuth)({ anyPermission: ["drivers.telemetry", "drivers.manage"] }) }, async (request, reply) => {
         const actor = liveMapActorFromRequest(request);
         if (!actor)
             return reply.code(401).send({ error: "Unauthorized" });
-        const [canTelemetry, canManage] = await Promise.all([
-            (0, identity_access_1.hasPermission)(request.user, "drivers.telemetry"),
-            (0, identity_access_1.hasPermission)(request.user, "drivers.manage"),
-        ]);
-        if (!canTelemetry && !canManage)
-            return reply.code(403).send({ error: "Forbidden" });
         try {
             const result = await (0, liveMapService_1.ingestDriverLocation)({ actor, body: request.body });
             return reply.send(result);
@@ -79,16 +78,22 @@ const driverFastifyRoutes = async (fastify) => {
             return sendLiveMapActionError(reply, err, "Failed to ingest driver location");
         }
     });
-    fastify.get("/presence", { preHandler: (0, authFastify_1.fastifyAuth)() }, async (request, reply) => {
+    fastify.post("/telemetry", { preHandler: (0, fastify_auth_1.fastifyAuth)({ anyPermission: ["drivers.telemetry", "drivers.manage"] }) }, async (request, reply) => {
         const actor = liveMapActorFromRequest(request);
         if (!actor)
             return reply.code(401).send({ error: "Unauthorized" });
-        const [canTelemetry, canManage] = await Promise.all([
-            (0, identity_access_1.hasPermission)(request.user, "drivers.telemetry"),
-            (0, identity_access_1.hasPermission)(request.user, "drivers.manage"),
-        ]);
-        if (!canTelemetry && !canManage)
-            return reply.code(403).send({ error: "Forbidden" });
+        try {
+            const result = await (0, liveMapService_1.ingestDriverTelemetry)({ actor, body: request.body });
+            return reply.send(result);
+        }
+        catch (err) {
+            return sendLiveMapActionError(reply, err, "Failed to ingest driver telemetry");
+        }
+    });
+    fastify.get("/presence", { preHandler: (0, fastify_auth_1.fastifyAuth)({ anyPermission: ["drivers.telemetry", "drivers.manage"] }) }, async (request, reply) => {
+        const actor = liveMapActorFromRequest(request);
+        if (!actor)
+            return reply.code(401).send({ error: "Unauthorized" });
         try {
             const result = await (0, liveMapService_1.getDriverPresence)({ actor, query: request.query });
             return reply.send(result);
@@ -97,16 +102,10 @@ const driverFastifyRoutes = async (fastify) => {
             return sendLiveMapActionError(reply, err, "Failed to fetch driver presence");
         }
     });
-    fastify.put("/presence", { preHandler: (0, authFastify_1.fastifyAuth)() }, async (request, reply) => {
+    fastify.put("/presence", { preHandler: (0, fastify_auth_1.fastifyAuth)({ anyPermission: ["drivers.telemetry", "drivers.manage"] }) }, async (request, reply) => {
         const actor = liveMapActorFromRequest(request);
         if (!actor)
             return reply.code(401).send({ error: "Unauthorized" });
-        const [canTelemetry, canManage] = await Promise.all([
-            (0, identity_access_1.hasPermission)(request.user, "drivers.telemetry"),
-            (0, identity_access_1.hasPermission)(request.user, "drivers.manage"),
-        ]);
-        if (!canTelemetry && !canManage)
-            return reply.code(403).send({ error: "Forbidden" });
         try {
             const result = await (0, liveMapService_1.setDriverPresence)({ actor, body: request.body });
             return reply.send(result);
@@ -115,16 +114,10 @@ const driverFastifyRoutes = async (fastify) => {
             return sendLiveMapActionError(reply, err, "Failed to update driver presence");
         }
     });
-    fastify.post("/presence/heartbeat", { preHandler: (0, authFastify_1.fastifyAuth)() }, async (request, reply) => {
+    fastify.post("/presence/heartbeat", { preHandler: (0, fastify_auth_1.fastifyAuth)({ anyPermission: ["drivers.telemetry", "drivers.manage"] }) }, async (request, reply) => {
         const actor = liveMapActorFromRequest(request);
         if (!actor)
             return reply.code(401).send({ error: "Unauthorized" });
-        const [canTelemetry, canManage] = await Promise.all([
-            (0, identity_access_1.hasPermission)(request.user, "drivers.telemetry"),
-            (0, identity_access_1.hasPermission)(request.user, "drivers.manage"),
-        ]);
-        if (!canTelemetry && !canManage)
-            return reply.code(403).send({ error: "Forbidden" });
         try {
             const result = await (0, liveMapService_1.heartbeatDriverPresence)({ actor, body: request.body });
             return reply.send(result);

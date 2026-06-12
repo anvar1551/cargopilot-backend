@@ -86,7 +86,7 @@ CREATE INDEX "IntegrationCanonicalEvent_companyId_domain_status_idx" ON "Integra
 CREATE INDEX "IntegrationCanonicalEvent_providerId_status_occurredAt_idx" ON "IntegrationCanonicalEvent"("providerId", "status", "occurredAt");
 
 -- CreateIndex
-CREATE INDEX "IntegrationCanonicalEvent_aggregateType_aggregateId_eventType_idx" ON "IntegrationCanonicalEvent"("aggregateType", "aggregateId", "eventType");
+CREATE INDEX "IntegrationCanonicalEvent_aggregateType_aggregateId_eventTy_idx" ON "IntegrationCanonicalEvent"("aggregateType", "aggregateId", "eventType");
 
 -- AddForeignKey
 ALTER TABLE "IntegrationCanonicalEvent" ADD CONSTRAINT "IntegrationCanonicalEvent_providerId_fkey" FOREIGN KEY ("providerId") REFERENCES "IntegrationProvider"("id") ON DELETE SET NULL ON UPDATE CASCADE;

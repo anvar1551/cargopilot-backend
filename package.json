@@ -5,6 +5,8 @@
   "main": "index.js",
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "dev:stack": "node scripts/dev/run-dev-stack.js",
+    "dev:stack:fake": "node scripts/dev/run-dev-stack.js --fake-carrier",
     "worker:analytics": "ts-node-dev --respawn --transpile-only src/workers/analytics.worker.ts",
     "worker:analytics-outbox": "ts-node-dev --respawn --transpile-only src/workers/analytics-outbox.worker.ts",
     "worker:integration-outbox": "ts-node-dev --respawn --transpile-only src/workers/integration-outbox.worker.ts",
@@ -14,6 +16,9 @@
     "smoke:payments-local": "ts-node-dev --transpile-only src/scripts/payments-local-smoke.ts",
     "fake:carrier": "ts-node-dev --transpile-only scripts/integration/fake-carrier.ts",
     "smoke:carrier-integration": "ts-node-dev --transpile-only scripts/integration/carrier-booking-smoke.ts",
+    "smoke:route-template-carrier": "ts-node-dev --transpile-only scripts/integration/route-template-carrier-smoke.ts",
+    "test:integration:carrier": "ts-node-dev --transpile-only scripts/integration/carrier-booking-smoke.ts",
+    "test:integration:route-template-carrier": "ts-node-dev --transpile-only scripts/integration/route-template-carrier-smoke.ts",
     "build": "tsc",
     "start": "node dist/src/index.js",
     "start:worker:analytics": "node dist/src/workers/analytics.worker.js",

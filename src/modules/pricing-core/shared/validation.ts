@@ -54,6 +54,8 @@ export const updatePricingRegionSchema = createPricingRegionSchema;
 export const listPricingRegionsQuerySchema = z.object({
   q: z.string().trim().optional(),
   isActive: booleanish.optional(),
+  cursor: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
 });
 
 export const zoneMatrixEntryInputSchema = z.object({
@@ -159,6 +161,7 @@ export const createTariffPlanSchema = z
       .pipe(z.string().regex(/^[A-Z]{2}$/))
       .optional()
       .nullable(),
+    routeTemplateId: z.string().uuid().optional().nullable(),
     currency: z
       .string()
       .trim()
@@ -326,10 +329,14 @@ export const listTariffPlansQuerySchema = z.object({
     .pipe(z.enum(TARIFF_TRANSPORT_MODES))
     .optional(),
   customerEntityId: z.string().uuid().optional(),
+  routeTemplateId: z.string().uuid().optional(),
   q: z.string().trim().optional(),
+  cursor: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
 });
 
 export const quoteTariffSchema = z.object({
+  companyId: z.string().uuid().optional().nullable(),
   customerEntityId: z.string().uuid().optional().nullable(),
   serviceType: z
     .string()
@@ -411,6 +418,8 @@ export const listDeliverySlaRulesQuerySchema = z.object({
   q: z.string().trim().optional(),
   serviceType: z.enum(SERVICE_TYPES).optional(),
   isActive: booleanish.optional(),
+  cursor: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
 });
 
 export const getOperationalSlaPolicySchema = z.object({});

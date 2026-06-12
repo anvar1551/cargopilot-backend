@@ -10,6 +10,8 @@ exports.readThroughAnalyticsProjection = readThroughAnalyticsProjection;
 exports.clearAnalyticsReadModelBySection = clearAnalyticsReadModelBySection;
 const crypto_1 = require("crypto");
 const redis_1 = require("../../../config/redis");
+const analyticsConfig_1 = require("../config/analyticsConfig");
+const analyticsLogger_1 = require("../config/analyticsLogger");
 const ANALYTICS_PREFIX = `${(0, redis_1.getRedisPrefix)()}:analytics:v3:`;
 const SECTION_VERSION_TTL_MS = 5000;
 const memoryStore = new Map();
@@ -27,7 +29,7 @@ const cleanupTimer = setInterval(() => {
 }, 60000);
 cleanupTimer.unref();
 function withJitter(ttlMs) {
-    const jitterPct = Math.min(Math.max(Number(process.env.ANALYTICS_V3_CACHE_JITTER_PCT || 0.15), 0), 0.45);
+    const jitterPct = analyticsConfig_1.analyticsConfig.cache.jitterPct;
     const jitter = ttlMs * jitterPct;
     const min = ttlMs - jitter;
     const max = ttlMs + jitter;
@@ -90,7 +92,11 @@ async function getSectionVersion(section) {
             value: fallback,
             expiresAt: Date.now() + SECTION_VERSION_TTL_MS,
         });
-        console.error(`[analytics-v3] version fallback ${section}: ${err?.message || "unknown"}`);
+        analyticsLogger_1.analyticsLogger.throttledWarn(`read-model-version-fallback-${section}`, "read model version fallback", {
+            error: err,
+            meta: { section },
+            throttleMs: 60000,
+        });
         return fallback;
     }
 }
@@ -102,7 +108,7 @@ async function resolveVersionedKey(baseKey) {
     return toVersionedKey({ section: parsed.section, suffix: parsed.suffix, version });
 }
 function writeMemory(key, payload, ttlMs) {
-    const staleMs = Math.max(ttlMs, Number(process.env.ANALYTICS_V3_READ_MODEL_STALE_MS || 15 * 60000));
+    const staleMs = Math.max(ttlMs, analyticsConfig_1.analyticsConfig.cache.staleMs);
     const now = Date.now();
     memoryStore.set(key, {
         payload,
@@ -149,11 +155,14 @@ async function readAnalyticsReadModel(baseKey) {
             return memoryHit?.payload ?? null;
         }
         const parsed = JSON.parse(raw);
-        writeMemory(key, parsed, Math.max(1000, Number(process.env.ANALYTICS_V3_MEMORY_TTL_MS || 30000)));
+        writeMemory(key, parsed, analyticsConfig_1.analyticsConfig.cache.memoryTtlMs);
         return parsed;
     }
     catch (err) {
-        console.error(`[analytics-v3] read model read failed: ${err?.message || "unknown"}`);
+        analyticsLogger_1.analyticsLogger.throttledWarn("read-model-read-failed", "read model read failed", {
+            error: err,
+            throttleMs: 60000,
+        });
         return memoryHit?.payload ?? null;
     }
 }
@@ -168,7 +177,10 @@ async function writeAnalyticsReadModel(args) {
         await (0, redis_1.withRedisTimeout)("analytics:read-model:set", () => redis.set(versionedKey, JSON.stringify(args.payload), "EX", Math.max(1, Math.floor(ttlMs / 1000))));
     }
     catch (err) {
-        console.error(`[analytics-v3] read model write failed: ${err?.message || "unknown"}`);
+        analyticsLogger_1.analyticsLogger.throttledWarn("read-model-write-failed", "read model write failed", {
+            error: err,
+            throttleMs: 60000,
+        });
     }
 }
 async function readThroughAnalyticsProjection(args) {
@@ -216,7 +228,7 @@ async function readThroughAnalyticsProjection(args) {
                 }
             }
         }
-        const waitMaxMs = Math.min(lockMs, Math.max(100, Number(process.env.ANALYTICS_V3_LOCK_WAIT_MS || 800)));
+        const waitMaxMs = Math.min(lockMs, analyticsConfig_1.analyticsConfig.cache.lockWaitMs);
         const started = Date.now();
         while (Date.now() - started < waitMaxMs) {
             await new Promise((resolve) => setTimeout(resolve, 60));
@@ -230,7 +242,10 @@ async function readThroughAnalyticsProjection(args) {
         return { payload, cacheHit: false };
     }
     catch (err) {
-        console.error(`[analytics-v3] read-through fallback: ${err?.message || "unknown"}`);
+        analyticsLogger_1.analyticsLogger.throttledWarn("read-through-fallback", "read-through fallback triggered", {
+            error: err,
+            throttleMs: 60000,
+        });
         const payload = await args.buildFromDb();
         await writeAnalyticsReadModel({ key: args.key, payload, ttlMs: args.ttlMs });
         return { payload, cacheHit: false };
@@ -259,6 +274,10 @@ async function clearAnalyticsReadModelBySection(section) {
         });
     }
     catch (err) {
-        console.error(`[analytics-v3] clear section failed: ${err?.message || "unknown"}`);
+        analyticsLogger_1.analyticsLogger.throttledWarn(`read-model-clear-failed-${section}`, "read model section clear failed", {
+            error: err,
+            meta: { section },
+            throttleMs: 60000,
+        });
     }
 }

@@ -2,7 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const client_1 = require("@prisma/client");
 const realtimeHub_1 = require("../../../modules/realtime-core/realtimeHub");
-const authFastify_1 = require("../../../middleware/authFastify");
+const fastify_auth_1 = require("../../../modules/identity-access/transport/fastify-auth");
 const identity_access_1 = require("../../identity-access");
 const shared_1 = require("../../orders-core/shared");
 const notificationService_1 = require("../application/notificationService");
@@ -36,7 +36,7 @@ async function ensureNotificationsAccess(user) {
     }
 }
 const notificationsFastifyRoutes = async (fastify) => {
-    fastify.get("/", { preHandler: (0, authFastify_1.fastifyAuth)() }, async (request, reply) => {
+    fastify.get("/", { preHandler: (0, fastify_auth_1.fastifyAuth)() }, async (request, reply) => {
         try {
             await ensureNotificationsAccess(request.user);
             const actor = (0, shared_1.requireOrderActor)(request.user);
@@ -54,7 +54,7 @@ const notificationsFastifyRoutes = async (fastify) => {
             });
         }
     });
-    fastify.get("/unread-count", { preHandler: (0, authFastify_1.fastifyAuth)() }, async (request, reply) => {
+    fastify.get("/unread-count", { preHandler: (0, fastify_auth_1.fastifyAuth)() }, async (request, reply) => {
         try {
             await ensureNotificationsAccess(request.user);
             const actor = (0, shared_1.requireOrderActor)(request.user);
@@ -67,7 +67,7 @@ const notificationsFastifyRoutes = async (fastify) => {
             });
         }
     });
-    fastify.post("/:id/read", { preHandler: (0, authFastify_1.fastifyAuth)() }, async (request, reply) => {
+    fastify.post("/:id/read", { preHandler: (0, fastify_auth_1.fastifyAuth)() }, async (request, reply) => {
         try {
             await ensureNotificationsAccess(request.user);
             const actor = (0, shared_1.requireOrderActor)(request.user);
@@ -86,7 +86,7 @@ const notificationsFastifyRoutes = async (fastify) => {
             });
         }
     });
-    fastify.post("/read-all", { preHandler: (0, authFastify_1.fastifyAuth)() }, async (request, reply) => {
+    fastify.post("/read-all", { preHandler: (0, fastify_auth_1.fastifyAuth)() }, async (request, reply) => {
         try {
             await ensureNotificationsAccess(request.user);
             const actor = (0, shared_1.requireOrderActor)(request.user);

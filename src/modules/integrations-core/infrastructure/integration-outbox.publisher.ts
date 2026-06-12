@@ -107,6 +107,14 @@ function isCarrierCreateShipment(record: Awaited<ReturnType<typeof integrationOu
   return record.domain === "carrier" && record.operation === "create_shipment";
 }
 
+function isCarrierTrack(record: Awaited<ReturnType<typeof integrationOutboxRepository.claimBatch>>[number]) {
+  return record.domain === "carrier" && record.operation === "track";
+}
+
+function isCarrierCancelShipment(record: Awaited<ReturnType<typeof integrationOutboxRepository.claimBatch>>[number]) {
+  return record.domain === "carrier" && record.operation === "cancel_shipment";
+}
+
 async function enqueueCarrierDispatchSuccessEvent(args: {
   record: Awaited<ReturnType<typeof integrationOutboxRepository.claimBatch>>[number];
   attempt: IntegrationAttempt;
@@ -129,6 +137,59 @@ async function enqueueCarrierDispatchSuccessEvent(args: {
       responseJson: args.attempt.responseJson ?? null,
       providerRequestId: args.attempt.providerRequestId ?? null,
       statusCode: args.attempt.statusCode,
+    },
+  });
+}
+
+async function enqueueCarrierTrackSuccessEvent(args: {
+  record: Awaited<ReturnType<typeof integrationOutboxRepository.claimBatch>>[number];
+  attempt: IntegrationAttempt;
+}) {
+  if (!isCarrierTrack(args.record) || !args.record.aggregateId) return;
+  const responseJson = args.attempt.responseJson ?? {};
+
+  await integrationCanonicalEventRepository.enqueue({
+    source: "outbound_response",
+    companyId: args.record.companyId,
+    providerId: args.record.providerId,
+    outboxId: args.record.id,
+    domain: "carrier",
+    providerCode: args.record.providerCode,
+    eventType: "carrier.status.updated",
+    aggregateType: args.record.aggregateType ?? "shipment",
+    aggregateId: args.record.aggregateId,
+    occurredAt: args.attempt.finishedAt,
+    payloadJson: {
+      ...responseJson,
+      providerRequestId: args.attempt.providerRequestId ?? null,
+      providerHttpStatusCode: args.attempt.statusCode,
+    },
+  });
+}
+
+async function enqueueCarrierCancelSuccessEvent(args: {
+  record: Awaited<ReturnType<typeof integrationOutboxRepository.claimBatch>>[number];
+  attempt: IntegrationAttempt;
+}) {
+  if (!isCarrierCancelShipment(args.record) || !args.record.aggregateId) return;
+
+  await integrationCanonicalEventRepository.enqueue({
+    source: "outbound_response",
+    companyId: args.record.companyId,
+    providerId: args.record.providerId,
+    outboxId: args.record.id,
+    domain: "carrier",
+    providerCode: args.record.providerCode,
+    eventType: "carrier.status.updated",
+    aggregateType: args.record.aggregateType ?? "shipment",
+    aggregateId: args.record.aggregateId,
+    occurredAt: args.attempt.finishedAt,
+    payloadJson: {
+      ...(args.attempt.responseJson ?? {}),
+      statusCode: "cancelled",
+      statusLabel: "Cancelled",
+      providerRequestId: args.attempt.providerRequestId ?? null,
+      providerHttpStatusCode: args.attempt.statusCode,
     },
   });
 }
@@ -213,6 +274,8 @@ async function processOne(record: Awaited<ReturnType<typeof integrationOutboxRep
   if (dispatchResult.sent) {
     await integrationOutboxRepository.markSent(record.id, attempt);
     await enqueueCarrierDispatchSuccessEvent({ record, attempt });
+    await enqueueCarrierTrackSuccessEvent({ record, attempt });
+    await enqueueCarrierCancelSuccessEvent({ record, attempt });
     return;
   }
 

@@ -10,10 +10,12 @@ import { fastifyAuth } from "../../../identity-access/transport/fastify-auth";
 import { requireOrderActor } from "../..";
 import {
   bookCarrierForOrderLeg,
+  cancelCarrierForOrderLeg,
   createPricingComponent,
   listOrderDocuments,
   listOrderLegs,
   listPricingComponents,
+  syncCarrierTrackingForOrderLeg,
   upsertOrderLeg,
 } from "../../../orders-legs";
 import { asEnumValue, emitMutationInvalidation, ensureOrderInScope, parseNumber, sendError } from "../shared";
@@ -127,6 +129,52 @@ const legsPricingRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.code(202).send(result);
       } catch (err: any) {
         return sendError(reply, err, "Failed to book carrier");
+      }
+    },
+  );
+
+  fastify.post(
+    "/:id/legs/:legId/carrier-track-sync",
+    { preHandler: fastifyAuth({ permission: "shipment.bookCarrier" }) },
+    async (request, reply) => {
+      try {
+        const actor = requireOrderActor(request.user);
+        const orderId = requireUuid((request.params as any)?.id, "orderId");
+        const legId = requireUuid((request.params as any)?.legId, "legId");
+        await ensureOrderInScope(request, orderId);
+        const result = await syncCarrierTrackingForOrderLeg({
+          orderId,
+          legId,
+          actor,
+        });
+        await emitMutationInvalidation("order_mutation");
+        return reply.code(202).send(result);
+      } catch (err: any) {
+        return sendError(reply, err, "Failed to sync carrier tracking");
+      }
+    },
+  );
+
+  fastify.post(
+    "/:id/legs/:legId/carrier-cancel",
+    { preHandler: fastifyAuth({ permission: "shipment.bookCarrier" }) },
+    async (request, reply) => {
+      try {
+        const actor = requireOrderActor(request.user);
+        const orderId = requireUuid((request.params as any)?.id, "orderId");
+        const legId = requireUuid((request.params as any)?.legId, "legId");
+        const body = (request.body ?? {}) as Record<string, unknown>;
+        await ensureOrderInScope(request, orderId);
+        const result = await cancelCarrierForOrderLeg({
+          orderId,
+          legId,
+          reason: typeof body.reason === "string" ? body.reason : null,
+          actor,
+        });
+        await emitMutationInvalidation("order_mutation");
+        return reply.code(202).send(result);
+      } catch (err: any) {
+        return sendError(reply, err, "Failed to cancel carrier booking");
       }
     },
   );

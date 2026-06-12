@@ -3,8 +3,13 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const analyticsV2_1 = require("../application/analyticsV2");
 const analyticsV2Realtime_1 = require("../realtime/analyticsV2Realtime");
 const analyticsEvents_1 = require("../realtime/analyticsEvents");
-const authFastify_1 = require("../../../middleware/authFastify");
+const fastify_auth_1 = require("../../../modules/identity-access/transport/fastify-auth");
 const opsMetrics_1 = require("../../../modules/observability-core/application/opsMetrics");
+const analyticsConfig_1 = require("../config/analyticsConfig");
+const sseHeaders_1 = require("../../../shared/http/sseHeaders");
+function isWritableStream(stream) {
+    return !stream.destroyed && stream.writable !== false;
+}
 function asStringArray(value) {
     if (!value)
         return [];
@@ -47,14 +52,25 @@ function parseDateEndExclusive(value) {
     return date;
 }
 function getScope(request) {
+    const permissionCodes = Array.isArray(request.user?.permissionCodes)
+        ? request.user.permissionCodes
+        : [];
+    const roleCodes = Array.isArray(request.user?.roleCodes)
+        ? request.user.roleCodes.map((value) => String(value || "").toLowerCase())
+        : [];
+    const isManagerScope = permissionCodes.includes("drivers.manage") ||
+        roleCodes.includes("manager") ||
+        roleCodes.includes("admin") ||
+        roleCodes.includes("super_admin") ||
+        roleCodes.includes("owner");
     return {
-        role: request.user?.role || "manager",
+        role: isManagerScope ? "manager" : request.user?.warehouseId ? "warehouse" : "global",
         warehouseId: request.user?.warehouseId ?? null,
         userId: request.user?.id ?? null,
     };
 }
 const analyticsFastifyRoutes = async (fastify) => {
-    fastify.get("/summary", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "orders.read" }) }, async (request, reply) => {
+    fastify.get("/summary", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "shipment.view" }) }, async (request, reply) => {
         const startedAt = Date.now();
         try {
             const rangeDays = Number(request.query?.rangeDays);
@@ -82,7 +98,7 @@ const analyticsFastifyRoutes = async (fastify) => {
             return reply.code(500).send({ error: err?.message || "Failed to load summary" });
         }
     });
-    fastify.get("/trend", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "orders.read" }) }, async (request, reply) => {
+    fastify.get("/trend", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "shipment.view" }) }, async (request, reply) => {
         const startedAt = Date.now();
         try {
             const rangeDays = Number(request.query?.rangeDays);
@@ -103,7 +119,7 @@ const analyticsFastifyRoutes = async (fastify) => {
             return reply.code(500).send({ error: err?.message || "Failed to load trend" });
         }
     });
-    fastify.get("/warnings", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "orders.read" }) }, async (request, reply) => {
+    fastify.get("/warnings", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "shipment.view" }) }, async (request, reply) => {
         const startedAt = Date.now();
         try {
             const rangeDays = Number(request.query?.rangeDays);
@@ -126,7 +142,7 @@ const analyticsFastifyRoutes = async (fastify) => {
             return reply.code(500).send({ error: err?.message || "Failed to load warnings" });
         }
     });
-    fastify.get("/finance-queue", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "orders.read" }) }, async (request, reply) => {
+    fastify.get("/finance-queue", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "shipment.view" }) }, async (request, reply) => {
         const startedAt = Date.now();
         try {
             const query = request.query;
@@ -158,7 +174,7 @@ const analyticsFastifyRoutes = async (fastify) => {
             return reply.code(500).send({ error: err?.message || "Failed to load finance queue" });
         }
     });
-    fastify.post("/refresh", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "orders.write" }) }, async (_request, reply) => {
+    fastify.post("/refresh", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "shipment.update" }) }, async (_request, reply) => {
         try {
             await (0, analyticsV2Realtime_1.publishAnalyticsInvalidation)("manual_refresh");
             await (0, analyticsEvents_1.publishCargoPilotDomainEvent)({
@@ -173,33 +189,40 @@ const analyticsFastifyRoutes = async (fastify) => {
             return reply.code(500).send({ error: err?.message || "Failed to refresh analytics" });
         }
     });
-    fastify.get("/stream", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "orders.read" }) }, async (request, reply) => {
-        reply.header("Content-Type", "text/event-stream");
-        reply.header("Cache-Control", "no-cache, no-transform");
-        reply.header("Connection", "keep-alive");
-        reply.header("X-Accel-Buffering", "no");
+    fastify.get("/stream", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "shipment.view" }) }, async (request, reply) => {
+        (0, sseHeaders_1.applySseHeaders)(request, reply);
         reply.raw.flushHeaders?.();
         const clientKey = `${request.user?.id || "anon"}:${request.ip || "ip"}`;
         const lastEventId = String(request.headers["last-event-id"] || request.headers["Last-Event-ID"] || "").trim();
         (0, opsMetrics_1.recordSseConnected)({ stream: "analytics", clientKey });
         let closed = false;
+        let disconnected = false;
         const send = (event, payload, id) => {
-            if (closed)
-                return;
-            if (id)
-                reply.raw.write(`id: ${id}\n`);
-            reply.raw.write(`event: ${event}\n`);
-            reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
+            if (closed || !isWritableStream(reply.raw))
+                return false;
+            try {
+                if (id)
+                    reply.raw.write(`id: ${id}\n`);
+                reply.raw.write(`event: ${event}\n`);
+                reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
+                return true;
+            }
+            catch {
+                return false;
+            }
         };
-        send("ready", { connectedAt: new Date().toISOString(), resumedFrom: lastEventId || null });
+        if (!send("ready", { connectedAt: new Date().toISOString(), resumedFrom: lastEventId || null })) {
+            (0, opsMetrics_1.recordSseDisconnected)("analytics");
+            return reply.hijack();
+        }
         const redisReplayEvents = await (0, analyticsV2Realtime_1.replayAnalyticsInvalidationFromRedis)({
             lastEventId,
-            limit: Number(process.env.ANALYTICS_V2_STREAM_REPLAY_MAX_EVENTS || 250),
+            limit: analyticsConfig_1.analyticsConfig.stream.replayMaxEvents,
         });
         const replayEvents = redisReplayEvents.length
             ? redisReplayEvents
             : (0, analyticsV2Realtime_1.replayAnalyticsInvalidationSince)(lastEventId);
-        const replayLimit = Math.max(10, Number(process.env.ANALYTICS_V2_STREAM_REPLAY_MAX_EVENTS || 250));
+        const replayLimit = analyticsConfig_1.analyticsConfig.stream.replayMaxEvents;
         const replaySlice = replayEvents.slice(-replayLimit);
         replaySlice.forEach((event) => {
             send("analytics-refresh", {
@@ -216,14 +239,17 @@ const analyticsFastifyRoutes = async (fastify) => {
                 delivered: replaySlice.length,
             });
         }
-        const heartbeatMs = Math.max(10000, Number(process.env.ANALYTICS_V2_STREAM_HEARTBEAT_MS || 25000));
-        const configuredRefreshMs = Number(process.env.ANALYTICS_V2_STREAM_REFRESH_MS || 0);
-        const refreshEveryMs = Number.isFinite(configuredRefreshMs) && configuredRefreshMs > 0
-            ? Math.max(30000, configuredRefreshMs)
-            : 0;
+        const heartbeatMs = analyticsConfig_1.analyticsConfig.stream.heartbeatMs;
+        const refreshEveryMs = analyticsConfig_1.analyticsConfig.stream.refreshMs;
         const heartbeat = setInterval(() => {
-            if (!closed)
+            if (closed || !isWritableStream(reply.raw))
+                return;
+            try {
                 reply.raw.write(`: ping ${Date.now()}\n\n`);
+            }
+            catch {
+                closed = true;
+            }
         }, heartbeatMs);
         const scheduledRefresh = refreshEveryMs > 0
             ? setInterval(() => {
@@ -237,22 +263,30 @@ const analyticsFastifyRoutes = async (fastify) => {
             }, refreshEveryMs)
             : null;
         const unsubscribe = (0, analyticsV2Realtime_1.subscribeAnalyticsInvalidation)((event) => {
-            send("analytics-refresh", {
+            const sent = send("analytics-refresh", {
                 at: event.at,
                 reason: event.reason,
                 scope: event.scope,
                 keys: event.keys,
                 source: event.source || "api",
             }, event.id);
+            if (!sent)
+                closed = true;
         });
-        request.raw.on("close", () => {
+        const onClose = () => {
+            if (disconnected)
+                return;
+            disconnected = true;
             closed = true;
             (0, opsMetrics_1.recordSseDisconnected)("analytics");
             clearInterval(heartbeat);
             if (scheduledRefresh)
                 clearInterval(scheduledRefresh);
             unsubscribe();
-        });
+        };
+        request.raw.on("close", onClose);
+        reply.raw.on("close", onClose);
+        reply.raw.on("error", onClose);
         return reply.hijack();
     });
 };

@@ -3,7 +3,6 @@ import { FastifyPluginAsync } from "fastify";
 
 import { getRedisClient, getRedisPrefix, withRedisTimeout } from "../../../config/redis";
 import { fastifyAuth } from "../../../modules/identity-access/transport/fastify-auth";
-import { hasPermission } from "../../identity-access";
 import {
   replayLiveMapEventsFromRedis,
   replayLiveMapEventsSince,
@@ -20,6 +19,7 @@ import type {
   LiveMapViewport,
   ManagerLiveMapSnapshot,
 } from "../application/liveMap.types";
+import { applySseHeaders } from "../../../shared/http/sseHeaders";
 
 function isWritableStream(stream: NodeJS.WritableStream & { destroyed?: boolean }) {
   return !stream.destroyed && (stream as any).writable !== false;
@@ -172,15 +172,12 @@ async function writeSnapshotCache(cacheKey: string, payload: ManagerLiveMapSnaps
 const liveMapFastifyRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get(
     "/snapshot",
-    { preHandler: fastifyAuth() },
+    { preHandler: fastifyAuth({ permission: "shipment.view" }) },
     async (request, reply) => {
       const startedAt = Date.now();
       try {
         const actor = actorFromRequest(request);
         if (!actor) return reply.code(401).send({ error: "Unauthorized" });
-
-        const allowed = await hasPermission(request.user!, "shipment.view");
-        if (!allowed) return reply.code(403).send({ error: "Forbidden" });
 
         const viewport = parseViewport((request.query ?? {}) as Record<string, unknown>);
         const scopeTag = actor.permissionCodes.includes("drivers.manage")
@@ -243,13 +240,10 @@ const liveMapFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.get(
     "/stream",
-    { preHandler: fastifyAuth() },
+    { preHandler: fastifyAuth({ permission: "shipment.view" }) },
     async (request, reply) => {
       const actor = actorFromRequest(request);
       if (!actor) return reply.code(401).send({ error: "Unauthorized" });
-
-      const allowed = await hasPermission(request.user!, "shipment.view");
-      if (!allowed) return reply.code(403).send({ error: "Forbidden" });
 
       const viewport = parseViewport((request.query ?? {}) as Record<string, unknown>);
       const clientKey = `${request.user?.id || "anon"}:${request.ip || "ip"}`;
@@ -258,10 +252,7 @@ const liveMapFastifyRoutes: FastifyPluginAsync = async (fastify) => {
       ).trim();
       let disconnected = false;
 
-      reply.header("Content-Type", "text/event-stream");
-      reply.header("Cache-Control", "no-cache, no-transform");
-      reply.header("Connection", "keep-alive");
-      reply.header("X-Accel-Buffering", "no");
+      applySseHeaders(request, reply);
       reply.raw.flushHeaders?.();
       recordSseConnected({ stream: "live-map", clientKey });
 

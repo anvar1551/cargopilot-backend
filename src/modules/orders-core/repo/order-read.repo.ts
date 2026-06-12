@@ -48,6 +48,10 @@ const orderListCacheGc = setInterval(() => {
 }, 60_000);
 orderListCacheGc.unref();
 
+export function clearOrderListCache() {
+  orderListCache.clear();
+}
+
 function getOrderListCacheTtlMs() {
   return Math.min(
     Math.max(Number(process.env.ORDER_LIST_CACHE_TTL_MS ?? 5000), 500),

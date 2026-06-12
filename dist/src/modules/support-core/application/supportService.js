@@ -29,7 +29,10 @@ function scheduleSupportRefresh(reason, ticketId) {
     });
 }
 function supportTenantScope(actor) {
-    return actor.role ? `role:${actor.role}` : "role:manager";
+    if (Array.isArray(actor.roleCodes) && actor.roleCodes.length > 0) {
+        return `role:${actor.roleCodes.slice().sort().join("|")}`;
+    }
+    return actor.id ? `user:${actor.id}` : "global";
 }
 async function enqueueSupportTicketChangedTx(tx, args) {
     await (0, analyticsOutbox_1.enqueueCargoPilotDomainEventTx)(tx, {
@@ -39,7 +42,7 @@ async function enqueueSupportTicketChangedTx(tx, args) {
         payload: {
             reason: args.reason,
             actorId: actorId(args.actor),
-            actorRole: args.actor.role ?? null,
+            actorRole: null,
             ...(args.payload ?? {}),
         },
     });
@@ -91,10 +94,18 @@ function actorId(actor) {
     return id || null;
 }
 function getAuthorType(actor) {
-    if (actor.role === "driver")
+    const roles = new Set(Array.isArray(actor.roleCodes)
+        ? actor.roleCodes.map((value) => String(value || "").trim().toLowerCase())
+        : []);
+    const permissions = new Set(Array.isArray(actor.permissionCodes)
+        ? actor.permissionCodes.map((value) => String(value || "").trim())
+        : []);
+    if (roles.has("driver") || permissions.has("drivers.telemetry")) {
         return client_1.SupportTicketAuthorType.driver;
-    if (actor.role === "customer")
+    }
+    if (roles.has("customer") || roles.has("client")) {
         return client_1.SupportTicketAuthorType.customer;
+    }
     return client_1.SupportTicketAuthorType.support;
 }
 function strongestPriority(current, next) {
@@ -597,12 +608,17 @@ async function createSupportTicket(input, actor) {
 async function listSupportAssignees() {
     const users = await prismaClient_1.default.user.findMany({
         where: {
-            roleBindings: {
+            memberships: {
                 some: {
-                    role: {
-                        rolePermissions: {
-                            some: {
-                                permission: { code: "support.update" },
+                    status: "active",
+                    roles: {
+                        some: {
+                            role: {
+                                rolePermissions: {
+                                    some: {
+                                        permission: { key: "support.assign" },
+                                    },
+                                },
                             },
                         },
                     },
@@ -610,7 +626,7 @@ async function listSupportAssignees() {
             },
         },
         orderBy: [{ name: "asc" }, { email: "asc" }],
-        select: { id: true, name: true, email: true, role: true },
+        select: { id: true, name: true, email: true },
         distinct: ["id"],
         take: 200,
     });

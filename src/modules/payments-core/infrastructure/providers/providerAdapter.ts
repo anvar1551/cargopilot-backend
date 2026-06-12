@@ -55,6 +55,9 @@ export interface PaymentProviderAdapter {
     intent: PaymentIntent;
   }): Promise<{
     status: CanonicalPaymentStatus;
+    providerPaymentId?: string;
+    providerInvoiceId?: string;
+    checkoutUrl?: string;
     rawResponse?: unknown;
   }>;
 

@@ -4,6 +4,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.listDriverWorkloads = exports.countOrdersForExport = exports.listOrdersForExport = exports.listOrders = exports.getOrderById = void 0;
+exports.clearOrderListCache = clearOrderListCache;
 const prismaClient_1 = __importDefault(require("../../../config/prismaClient"));
 const client_1 = require("@prisma/client");
 const order_repo_shared_1 = require("./order-repo.shared");
@@ -17,6 +18,9 @@ const orderListCacheGc = setInterval(() => {
     }
 }, 60000);
 orderListCacheGc.unref();
+function clearOrderListCache() {
+    orderListCache.clear();
+}
 function getOrderListCacheTtlMs() {
     return Math.min(Math.max(Number(process.env.ORDER_LIST_CACHE_TTL_MS ?? 5000), 500), 60000);
 }
@@ -71,6 +75,7 @@ const orderListSelect = {
     createdAt: true,
     updatedAt: true,
     currency: true,
+    paymentState: true,
     codAmount: true,
     codPaidStatus: true,
     serviceCharge: true,
@@ -140,6 +145,7 @@ const orderExportSelect = {
     codAmount: true,
     currency: true,
     paymentType: true,
+    paymentState: true,
     deliveryChargePaidBy: true,
     codPaidStatus: true,
     serviceCharge: true,

@@ -9,6 +9,7 @@ import {
   type Actor,
   type UpsertOrderLegInput,
 } from "./shared";
+import { autoBookCarrierForOrderLeg } from "./carrier-auto-booking";
 
 export async function listOrderLegs(orderId: string) {
   await ensureOrderExists(orderId);
@@ -29,7 +30,7 @@ export async function upsertOrderLeg(
     throw orderError("sequence is required for new leg and must be > 0", 400);
   }
 
-  return prisma.$transaction(async (tx) => {
+  const leg = await prisma.$transaction(async (tx) => {
     let leg;
 
     if (input.legId) {
@@ -112,4 +113,15 @@ export async function upsertOrderLeg(
 
     return leg;
   });
+
+  if (!input.legId) {
+    await autoBookCarrierForOrderLeg({ orderId, legId: leg.id, actor }).catch((error) => {
+      console.error(
+        `[carrier-routing] auto-book failed for order=${orderId} leg=${leg.id}:`,
+        error,
+      );
+    });
+  }
+
+  return leg;
 }

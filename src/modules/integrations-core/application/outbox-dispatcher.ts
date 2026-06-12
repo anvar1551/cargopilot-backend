@@ -1,13 +1,17 @@
-import http from "http";
-import https from "https";
 import { URL } from "url";
 import prisma from "../../../config/prismaClient";
 import type { IntegrationProviderRef } from "../domain/types";
+import {
+  integrationHttpJson,
+  isIntegrationHttpRetryableError,
+  type IntegrationHttpMethod,
+} from "./integration-http-client";
 import { decryptIntegrationSecret } from "./integration-secret.crypto";
 import type { IntegrationOutboxRecord, OutboxDispatchResult } from "./outbox.types";
 import {
   HttpCarrierAdapter,
   HttpSmsAdapter,
+  isProviderEnvFallbackEnabled,
   resolveProviderHttpConfig,
   toCarrierCancelInput,
   toCarrierCreateShipmentInput,
@@ -100,14 +104,6 @@ function parseEnvelope(value: unknown): IntegrationEventEnvelopeLike | null {
   };
 }
 
-function parseJsonSafe(raw: string) {
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return raw;
-  }
-}
-
 function toHeaders(value: unknown) {
   const headersRecord = toObject(value);
   if (!headersRecord) return {};
@@ -138,6 +134,8 @@ function resolveEndpointUrl(
   const endpointFromSecret = secretConfig?.endpointUrl || secretConfig?.baseUrl;
   if (endpointFromSecret?.trim()) return endpointFromSecret.trim();
 
+  if (!isProviderEnvFallbackEnabled()) return null;
+
   const providerCode = normalizeProviderCode(record.providerCode);
   const envEndpoint = String(
     process.env[`INTEGRATION_PROVIDER_ENDPOINT_${providerCode}`] || "",
@@ -157,75 +155,20 @@ function headersFromSecretConfig(secretConfig?: ProviderSecretConfig | null) {
   return headers;
 }
 
-function resolveHttpMethod(record: IntegrationOutboxRecord) {
+function resolveHttpMethod(record: IntegrationOutboxRecord): IntegrationHttpMethod {
   const payload = toObject(record.payload) || {};
   const method = pickString(payload, ["method", "httpMethod"]);
   if (!method) return "POST";
   const normalized = method.toUpperCase();
-  if (["GET", "POST", "PUT", "PATCH", "DELETE"].includes(normalized)) return normalized;
+  if (["GET", "POST", "PUT", "PATCH", "DELETE"].includes(normalized)) {
+    return normalized as IntegrationHttpMethod;
+  }
   return "POST";
 }
 
 function resolveBody(record: IntegrationOutboxRecord) {
   const payload = toObject(record.payload) || {};
   return payload.body ?? record.payload;
-}
-
-async function sendHttpJson(args: {
-  url: string;
-  method: string;
-  headers: Record<string, string>;
-  body: unknown;
-  timeoutMs: number;
-}): Promise<{ statusCode: number; response: unknown }> {
-  const target = new URL(args.url);
-  const isHttps = target.protocol === "https:";
-  const transport = isHttps ? https : http;
-  const bodyText = args.method === "GET" ? "" : JSON.stringify(args.body ?? {});
-
-  const headers: Record<string, string> = {
-    "content-type": "application/json",
-    ...args.headers,
-  };
-  if (args.method !== "GET") {
-    headers["content-length"] = String(Buffer.byteLength(bodyText, "utf8"));
-  }
-
-  return await new Promise((resolve, reject) => {
-    const request = transport.request(
-      {
-        method: args.method,
-        protocol: target.protocol,
-        hostname: target.hostname,
-        port: target.port || undefined,
-        path: `${target.pathname}${target.search}`,
-        headers,
-      },
-      (response) => {
-        const chunks: Buffer[] = [];
-        response.on("data", (chunk) =>
-          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)),
-        );
-        response.on("end", () => {
-          const raw = Buffer.concat(chunks).toString("utf8");
-          resolve({
-            statusCode: Number(response.statusCode || 0),
-            response: raw ? parseJsonSafe(raw) : null,
-          });
-        });
-      },
-    );
-
-    request.setTimeout(args.timeoutMs, () => {
-      request.destroy(new Error(`request timed out after ${args.timeoutMs}ms`));
-    });
-
-    request.on("error", (error) => reject(error));
-    if (args.method !== "GET") {
-      request.write(bodyText);
-    }
-    request.end();
-  });
 }
 
 const unsupportedDispatcher: IntegrationOutboxDispatcher = {
@@ -285,7 +228,7 @@ const webhookSinkDispatcher: IntegrationOutboxDispatcher = {
     };
 
     try {
-      const response = await sendHttpJson({
+      const response = await integrationHttpJson({
         url: target.toString(),
         method,
         headers,
@@ -298,7 +241,7 @@ const webhookSinkDispatcher: IntegrationOutboxDispatcher = {
         sent: response.statusCode >= 200 && response.statusCode < 300,
         retryable,
         statusCode: response.statusCode || null,
-        responseJson: toObject(response.response) || { value: response.response },
+        responseJson: toObject(response.body) || { value: response.body },
         requestJson: {
           url: target.toString(),
           method,
@@ -310,15 +253,9 @@ const webhookSinkDispatcher: IntegrationOutboxDispatcher = {
       };
     } catch (error: any) {
       const message = String(error?.message || "dispatch failed");
-      const retryable =
-        message.includes("timed out") ||
-        message.includes("ECONNRESET") ||
-        message.includes("ENOTFOUND") ||
-        message.includes("EAI_AGAIN") ||
-        message.includes("ECONNREFUSED");
       return {
         sent: false,
-        retryable,
+        retryable: isIntegrationHttpRetryableError(error),
         statusCode: null,
         requestJson: {
           url: target.toString(),

@@ -19,12 +19,17 @@ const SUPPORTED_CURRENCY_CODES = new Set(["UZS", "USD", "CNY"]);
 const SERVICE_CHARGE_REF_KEY = "system:service_charge";
 const SERVICE_CHARGE_REF_KEY_PREFIX = `${SERVICE_CHARGE_REF_KEY}:leg:`;
 
-type SystemLegKind = "pickup" | "linehaul" | "last_mile";
+type SystemLegKind = "pickup" | "linehaul" | "last_mile" | "route_template";
 
 type SystemLegTemplate = {
   kind: SystemLegKind;
   sequence: number;
   mode: TransportMode;
+  routeTemplateId?: string | null;
+  routeTemplateLegId?: string | null;
+  legCode?: string | null;
+  fromCountry?: string | null;
+  toCountry?: string | null;
   componentType: PricingComponentType;
   description: string;
 };
@@ -129,18 +134,32 @@ function toMajorUnits(minor: number): number {
   return roundTo2(minor / 100);
 }
 
-function buildSystemLegTemplates(serviceType: ServiceType | null | undefined): SystemLegTemplate[] {
+function buildSystemLegTemplates(
+  serviceType: ServiceType | null | undefined,
+  route?: {
+    originCountryCode?: string | null;
+    destinationCountryCode?: string | null;
+    linehaulMode?: TransportMode | null;
+  },
+): SystemLegTemplate[] {
+  const originCountry = route?.originCountryCode ?? null;
+  const destinationCountry = route?.destinationCountryCode ?? null;
+  const linehaulMode = route?.linehaulMode ?? TransportMode.road;
   const pickup: SystemLegTemplate = {
     kind: "pickup",
     sequence: 1,
     mode: TransportMode.road,
+    fromCountry: originCountry,
+    toCountry: originCountry,
     componentType: PricingComponentType.handling,
     description: "Pickup leg service charge allocation",
   };
   const linehaul: SystemLegTemplate = {
     kind: "linehaul",
     sequence: 2,
-    mode: TransportMode.road,
+    mode: linehaulMode,
+    fromCountry: originCountry,
+    toCountry: destinationCountry,
     componentType: PricingComponentType.linehaul,
     description: "Linehaul leg service charge allocation",
   };
@@ -148,6 +167,8 @@ function buildSystemLegTemplates(serviceType: ServiceType | null | undefined): S
     kind: "last_mile",
     sequence: 3,
     mode: TransportMode.road,
+    fromCountry: destinationCountry,
+    toCountry: destinationCountry,
     componentType: PricingComponentType.local_delivery,
     description: "Last-mile leg service charge allocation",
   };
@@ -164,9 +185,56 @@ function buildSystemLegTemplates(serviceType: ServiceType | null | undefined): S
   return [pickup, linehaul, lastMile];
 }
 
+function componentTypeForRouteTemplateLeg(leg: { legCode?: string | null; label?: string | null }) {
+  const key = `${leg.legCode ?? ""} ${leg.label ?? ""}`.toLowerCase();
+  if (key.includes("pickup")) return PricingComponentType.handling;
+  if (key.includes("last") || key.includes("delivery")) {
+    return PricingComponentType.local_delivery;
+  }
+  return PricingComponentType.linehaul;
+}
+
+async function loadRouteTemplateLegTemplates(
+  tx: any,
+  routeTemplateId?: string | null,
+): Promise<SystemLegTemplate[] | null> {
+  if (!routeTemplateId) return null;
+  const routeTemplate = await tx.routeTemplate.findFirst({
+    where: {
+      id: routeTemplateId,
+      isActive: true,
+    },
+    include: {
+      legs: {
+        orderBy: [{ sequence: "asc" }, { createdAt: "asc" }],
+      },
+    },
+  });
+  if (!routeTemplate) {
+    throw orderError("routeTemplateId not found or inactive", 400);
+  }
+  if (!Array.isArray(routeTemplate.legs) || routeTemplate.legs.length === 0) {
+    throw orderError("route template has no legs", 400);
+  }
+
+  return routeTemplate.legs.map((leg: any): SystemLegTemplate => ({
+    kind: "route_template",
+    sequence: leg.sequence,
+    mode: leg.mode,
+    routeTemplateId: routeTemplate.id,
+    routeTemplateLegId: leg.id,
+    legCode: leg.legCode,
+    fromCountry: leg.originCountryCode ?? null,
+    toCountry: leg.destinationCountryCode ?? null,
+    componentType: componentTypeForRouteTemplateLeg(leg),
+    description: `Route leg ${leg.sequence}: ${leg.label || leg.legCode}`,
+  }));
+}
+
 function weightForLegKind(kind: SystemLegKind): number {
   if (kind === "pickup") return 0.2;
   if (kind === "linehaul") return 0.5;
+  if (kind === "route_template") return 1;
   return 0.3;
 }
 
@@ -202,6 +270,10 @@ export async function seedInitialServiceChargePricing(
     currency?: string | null;
     serviceType?: ServiceType | null;
     perLegRuleAmountsMajor?: number[] | null;
+    originCountryCode?: string | null;
+    destinationCountryCode?: string | null;
+    linehaulMode?: TransportMode | null;
+    routeTemplateId?: string | null;
   },
   actor?: Actor,
 ) {
@@ -228,7 +300,13 @@ export async function seedInitialServiceChargePricing(
       },
     });
 
-    const templates = buildSystemLegTemplates(input.serviceType);
+    const templates =
+      (await loadRouteTemplateLegTemplates(tx, input.routeTemplateId ?? null)) ??
+      buildSystemLegTemplates(input.serviceType, {
+        originCountryCode: input.originCountryCode ?? null,
+        destinationCountryCode: input.destinationCountryCode ?? null,
+        linehaulMode: input.linehaulMode ?? null,
+      });
 
     if (legs.length === 0) {
       const created = await Promise.all(
@@ -239,10 +317,24 @@ export async function seedInitialServiceChargePricing(
               sequence: template.sequence,
               mode: template.mode,
               status: OrderLegStatus.planned,
-              notes: `System leg: ${template.kind}`,
+              routeTemplateId: template.routeTemplateId ?? null,
+              routeTemplateLegId: template.routeTemplateLegId ?? null,
+              fromCountry: template.fromCountry ?? null,
+              toCountry: template.toCountry ?? null,
+              notes:
+                template.kind === "route_template"
+                  ? `Route template leg: ${template.legCode ?? template.sequence}`
+                  : `System leg: ${template.kind}`,
               metadata: {
                 systemGenerated: true,
                 legKind: template.kind,
+                ...(template.routeTemplateId
+                  ? { routeTemplateId: template.routeTemplateId }
+                  : {}),
+                ...(template.routeTemplateLegId
+                  ? { routeTemplateLegId: template.routeTemplateLegId }
+                  : {}),
+                ...(template.legCode ? { legCode: template.legCode } : {}),
               },
             },
             select: { id: true, sequence: true, metadata: true },

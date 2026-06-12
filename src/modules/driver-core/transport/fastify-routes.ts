@@ -1,7 +1,6 @@
 import type { FastifyPluginAsync } from "fastify";
 import { ZodError } from "zod";
 import { fastifyAuth } from "../../../modules/identity-access/transport/fastify-auth";
-import { hasPermission } from "../../identity-access";
 import {
   getDriverPresence,
   heartbeatDriverPresence,
@@ -90,15 +89,10 @@ const driverFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post(
     "/location",
-    { preHandler: fastifyAuth() },
+    { preHandler: fastifyAuth({ anyPermission: ["drivers.telemetry", "drivers.manage"] }) },
     async (request, reply) => {
       const actor = liveMapActorFromRequest(request);
       if (!actor) return reply.code(401).send({ error: "Unauthorized" });
-      const [canTelemetry, canManage] = await Promise.all([
-        hasPermission(request.user!, "drivers.telemetry"),
-        hasPermission(request.user!, "drivers.manage"),
-      ]);
-      if (!canTelemetry && !canManage) return reply.code(403).send({ error: "Forbidden" });
       try {
         const result = await ingestDriverLocation({ actor, body: request.body });
         return reply.send(result);
@@ -110,15 +104,10 @@ const driverFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post(
     "/telemetry",
-    { preHandler: fastifyAuth() },
+    { preHandler: fastifyAuth({ anyPermission: ["drivers.telemetry", "drivers.manage"] }) },
     async (request, reply) => {
       const actor = liveMapActorFromRequest(request);
       if (!actor) return reply.code(401).send({ error: "Unauthorized" });
-      const [canTelemetry, canManage] = await Promise.all([
-        hasPermission(request.user!, "drivers.telemetry"),
-        hasPermission(request.user!, "drivers.manage"),
-      ]);
-      if (!canTelemetry && !canManage) return reply.code(403).send({ error: "Forbidden" });
       try {
         const result = await ingestDriverTelemetry({ actor, body: request.body });
         return reply.send(result);
@@ -130,15 +119,10 @@ const driverFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.get(
     "/presence",
-    { preHandler: fastifyAuth() },
+    { preHandler: fastifyAuth({ anyPermission: ["drivers.telemetry", "drivers.manage"] }) },
     async (request, reply) => {
       const actor = liveMapActorFromRequest(request);
       if (!actor) return reply.code(401).send({ error: "Unauthorized" });
-      const [canTelemetry, canManage] = await Promise.all([
-        hasPermission(request.user!, "drivers.telemetry"),
-        hasPermission(request.user!, "drivers.manage"),
-      ]);
-      if (!canTelemetry && !canManage) return reply.code(403).send({ error: "Forbidden" });
       try {
         const result = await getDriverPresence({ actor, query: request.query });
         return reply.send(result);
@@ -150,15 +134,10 @@ const driverFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.put(
     "/presence",
-    { preHandler: fastifyAuth() },
+    { preHandler: fastifyAuth({ anyPermission: ["drivers.telemetry", "drivers.manage"] }) },
     async (request, reply) => {
       const actor = liveMapActorFromRequest(request);
       if (!actor) return reply.code(401).send({ error: "Unauthorized" });
-      const [canTelemetry, canManage] = await Promise.all([
-        hasPermission(request.user!, "drivers.telemetry"),
-        hasPermission(request.user!, "drivers.manage"),
-      ]);
-      if (!canTelemetry && !canManage) return reply.code(403).send({ error: "Forbidden" });
       try {
         const result = await setDriverPresence({ actor, body: request.body });
         return reply.send(result);
@@ -170,15 +149,10 @@ const driverFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post(
     "/presence/heartbeat",
-    { preHandler: fastifyAuth() },
+    { preHandler: fastifyAuth({ anyPermission: ["drivers.telemetry", "drivers.manage"] }) },
     async (request, reply) => {
       const actor = liveMapActorFromRequest(request);
       if (!actor) return reply.code(401).send({ error: "Unauthorized" });
-      const [canTelemetry, canManage] = await Promise.all([
-        hasPermission(request.user!, "drivers.telemetry"),
-        hasPermission(request.user!, "drivers.manage"),
-      ]);
-      if (!canTelemetry && !canManage) return reply.code(403).send({ error: "Forbidden" });
       try {
         const result = await heartbeatDriverPresence({ actor, body: request.body });
         return reply.send(result);

@@ -133,7 +133,7 @@ function mapCsvRowToCreateOrderDto(row, customerEntityId) {
             weightKg: v.weightKg || undefined,
             codEnabled: parseBoolean(v.codEnabled),
             codAmount: v.codAmount || undefined,
-            currency: v.currency || "EUR",
+            currency: v.currency || "UZS",
             parcels: [{ weightKg: v.weightKg || undefined }],
             pieceTotal: v.pieceTotal || 1,
             fragile: parseBoolean(v.fragile),
@@ -240,15 +240,27 @@ async function importOrdersFromCsv(args) {
     const parsedRows = parseCsv(args.csvText);
     const orderCustomerId = await resolveOrderOwnerCustomerId(args.actor, args.customerEntityId);
     const createdOrders = [];
-    const rawLabelMode = process.env.ORDER_LABEL_MODE;
-    const labelMode = rawLabelMode === "async" || rawLabelMode === "queue" ? rawLabelMode : "sync";
+    const labelMode = (0, label_1.resolveOrderLabelMode)(process.env.ORDER_LABEL_MODE, "sync");
+    const autoLabelFallback = (0, label_1.isOrderLabelAutoFallbackEnabled)();
     for (const row of parsedRows) {
         const dto = mapCsvRowToCreateOrderDto(row, args.customerEntityId);
         const repoPayload = (await (0, orderCreate_mapper_1.mapCreateOrderDtoToRepoPayload)(dto));
         const order = await (0, repo_1.createOrder)(orderCustomerId, repoPayload, actor);
         createdOrders.push(order);
         if (labelMode === "queue") {
-            await (0, label_1.enqueueOrderLabelJob)(order.id);
+            try {
+                await (0, label_1.enqueueOrderLabelJob)(order.id);
+            }
+            catch (queueErr) {
+                if (!autoLabelFallback)
+                    throw queueErr;
+                console.error(`Label enqueue failed for imported order ${order.id}, falling back to inline generation:`, queueErr);
+                await (0, label_1.generateAndAttachParcelLabelsForOrder)(order.id);
+                continue;
+            }
+            if (autoLabelFallback) {
+                (0, label_1.scheduleOrderLabelAutoFallback)(order.id);
+            }
         }
         else if (labelMode === "async") {
             void (0, label_1.generateAndAttachParcelLabelsForOrder)(order.id).catch((labelErr) => {
@@ -283,7 +295,7 @@ function getOrderImportTemplateCsv() {
         "1",
         "false",
         "",
-        "EUR",
+        "UZS",
         "CASH",
         "SENDER",
         "28000",

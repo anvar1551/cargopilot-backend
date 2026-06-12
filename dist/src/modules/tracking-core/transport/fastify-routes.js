@@ -4,14 +4,14 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const prismaClient_1 = __importDefault(require("../../../config/prismaClient"));
-const authFastify_1 = require("../../../middleware/authFastify");
+const fastify_auth_1 = require("../../../modules/identity-access/transport/fastify-auth");
 const identity_access_1 = require("../../identity-access");
 const trackingRepo_1 = require("../application/trackingRepo");
 function isUuid(value) {
     return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 const trackingFastifyRoutes = async (fastify) => {
-    fastify.get("/:id", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "orders.read" }) }, async (request, reply) => {
+    fastify.get("/:id", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "shipment.view" }) }, async (request, reply) => {
         try {
             const orderId = String(request.params?.id ?? "").trim();
             if (!isUuid(orderId)) {

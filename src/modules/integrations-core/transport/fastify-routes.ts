@@ -1,19 +1,36 @@
 import type { FastifyPluginAsync } from "fastify";
+import { ServiceType, TransportMode } from "@prisma/client";
 import { ZodError, z } from "zod";
 import { createWebhookGatewayService } from "../application/webhook-gateway.service";
 import { providerWebhookVerifierResolver } from "../infrastructure/provider-webhook-verifier.resolver";
 import { webhookEventRepository } from "../infrastructure/webhook-events.repo";
 import { integrationCanonicalEventRepository } from "../infrastructure/canonical-event.repo";
 import {
+  deleteIntegrationProviderForActor,
+  listIntegrationCanonicalEventsForActor,
   listIntegrationOutboxAttemptsForActor,
   listIntegrationOutboxForActor,
   listIntegrationProvidersForActor,
+  listIntegrationWebhookEventsForActor,
   replayIntegrationOutboxForActor,
   retryIntegrationOutboxNowForActor,
   rotateIntegrationProviderSecretForActor,
   updateIntegrationProviderStatusForActor,
   upsertIntegrationProviderForActor,
 } from "../application/integration-admin.service";
+import {
+  createCarrierRoutingRuleForActor,
+  deleteCarrierRoutingRuleForActor,
+  listCarrierRoutingRulesForActor,
+  updateCarrierRoutingRuleForActor,
+} from "../application/carrier-routing.service";
+import {
+  createRouteTemplateForActor,
+  deleteRouteTemplateForActor,
+  getRouteTemplateForActor,
+  listRouteTemplatesForActor,
+  updateRouteTemplateForActor,
+} from "../application/route-template.service";
 import { fastifyAuth } from "../../identity-access/transport/fastify-auth";
 
 type WebhookRouteParams = {
@@ -30,6 +47,13 @@ const integrationOutboxStatusValues = [
   "failed",
   "dead_letter",
 ] as const;
+const integrationEventProcessStatusValues = [
+  "pending",
+  "processing",
+  "processed",
+  "failed",
+  "ignored",
+] as const;
 
 const idParamsSchema = z.object({
   id: z.string().uuid(),
@@ -41,6 +65,9 @@ const listProvidersQuerySchema = z.object({
   status: z.enum(integrationProviderStatusValues).optional(),
   environment: z.enum(integrationEnvironmentValues).optional(),
   providerCode: z.string().trim().min(1).optional(),
+  q: z.string().trim().optional(),
+  cursor: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
 });
 
 const upsertProviderBodySchema = z.object({
@@ -75,6 +102,107 @@ const listOutboxQuerySchema = z.object({
 
 const listOutboxAttemptsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional(),
+});
+
+const listWebhookEventsQuerySchema = z.object({
+  companyId: z.string().uuid().optional(),
+  domain: z.enum(integrationDomainValues).optional(),
+  providerCode: z.string().trim().min(1).optional(),
+  q: z.string().trim().optional(),
+  page: z.coerce.number().int().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+
+const listCanonicalEventsQuerySchema = z.object({
+  companyId: z.string().uuid().optional(),
+  status: z.enum(integrationEventProcessStatusValues).optional(),
+  domain: z.enum(integrationDomainValues).optional(),
+  providerCode: z.string().trim().min(1).optional(),
+  q: z.string().trim().optional(),
+  page: z.coerce.number().int().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+
+const booleanishSchema = z.preprocess((value) => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) return true;
+    if (["false", "0", "no", "off"].includes(normalized)) return false;
+  }
+  return value;
+}, z.boolean());
+
+const listCarrierRoutingRulesQuerySchema = z.object({
+  companyId: z.string().uuid().optional(),
+  providerId: z.string().uuid().optional(),
+  routeTemplateId: z.string().uuid().optional(),
+  isActive: booleanishSchema.optional(),
+  q: z.string().trim().optional(),
+  cursor: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+
+const routeTemplateLegBodySchema = z.object({
+  id: z.string().uuid().optional(),
+  sequence: z.coerce.number().int().min(1),
+  legCode: z.string().trim().min(1).max(64),
+  label: z.string().trim().max(160).nullable().optional(),
+  mode: z.enum(Object.values(TransportMode) as [TransportMode, ...TransportMode[]]),
+  originCountryCode: z.string().trim().max(2).nullable().optional(),
+  destinationCountryCode: z.string().trim().max(2).nullable().optional(),
+  metadata: z.unknown().optional(),
+});
+
+const listRouteTemplatesQuerySchema = z.object({
+  companyId: z.string().uuid().optional(),
+  isActive: booleanishSchema.optional(),
+  q: z.string().trim().optional(),
+  cursor: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+
+const routeTemplateBodySchema = z.object({
+  companyId: z.string().uuid(),
+  name: z.string().trim().min(1).max(180),
+  code: z.string().trim().max(64).nullable().optional(),
+  isActive: booleanishSchema.optional(),
+  priority: z.coerce.number().int().optional(),
+  serviceType: z.enum(Object.values(ServiceType) as [ServiceType, ...ServiceType[]]).nullable().optional(),
+  transportMode: z.enum(Object.values(TransportMode) as [TransportMode, ...TransportMode[]]).nullable().optional(),
+  originCountryCode: z.string().trim().max(2).nullable().optional(),
+  destinationCountryCode: z.string().trim().max(2).nullable().optional(),
+  metadata: z.unknown().optional(),
+  legs: z.array(routeTemplateLegBodySchema).min(1).max(50),
+});
+
+const updateRouteTemplateBodySchema = routeTemplateBodySchema.partial().omit({
+  companyId: true,
+});
+
+const carrierRoutingRuleBodySchema = z.object({
+  companyId: z.string().uuid(),
+  name: z.string().trim().min(1).max(180),
+  code: z.string().trim().max(64).nullable().optional(),
+  providerId: z.string().uuid(),
+  fallbackProviderId: z.string().uuid().nullable().optional(),
+  routeTemplateId: z.string().uuid().nullable().optional(),
+  routeTemplateLegId: z.string().uuid().nullable().optional(),
+  isActive: booleanishSchema.optional(),
+  priority: z.coerce.number().int().optional(),
+  autoBook: booleanishSchema.optional(),
+  serviceType: z.enum(Object.values(ServiceType) as [ServiceType, ...ServiceType[]]).nullable().optional(),
+  transportMode: z.enum(Object.values(TransportMode) as [TransportMode, ...TransportMode[]]).nullable().optional(),
+  originCountryCode: z.string().trim().max(2).nullable().optional(),
+  destinationCountryCode: z.string().trim().max(2).nullable().optional(),
+  minWeightKg: z.coerce.number().min(0).nullable().optional(),
+  maxWeightKg: z.coerce.number().gt(0).nullable().optional(),
+  legSequence: z.coerce.number().int().min(1).nullable().optional(),
+  conditionsJson: z.unknown().optional(),
+});
+
+const updateCarrierRoutingRuleBodySchema = carrierRoutingRuleBodySchema.partial().omit({
+  companyId: true,
 });
 
 function sendError(reply: any, error: unknown, fallback: string) {
@@ -127,6 +255,9 @@ const integrationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           status: query.status,
           environment: query.environment,
           providerCode: query.providerCode,
+          q: query.q,
+          cursor: query.cursor,
+          limit: query.limit,
         });
         return reply.send(result);
       } catch (error) {
@@ -179,6 +310,23 @@ const integrationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     },
   );
 
+  fastify.delete(
+    "/providers/:id",
+    { preHandler: fastifyAuth({ permission: "integration.provider.manage" }) },
+    async (request, reply) => {
+      try {
+        const params = idParamsSchema.parse(request.params ?? {});
+        const result = await deleteIntegrationProviderForActor({
+          user: request.user!,
+          providerId: params.id,
+        });
+        return reply.send(result);
+      } catch (error) {
+        return sendError(reply, error, "Failed to delete integration provider");
+      }
+    },
+  );
+
   fastify.post(
     "/providers/:id/rotate-secret",
     { preHandler: fastifyAuth({ permission: "integration.provider.rotateSecret" }) },
@@ -195,6 +343,163 @@ const integrationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.send(result);
       } catch (error) {
         return sendError(reply, error, "Failed to rotate provider secret");
+      }
+    },
+  );
+
+  fastify.get(
+    "/route-templates",
+    { preHandler: fastifyAuth({ permission: "integration.routing.read" }) },
+    async (request, reply) => {
+      try {
+        const query = listRouteTemplatesQuerySchema.parse(request.query ?? {});
+        const result = await listRouteTemplatesForActor({
+          user: request.user!,
+          filters: query,
+        });
+        return reply.send(result);
+      } catch (error) {
+        return sendError(reply, error, "Failed to list route templates");
+      }
+    },
+  );
+
+  fastify.get(
+    "/route-templates/:id",
+    { preHandler: fastifyAuth({ permission: "integration.routing.read" }) },
+    async (request, reply) => {
+      try {
+        const params = idParamsSchema.parse(request.params ?? {});
+        const result = await getRouteTemplateForActor({
+          user: request.user!,
+          routeTemplateId: params.id,
+        });
+        return reply.send(result);
+      } catch (error) {
+        return sendError(reply, error, "Failed to fetch route template");
+      }
+    },
+  );
+
+  fastify.post(
+    "/route-templates",
+    { preHandler: fastifyAuth({ permission: "integration.routing.manage" }) },
+    async (request, reply) => {
+      try {
+        const body = routeTemplateBodySchema.parse(request.body ?? {});
+        const result = await createRouteTemplateForActor({
+          user: request.user!,
+          input: body,
+        });
+        return reply.code(201).send(result);
+      } catch (error) {
+        return sendError(reply, error, "Failed to create route template");
+      }
+    },
+  );
+
+  fastify.patch(
+    "/route-templates/:id",
+    { preHandler: fastifyAuth({ permission: "integration.routing.manage" }) },
+    async (request, reply) => {
+      try {
+        const params = idParamsSchema.parse(request.params ?? {});
+        const body = updateRouteTemplateBodySchema.parse(request.body ?? {});
+        const result = await updateRouteTemplateForActor({
+          user: request.user!,
+          routeTemplateId: params.id,
+          input: body,
+        });
+        return reply.send(result);
+      } catch (error) {
+        return sendError(reply, error, "Failed to update route template");
+      }
+    },
+  );
+
+  fastify.delete(
+    "/route-templates/:id",
+    { preHandler: fastifyAuth({ permission: "integration.routing.manage" }) },
+    async (request, reply) => {
+      try {
+        const params = idParamsSchema.parse(request.params ?? {});
+        const result = await deleteRouteTemplateForActor({
+          user: request.user!,
+          routeTemplateId: params.id,
+        });
+        return reply.send(result);
+      } catch (error) {
+        return sendError(reply, error, "Failed to delete route template");
+      }
+    },
+  );
+
+  fastify.get(
+    "/carrier-routing-rules",
+    { preHandler: fastifyAuth({ permission: "integration.routing.read" }) },
+    async (request, reply) => {
+      try {
+        const query = listCarrierRoutingRulesQuerySchema.parse(request.query ?? {});
+        const result = await listCarrierRoutingRulesForActor({
+          user: request.user!,
+          filters: query,
+        });
+        return reply.send(result);
+      } catch (error) {
+        return sendError(reply, error, "Failed to list carrier routing rules");
+      }
+    },
+  );
+
+  fastify.post(
+    "/carrier-routing-rules",
+    { preHandler: fastifyAuth({ permission: "integration.routing.manage" }) },
+    async (request, reply) => {
+      try {
+        const body = carrierRoutingRuleBodySchema.parse(request.body ?? {});
+        const result = await createCarrierRoutingRuleForActor({
+          user: request.user!,
+          input: body,
+        });
+        return reply.code(201).send(result);
+      } catch (error) {
+        return sendError(reply, error, "Failed to create carrier routing rule");
+      }
+    },
+  );
+
+  fastify.patch(
+    "/carrier-routing-rules/:id",
+    { preHandler: fastifyAuth({ permission: "integration.routing.manage" }) },
+    async (request, reply) => {
+      try {
+        const params = idParamsSchema.parse(request.params ?? {});
+        const body = updateCarrierRoutingRuleBodySchema.parse(request.body ?? {});
+        const result = await updateCarrierRoutingRuleForActor({
+          user: request.user!,
+          ruleId: params.id,
+          input: body,
+        });
+        return reply.send(result);
+      } catch (error) {
+        return sendError(reply, error, "Failed to update carrier routing rule");
+      }
+    },
+  );
+
+  fastify.delete(
+    "/carrier-routing-rules/:id",
+    { preHandler: fastifyAuth({ permission: "integration.routing.manage" }) },
+    async (request, reply) => {
+      try {
+        const params = idParamsSchema.parse(request.params ?? {});
+        const result = await deleteCarrierRoutingRuleForActor({
+          user: request.user!,
+          ruleId: params.id,
+        });
+        return reply.send(result);
+      } catch (error) {
+        return sendError(reply, error, "Failed to delete carrier routing rule");
       }
     },
   );
@@ -236,6 +541,51 @@ const integrationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.send(result);
       } catch (error) {
         return sendError(reply, error, "Failed to list outbox attempts");
+      }
+    },
+  );
+
+  fastify.get(
+    "/webhook-events",
+    { preHandler: fastifyAuth({ permission: "integration.outbox.read" }) },
+    async (request, reply) => {
+      try {
+        const query = listWebhookEventsQuerySchema.parse(request.query ?? {});
+        const result = await listIntegrationWebhookEventsForActor({
+          user: request.user!,
+          companyId: query.companyId,
+          domain: query.domain,
+          providerCode: query.providerCode,
+          q: query.q,
+          page: query.page,
+          limit: query.limit,
+        });
+        return reply.send(result);
+      } catch (error) {
+        return sendError(reply, error, "Failed to list webhook events");
+      }
+    },
+  );
+
+  fastify.get(
+    "/canonical-events",
+    { preHandler: fastifyAuth({ permission: "integration.outbox.read" }) },
+    async (request, reply) => {
+      try {
+        const query = listCanonicalEventsQuerySchema.parse(request.query ?? {});
+        const result = await listIntegrationCanonicalEventsForActor({
+          user: request.user!,
+          companyId: query.companyId,
+          status: query.status,
+          domain: query.domain,
+          providerCode: query.providerCode,
+          q: query.q,
+          page: query.page,
+          limit: query.limit,
+        });
+        return reply.send(result);
+      } catch (error) {
+        return sendError(reply, error, "Failed to list canonical events");
       }
     },
   );

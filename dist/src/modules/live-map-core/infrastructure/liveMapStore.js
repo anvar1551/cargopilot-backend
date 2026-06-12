@@ -178,11 +178,34 @@ function writeMemoryPresence(record) {
     });
 }
 async function startStreamConsumer() {
-    const redis = await (0, redis_1.getRedisClient)();
+    const createStreamRedis = () => (0, redis_1.createRedisClient)({
+        connectTimeout: 3000,
+        enableOfflineQueue: true,
+        maxRetriesPerRequest: null,
+        lazyConnect: true,
+        commandTimeout: null,
+    });
+    let redis = createStreamRedis();
     if (!redis)
         return;
+    await redis.connect().catch(() => undefined);
     while (true) {
         try {
+            if (!redis) {
+                await new Promise((resolve) => setTimeout(resolve, 1000));
+                redis = createStreamRedis();
+                if (redis) {
+                    await redis.connect().catch(() => undefined);
+                }
+                continue;
+            }
+            if (redis.status !== "ready" && redis.status !== "connect") {
+                await redis.connect().catch(() => undefined);
+            }
+            if (redis.status !== "ready") {
+                await new Promise((resolve) => setTimeout(resolve, 1000));
+                continue;
+            }
             const results = (await redis.xread("COUNT", 100, "BLOCK", 2000, "STREAMS", getEventsStream(), streamLastId));
             if (results) {
                 for (const [, entries] of results) {
@@ -205,6 +228,16 @@ async function startStreamConsumer() {
         }
         catch (err) {
             console.error(`[live-map] stream read error: ${err?.message}`);
+            try {
+                redis?.disconnect();
+            }
+            catch {
+                // noop
+            }
+            redis = createStreamRedis();
+            if (redis) {
+                await redis.connect().catch(() => undefined);
+            }
             await new Promise((resolve) => setTimeout(resolve, 2000));
         }
     }
@@ -245,7 +278,7 @@ async function readDriverIdsInViewport(viewport) {
     if (!redis)
         return [];
     try {
-        const ids = (await (0, redis_1.withRedisTimeout)("live-map:geo-search-ids", () => redis.call("GEOSEARCH", getGeoIndexKey(), "FROMLONLAT", String(centerLng), String(centerLat), "BYBOX", String(widthM), String(heightM), "m", "ASC")));
+        const ids = (await (0, redis_1.withRedisTimeout)("live-map:geo-search-ids", () => redis.call("GEOSEARCH", getGeoIndexKey(), "FROMLONLAT", String(centerLng), String(centerLat), "BYBOX", String(widthM), String(heightM), "m", "ASC"), Math.max(1500, Number(process.env.LIVE_MAP_REDIS_GEO_TIMEOUT_MS || 2500))));
         return Array.from(new Set(ids)).filter(Boolean);
     }
     catch (err) {
@@ -290,7 +323,7 @@ async function readDriverLocations(driverIds) {
         if (redis) {
             const pipe = redis.pipeline();
             redisKeys.forEach((key) => pipe.hgetall(key));
-            const results = await (0, redis_1.withRedisTimeout)("live-map:hgetall-locations", () => pipe.exec());
+            const results = await (0, redis_1.withRedisTimeout)("live-map:hgetall-locations", () => pipe.exec(), Math.max(1500, Number(process.env.LIVE_MAP_REDIS_LOCATIONS_TIMEOUT_MS || 2500)));
             if (results) {
                 results.forEach((entry, index) => {
                     const [err, hash] = entry ?? [];
@@ -402,7 +435,7 @@ async function readDriverPresences(driverIds) {
         if (redis) {
             const pipe = redis.pipeline();
             redisKeys.forEach((key) => pipe.hgetall(key));
-            const rows = await (0, redis_1.withRedisTimeout)("live-map:hgetall-presences", () => pipe.exec());
+            const rows = await (0, redis_1.withRedisTimeout)("live-map:hgetall-presences", () => pipe.exec(), Math.max(1500, Number(process.env.LIVE_MAP_REDIS_PRESENCES_TIMEOUT_MS || 2500)));
             if (rows) {
                 rows.forEach((entry, index) => {
                     const [err, hash] = entry ?? [];

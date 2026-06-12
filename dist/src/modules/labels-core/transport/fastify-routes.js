@@ -4,15 +4,20 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const prismaClient_1 = __importDefault(require("../../../config/prismaClient"));
-const authFastify_1 = require("../../../middleware/authFastify");
+const fastify_auth_1 = require("../../../modules/identity-access/transport/fastify-auth");
+const identity_access_1 = require("../../identity-access");
 const s3Presign_1 = require("../../../utils/s3Presign");
 const labelsFastifyRoutes = async (fastify) => {
-    fastify.get("/orders/:id/url", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "orders.read" }) }, async (request, reply) => {
+    fastify.get("/orders/:id/url", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "shipment.view" }) }, async (request, reply) => {
         try {
             const orderId = String(request.params?.id || "").trim();
             const user = request.user;
-            const order = await prismaClient_1.default.order.findUnique({
-                where: { id: orderId },
+            const scopedWhere = await (0, identity_access_1.buildOrderScopeWhere)(user);
+            if (!scopedWhere) {
+                return reply.code(403).send({ error: "Forbidden" });
+            }
+            const order = await prismaClient_1.default.order.findFirst({
+                where: { id: orderId, ...scopedWhere },
                 select: {
                     id: true,
                     customerId: true,
@@ -34,15 +39,6 @@ const labelsFastifyRoutes = async (fastify) => {
             });
             if (!order)
                 return reply.code(404).send({ error: "Order not found" });
-            if (user.role === "customer") {
-                const allowed = (user.customerEntityId && order.customerEntityId === user.customerEntityId) ||
-                    order.customerId === user.id;
-                if (!allowed)
-                    return reply.code(403).send({ error: "Forbidden" });
-            }
-            else if (user.role === "driver" && order.assignedDriverId !== user.id) {
-                return reply.code(403).send({ error: "Forbidden" });
-            }
             const parcelLabels = order.parcels.filter((p) => Boolean(p.labelKey));
             if (parcelLabels.length === 0 && order.labelKey) {
                 const url = await (0, s3Presign_1.presignGetObject)(order.labelKey, 300);

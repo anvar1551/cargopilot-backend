@@ -1,7 +1,7 @@
 import { FastifyPluginAsync } from "fastify";
 import { fastifyAuth } from "../../../identity-access/transport/fastify-auth";
-import { getOrderForActor } from "../..";
-import { sendError } from "../shared";
+import { deleteOrderForActor, getOrderForActor } from "../..";
+import { emitMutationInvalidation, sendError } from "../shared";
 
 const orderDetailRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get("/:id", { preHandler: fastifyAuth({ permission: "shipment.view" }) }, async (request, reply) => {
@@ -14,6 +14,18 @@ const orderDetailRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(403).send({ error: "Forbidden" });
     } catch (err: any) {
       return sendError(reply, err, "Failed to fetch order");
+    }
+  });
+
+  fastify.delete("/:id", { preHandler: fastifyAuth({ permission: "shipment.delete" }) }, async (request, reply) => {
+    try {
+      const actor = request.user as Express.User;
+      const orderId = String((request.params as any)?.id ?? "").trim();
+      const result = await deleteOrderForActor({ actor, orderId });
+      await emitMutationInvalidation("order_mutation");
+      return reply.send(result);
+    } catch (err: any) {
+      return sendError(reply, err, "Failed to delete order");
     }
   });
 };

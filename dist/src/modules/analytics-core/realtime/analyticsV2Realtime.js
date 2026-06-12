@@ -7,9 +7,11 @@ exports.replayAnalyticsInvalidationFromRedis = replayAnalyticsInvalidationFromRe
 exports.subscribeAnalyticsInvalidation = subscribeAnalyticsInvalidation;
 const events_1 = require("events");
 const redis_1 = require("../../../config/redis");
+const analyticsConfig_1 = require("../config/analyticsConfig");
+const analyticsLogger_1 = require("../config/analyticsLogger");
 const emitter = new events_1.EventEmitter();
 const STREAM_MAX_LEN = 10000;
-const EVENT_BUFFER_LIMIT = Math.max(100, Number(process.env.ANALYTICS_V2_STREAM_REPLAY_BUFFER || 1000));
+const EVENT_BUFFER_LIMIT = analyticsConfig_1.analyticsConfig.stream.replayBufferLimit;
 let consumerStarted = false;
 let streamLastId = "$";
 let localEventSeq = 0;
@@ -51,11 +53,35 @@ function appendRecentEvent(event) {
     }
 }
 async function startStreamConsumer() {
-    const redis = await (0, redis_1.getRedisClient)();
+    const createStreamRedis = () => (0, redis_1.createRedisClient)({
+        connectTimeout: 3000,
+        enableOfflineQueue: true,
+        maxRetriesPerRequest: null,
+        lazyConnect: true,
+        // Blocking stream reads should not be capped by commandTimeout.
+        commandTimeout: null,
+    });
+    let redis = createStreamRedis();
     if (!redis)
         return;
+    await redis.connect().catch(() => undefined);
     while (true) {
         try {
+            if (!redis) {
+                await new Promise((resolve) => setTimeout(resolve, 1000));
+                redis = createStreamRedis();
+                if (redis) {
+                    await redis.connect().catch(() => undefined);
+                }
+                continue;
+            }
+            if (redis.status !== "ready" && redis.status !== "connect") {
+                await redis.connect().catch(() => undefined);
+            }
+            if (redis.status !== "ready") {
+                await new Promise((resolve) => setTimeout(resolve, 1000));
+                continue;
+            }
             const results = (await redis.xread("COUNT", 100, "BLOCK", 2000, "STREAMS", getAnalyticsEventsStream(), streamLastId));
             if (results) {
                 for (const [, entries] of results) {
@@ -79,7 +105,20 @@ async function startStreamConsumer() {
             }
         }
         catch (err) {
-            console.error(`[analytics-v2] stream read error: ${err?.message || "unknown"}`);
+            analyticsLogger_1.analyticsLogger.throttledError("stream-read-error", "stream read error", {
+                error: err,
+                throttleMs: 30000,
+            });
+            try {
+                redis?.disconnect();
+            }
+            catch {
+                // noop
+            }
+            redis = createStreamRedis();
+            if (redis) {
+                await redis.connect().catch(() => undefined);
+            }
             await new Promise((resolve) => setTimeout(resolve, 2000));
         }
     }
@@ -111,7 +150,10 @@ async function publishAnalyticsInvalidation(reason, options) {
         await redis.xadd(getAnalyticsEventsStream(), "MAXLEN", "~", String(STREAM_MAX_LEN), event.id || "*", "type", event.type, "reason", event.reason, "scope", event.scope, "keys", JSON.stringify(event.keys), "source", event.source || "api", "data", JSON.stringify(event));
     }
     catch (err) {
-        console.error(`[analytics-v2] stream publish failed: ${err?.message || "unknown"}`);
+        analyticsLogger_1.analyticsLogger.throttledWarn("stream-publish-failed", "stream publish failed", {
+            error: err,
+            throttleMs: 60000,
+        });
     }
 }
 function replayAnalyticsInvalidationSince(lastEventId) {
@@ -147,7 +189,10 @@ async function replayAnalyticsInvalidationFromRedis(args) {
             .filter((item) => Boolean(item));
     }
     catch (err) {
-        console.error(`[analytics-v2] replay from redis failed: ${err?.message || "unknown"}`);
+        analyticsLogger_1.analyticsLogger.throttledWarn("stream-replay-failed", "stream replay from redis failed", {
+            error: err,
+            throttleMs: 60000,
+        });
         return [];
     }
 }

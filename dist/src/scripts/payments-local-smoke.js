@@ -1,7 +1,11 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 const crypto_1 = require("crypto");
 require("dotenv/config");
+const stripe_1 = __importDefault(require("stripe"));
 const API_URL = process.env.SMOKE_API_URL?.trim() || "http://localhost:4000/api";
 const TOKEN = process.env.SMOKE_TOKEN?.trim() || "";
 const COMPANY_ID = process.env.SMOKE_COMPANY_ID?.trim() || "";
@@ -14,6 +18,7 @@ const PAYME_SECRET = process.env.SMOKE_PAYME_SECRET?.trim() || "";
 const UZUM_SECRET = process.env.SMOKE_UZUM_SECRET?.trim() || "";
 const UZUM_SERVICE_ID = process.env.SMOKE_UZUM_SERVICE_ID?.trim() || "";
 const UZUM_AUTH_USER = process.env.SMOKE_UZUM_AUTH_USER?.trim() || "";
+const STRIPE_WEBHOOK_SECRET = process.env.SMOKE_STRIPE_WEBHOOK_SECRET?.trim() || "";
 function requireBaseEnv() {
     const missing = [];
     if (!TOKEN)
@@ -211,6 +216,53 @@ async function runUzum() {
         console.log("[UZUM] callback body:", callback.data);
     }
 }
+async function runStripe() {
+    if (!STRIPE_WEBHOOK_SECRET) {
+        console.log("[STRIPE] skipped: SMOKE_STRIPE_WEBHOOK_SECRET missing");
+        return;
+    }
+    const intent = await createIntent("STRIPE");
+    const eventPayload = {
+        id: `evt_smoke_${Date.now()}`,
+        object: "event",
+        type: "checkout.session.completed",
+        livemode: false,
+        data: {
+            object: {
+                id: `cs_test_smoke_${Date.now()}`,
+                object: "checkout.session",
+                payment_intent: `pi_smoke_${Date.now()}`,
+                payment_status: "paid",
+                metadata: {
+                    paymentIntentId: intent.paymentIntentId,
+                    orderId: ORDER_ID,
+                    companyId: COMPANY_ID,
+                },
+            },
+        },
+    };
+    const payload = JSON.stringify(eventPayload);
+    const signature = stripe_1.default.webhooks.generateTestHeaderString({
+        payload,
+        secret: STRIPE_WEBHOOK_SECRET,
+    });
+    const callback = await api("/payments/stripe/callback", {
+        method: "POST",
+        auth: false,
+        headers: {
+            "Stripe-Signature": signature,
+            "Content-Type": "application/json",
+        },
+        body: payload,
+    });
+    const refreshed = await fetchIntent(intent.paymentIntentId);
+    const ok = callback.status < 300 &&
+        (refreshed.statusCanonical === "succeeded" || refreshed.status === "SUCCEEDED");
+    console.log(`[STRIPE] ${ok ? "PASS" : "FAIL"} callback=${callback.status} status=${refreshed.status}`);
+    if (!ok) {
+        console.log("[STRIPE] callback body:", callback.data);
+    }
+}
 async function main() {
     requireBaseEnv();
     console.log("== CargoPilot payments local smoke ==");
@@ -221,6 +273,7 @@ async function main() {
     await runClick();
     await runPayme();
     await runUzum();
+    await runStripe();
     console.log("== done ==");
 }
 main().catch((error) => {

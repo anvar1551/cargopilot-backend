@@ -118,6 +118,21 @@ const server = http.createServer(async (request, response) => {
       });
     }
 
+    if (method === "GET" && url.pathname === "/shipments/track") {
+      const trackingNumber = String(url.searchParams.get("trackingNumber") || "").trim();
+      const shipment = Array.from(shipments.values()).find(
+        (item) => item.trackingNumber === trackingNumber,
+      );
+      if (!shipment) return jsonResponse(response, 404, { error: "not found" });
+      return jsonResponse(response, 200, {
+        statusCode: shipment.statusCode,
+        statusLabel: shipment.statusCode,
+        trackingNumber: shipment.trackingNumber,
+        partnerShipmentId: shipment.id,
+        happenedAt: shipment.updatedAt,
+      });
+    }
+
     const cancelMatch = url.pathname.match(/^\/shipments\/([^/]+)\/cancel$/);
     if (method === "POST" && cancelMatch) {
       const shipment = shipments.get(decodeURIComponent(cancelMatch[1]));

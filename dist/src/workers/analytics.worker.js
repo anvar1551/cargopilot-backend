@@ -7,6 +7,8 @@ exports.startAnalyticsWorker = startAnalyticsWorker;
 require("dotenv/config");
 const prismaClient_1 = __importDefault(require("../config/prismaClient"));
 const redis_1 = require("../config/redis");
+const analyticsConfig_1 = require("../modules/analytics-core/config/analyticsConfig");
+const analyticsLogger_1 = require("../modules/analytics-core/config/analyticsLogger");
 const analyticsEvents_1 = require("../modules/analytics-core/realtime/analyticsEvents");
 const analyticsV2_1 = require("../modules/analytics-core/application/analyticsV2");
 const analyticsReadModel_1 = require("../modules/analytics-core/infrastructure/analyticsReadModel");
@@ -14,15 +16,15 @@ const analyticsV2Realtime_1 = require("../modules/analytics-core/realtime/analyt
 const opsMetrics_1 = require("../modules/observability-core/application/opsMetrics");
 const supportCache_1 = require("../modules/support-core/infrastructure/supportCache");
 const supportRealtime_1 = require("../modules/support-core/realtime/supportRealtime");
-const GROUP_NAME = process.env.ANALYTICS_WORKER_GROUP || "cp_analytics_workers";
-const CONSUMER_NAME = process.env.ANALYTICS_WORKER_CONSUMER ||
-    `${process.env.HOSTNAME || "analytics"}-${process.pid}`;
+const GROUP_NAME = analyticsConfig_1.analyticsConfig.worker.group;
+const CONSUMER_NAME = analyticsConfig_1.analyticsConfig.worker.consumer;
 const STREAM_KEY = (0, analyticsEvents_1.getDomainEventsStreamKey)();
-const DEDUPE_TTL_SEC = Math.max(60, Number(process.env.ANALYTICS_WORKER_DEDUPE_TTL_SEC || 24 * 60 * 60));
-const FLUSH_DEBOUNCE_MS = Math.max(250, Number(process.env.ANALYTICS_WORKER_FLUSH_DEBOUNCE_MS || 750));
-const HEALTH_LOG_MS = Math.max(10000, Number(process.env.ANALYTICS_WORKER_HEALTH_LOG_MS || 60000));
-const LEADER_LOCK_KEY = process.env.ANALYTICS_WORKER_LEADER_LOCK_KEY || `${(0, redis_1.getRedisPrefix)()}:cp:analytics:worker:lock`;
-const LEADER_LOCK_TTL_SEC = Math.max(10, Number(process.env.ANALYTICS_WORKER_LEADER_LOCK_TTL_SEC || 30));
+const DEDUPE_TTL_SEC = analyticsConfig_1.analyticsConfig.worker.dedupeTtlSec;
+const FLUSH_DEBOUNCE_MS = analyticsConfig_1.analyticsConfig.worker.flushDebounceMs;
+const HEALTH_LOG_MS = analyticsConfig_1.analyticsConfig.worker.healthLogMs;
+const HEALTH_LOG_ENABLED = analyticsConfig_1.analyticsConfig.worker.healthLogEnabled;
+const LEADER_LOCK_KEY = analyticsConfig_1.analyticsConfig.worker.leaderLockKey || `${(0, redis_1.getRedisPrefix)()}:cp:analytics:worker:lock`;
+const LEADER_LOCK_TTL_SEC = analyticsConfig_1.analyticsConfig.worker.leaderLockTtlSec;
 const dirtySections = new Set();
 let flushTimer = null;
 let lastEventAt = 0;
@@ -70,9 +72,16 @@ function toReadModelSection(section) {
     return section;
 }
 async function ensureConsumerGroup() {
-    const redis = await (0, redis_1.getRedisClient)();
+    const redis = (0, redis_1.createRedisClient)({
+        connectTimeout: 3000,
+        enableOfflineQueue: true,
+        maxRetriesPerRequest: null,
+        lazyConnect: true,
+        commandTimeout: null,
+    });
     if (!redis)
         return;
+    await redis.connect().catch(() => undefined);
     try {
         await redis.xgroup("CREATE", STREAM_KEY, GROUP_NAME, "0", "MKSTREAM");
     }
@@ -81,6 +90,9 @@ async function ensureConsumerGroup() {
         if (!message.includes("BUSYGROUP")) {
             throw err;
         }
+    }
+    finally {
+        await redis.quit().catch(() => undefined);
     }
 }
 function parseDomainEvent(raw) {
@@ -130,8 +142,8 @@ async function rebuildDirtySections() {
         for (const section of sections) {
             await (0, analyticsReadModel_1.clearAnalyticsReadModelBySection)(toReadModelSection(section));
         }
-        const defaultRangeDays = Math.max(7, Math.min(180, Number(process.env.ANALYTICS_V3_DEFAULT_RANGE_DAYS || 30)));
-        const defaultPageSize = Math.max(5, Math.min(200, Number(process.env.ANALYTICS_V3_DEFAULT_QUEUE_PAGE_SIZE || 20)));
+        const defaultRangeDays = analyticsConfig_1.analyticsConfig.defaults.rangeDays;
+        const defaultPageSize = analyticsConfig_1.analyticsConfig.defaults.queuePageSize;
         const scope = { role: "manager", warehouseId: null, userId: null };
         if (sections.includes("summary")) {
             await (0, analyticsV2_1.getAnalyticsSummaryV2)({ rangeDays: defaultRangeDays, scope });
@@ -162,16 +174,26 @@ async function rebuildDirtySections() {
     }
     catch (err) {
         (0, opsMetrics_1.recordAnalyticsWorkerError)();
-        console.error(`[analytics-worker] rebuild failed: ${err?.message || "unknown"}`);
+        analyticsLogger_1.analyticsLogger.throttledError("worker-rebuild-failed", "analytics worker rebuild failed", {
+            error: err,
+            throttleMs: 30000,
+        });
     }
 }
 async function logHealthMaybe() {
+    if (!HEALTH_LOG_ENABLED)
+        return;
     const now = Date.now();
     if (now - lastHealthLogAt < HEALTH_LOG_MS)
         return;
     lastHealthLogAt = now;
     const lagMs = lastEventAt > 0 ? now - lastEventAt : 0;
-    console.log(`[analytics-worker] consumed=${totalConsumed} rebuilds=${totalRebuilds} lagMs=${lagMs} dirty=${dirtySections.size}`);
+    analyticsLogger_1.analyticsLogger.info("analytics worker health", {
+        consumed: totalConsumed,
+        rebuilds: totalRebuilds,
+        lagMs,
+        dirtySections: dirtySections.size,
+    });
 }
 async function isLeaderOrAcquire(args) {
     if (!args.enabled)
@@ -191,21 +213,48 @@ async function isLeaderOrAcquire(args) {
 }
 async function startAnalyticsWorker(args) {
     const useLeaderLock = Boolean(args?.leaderLock);
-    console.log(`[analytics-worker] starting consumer=${CONSUMER_NAME} group=${GROUP_NAME}`);
+    analyticsLogger_1.analyticsLogger.info("analytics worker starting", {
+        consumer: CONSUMER_NAME,
+        group: GROUP_NAME,
+        leaderLock: useLeaderLock,
+    });
     await ensureConsumerGroup();
+    const createStreamRedis = () => (0, redis_1.createRedisClient)({
+        connectTimeout: 3000,
+        enableOfflineQueue: true,
+        maxRetriesPerRequest: null,
+        lazyConnect: true,
+        commandTimeout: null,
+    });
+    let streamRedis = createStreamRedis();
+    if (!streamRedis) {
+        analyticsLogger_1.analyticsLogger.error("analytics worker stream redis unavailable at startup");
+        return;
+    }
+    await streamRedis.connect().catch(() => undefined);
     while (true) {
         try {
+            if (!streamRedis) {
+                await new Promise((resolve) => setTimeout(resolve, 1000));
+                streamRedis = createStreamRedis();
+                if (streamRedis) {
+                    await streamRedis.connect().catch(() => undefined);
+                }
+                continue;
+            }
             const leader = await isLeaderOrAcquire({ enabled: useLeaderLock });
             if (!leader) {
                 await new Promise((resolve) => setTimeout(resolve, 2000));
                 continue;
             }
-            const redis = await (0, redis_1.getRedisClient)();
-            if (!redis) {
+            if (streamRedis.status !== "ready") {
+                await streamRedis.connect().catch(() => undefined);
+            }
+            if (streamRedis.status !== "ready") {
                 await new Promise((resolve) => setTimeout(resolve, 2000));
                 continue;
             }
-            const results = (await redis.xreadgroup("GROUP", GROUP_NAME, CONSUMER_NAME, "COUNT", 100, "BLOCK", 2000, "STREAMS", STREAM_KEY, ">"));
+            const results = (await streamRedis.xreadgroup("GROUP", GROUP_NAME, CONSUMER_NAME, "COUNT", 100, "BLOCK", 2000, "STREAMS", STREAM_KEY, ">"));
             if (!results) {
                 await logHealthMaybe();
                 continue;
@@ -236,7 +285,7 @@ async function startAnalyticsWorker(args) {
                             });
                         }
                     }
-                    await redis.xack(STREAM_KEY, GROUP_NAME, streamEntryId);
+                    await streamRedis.xack(STREAM_KEY, GROUP_NAME, streamEntryId);
                     if (shouldProcess)
                         totalConsumed += 1;
                 }
@@ -246,7 +295,20 @@ async function startAnalyticsWorker(args) {
         }
         catch (err) {
             (0, opsMetrics_1.recordAnalyticsWorkerError)();
-            console.error(`[analytics-worker] stream error: ${err?.message || "unknown"}`);
+            analyticsLogger_1.analyticsLogger.throttledError("worker-stream-error", "analytics worker stream error", {
+                error: err,
+                throttleMs: 30000,
+            });
+            try {
+                streamRedis?.disconnect();
+            }
+            catch {
+                // noop
+            }
+            streamRedis = createStreamRedis();
+            if (streamRedis) {
+                await streamRedis.connect().catch(() => undefined);
+            }
             await new Promise((resolve) => setTimeout(resolve, 2000));
         }
     }
@@ -255,12 +317,12 @@ if (require.main === module) {
     void startAnalyticsWorker({ leaderLock: false });
 }
 process.on("SIGTERM", async () => {
-    console.log("[analytics-worker] shutting down");
+    analyticsLogger_1.analyticsLogger.info("analytics worker shutting down");
     await prismaClient_1.default.$disconnect().catch(() => undefined);
     process.exit(0);
 });
 process.on("SIGINT", async () => {
-    console.log("[analytics-worker] interrupted");
+    analyticsLogger_1.analyticsLogger.info("analytics worker interrupted");
     await prismaClient_1.default.$disconnect().catch(() => undefined);
     process.exit(0);
 });

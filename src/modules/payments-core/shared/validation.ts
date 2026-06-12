@@ -67,6 +67,14 @@ export const paymentIntentIdParamsSchema = z.object({
   id: z.string().uuid(),
 });
 
+export const paymentOrderIdParamsSchema = z.object({
+  orderId: z.string().uuid(),
+});
+
+export const retryOrderPaymentSchema = z.object({
+  provider: providerEnum.optional(),
+});
+
 export const refundPaymentSchema = z.object({
   companyId: z.string().uuid(),
   idempotencyKey: z.string().trim().min(8).max(128),

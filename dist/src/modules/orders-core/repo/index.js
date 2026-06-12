@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.listDriverWorkloads = exports.countOrdersForExport = exports.listOrdersForExport = exports.listOrders = exports.getOrderById = exports.createOrder = void 0;
+exports.clearOrderListCache = exports.listDriverWorkloads = exports.countOrdersForExport = exports.listOrdersForExport = exports.listOrders = exports.getOrderById = exports.createOrder = void 0;
 var order_write_repo_1 = require("./order-write.repo");
 Object.defineProperty(exports, "createOrder", { enumerable: true, get: function () { return order_write_repo_1.createOrder; } });
 var order_read_repo_1 = require("./order-read.repo");
@@ -9,3 +9,4 @@ Object.defineProperty(exports, "listOrders", { enumerable: true, get: function (
 Object.defineProperty(exports, "listOrdersForExport", { enumerable: true, get: function () { return order_read_repo_1.listOrdersForExport; } });
 Object.defineProperty(exports, "countOrdersForExport", { enumerable: true, get: function () { return order_read_repo_1.countOrdersForExport; } });
 Object.defineProperty(exports, "listDriverWorkloads", { enumerable: true, get: function () { return order_read_repo_1.listDriverWorkloads; } });
+Object.defineProperty(exports, "clearOrderListCache", { enumerable: true, get: function () { return order_read_repo_1.clearOrderListCache; } });

@@ -1,6 +1,7 @@
 import http from "http";
 import {
   HttpCarrierAdapter,
+  resolveProviderHttpConfig,
 } from "../../src/modules/integrations-core/application/provider-adapters";
 
 function createCarrierInput() {
@@ -107,5 +108,62 @@ describe("HTTP carrier adapter", () => {
         adapter(baseUrl, 50).createShipment(createCarrierInput(), context),
       ).rejects.toThrow(/timed out/i);
     });
+  });
+});
+
+describe("provider HTTP config resolution", () => {
+  const previousEnv = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...previousEnv };
+  });
+
+  it("uses encrypted DB secret payload before any env fallback", () => {
+    process.env.INTEGRATION_ALLOW_ENV_PROVIDER_FALLBACK = "true";
+    process.env.INTEGRATION_CARRIER_BASE_URL_FAKE_CARRIER = "https://env.example.test";
+    process.env.INTEGRATION_CARRIER_TOKEN_FAKE_CARRIER = "env-token";
+
+    const config = resolveProviderHttpConfig({
+      domain: "carrier",
+      providerCode: "fake_carrier",
+      timeoutMs: 1000,
+      secretConfig: {
+        baseUrl: "https://db.example.test",
+        token: "db-token",
+      },
+    });
+
+    expect(config?.baseUrl).toBe("https://db.example.test");
+    expect(config?.token).toBe("db-token");
+  });
+
+  it("does not read provider credentials from env unless fallback is explicitly enabled", () => {
+    delete process.env.INTEGRATION_ALLOW_ENV_PROVIDER_FALLBACK;
+    process.env.INTEGRATION_CARRIER_BASE_URL_FAKE_CARRIER = "https://env.example.test";
+
+    const config = resolveProviderHttpConfig({
+      domain: "carrier",
+      providerCode: "fake_carrier",
+      timeoutMs: 1000,
+      secretConfig: null,
+    });
+
+    expect(config).toBeNull();
+  });
+
+  it("can use env provider credentials when local fallback is explicitly enabled", () => {
+    process.env.INTEGRATION_ALLOW_ENV_PROVIDER_FALLBACK = "true";
+    process.env.INTEGRATION_CARRIER_BASE_URL_FAKE_CARRIER = "https://env.example.test";
+    process.env.INTEGRATION_CARRIER_API_KEY_FAKE_CARRIER = "env-api-key";
+
+    const config = resolveProviderHttpConfig({
+      domain: "carrier",
+      providerCode: "fake_carrier",
+      timeoutMs: 1000,
+      secretConfig: null,
+    });
+
+    expect(config?.baseUrl).toBe("https://env.example.test");
+    expect(config?.apiKey).toBe("env-api-key");
   });
 });

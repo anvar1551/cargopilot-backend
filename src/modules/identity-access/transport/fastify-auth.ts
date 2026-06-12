@@ -61,6 +61,7 @@ async function resolveAuthenticatedUserFromAuthHeader(
 
 type AuthOptions = {
   permission?: string;
+  anyPermission?: string[];
 };
 
 export function fastifyAuth(options: AuthOptions = {}) {
@@ -83,6 +84,21 @@ export function fastifyAuth(options: AuthOptions = {}) {
           .code(err?.statusCode ?? 403)
           .send({ error: err?.message ?? "Forbidden" });
       }
+    }
+
+    if (options.anyPermission?.length) {
+      let lastError: any = null;
+      for (const permission of options.anyPermission) {
+        try {
+          await authorize(user, permission);
+          return;
+        } catch (err: any) {
+          lastError = err;
+        }
+      }
+      return reply
+        .code(lastError?.statusCode ?? 403)
+        .send({ error: lastError?.message ?? "Forbidden" });
     }
   };
 }

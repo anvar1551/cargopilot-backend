@@ -6,6 +6,7 @@ exports.appendCargoPilotDomainEvent = appendCargoPilotDomainEvent;
 exports.publishCargoPilotDomainEvent = publishCargoPilotDomainEvent;
 const crypto_1 = require("crypto");
 const redis_1 = require("../../../config/redis");
+const analyticsLogger_1 = require("../config/analyticsLogger");
 const STREAM_MAX_LEN = 100000;
 function getDomainEventsStreamKey() {
     return `${(0, redis_1.getRedisPrefix)()}:cp:events`;
@@ -34,6 +35,9 @@ async function publishCargoPilotDomainEvent(partial) {
         await appendCargoPilotDomainEvent(event);
     }
     catch (err) {
-        console.error(`[analytics-events] publish failed: ${err?.message || "unknown"}`);
+        analyticsLogger_1.analyticsLogger.throttledWarn("domain-event-publish-failed", "domain event publish failed", {
+            error: err,
+            throttleMs: 60000,
+        });
     }
 }

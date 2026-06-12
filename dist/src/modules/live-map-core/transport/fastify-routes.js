@@ -2,11 +2,14 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const crypto_1 = require("crypto");
 const redis_1 = require("../../../config/redis");
-const authFastify_1 = require("../../../middleware/authFastify");
-const identity_access_1 = require("../../identity-access");
+const fastify_auth_1 = require("../../../modules/identity-access/transport/fastify-auth");
 const liveMapStore_1 = require("../infrastructure/liveMapStore");
 const liveMapService_1 = require("../application/liveMapService");
 const opsMetrics_1 = require("../../../modules/observability-core/application/opsMetrics");
+const sseHeaders_1 = require("../../../shared/http/sseHeaders");
+function isWritableStream(stream) {
+    return !stream.destroyed && stream.writable !== false;
+}
 const snapshotCache = new Map();
 const snapshotBuilds = new Map();
 const snapshotGc = setInterval(() => {
@@ -54,15 +57,21 @@ function withTimeout(promise, timeoutMs) {
     });
 }
 function actorFromRequest(request) {
-    const role = request.user?.role;
     const warehouseId = request.user?.warehouseId ?? null;
     const userId = request.user?.id;
-    if (!role || !userId)
+    if (!userId)
         return null;
-    return { role, warehouseId, userId };
+    return {
+        userId,
+        warehouseId,
+        roleCodes: Array.isArray(request.user?.roleCodes) ? request.user.roleCodes : [],
+        permissionCodes: Array.isArray(request.user?.permissionCodes)
+            ? request.user.permissionCodes
+            : [],
+    };
 }
-function getScopeKey(role, warehouseId) {
-    return `${role}:${warehouseId ?? "all"}`;
+function getScopeKey(scopeTag, warehouseId) {
+    return `${scopeTag}:${warehouseId ?? "all"}`;
 }
 function toViewportBucketKey(viewport) {
     if (!viewport)
@@ -75,8 +84,8 @@ function toViewportBucketKey(viewport) {
         viewport.maxLng.toFixed(precision),
     ].join(",");
 }
-function getSnapshotCacheKey(role, warehouseId, viewport) {
-    return `${getScopeKey(role, warehouseId)}:${toViewportBucketKey(viewport)}`;
+function getSnapshotCacheKey(scopeTag, warehouseId, viewport) {
+    return `${getScopeKey(scopeTag, warehouseId)}:${toViewportBucketKey(viewport)}`;
 }
 function getSnapshotRedisKey(cacheKey) {
     const digest = (0, crypto_1.createHash)("sha1").update(cacheKey).digest("hex");
@@ -99,7 +108,7 @@ async function readSnapshotCache(cacheKey) {
         const redis = await (0, redis_1.getRedisClient)();
         if (!redis)
             return null;
-        const redisHit = await redis.get(getSnapshotRedisKey(cacheKey));
+        const redisHit = await (0, redis_1.withRedisTimeout)("live-map:snapshot-cache:get", () => redis.get(getSnapshotRedisKey(cacheKey)), Math.max(500, Number(process.env.LIVE_MAP_REDIS_SNAPSHOT_CACHE_TIMEOUT_MS || 1500)));
         if (!redisHit)
             return null;
         return {
@@ -125,24 +134,24 @@ async function writeSnapshotCache(cacheKey, payload, ttlMs) {
         if (!redis)
             return;
         const ttlSec = Math.max(1, Math.floor(ttlMs / 1000));
-        await redis.set(getSnapshotRedisKey(cacheKey), JSON.stringify(payload), "EX", ttlSec);
+        await (0, redis_1.withRedisTimeout)("live-map:snapshot-cache:set", () => redis.set(getSnapshotRedisKey(cacheKey), JSON.stringify(payload), "EX", ttlSec), Math.max(500, Number(process.env.LIVE_MAP_REDIS_SNAPSHOT_CACHE_TIMEOUT_MS || 1500)));
     }
     catch (err) {
         console.error(`[live-map-cache] redis write failed: ${err?.message || "unknown"}`);
     }
 }
 const liveMapFastifyRoutes = async (fastify) => {
-    fastify.get("/snapshot", { preHandler: (0, authFastify_1.fastifyAuth)() }, async (request, reply) => {
+    fastify.get("/snapshot", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "shipment.view" }) }, async (request, reply) => {
         const startedAt = Date.now();
         try {
             const actor = actorFromRequest(request);
             if (!actor)
                 return reply.code(401).send({ error: "Unauthorized" });
-            const allowed = await (0, identity_access_1.hasPermission)(request.user, "orders.read");
-            if (!allowed)
-                return reply.code(403).send({ error: "Forbidden" });
             const viewport = parseViewport((request.query ?? {}));
-            const cacheKey = getSnapshotCacheKey(actor.role, actor.warehouseId, viewport);
+            const scopeTag = actor.permissionCodes.includes("drivers.manage")
+                ? "global"
+                : "warehouse";
+            const cacheKey = getSnapshotCacheKey(scopeTag, actor.warehouseId, viewport);
             const cacheTtlMs = Math.min(Math.max(Number(process.env.LIVE_MAP_SNAPSHOT_CACHE_TTL_MS || 45000), 1000), 120000);
             const cached = await readSnapshotCache(cacheKey);
             if (cached?.isFresh) {
@@ -153,10 +162,7 @@ const liveMapFastifyRoutes = async (fastify) => {
             }
             let build = snapshotBuilds.get(cacheKey);
             if (!build) {
-                build = (0, liveMapService_1.getLiveMapSnapshot)({
-                    actor: { role: actor.role, warehouseId: actor.warehouseId },
-                    viewport,
-                });
+                build = (0, liveMapService_1.getLiveMapSnapshot)({ actor, viewport });
                 snapshotBuilds.set(cacheKey, build);
                 build
                     .then((snapshot) => writeSnapshotCache(cacheKey, snapshot, cacheTtlMs))
@@ -190,26 +196,37 @@ const liveMapFastifyRoutes = async (fastify) => {
             return reply.code(500).send({ error: err?.message || "Failed to fetch live map snapshot" });
         }
     });
-    fastify.get("/stream", { preHandler: (0, authFastify_1.fastifyAuth)() }, async (request, reply) => {
+    fastify.get("/stream", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "shipment.view" }) }, async (request, reply) => {
         const actor = actorFromRequest(request);
         if (!actor)
             return reply.code(401).send({ error: "Unauthorized" });
-        const allowed = await (0, identity_access_1.hasPermission)(request.user, "orders.read");
-        if (!allowed)
-            return reply.code(403).send({ error: "Forbidden" });
         const viewport = parseViewport((request.query ?? {}));
         const clientKey = `${request.user?.id || "anon"}:${request.ip || "ip"}`;
         const lastEventId = String(request.headers["last-event-id"] || request.headers["Last-Event-ID"] || "").trim();
-        reply.header("Content-Type", "text/event-stream");
-        reply.header("Cache-Control", "no-cache, no-transform");
-        reply.header("Connection", "keep-alive");
-        reply.header("X-Accel-Buffering", "no");
+        let disconnected = false;
+        (0, sseHeaders_1.applySseHeaders)(request, reply);
         reply.raw.flushHeaders?.();
         (0, opsMetrics_1.recordSseConnected)({ stream: "live-map", clientKey });
-        reply.raw.write(`event: ready\ndata: ${JSON.stringify({
-            connectedAt: new Date().toISOString(),
-            resumedFrom: lastEventId || null,
-        })}\n\n`);
+        try {
+            if (!isWritableStream(reply.raw)) {
+                if (!disconnected) {
+                    disconnected = true;
+                    (0, opsMetrics_1.recordSseDisconnected)("live-map");
+                }
+                return reply.hijack();
+            }
+            reply.raw.write(`event: ready\ndata: ${JSON.stringify({
+                connectedAt: new Date().toISOString(),
+                resumedFrom: lastEventId || null,
+            })}\n\n`);
+        }
+        catch {
+            if (!disconnected) {
+                disconnected = true;
+                (0, opsMetrics_1.recordSseDisconnected)("live-map");
+            }
+            return reply.hijack();
+        }
         const redisReplayEvents = await (0, liveMapStore_1.replayLiveMapEventsFromRedis)({
             lastEventId,
             limit: Number(process.env.LIVE_MAP_STREAM_REPLAY_MAX_EVENTS || 300),
@@ -220,8 +237,15 @@ const liveMapFastifyRoutes = async (fastify) => {
         const replayLimit = Math.max(10, Number(process.env.LIVE_MAP_STREAM_REPLAY_MAX_EVENTS || 300));
         const replaySlice = replayEvents.slice(-replayLimit);
         replaySlice.forEach((event) => {
-            reply.raw.write(`id: ${event.id || ""}\n`);
-            reply.raw.write(`event: live-map\ndata: ${JSON.stringify(event)}\n\n`);
+            if (!isWritableStream(reply.raw))
+                return;
+            try {
+                reply.raw.write(`id: ${event.id || ""}\n`);
+                reply.raw.write(`event: live-map\ndata: ${JSON.stringify(event)}\n\n`);
+            }
+            catch {
+                // ignore broken connection during replay
+            }
         });
         if (replayEvents.length > replaySlice.length) {
             reply.raw.write(`event: live-map-replay-truncated\ndata: ${JSON.stringify({
@@ -231,10 +255,17 @@ const liveMapFastifyRoutes = async (fastify) => {
         }
         const heartbeatMs = Math.max(10000, Number(process.env.LIVE_MAP_STREAM_HEARTBEAT_MS || 25000));
         const heartbeat = setInterval(() => {
-            reply.raw.write(`: keepalive ${Date.now()}\n\n`);
+            if (!isWritableStream(reply.raw))
+                return;
+            try {
+                reply.raw.write(`: keepalive ${Date.now()}\n\n`);
+            }
+            catch {
+                // ignore broken connection during heartbeat
+            }
         }, heartbeatMs);
         const unsubscribe = (0, liveMapStore_1.subscribeLiveMapEvents)((event) => {
-            if (actor.role === identity_access_1.ROLE_WAREHOUSE && actor.warehouseId) {
+            if (!actor.permissionCodes.includes("drivers.manage") && actor.warehouseId) {
                 if (event.type !== "driver_location_upsert")
                     return;
                 const eventWarehouseId = event.payload.warehouseId;
@@ -245,14 +276,27 @@ const liveMapFastifyRoutes = async (fastify) => {
                 if (!isInViewport(event.payload.lat, event.payload.lng, viewport))
                     return;
             }
-            reply.raw.write(`id: ${event.id || ""}\n`);
-            reply.raw.write(`event: live-map\ndata: ${JSON.stringify(event)}\n\n`);
+            if (!isWritableStream(reply.raw))
+                return;
+            try {
+                reply.raw.write(`id: ${event.id || ""}\n`);
+                reply.raw.write(`event: live-map\ndata: ${JSON.stringify(event)}\n\n`);
+            }
+            catch {
+                // ignore broken connection during push
+            }
         });
-        request.raw.on("close", () => {
+        const onClose = () => {
+            if (disconnected)
+                return;
+            disconnected = true;
             (0, opsMetrics_1.recordSseDisconnected)("live-map");
             clearInterval(heartbeat);
             unsubscribe();
-        });
+        };
+        request.raw.on("close", onClose);
+        reply.raw.on("close", onClose);
+        reply.raw.on("error", onClose);
         return reply.hijack();
     });
 };

@@ -72,7 +72,16 @@ async function start() {
       reply.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
       reply.header(
         "Access-Control-Allow-Headers",
-        "Authorization,Content-Type,Accept,Origin,X-Requested-With,Last-Event-ID",
+        [
+          "Authorization",
+          "Content-Type",
+          "Accept",
+          "Origin",
+          "X-Requested-With",
+          "Last-Event-ID",
+          "Cache-Control",
+          "Pragma",
+        ].join(","),
       );
       if (request.method === "OPTIONS") {
         return reply.code(204).send();

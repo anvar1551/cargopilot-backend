@@ -9,6 +9,9 @@ import {
   getCompanyPaymentPolicyForActor,
   getPaymentIntentForActor,
   handleProviderWebhook,
+  listOrderPaymentIntentsForActor,
+  retryOrderPaymentForActor,
+  syncPaymentIntentForActor,
   upsertCompanyPaymentPolicyForActor,
   listAvailableProvidersForActor,
   listProviderConfigsForActor,
@@ -22,9 +25,11 @@ import {
   listAvailableProvidersQuerySchema,
   patchProviderConfigSchema,
   paymentIntentIdParamsSchema,
+  paymentOrderIdParamsSchema,
   paymentWebhookSchema,
   providerConfigIdParamsSchema,
   refundPaymentSchema,
+  retryOrderPaymentSchema,
   upsertCompanyPaymentSettingSchema,
   upsertProviderConfigSchema,
 } from "../shared/validation";
@@ -187,6 +192,59 @@ const paymentsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.send(result);
       } catch (error) {
         return sendError(reply, error, "Failed to load payment intent");
+      }
+    },
+  );
+
+  fastify.get(
+    "/orders/:orderId/payment/intents",
+    { preHandler: fastifyAuth({ permission: "payments.intents.read" }) },
+    async (request, reply) => {
+      try {
+        const params = paymentOrderIdParamsSchema.parse(request.params);
+        const result = await listOrderPaymentIntentsForActor({
+          user: request.user!,
+          orderId: params.orderId,
+        });
+        return reply.send(result);
+      } catch (error) {
+        return sendError(reply, error, "Failed to load order payment intents");
+      }
+    },
+  );
+
+  fastify.post(
+    "/payments/intents/:id/sync",
+    { preHandler: fastifyAuth({ permission: "payments.intents.read" }) },
+    async (request, reply) => {
+      try {
+        const params = paymentIntentIdParamsSchema.parse(request.params);
+        const result = await syncPaymentIntentForActor({
+          user: request.user!,
+          id: params.id,
+        });
+        return reply.send(result);
+      } catch (error) {
+        return sendError(reply, error, "Failed to sync payment intent");
+      }
+    },
+  );
+
+  fastify.post(
+    "/orders/:orderId/payment/retry",
+    { preHandler: fastifyAuth({ permission: "payments.intents.create" }) },
+    async (request, reply) => {
+      try {
+        const params = paymentOrderIdParamsSchema.parse(request.params);
+        const body = retryOrderPaymentSchema.parse(request.body ?? {});
+        const result = await retryOrderPaymentForActor({
+          user: request.user!,
+          orderId: params.orderId,
+          provider: body.provider,
+        });
+        return reply.code(201).send(result);
+      } catch (error) {
+        return sendError(reply, error, "Failed to retry order payment");
       }
     },
   );

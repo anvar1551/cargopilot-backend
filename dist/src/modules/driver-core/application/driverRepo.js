@@ -8,12 +8,11 @@ const client_1 = require("@prisma/client");
 const prismaClient_1 = __importDefault(require("../../../config/prismaClient"));
 const listAllDrivers = async () => {
     const rows = await prismaClient_1.default.user.findMany({
-        where: { role: "driver" },
+        where: { driverType: { not: null } },
         select: {
             id: true,
             name: true,
             email: true,
-            role: true,
             warehouseId: true,
             driverType: true,
             warehouseAccesses: {
@@ -32,7 +31,7 @@ const listAllDrivers = async () => {
             id: driver.id,
             name: driver.name,
             email: driver.email,
-            role: driver.role,
+            role: "driver",
             warehouseId: driver.warehouseId ?? null,
             warehouseIds,
             driverType: driver.driverType === client_1.DriverType.linehaul ? "linehaul" : "local",

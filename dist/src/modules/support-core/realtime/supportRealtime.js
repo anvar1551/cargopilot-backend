@@ -50,11 +50,34 @@ function appendRecentEvent(event) {
     }
 }
 async function startStreamConsumer() {
-    const redis = await (0, redis_1.getRedisClient)();
+    const createStreamRedis = () => (0, redis_1.createRedisClient)({
+        connectTimeout: 3000,
+        enableOfflineQueue: true,
+        maxRetriesPerRequest: null,
+        lazyConnect: true,
+        commandTimeout: null,
+    });
+    let redis = createStreamRedis();
     if (!redis)
         return;
+    await redis.connect().catch(() => undefined);
     while (true) {
         try {
+            if (!redis) {
+                await new Promise((resolve) => setTimeout(resolve, 1000));
+                redis = createStreamRedis();
+                if (redis) {
+                    await redis.connect().catch(() => undefined);
+                }
+                continue;
+            }
+            if (redis.status !== "ready" && redis.status !== "connect") {
+                await redis.connect().catch(() => undefined);
+            }
+            if (redis.status !== "ready") {
+                await new Promise((resolve) => setTimeout(resolve, 1000));
+                continue;
+            }
             const results = (await redis.xread("COUNT", 100, "BLOCK", 2000, "STREAMS", getSupportEventsStream(), streamLastId));
             if (!results)
                 continue;
@@ -79,6 +102,16 @@ async function startStreamConsumer() {
         }
         catch (err) {
             console.error(`[support] stream read error: ${err?.message || "unknown"}`);
+            try {
+                redis?.disconnect();
+            }
+            catch {
+                // noop
+            }
+            redis = createStreamRedis();
+            if (redis) {
+                await redis.connect().catch(() => undefined);
+            }
             await new Promise((resolve) => setTimeout(resolve, 2000));
         }
     }

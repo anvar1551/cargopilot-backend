@@ -1,15 +1,26 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.paymentWebhookSchema = exports.refundPaymentSchema = exports.paymentIntentIdParamsSchema = exports.createPaymentIntentSchema = exports.providerConfigIdParamsSchema = exports.patchProviderConfigSchema = exports.upsertProviderConfigSchema = exports.listProviderConfigsQuerySchema = void 0;
+exports.paymentWebhookSchema = exports.refundPaymentSchema = exports.retryOrderPaymentSchema = exports.paymentOrderIdParamsSchema = exports.paymentIntentIdParamsSchema = exports.createPaymentIntentSchema = exports.providerConfigIdParamsSchema = exports.patchProviderConfigSchema = exports.upsertProviderConfigSchema = exports.upsertCompanyPaymentSettingSchema = exports.listAvailableProvidersQuerySchema = exports.listProviderConfigsQuerySchema = void 0;
 const client_1 = require("@prisma/client");
 const zod_1 = require("zod");
 const providerEnum = zod_1.z.nativeEnum(client_1.PaymentProvider);
 const environmentEnum = zod_1.z.nativeEnum(client_1.PaymentEnvironment);
+const supportedCurrencyEnum = zod_1.z.enum(["UZS", "USD", "CNY"]);
 exports.listProviderConfigsQuerySchema = zod_1.z.object({
     companyId: zod_1.z.string().uuid().optional(),
     provider: providerEnum.optional(),
     environment: environmentEnum.optional(),
     enabledOnly: zod_1.z.coerce.boolean().optional(),
+});
+exports.listAvailableProvidersQuerySchema = zod_1.z.object({
+    companyId: zod_1.z.string().uuid().optional(),
+    environment: environmentEnum.optional(),
+});
+exports.upsertCompanyPaymentSettingSchema = zod_1.z.object({
+    companyId: zod_1.z.string().uuid(),
+    onlinePaymentsEnabled: zod_1.z.boolean(),
+    defaultProvider: providerEnum.optional().nullable(),
+    allowProviderOverride: zod_1.z.boolean().optional(),
 });
 exports.upsertProviderConfigSchema = zod_1.z.object({
     companyId: zod_1.z.string().uuid(),
@@ -36,7 +47,11 @@ exports.createPaymentIntentSchema = zod_1.z.object({
     companyId: zod_1.z.string().uuid(),
     orderId: zod_1.z.string().uuid(),
     amountMinor: zod_1.z.coerce.bigint().gt(0n),
-    currency: zod_1.z.string().trim().min(3).max(8),
+    currency: zod_1.z
+        .string()
+        .trim()
+        .transform((value) => value.toUpperCase())
+        .pipe(supportedCurrencyEnum),
     provider: providerEnum.optional(),
     idempotencyKey: zod_1.z.string().trim().min(8).max(128),
     returnUrl: zod_1.z.string().url().optional(),
@@ -44,6 +59,12 @@ exports.createPaymentIntentSchema = zod_1.z.object({
 });
 exports.paymentIntentIdParamsSchema = zod_1.z.object({
     id: zod_1.z.string().uuid(),
+});
+exports.paymentOrderIdParamsSchema = zod_1.z.object({
+    orderId: zod_1.z.string().uuid(),
+});
+exports.retryOrderPaymentSchema = zod_1.z.object({
+    provider: providerEnum.optional(),
 });
 exports.refundPaymentSchema = zod_1.z.object({
     companyId: zod_1.z.string().uuid(),

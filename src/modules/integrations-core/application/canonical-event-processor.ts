@@ -20,7 +20,8 @@ async function processOne(event: Awaited<ReturnType<typeof integrationCanonicalE
       await integrationCanonicalEventRepository.markProcessed(event.id);
       return "processed" as const;
     }
-    await integrationCanonicalEventRepository.markIgnored(event.id, result.reason);
+    const reason = "reason" in result ? result.reason : "carrier event was not applied";
+    await integrationCanonicalEventRepository.markIgnored(event.id, reason);
     return "ignored" as const;
   }
 

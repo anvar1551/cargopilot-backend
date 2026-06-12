@@ -5,10 +5,10 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const prismaClient_1 = __importDefault(require("../../../config/prismaClient"));
 const s3Presign_1 = require("../../../utils/s3Presign");
-const authFastify_1 = require("../../../middleware/authFastify");
+const fastify_auth_1 = require("../../../modules/identity-access/transport/fastify-auth");
 const identity_access_1 = require("../../identity-access");
 const invoiceFastifyRoutes = async (fastify) => {
-    fastify.get("/orders/:id/url", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "payments.intents.read" }) }, async (request, reply) => {
+    fastify.get("/orders/:id/url", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "payments.intents.read" }) }, async (request, reply) => {
         try {
             const idParam = String(request.params?.id ?? "").trim();
             if (!idParam)

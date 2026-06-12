@@ -238,6 +238,7 @@ export async function applyCarrierIntegrationEvent(
     const legStatus = mapCarrierStatusToLegStatus(providerStatus);
     const orderStatus = mapCarrierStatusToOrderStatus(providerStatus);
     const isFinalFailure = legStatus === OrderLegStatus.exception;
+    const isCancelled = legStatus === OrderLegStatus.cancelled;
 
     await db.$transaction(async (tx: any) => {
       const leg = await findLegForCarrierEvent(tx, event);
@@ -248,6 +249,7 @@ export async function applyCarrierIntegrationEvent(
         data: {
           ...(legStatus ? { status: legStatus } : {}),
           ...(isFinalFailure ? { carrierBookingStatus: "failed" } : {}),
+          ...(isCancelled ? { carrierBookingStatus: "cancelled" } : {}),
           carrierLastStatusAt: parseDate(happenedAt || event.occurredAt),
           metadata: {
             ...(toObject(leg.metadata) as any),

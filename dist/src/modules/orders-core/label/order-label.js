@@ -3,8 +3,13 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.resolveOrderLabelMode = resolveOrderLabelMode;
+exports.isOrderLabelAutoFallbackEnabled = isOrderLabelAutoFallbackEnabled;
 exports.generateAndAttachParcelLabelsForOrder = generateAndAttachParcelLabelsForOrder;
 exports.enqueueOrderLabelJob = enqueueOrderLabelJob;
+exports.shouldRunOrderLabelAutoFallback = shouldRunOrderLabelAutoFallback;
+exports.runOrderLabelAutoFallback = runOrderLabelAutoFallback;
+exports.scheduleOrderLabelAutoFallback = scheduleOrderLabelAutoFallback;
 exports.runOrderLabelQueueTick = runOrderLabelQueueTick;
 const path_1 = __importDefault(require("path"));
 const client_1 = require("@prisma/client");
@@ -17,6 +22,20 @@ function parsePositiveInt(value, fallback) {
     if (!Number.isFinite(parsed) || parsed <= 0)
         return fallback;
     return Math.floor(parsed);
+}
+function resolveOrderLabelMode(rawMode, fallback = "queue") {
+    return rawMode === "sync" || rawMode === "async" || rawMode === "queue"
+        ? rawMode
+        : fallback;
+}
+function isOrderLabelAutoFallbackEnabled() {
+    return process.env.ORDER_LABEL_AUTO_FALLBACK !== "false";
+}
+function resolveFallbackDelayMs() {
+    return parsePositiveInt(process.env.ORDER_LABEL_FALLBACK_DELAY_MS, 15000);
+}
+function resolveStaleProcessingMs() {
+    return parsePositiveInt(process.env.ORDER_LABEL_STALE_PROCESSING_MS, 300000);
 }
 function buildRetryDelayMs(attempt) {
     const baseDelayMs = parsePositiveInt(process.env.ORDER_LABEL_RETRY_BASE_MS, 15000);
@@ -121,6 +140,74 @@ async function enqueueOrderLabelJob(orderId) {
             lockedBy: null,
         },
     });
+}
+async function hasMissingParcelLabels(orderId) {
+    const unlabeled = await prismaClient_1.default.parcel.count({
+        where: {
+            orderId,
+            OR: [{ labelKey: null }, { labelKey: "" }],
+        },
+    });
+    return unlabeled > 0;
+}
+async function shouldRunOrderLabelAutoFallback(orderId) {
+    const missingLabels = await hasMissingParcelLabels(orderId);
+    if (!missingLabels)
+        return false;
+    const job = await prismaClient_1.default.orderLabelJob.findUnique({
+        where: { orderId },
+        select: {
+            status: true,
+            lockedAt: true,
+        },
+    });
+    if (!job)
+        return true;
+    if (job.status === client_1.OrderLabelJobStatus.completed)
+        return false;
+    if (job.status === client_1.OrderLabelJobStatus.processing && job.lockedAt) {
+        const staleAfterMs = resolveStaleProcessingMs();
+        const lockAgeMs = Date.now() - job.lockedAt.getTime();
+        return lockAgeMs >= staleAfterMs;
+    }
+    return true;
+}
+async function runOrderLabelAutoFallback(orderId) {
+    const shouldRun = await shouldRunOrderLabelAutoFallback(orderId);
+    if (!shouldRun)
+        return false;
+    await generateAndAttachParcelLabelsForOrder(orderId);
+    await prismaClient_1.default.orderLabelJob.updateMany({
+        where: {
+            orderId,
+            status: {
+                in: [
+                    client_1.OrderLabelJobStatus.pending,
+                    client_1.OrderLabelJobStatus.failed,
+                    client_1.OrderLabelJobStatus.processing,
+                ],
+            },
+        },
+        data: {
+            status: client_1.OrderLabelJobStatus.completed,
+            error: "Completed by auto-fallback",
+            lockedAt: null,
+            lockedBy: null,
+            availableAt: new Date(),
+        },
+    });
+    return true;
+}
+function scheduleOrderLabelAutoFallback(orderId, delayMs) {
+    if (!isOrderLabelAutoFallbackEnabled())
+        return;
+    const waitMs = Math.max(1000, delayMs ?? resolveFallbackDelayMs());
+    const timer = setTimeout(() => {
+        void runOrderLabelAutoFallback(orderId).catch((error) => {
+            console.error(`[order-label] auto fallback failed for order ${orderId}:`, error);
+        });
+    }, waitMs);
+    timer.unref?.();
 }
 async function claimOrderLabelJobs(workerId, batchSize) {
     const now = new Date();

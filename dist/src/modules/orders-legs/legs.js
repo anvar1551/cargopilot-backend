@@ -10,6 +10,7 @@ const prismaClient_1 = __importDefault(require("../../config/prismaClient"));
 const analyticsOutbox_1 = require("../analytics-core/infrastructure/analyticsOutbox");
 const shared_1 = require("../orders-core/shared");
 const shared_2 = require("./shared");
+const carrier_auto_booking_1 = require("./carrier-auto-booking");
 async function listOrderLegs(orderId) {
     await (0, shared_2.ensureOrderExists)(orderId);
     return prismaClient_1.default.orderLeg.findMany({
@@ -22,7 +23,7 @@ async function upsertOrderLeg(orderId, input, actor) {
     if (!input.legId && (input.sequence == null || input.sequence <= 0)) {
         throw (0, shared_1.orderError)("sequence is required for new leg and must be > 0", 400);
     }
-    return prismaClient_1.default.$transaction(async (tx) => {
+    const leg = await prismaClient_1.default.$transaction(async (tx) => {
         let leg;
         if (input.legId) {
             const existing = await tx.orderLeg.findFirst({
@@ -94,10 +95,16 @@ async function upsertOrderLeg(orderId, input, actor) {
                     mode: leg.mode,
                     status: leg.status,
                     actorId: actor?.id ?? null,
-                    actorRole: actor?.role ?? null,
+                    actorRole: null,
                 },
             },
         ]);
         return leg;
     });
+    if (!input.legId) {
+        await (0, carrier_auto_booking_1.autoBookCarrierForOrderLeg)({ orderId, legId: leg.id, actor }).catch((error) => {
+            console.error(`[carrier-routing] auto-book failed for order=${orderId} leg=${leg.id}:`, error);
+        });
+    }
+    return leg;
 }

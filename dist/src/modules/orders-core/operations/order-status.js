@@ -129,6 +129,45 @@ function assertWarehouseScope(actor, orders) {
         throw (0, shared_1.orderError)(`Orders not in your warehouse: ${wrong.map((x) => x.id).join(", ")}`, 403);
     }
 }
+function scopedOrderWhere(actor, orderIds) {
+    const scopes = Array.isArray(actor.scopes) ? actor.scopes : [];
+    const orgScopedIds = Array.from(new Set(scopes
+        .filter((item) => item.scopeType === "company" ||
+        item.scopeType === "branch" ||
+        item.scopeType === "agent" ||
+        item.scopeType === "pickup_point" ||
+        item.scopeType === "carrier" ||
+        item.scopeType === "client")
+        .map((item) => item.scopeRefId)
+        .filter(Boolean)));
+    const warehouseScopedIds = Array.from(new Set(scopes
+        .filter((item) => item.scopeType === "warehouse")
+        .map((item) => item.scopeRefId)
+        .filter(Boolean)));
+    const scopeClauses = [];
+    if (orgScopedIds.length > 0) {
+        scopeClauses.push({
+            OR: [{ ownerOrgId: { in: orgScopedIds } }, { assignedOrgId: { in: orgScopedIds } }],
+        });
+    }
+    if (warehouseScopedIds.length > 0) {
+        scopeClauses.push({ currentWarehouseId: { in: warehouseScopedIds } });
+    }
+    if (actor.warehouseId) {
+        scopeClauses.push({ currentWarehouseId: actor.warehouseId });
+    }
+    if (scopeClauses.length === 0 && actor.companyId) {
+        scopeClauses.push({
+            OR: [{ ownerOrgId: actor.companyId }, { assignedOrgId: actor.companyId }],
+        });
+    }
+    return {
+        AND: [
+            { id: { in: orderIds } },
+            scopeClauses.length > 0 ? { OR: scopeClauses } : { id: "__no_access__" },
+        ],
+    };
+}
 function resolveWarehouseId(actor, provided) {
     if (actor.warehouseId)
         return actor.warehouseId;
@@ -150,13 +189,7 @@ function hasPositiveAmount(value) {
     const amount = Number(value ?? 0);
     return Number.isFinite(amount) && amount > 0;
 }
-function normalizeActorRoleForTracking(role) {
-    if (role === "customer" ||
-        role === "driver" ||
-        role === "warehouse" ||
-        role === "manager") {
-        return role;
-    }
+function normalizeActorRoleForTracking() {
     return null;
 }
 function isPendingPaidStatus(value) {
@@ -234,7 +267,7 @@ async function assignDriversBulk(args) {
         throw (0, shared_1.orderError)("Driver not found or invalid role", 400);
     }
     const orders = await prismaClient_1.default.order.findMany({
-        where: { id: { in: orderIds } },
+        where: scopedOrderWhere(actor, orderIds),
         select: {
             id: true,
             status: true,
@@ -242,7 +275,7 @@ async function assignDriversBulk(args) {
         },
     });
     if (orders.length !== orderIds.length) {
-        throw (0, shared_1.orderError)("Some orders were not found", 400);
+        throw (0, shared_1.orderError)("Some orders were not found or out of scope", 403);
     }
     const final = orders.filter((o) => FINAL_ORDER_STATUSES.includes(o.status));
     if (final.length) {
@@ -262,14 +295,13 @@ async function assignDriversBulk(args) {
     const effectiveWarehouseId = resolveWarehouseId(actor, warehouseId);
     await prismaClient_1.default.$transaction(async (tx) => {
         await tx.order.updateMany({
-            where: { id: { in: orderIds } },
+            where: scopedOrderWhere(actor, orderIds),
             data: { assignedDriverId: driverId },
         });
         if (type === "pickup") {
             await tx.order.updateMany({
                 where: {
-                    id: { in: orderIds },
-                    status: { in: [client_1.OrderStatus.pending, client_1.OrderStatus.exception] },
+                    AND: [scopedOrderWhere(actor, orderIds), { status: { in: [client_1.OrderStatus.pending, client_1.OrderStatus.exception] } }],
                 },
                 data: { status: client_1.OrderStatus.assigned },
             });
@@ -283,7 +315,7 @@ async function assignDriversBulk(args) {
                 region: region ?? null,
                 warehouseId: effectiveWarehouseId,
                 actorId: actor.id,
-                actorRole: normalizeActorRoleForTracking(actor.userRole),
+                actorRole: normalizeActorRoleForTracking(),
                 parcelId: null,
             })),
         });
@@ -296,7 +328,7 @@ async function assignDriversBulk(args) {
                 assignmentType: type,
                 driverId,
                 actorId: actor.id,
-                actorRole: normalizeActorRoleForTracking(actor.userRole),
+                actorRole: normalizeActorRoleForTracking(),
             },
         })));
     });
@@ -321,7 +353,7 @@ async function updateOrdersStatusBulk(args) {
         throw (0, shared_1.orderError)(`reasonCode is required when status is ${status}`, 400);
     }
     const orders = await prismaClient_1.default.order.findMany({
-        where: { id: { in: orderIds } },
+        where: scopedOrderWhere(actor, orderIds),
         select: {
             id: true,
             status: true,
@@ -341,7 +373,7 @@ async function updateOrdersStatusBulk(args) {
         },
     });
     if (orders.length !== orderIds.length) {
-        throw (0, shared_1.orderError)("Some orders were not found", 400);
+        throw (0, shared_1.orderError)("Some orders were not found or out of scope", 403);
     }
     assertWarehouseScope(actor, orders);
     const effectiveWarehouseId = resolveWarehouseId(actor, warehouseId);
@@ -377,7 +409,7 @@ async function updateOrdersStatusBulk(args) {
     }
     await prismaClient_1.default.$transaction(async (tx) => {
         await tx.order.updateMany({
-            where: { id: { in: orderIds } },
+            where: scopedOrderWhere(actor, orderIds),
             data: updateData,
         });
         await tx.tracking.createMany({
@@ -389,7 +421,7 @@ async function updateOrdersStatusBulk(args) {
                 region: region ?? null,
                 warehouseId: effectiveWarehouseId,
                 actorId: actor.id,
-                actorRole: normalizeActorRoleForTracking(actor.userRole),
+                actorRole: normalizeActorRoleForTracking(),
                 parcelId: null,
             })),
         });
@@ -402,7 +434,7 @@ async function updateOrdersStatusBulk(args) {
                 status,
                 reasonCode: reasonCode ?? null,
                 actorId: actor.id,
-                actorRole: normalizeActorRoleForTracking(actor.userRole),
+                actorRole: normalizeActorRoleForTracking(),
             },
         })));
     });
@@ -511,7 +543,7 @@ async function updateDriverOrderStatus(args) {
                 region: region ?? null,
                 warehouseId: order.currentWarehouseId ?? null,
                 actorId: actor.id,
-                actorRole: normalizeActorRoleForTracking(actor.userRole),
+                actorRole: normalizeActorRoleForTracking(),
                 parcelId: null,
             },
         });
@@ -525,7 +557,7 @@ async function updateDriverOrderStatus(args) {
                     status,
                     reasonCode: reasonCode ?? null,
                     actorId: actor.id,
-                    actorRole: normalizeActorRoleForTracking(actor.userRole),
+                    actorRole: normalizeActorRoleForTracking(),
                 },
             },
         ]);

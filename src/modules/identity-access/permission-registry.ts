@@ -68,6 +68,8 @@ export const SYSTEM_PERMISSIONS: SeedPermission[] = [
   permission("integration.provider.read", "integrations", "read", "Read integration providers"),
   permission("integration.provider.manage", "integrations", "manage", "Manage integration providers"),
   permission("integration.provider.rotateSecret", "integrations", "manage", "Rotate provider secrets"),
+  permission("integration.routing.read", "integrations", "read", "Read route templates and carrier routing rules"),
+  permission("integration.routing.manage", "integrations", "manage", "Manage route templates and carrier routing rules"),
   permission("integration.outbox.read", "integrations", "read", "Read integration outbox and delivery attempts"),
   permission("integration.outbox.replay", "integrations", "manage", "Replay and retry integration outbox records"),
   permission("audit.read", "analytics", "read", "Read audit logs"),

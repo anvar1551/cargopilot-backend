@@ -11,6 +11,8 @@ const crypto_1 = require("crypto");
 const client_1 = require("@prisma/client");
 const prismaClient_1 = __importDefault(require("../../../config/prismaClient"));
 const makeScopeKey_1 = require("../infrastructure/makeScopeKey");
+const analyticsConfig_1 = require("../config/analyticsConfig");
+const analyticsLogger_1 = require("../config/analyticsLogger");
 const analyticsReadModel_1 = require("../infrastructure/analyticsReadModel");
 const ACTIVE_ORDER_STATUSES = [
     "pending",
@@ -75,7 +77,7 @@ let cachedPolicy = {
     expiresAt: 0,
 };
 async function getSlaPolicy() {
-    const dbPolicyEnabled = process.env.ANALYTICS_SLA_POLICY_DB_ENABLED === "true";
+    const dbPolicyEnabled = analyticsConfig_1.analyticsConfig.slaPolicyDbEnabled;
     if (Date.now() < cachedPolicy.expiresAt) {
         return {
             staleHours: cachedPolicy.staleHours,
@@ -110,7 +112,10 @@ async function getSlaPolicy() {
                 error?.code === "P2022" ||
                 /OperationalSlaPolicy/i.test(String(error?.message ?? ""));
             if (!knownSchemaMismatch) {
-                console.error(`[analytics-v2] sla policy load failed: ${error?.message || "unknown"}`);
+                analyticsLogger_1.analyticsLogger.throttledWarn("sla-policy-load", "sla policy load failed", {
+                    error,
+                    throttleMs: 60000,
+                });
             }
         }
     }
@@ -184,7 +189,7 @@ async function getAnalyticsSummaryV2(params) {
     const rangeDays = clampInt(params.rangeDays ?? 30, 7, 180, 30);
     const staleHours = clampInt(params.staleHours ?? policy.staleHours, 6, 720, policy.staleHours);
     const scopeKey = (0, makeScopeKey_1.makeScopeKey)(params.scope);
-    const ttlMs = Number(process.env.ANALYTICS_V2_SUMMARY_TTL_MS || 60000);
+    const ttlMs = analyticsConfig_1.analyticsConfig.cache.summaryTtlMs;
     const readModelKey = (0, analyticsReadModel_1.getSummaryReadModelKey)({
         scope: scopeKey,
         rangeDays,
@@ -358,7 +363,7 @@ async function getAnalyticsSummaryV2(params) {
 async function getAnalyticsTrendV2(params) {
     const rangeDays = clampInt(params.rangeDays ?? 30, 7, 180, 30);
     const scopeKey = (0, makeScopeKey_1.makeScopeKey)(params.scope);
-    const ttlMs = Number(process.env.ANALYTICS_V2_TREND_TTL_MS || 60000);
+    const ttlMs = analyticsConfig_1.analyticsConfig.cache.trendTtlMs;
     const readModelKey = (0, analyticsReadModel_1.getTrendReadModelKey)({
         scope: scopeKey,
         rangeDays,
@@ -413,7 +418,7 @@ async function getAnalyticsWarningsV2(params) {
     const rangeDays = clampInt(params.rangeDays ?? 30, 7, 180, 30);
     const staleHours = clampInt(params.staleHours ?? policy.staleHours, 6, 720, policy.staleHours);
     const scopeKey = (0, makeScopeKey_1.makeScopeKey)(params.scope);
-    const ttlMs = Number(process.env.ANALYTICS_V2_WARNINGS_TTL_MS || 60000);
+    const ttlMs = analyticsConfig_1.analyticsConfig.cache.warningsTtlMs;
     const readModelKey = (0, analyticsReadModel_1.getWarningsReadModelKey)({
         scope: scopeKey,
         rangeDays,
@@ -511,8 +516,8 @@ async function getAnalyticsFinanceQueueV2(params) {
     const queuePage = Math.max(Number(params.queuePage ?? 1) || 1, 1);
     const queueOffset = (queuePage - 1) * queuePageSize;
     const scopeKey = (0, makeScopeKey_1.makeScopeKey)(params.scope);
-    const ttlMs = Number(process.env.ANALYTICS_V2_FINANCE_QUEUE_TTL_MS || 60000);
-    const queueStatuses = Array.from(new Set((params.queueStatuses ?? []).filter((v) => v === "expected" || v === "held")));
+    const ttlMs = analyticsConfig_1.analyticsConfig.cache.financeQueueTtlMs;
+    const queueStatuses = Array.from(new Set((params.queueStatuses ?? []).filter((v) => v === "expected" || v === "held" || v === "settled")));
     const queueKinds = Array.from(new Set((params.queueKinds ?? []).filter((v) => v === "cod" || v === "service_charge")));
     const queueHolderTypes = Array.from(new Set((params.queueHolderTypes ?? []).filter((v) => ["none", "driver", "warehouse", "pickup_point", "finance"].includes(v))));
     const filterHash = digestFilter({
@@ -534,11 +539,11 @@ async function getAnalyticsFinanceQueueV2(params) {
         key: readModelKey,
         ttlMs,
         buildFromDb: async () => {
-            const queueWhereParts = [client_1.Prisma.sql `cc.status IN ('expected', 'held')`];
-            const queueReferenceAtSql = client_1.Prisma.sql `COALESCE(cc."collectedAt", cc."createdAt", cc."updatedAt")`;
-            if (queueStatuses.length) {
-                queueWhereParts.push(client_1.Prisma.sql `cc.status::text IN (${client_1.Prisma.join(queueStatuses)})`);
-            }
+            const visibleStatuses = queueStatuses.length ? queueStatuses : ["expected", "held"];
+            const queueWhereParts = [
+                client_1.Prisma.sql `cc.status::text IN (${client_1.Prisma.join(visibleStatuses)})`,
+            ];
+            const queueReferenceAtSql = client_1.Prisma.sql `COALESCE(cc."settledAt", cc."collectedAt", cc."createdAt", cc."updatedAt")`;
             if (queueKinds.length) {
                 queueWhereParts.push(client_1.Prisma.sql `cc.kind::text IN (${client_1.Prisma.join(queueKinds)})`);
             }
@@ -572,7 +577,7 @@ async function getAnalyticsFinanceQueueV2(params) {
               COALESCE(cc."currentHolderLabel", u."name", w."name") AS "holderLabel",
               COALESCE(cc."collectedAmount", cc."expectedAmount")::double precision AS amount,
               cc.currency,
-              COALESCE(cc."collectedAt", cc."createdAt", cc."updatedAt") AS "referenceAt",
+              COALESCE(cc."settledAt", cc."collectedAt", cc."createdAt", cc."updatedAt") AS "referenceAt",
               cc."updatedAt"
             FROM "CashCollection" cc
             INNER JOIN "Order" o ON o.id = cc."orderId"

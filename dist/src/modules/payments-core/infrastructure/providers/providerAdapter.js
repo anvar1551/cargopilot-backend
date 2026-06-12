@@ -5,6 +5,7 @@ exports.parsePaymentEnvironment = parsePaymentEnvironment;
 const client_1 = require("@prisma/client");
 const clickAdapter_1 = require("./clickAdapter");
 const paymeAdapter_1 = require("./paymeAdapter");
+const stripeAdapter_1 = require("./stripeAdapter");
 const uzumAdapter_1 = require("./uzumAdapter");
 class NotImplementedProviderAdapter {
     constructor(provider) {
@@ -39,7 +40,7 @@ const adapters = new Map([
     [client_1.PaymentProvider.CLICK, new clickAdapter_1.ClickProviderAdapter()],
     [client_1.PaymentProvider.PAYME, new paymeAdapter_1.PaymeProviderAdapter()],
     [client_1.PaymentProvider.UZUM, new uzumAdapter_1.UzumProviderAdapter()],
-    [client_1.PaymentProvider.STRIPE, new NotImplementedProviderAdapter(client_1.PaymentProvider.STRIPE)],
+    [client_1.PaymentProvider.STRIPE, new stripeAdapter_1.StripeProviderAdapter()],
 ]);
 function getPaymentProviderAdapter(provider) {
     return adapters.get(provider) ?? new NotImplementedProviderAdapter(provider);

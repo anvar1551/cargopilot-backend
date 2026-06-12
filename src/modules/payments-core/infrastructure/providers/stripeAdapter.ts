@@ -141,6 +141,7 @@ export class StripeProviderAdapter implements PaymentProviderAdapter {
       const paymentIntent = await stripe.paymentIntents.retrieve(input.intent.providerPaymentId);
       return {
         status: mapStripePaymentIntentStatus(paymentIntent.status),
+        providerPaymentId: paymentIntent.id,
         rawResponse: {
           paymentIntentId: paymentIntent.id,
           status: paymentIntent.status,
@@ -152,6 +153,9 @@ export class StripeProviderAdapter implements PaymentProviderAdapter {
       const session = await stripe.checkout.sessions.retrieve(input.intent.providerInvoiceId);
       return {
         status: mapStripeCheckoutPaymentStatus(session.payment_status),
+        providerPaymentId: toStringValue(session.payment_intent) || undefined,
+        providerInvoiceId: session.id,
+        checkoutUrl: session.url ?? undefined,
         rawResponse: {
           sessionId: session.id,
           paymentIntent: toStringValue(session.payment_intent) || null,

@@ -5,7 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const zod_1 = require("zod");
 const prismaClient_1 = __importDefault(require("../../../config/prismaClient"));
-const authFastify_1 = require("../../../middleware/authFastify");
+const fastify_auth_1 = require("../../../modules/identity-access/transport/fastify-auth");
 const identity_access_1 = require("../../identity-access");
 const addressRepo_1 = require("../application/addressRepo");
 const addressCreateSchema = zod_1.z.object({
@@ -33,7 +33,7 @@ function sendError(reply, err, fallback) {
     return reply.code(err?.statusCode ?? 500).send({ error: err?.message ?? fallback });
 }
 const addressesFastifyRoutes = async (fastify) => {
-    fastify.get("/", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "customers.read" }) }, async (request, reply) => {
+    fastify.get("/", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "customers.read" }) }, async (request, reply) => {
         try {
             const q = typeof request.query?.q === "string" ? request.query.q : undefined;
             const take = request.query?.take ? Number(request.query.take) : undefined;
@@ -67,7 +67,7 @@ const addressesFastifyRoutes = async (fastify) => {
             return sendError(reply, err, "Failed to fetch addresses");
         }
     });
-    fastify.post("/", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "customers.write" }) }, async (request, reply) => {
+    fastify.post("/", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "customers.write" }) }, async (request, reply) => {
         try {
             const dto = addressCreateSchema.parse(request.body);
             const scopeWhere = await (0, identity_access_1.buildCustomerEntityScopeWhere)(request.user);

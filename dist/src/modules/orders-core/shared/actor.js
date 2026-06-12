@@ -29,10 +29,15 @@ function toOrderActor(user) {
         return null;
     return {
         id: user.id,
-        role: typeof user.role === "string" ? user.role : null,
-        userRole: typeof user.role === "string" ? user.role : null,
+        membershipId: user.membershipId ?? null,
+        companyId: user.companyId ?? null,
+        branchId: user.branchId ?? null,
+        roleCodes: Array.isArray(user.roleCodes) ? user.roleCodes : [],
+        permissionCodes: Array.isArray(user.permissionCodes) ? user.permissionCodes : [],
+        scopes: Array.isArray(user.scopes) ? user.scopes : [],
         tenantScope: typeof user.tenantScope === "string" ? user.tenantScope : null,
         warehouseId: user.warehouseId ?? null,
+        customerEntityId: user.customerEntityId ?? null,
     };
 }
 /**

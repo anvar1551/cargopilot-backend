@@ -113,15 +113,7 @@ function parseProofStage(value, fallback = "delivery") {
         return raw;
     return fallback;
 }
-function normalizeActorRoleForTracking(role) {
-    if (!role)
-        return null;
-    if (role === "customer" ||
-        role === "driver" ||
-        role === "warehouse" ||
-        role === "manager") {
-        return role;
-    }
+function normalizeActorRoleForTracking() {
     return null;
 }
 function parseProofTrackingMeta(trackingEvents) {
@@ -292,41 +284,51 @@ async function submitProofForActor(input) {
     ]);
     const proofTimestamp = parseDateOrNow(body.savedAt);
     const stageLabel = stage === "pickup" ? "Pickup" : "Delivery";
-    const result = await prismaClient_1.default.$transaction(async (tx) => {
-        const photoAttachment = await tx.orderAttachment.create({
-            data: {
-                orderId: order.id,
-                key: photoKey,
-                fileName: file.originalname || `${stage}-proof-photo${photoExt}`,
-                mimeType: file.mimetype || "image/jpeg",
-                size: file.size ?? null,
-            },
+    let result;
+    try {
+        result = await prismaClient_1.default.$transaction(async (tx) => {
+            const photoAttachment = await tx.orderAttachment.create({
+                data: {
+                    orderId: order.id,
+                    key: photoKey,
+                    fileName: file.originalname || `${stage}-proof-photo${photoExt}`,
+                    mimeType: file.mimetype || "image/jpeg",
+                    size: file.size ?? null,
+                },
+            });
+            const signatureAttachment = await tx.orderAttachment.create({
+                data: {
+                    orderId: order.id,
+                    key: signatureKey,
+                    fileName: `${stage}-signature-${proofId}.svg`,
+                    mimeType: "image/svg+xml",
+                    size: Buffer.byteLength(signatureSvg, "utf8"),
+                },
+            });
+            await tx.tracking.create({
+                data: {
+                    orderId: order.id,
+                    status: null,
+                    reasonCode: null,
+                    note: `${stageLabel} proof uploaded (signed by: ${signedBy})`,
+                    region: null,
+                    warehouseId: order.currentWarehouseId ?? null,
+                    actorId: actor.id,
+                    actorRole: normalizeActorRoleForTracking(),
+                    parcelId: null,
+                    timestamp: proofTimestamp,
+                },
+            });
+            return { photoAttachment, signatureAttachment };
         });
-        const signatureAttachment = await tx.orderAttachment.create({
-            data: {
-                orderId: order.id,
-                key: signatureKey,
-                fileName: `${stage}-signature-${proofId}.svg`,
-                mimeType: "image/svg+xml",
-                size: Buffer.byteLength(signatureSvg, "utf8"),
-            },
-        });
-        await tx.tracking.create({
-            data: {
-                orderId: order.id,
-                status: null,
-                reasonCode: null,
-                note: `${stageLabel} proof uploaded (signed by: ${signedBy})`,
-                region: null,
-                warehouseId: order.currentWarehouseId ?? null,
-                actorId: actor.id,
-                actorRole: normalizeActorRoleForTracking(actor.userRole),
-                parcelId: null,
-                timestamp: proofTimestamp,
-            },
-        });
-        return { photoAttachment, signatureAttachment };
-    });
+    }
+    catch (error) {
+        await Promise.allSettled([
+            s3_1.s3.send(new client_s3_1.DeleteObjectCommand({ Bucket: bucket, Key: photoKey })),
+            s3_1.s3.send(new client_s3_1.DeleteObjectCommand({ Bucket: bucket, Key: signatureKey })),
+        ]);
+        throw error;
+    }
     return {
         success: true,
         proof: {

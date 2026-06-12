@@ -1,14 +1,51 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.createOrderPayloadSchema = exports.parcelInputSchema = exports.addressSchema = void 0;
 exports.mapCreateOrderDtoToRepoPayload = mapCreateOrderDtoToRepoPayload;
-const prismaClient_1 = __importDefault(require("../../../config/prismaClient"));
 const zod_1 = require("zod");
+const client_1 = require("@prisma/client");
 const orderAddress_shared_1 = require("./orderAddress.shared");
 const order_constants_1 = require("./order.constants");
+const validation_1 = require("../../pricing-core/shared/validation");
+const SUPPORTED_ORDER_CURRENCIES = ["UZS", "USD", "CNY"];
+let prismaClientPromise = null;
+async function getPrismaClient() {
+    prismaClientPromise ?? (prismaClientPromise = Promise.resolve().then(() => __importStar(require("../../../config/prismaClient"))).then((module) => module.default));
+    return prismaClientPromise;
+}
 /**
  * Helpers
  */
@@ -128,6 +165,13 @@ exports.createOrderPayloadSchema = zod_1.z
         dangerousGoods: zod_1.z.boolean().optional(),
         shipmentInsurance: zod_1.z.boolean().optional(),
         itemValue: optionalNumber().refine((v) => v == null || v >= 0, "itemValue must be >= 0"),
+        transportMode: zod_1.z
+            .string()
+            .optional()
+            .nullable()
+            .transform((value) => String(value || "").trim().toUpperCase() || "ROAD")
+            .pipe(zod_1.z.enum(validation_1.TARIFF_TRANSPORT_MODES))
+            .default("ROAD"),
     }),
     payment: zod_1.z
         .object({
@@ -135,6 +179,11 @@ exports.createOrderPayloadSchema = zod_1.z
             .enum(["CASH", "CARD", "COD", "TRANSFER", "OTHER"])
             .optional()
             .nullable(),
+        provider: zod_1.z
+            .enum(["CLICK", "PAYME", "UZUM", "STRIPE"])
+            .optional()
+            .nullable(),
+        idempotencyKey: zod_1.z.string().trim().min(8).max(128).optional().nullable(),
         deliveryChargePaidBy: zod_1.z
             .enum(["SENDER", "RECIPIENT", "COMPANY"])
             .optional()
@@ -205,6 +254,22 @@ exports.createOrderPayloadSchema = zod_1.z
                 message: "Currency is required for COD",
             });
         }
+        else if (!SUPPORTED_ORDER_CURRENCIES.includes(cur.trim().toUpperCase())) {
+            ctx.addIssue({
+                code: "custom",
+                path: ["shipment", "currency"],
+                message: `Currency must be one of: ${SUPPORTED_ORDER_CURRENCIES.join(", ")}`,
+            });
+        }
+    }
+    const anyCurrency = v.shipment?.currency;
+    if (anyCurrency &&
+        !SUPPORTED_ORDER_CURRENCIES.includes(anyCurrency.trim().toUpperCase())) {
+        ctx.addIssue({
+            code: "custom",
+            path: ["shipment", "currency"],
+            message: `Currency must be one of: ${SUPPORTED_ORDER_CURRENCIES.join(", ")}`,
+        });
     }
 });
 async function mapCreateOrderDtoToRepoPayload(raw) {
@@ -218,9 +283,10 @@ async function mapCreateOrderDtoToRepoPayload(raw) {
     let receiverAddr = null;
     // ✅ optional resolve from address book IDs
     if (senderAddressId || receiverAddressId) {
+        const prisma = await getPrismaClient();
         const [resolvedSenderAddr, resolvedReceiverAddr] = await Promise.all([
             senderAddressId
-                ? prismaClient_1.default.address.findFirst({
+                ? prisma.address.findFirst({
                     where: {
                         id: senderAddressId,
                         customerEntityId: dto.customerEntityId ?? undefined,
@@ -228,7 +294,7 @@ async function mapCreateOrderDtoToRepoPayload(raw) {
                 })
                 : Promise.resolve(null),
             receiverAddressId
-                ? prismaClient_1.default.address.findUnique({ where: { id: receiverAddressId } })
+                ? prisma.address.findUnique({ where: { id: receiverAddressId } })
                 : Promise.resolve(null),
         ]);
         if (senderAddressId && !resolvedSenderAddr) {
@@ -318,26 +384,27 @@ async function mapCreateOrderDtoToRepoPayload(raw) {
         senderAddressId,
         receiverAddressId,
         serviceType: dto.shipment?.serviceType ?? order_constants_1.DEFAULT_SERVICE_TYPE,
+        transportMode: dto.shipment?.transportMode?.trim().toUpperCase() ?? "ROAD",
         weightKg: dto.shipment?.weightKg ?? null,
         codAmount: dto.shipment?.codEnabled
             ? (dto.shipment?.codAmount ?? null)
             : null,
-        currency: dto.shipment?.codEnabled
-            ? (dto.shipment?.currency ?? null)
-            : null,
+        currency: dto.shipment?.currency?.trim().toUpperCase() ?? null,
         pieceTotal: dto.shipment?.pieceTotal ?? null,
         parcels: dto.shipment?.parcels ?? null,
         fragile: dto.shipment?.fragile ?? false,
         dangerousGoods: dto.shipment?.dangerousGoods ?? false,
         shipmentInsurance: dto.shipment?.shipmentInsurance ?? false,
         itemValue: dto.shipment?.itemValue ?? null,
-        paymentType: dto.payment?.paymentType ?? null,
-        deliveryChargePaidBy: dto.payment?.deliveryChargePaidBy ?? null,
+        paymentType: dto.payment?.paymentType ?? client_1.PaymentType.CASH,
+        paymentProvider: dto.payment?.provider ?? null,
+        paymentIntentIdempotencyKey: dto.payment?.idempotencyKey?.trim() ?? null,
+        deliveryChargePaidBy: dto.payment?.deliveryChargePaidBy ?? client_1.PaidBy.SENDER,
         ifRecipientNotAvailable: dto.payment?.ifRecipientNotAvailable ??
-            null,
+            client_1.RecipientUnavailableAction.CALL_SENDER,
         codPaidStatus: dto.payment?.codPaidStatus ?? null,
         serviceCharge: dto.payment?.serviceCharge ?? null,
-        serviceChargePaidStatus: dto.payment?.serviceChargePaidStatus ?? null,
+        serviceChargePaidStatus: dto.payment?.serviceChargePaidStatus ?? client_1.PaidStatus.NOT_PAID,
         plannedPickupAt: dto.schedule?.plannedPickupAt ?? null,
         plannedDeliveryAt: dto.schedule?.plannedDeliveryAt ?? null,
         promiseDate: dto.schedule?.promiseDate ?? null,

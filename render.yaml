@@ -20,12 +20,28 @@ services:
         sync: false
       - key: JWT_SECRET
         generateValue: true
+      - key: REFRESH_TOKEN_SECRET
+        generateValue: true
+      - key: PAYMENT_CONFIG_MASTER_KEY
+        generateValue: true
+      - key: INTEGRATION_CONFIG_MASTER_KEY
+        generateValue: true
       - key: CLIENT_URL
+        sync: false
+      - key: CORS_ORIGINS
         sync: false
       - key: PAYMENTS_ENABLED
         value: "false"
-      - key: PAYMENT_PROVIDER
-        value: stripe
+      - key: REDIS_ENABLED
+        value: "true"
+      - key: REDIS_URL
+        sync: false
+      - key: REDIS_PREFIX
+        value: cargopilot
+      - key: INTEGRATION_OUTBOX_IN_API
+        value: "false"
+      - key: ANALYTICS_WORKER_IN_PROCESS
+        value: "false"
       - key: AWS_REGION
         value: us-east-1
       - key: AWS_S3_BUCKET
@@ -38,6 +54,86 @@ services:
         value: "100"
       - key: ORDER_LABEL_SECOND_CODE_MODE
         value: barcode
+
+  - type: worker
+    runtime: docker
+    name: cargopilot-analytics-outbox-worker
+    region: frankfurt
+    plan: starter
+    dockerContext: .
+    dockerfilePath: ./Dockerfile
+    dockerCommand: node dist/src/workers/analytics-outbox.worker.js
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: RUN_PRISMA_MIGRATIONS
+        value: "false"
+      - key: DATABASE_URL
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: DATABASE_URL
+      - key: REDIS_ENABLED
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: REDIS_ENABLED
+      - key: REDIS_URL
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: REDIS_URL
+      - key: REDIS_PREFIX
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: REDIS_PREFIX
+
+  - type: worker
+    runtime: docker
+    name: cargopilot-integration-outbox-worker
+    region: frankfurt
+    plan: starter
+    dockerContext: .
+    dockerfilePath: ./Dockerfile
+    dockerCommand: node dist/src/workers/integration-outbox.worker.js
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: RUN_PRISMA_MIGRATIONS
+        value: "false"
+      - key: DATABASE_URL
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: DATABASE_URL
+      - key: REDIS_ENABLED
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: REDIS_ENABLED
+      - key: REDIS_URL
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: REDIS_URL
+      - key: REDIS_PREFIX
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: REDIS_PREFIX
+      - key: PAYMENT_CONFIG_MASTER_KEY
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: PAYMENT_CONFIG_MASTER_KEY
+      - key: INTEGRATION_CONFIG_MASTER_KEY
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: INTEGRATION_CONFIG_MASTER_KEY
 
   - type: worker
     runtime: docker
@@ -58,6 +154,21 @@ services:
           type: web
           name: cargopilot-api
           envVarKey: DATABASE_URL
+      - key: REDIS_ENABLED
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: REDIS_ENABLED
+      - key: REDIS_URL
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: REDIS_URL
+      - key: REDIS_PREFIX
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: REDIS_PREFIX
       - key: AWS_REGION
         fromService:
           type: web
@@ -93,4 +204,3 @@ services:
           type: web
           name: cargopilot-api
           envVarKey: ORDER_LABEL_SECOND_CODE_MODE
-

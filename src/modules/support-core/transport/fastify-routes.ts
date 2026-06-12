@@ -26,6 +26,7 @@ import {
   recordSseConnected,
   recordSseDisconnected,
 } from "../../../modules/observability-core/application/opsMetrics";
+import { applySseHeaders } from "../../../shared/http/sseHeaders";
 
 function isWritableStream(stream: NodeJS.WritableStream & { destroyed?: boolean }) {
   return !stream.destroyed && (stream as any).writable !== false;
@@ -74,10 +75,7 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     "/stream",
     { preHandler: fastifyAuth({ permission: "support.view" }) },
     async (request, reply) => {
-      reply.header("Content-Type", "text/event-stream");
-      reply.header("Cache-Control", "no-cache, no-transform");
-      reply.header("Connection", "keep-alive");
-      reply.header("X-Accel-Buffering", "no");
+      applySseHeaders(request, reply);
       reply.raw.flushHeaders?.();
 
       const clientKey = `${request.user?.id || "anon"}:${request.ip || "ip"}`;

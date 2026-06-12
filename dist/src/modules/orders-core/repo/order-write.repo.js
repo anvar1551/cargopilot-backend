@@ -85,13 +85,7 @@ async function assertFkExistsTx(tx, payload) {
         }
     }
 }
-function normalizeActorRoleForTracking(role) {
-    if (role === "customer" ||
-        role === "driver" ||
-        role === "warehouse" ||
-        role === "manager") {
-        return role;
-    }
+function normalizeActorRoleForTracking() {
     return null;
 }
 async function getNextOrderNumberTx(tx) {
@@ -226,6 +220,7 @@ const createOrder = async (customerId, payload, actor) => {
                 receiverPhone2: payload.receiverPhone2 ?? null,
                 receiverPhone3: payload.receiverPhone3 ?? null,
                 receiverAddress: payload.receiverAddress ?? null,
+                ownerOrgId: actor?.companyId ?? null,
                 customerEntityId: payload.customerEntityId ?? null,
                 senderAddressId,
                 receiverAddressId,
@@ -234,6 +229,7 @@ const createOrder = async (customerId, payload, actor) => {
                 currency: payload.currency ?? null,
                 weightKg: payload.weightKg ?? null,
                 paymentType: payload.paymentType ?? null,
+                paymentState: client_1.OrderPaymentState.UNPAID,
                 deliveryChargePaidBy: payload.deliveryChargePaidBy ?? null,
                 ifRecipientNotAvailable: payload.ifRecipientNotAvailable ?? null,
                 codPaidStatus: payload.codPaidStatus ?? null,
@@ -264,7 +260,7 @@ const createOrder = async (customerId, payload, actor) => {
                         status: client_1.OrderStatus.pending,
                         note: "Order created",
                         actorId: actor?.id ?? null,
-                        actorRole: normalizeActorRoleForTracking(actor?.userRole),
+                        actorRole: normalizeActorRoleForTracking(),
                         warehouseId: actor?.warehouseId ?? null,
                         region: null,
                     },
@@ -311,7 +307,7 @@ const createOrder = async (customerId, payload, actor) => {
                     source: "createOrder",
                     orderNumber: created.orderNumber,
                     actorId: actor?.id ?? null,
-                    actorRole: normalizeActorRoleForTracking(actor?.userRole),
+                    actorRole: normalizeActorRoleForTracking(),
                 },
             },
         ]);

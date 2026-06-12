@@ -13,6 +13,24 @@ const socket_io_1 = require("socket.io");
 const prismaClient_1 = __importDefault(require("../../config/prismaClient"));
 const notificationService_1 = require("../../modules/notifications-core/application/notificationService");
 let io = null;
+function deriveProfileType(args) {
+    const roleCodes = new Set(args.roleCodes.map((value) => value.toLowerCase()).filter(Boolean));
+    const permissionCodes = new Set(args.permissionCodes.filter(Boolean));
+    if (permissionCodes.has("drivers.telemetry") || Array.from(roleCodes).some((c) => c.includes("driver"))) {
+        return "driver";
+    }
+    if (args.warehouseId ||
+        permissionCodes.has("warehouses.read") ||
+        Array.from(roleCodes).some((c) => c.includes("warehouse") || c.includes("pvz") || c.includes("branch"))) {
+        return "warehouse";
+    }
+    if (args.customerEntityId ||
+        permissionCodes.has("payments.intents.read") ||
+        Array.from(roleCodes).some((c) => c.includes("customer") || c.includes("client"))) {
+        return "customer";
+    }
+    return "manager";
+}
 function toAllowedOriginMatcher(origins) {
     const cleaned = origins
         .map((value) => String(value || "").trim())
@@ -67,16 +85,45 @@ function initRealtimeHub(server, corsOrigins) {
                 where: { id: decoded.id },
                 select: {
                     id: true,
-                    role: true,
                     warehouseId: true,
+                    customerEntityId: true,
+                    memberships: {
+                        where: { status: "active" },
+                        select: {
+                            roles: {
+                                select: {
+                                    role: {
+                                        select: {
+                                            code: true,
+                                            rolePermissions: {
+                                                select: {
+                                                    permission: {
+                                                        select: { key: true },
+                                                    },
+                                                },
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
                 },
             });
             if (!user)
                 return next(new Error("Unauthorized"));
+            const roleCodes = user.memberships.flatMap((membership) => membership.roles.map((binding) => binding.role.code));
+            const permissionCodes = user.memberships.flatMap((membership) => membership.roles.flatMap((binding) => binding.role.rolePermissions.map((rp) => rp.permission.key)));
+            const audience = deriveProfileType({
+                warehouseId: user.warehouseId ?? null,
+                customerEntityId: user.customerEntityId ?? null,
+                roleCodes,
+                permissionCodes,
+            });
             const authSocket = socket;
             authSocket.data.user = {
                 id: user.id,
-                role: user.role,
+                audience,
                 warehouseId: user.warehouseId ?? null,
             };
             return next();
@@ -93,7 +140,7 @@ function initRealtimeHub(server, corsOrigins) {
             return;
         }
         socket.join(userRoom(user.id));
-        socket.join(`role:${user.role}`);
+        socket.join(`role:${user.audience}`);
         if (user.warehouseId) {
             socket.join(`warehouse:${user.warehouseId}`);
         }

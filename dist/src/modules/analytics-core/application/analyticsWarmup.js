@@ -2,14 +2,16 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.startAnalyticsWarmupLoop = startAnalyticsWarmupLoop;
 const analyticsV2_1 = require("./analyticsV2");
+const analyticsConfig_1 = require("../config/analyticsConfig");
+const analyticsLogger_1 = require("../config/analyticsLogger");
 const defaultScope = {
     role: "manager",
     warehouseId: null,
     userId: null,
 };
-const warmupRangeDays = Math.max(7, Math.min(180, Number(process.env.ANALYTICS_V3_DEFAULT_RANGE_DAYS || 30)));
-const warmupStaleHours = Math.max(6, Math.min(720, Number(process.env.ANALYTICS_WARMUP_STALE_HOURS || 48)));
-const warmupQueuePageSize = Math.max(5, Math.min(200, Number(process.env.ANALYTICS_V3_DEFAULT_QUEUE_PAGE_SIZE || 20)));
+const warmupRangeDays = analyticsConfig_1.analyticsConfig.defaults.rangeDays;
+const warmupStaleHours = analyticsConfig_1.analyticsConfig.defaults.staleHours;
+const warmupQueuePageSize = analyticsConfig_1.analyticsConfig.defaults.queuePageSize;
 let warmupInFlight = false;
 async function runWarmupPass() {
     if (warmupInFlight)
@@ -45,22 +47,25 @@ async function runWarmupPass() {
     }
 }
 function startAnalyticsWarmupLoop() {
-    const enabled = process.env.ANALYTICS_WARMUP_ENABLED !== "false";
+    const enabled = analyticsConfig_1.analyticsConfig.warmup.enabled;
     if (!enabled)
         return;
-    const intervalMs = Math.max(60000, Number(process.env.ANALYTICS_WARMUP_INTERVAL_MS || 240000));
+    const intervalMs = analyticsConfig_1.analyticsConfig.warmup.intervalMs;
     const trigger = async (source) => {
         try {
             await runWarmupPass();
             if (source === "startup") {
-                console.log("[analytics-warmup] startup pass completed");
+                analyticsLogger_1.analyticsLogger.info("warmup startup pass completed");
             }
         }
         catch (err) {
-            console.error(`[analytics-warmup] ${source} pass failed: ${err?.message || "unknown"}`);
+            analyticsLogger_1.analyticsLogger.throttledError(`warmup-${source}-failed`, `${source} warmup pass failed`, {
+                error: err,
+                throttleMs: 60000,
+            });
         }
     };
-    const startupDelayMs = Math.max(0, Number(process.env.ANALYTICS_WARMUP_STARTUP_DELAY_MS || 30000));
+    const startupDelayMs = analyticsConfig_1.analyticsConfig.warmup.startupDelayMs;
     const startupTimer = setTimeout(() => {
         void trigger("startup");
     }, startupDelayMs);

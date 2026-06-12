@@ -7,8 +7,6 @@ exports.formatProviderAmount = formatProviderAmount;
 const CURRENCY_EXPONENT = {
     UZS: 2,
     USD: 2,
-    EUR: 2,
-    RUB: 2,
     CNY: 2,
 };
 function normalizeCurrency(code) {

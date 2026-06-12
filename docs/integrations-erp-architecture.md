@@ -142,10 +142,62 @@ Status (May 31, 2026):
   - Outbox dispatcher now routes `carrier` and `sms` domain records into these adapters.
   - Action resolution supports explicit `payload.action` and event-type fallback mapping.
 
-Environment routing pattern:
+Provider configuration contract:
 
-- Carrier: `INTEGRATION_CARRIER_BASE_URL_<PROVIDER_CODE>` (+ optional token/api key vars)
-- SMS: `INTEGRATION_SMS_BASE_URL_<PROVIDER_CODE>` (+ optional token/api key vars)
+- Production provider configuration is DB-first.
+- Admin creates one `IntegrationProvider` per company/domain/provider/environment.
+- Admin rotates an encrypted `IntegrationProviderSecret` payload for credentials and endpoints.
+- The dispatcher decrypts the current provider secret at send time; secrets are never returned to the UI.
+- Normal carrier/SMS payload keys:
+  - `baseUrl`
+  - `token`
+  - `apiKey`
+  - `apiKeyHeader`
+- Inbound webhook payload keys:
+  - `webhookSecret`
+  - `webhookSignatureHeader`
+  - `webhookTimestampHeader`
+  - `webhookMaxSkewSeconds`
+- Env provider fallback is not a production configuration path. It is only enabled when `INTEGRATION_ALLOW_ENV_PROVIDER_FALLBACK=true`, mainly for local development or bootstrap compatibility.
+- Optional fallback names, when explicitly enabled:
+  - Carrier: `INTEGRATION_CARRIER_BASE_URL_<PROVIDER_CODE>` (+ optional token/api key vars)
+  - SMS: `INTEGRATION_SMS_BASE_URL_<PROVIDER_CODE>` (+ optional token/api key vars)
+
+### Phase 4B - Carrier routing rules
+
+Status (June 7, 2026):
+
+- Done in codebase:
+  - `CarrierRoutingRule` model added.
+  - RBAC-protected admin APIs added under `/api/integrations/carrier-routing-rules`.
+  - Rules are company-scoped, priority ordered, and can match service type, transport mode, countries, weight range, and leg sequence.
+  - Order-leg auto-booking resolves the first active matching rule and enqueues carrier booking through the existing integration outbox.
+  - Manual carrier booking remains available for sandbox testing, overrides, and exception recovery.
+
+Important separation:
+
+- Tariff plans decide what CargoPilot charges the customer.
+- Carrier routing rules decide which integration provider physically handles the leg.
+- Integration providers store encrypted credentials/endpoints for that carrier.
+
+### Phase 4C - Route templates
+
+Status (June 7, 2026):
+
+- Done in codebase:
+  - `RouteTemplate` and `RouteTemplateLeg` models added.
+  - RBAC-protected admin APIs added under `/api/integrations/route-templates`.
+  - `TariffPlan` can reference `routeTemplateId`.
+  - `CarrierRoutingRule` can reference `routeTemplateId` and `routeTemplateLegId`.
+  - `OrderLeg` stores the route template/leg source used to generate the operational execution leg.
+  - Order creation now creates legs from the matched tariff's route template when configured, then runs carrier auto-booking against those exact legs.
+
+Reason:
+
+- Pricing and carrier setup must not define separate transit chains.
+- The route template is the single source of truth for route structure.
+- Tariffs attach customer price to the route.
+- Carrier rules attach providers to the route or an exact route leg.
 
 ### Phase 5 - Admin operations
 

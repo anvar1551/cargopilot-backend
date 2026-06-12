@@ -10,7 +10,8 @@ Define how CargoPilot pricing should evolve from current lane-based quoting to e
   - `transportMode`
   - weight/zone/rate band
 - Result is a single customer-facing service charge (door-to-door).
-- System creates operational legs, but pricing is still mostly lane-level.
+- System creates operational legs.
+- Tariff plans can now reference route templates so operational legs can come from one shared route structure.
 
 This is acceptable for early production, but limited for complex cross-border operations.
 
@@ -115,8 +116,10 @@ Rules:
 - Basic 3-leg generation.
 
 ### Phase 2
-- Transit-aware route templates (implicit transit).
-- Leg defaults include from/to country and correct linehaul mode.
+- Transit-aware route templates (implemented backend contract).
+- Tariff plans reference route templates through `routeTemplateId`.
+- Carrier routing rules reference `routeTemplateId` / `routeTemplateLegId`.
+- Order legs store route template lineage.
 - Surcharge line decomposition persisted.
 
 ### Phase 3

@@ -641,7 +641,11 @@ export async function getAnalyticsFinanceQueueV2(params: QueueParams) {
   const ttlMs = analyticsConfig.cache.financeQueueTtlMs;
 
   const queueStatuses = Array.from(
-    new Set((params.queueStatuses ?? []).filter((v) => v === "expected" || v === "held")),
+    new Set(
+      (params.queueStatuses ?? []).filter((v) =>
+        v === "expected" || v === "held" || v === "settled",
+      ),
+    ),
   );
   const queueKinds = Array.from(
     new Set((params.queueKinds ?? []).filter((v) => v === "cod" || v === "service_charge")),
@@ -672,12 +676,12 @@ export async function getAnalyticsFinanceQueueV2(params: QueueParams) {
     key: readModelKey,
     ttlMs,
     buildFromDb: async () => {
-      const queueWhereParts: Prisma.Sql[] = [Prisma.sql`cc.status IN ('expected', 'held')`];
-      const queueReferenceAtSql = Prisma.sql`COALESCE(cc."collectedAt", cc."createdAt", cc."updatedAt")`;
+      const visibleStatuses = queueStatuses.length ? queueStatuses : ["expected", "held"];
+      const queueWhereParts: Prisma.Sql[] = [
+        Prisma.sql`cc.status::text IN (${Prisma.join(visibleStatuses)})`,
+      ];
+      const queueReferenceAtSql = Prisma.sql`COALESCE(cc."settledAt", cc."collectedAt", cc."createdAt", cc."updatedAt")`;
 
-      if (queueStatuses.length) {
-        queueWhereParts.push(Prisma.sql`cc.status::text IN (${Prisma.join(queueStatuses)})`);
-      }
       if (queueKinds.length) {
         queueWhereParts.push(Prisma.sql`cc.kind::text IN (${Prisma.join(queueKinds)})`);
       }
@@ -732,7 +736,7 @@ export async function getAnalyticsFinanceQueueV2(params: QueueParams) {
               COALESCE(cc."currentHolderLabel", u."name", w."name") AS "holderLabel",
               COALESCE(cc."collectedAmount", cc."expectedAmount")::double precision AS amount,
               cc.currency,
-              COALESCE(cc."collectedAt", cc."createdAt", cc."updatedAt") AS "referenceAt",
+              COALESCE(cc."settledAt", cc."collectedAt", cc."createdAt", cc."updatedAt") AS "referenceAt",
               cc."updatedAt"
             FROM "CashCollection" cc
             INNER JOIN "Order" o ON o.id = cc."orderId"

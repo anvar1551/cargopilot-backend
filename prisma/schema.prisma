@@ -483,6 +483,8 @@ model Organization {
   integrationProviders     IntegrationProvider[]
   integrationOutbox        IntegrationOutbox[]
   integrationWebhookEvents IntegrationWebhookEvent[]
+  routeTemplates           RouteTemplate[]
+  carrierRoutingRules      CarrierRoutingRule[]
 
   @@index([type, isActive])
   @@index([parentOrgId])
@@ -954,14 +956,121 @@ model IntegrationProvider {
   createdAt       DateTime                  @default(now())
   updatedAt       DateTime                  @updatedAt
 
-  secrets         IntegrationProviderSecret[]
-  outboxRecords   IntegrationOutbox[]
-  webhookEvents   IntegrationWebhookEvent[]
-  canonicalEvents IntegrationCanonicalEvent[]
+  secrets                     IntegrationProviderSecret[]
+  outboxRecords               IntegrationOutbox[]
+  webhookEvents               IntegrationWebhookEvent[]
+  canonicalEvents             IntegrationCanonicalEvent[]
+  carrierRoutingRules         CarrierRoutingRule[]        @relation("CarrierRoutingRuleProvider")
+  fallbackCarrierRoutingRules CarrierRoutingRule[]        @relation("CarrierRoutingRuleFallbackProvider")
 
   @@unique([companyId, domain, providerCode, environment], map: "uniq_integration_provider_company_domain_code_env")
   @@index([companyId, domain, status])
   @@index([providerCode, environment, status])
+}
+
+model RouteTemplate {
+  id String @id @default(uuid()) @db.Uuid
+
+  companyId String       @db.Uuid
+  company   Organization @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  name                   String
+  code                   String?
+  isActive               Boolean        @default(true)
+  priority               Int            @default(0)
+  serviceType            ServiceType?
+  transportMode          TransportMode?
+  originCountryCode      String?
+  destinationCountryCode String?
+  metadata               Json?
+
+  createdByUserId String?  @db.Uuid
+  updatedByUserId String?  @db.Uuid
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  legs                RouteTemplateLeg[]
+  tariffPlans         TariffPlan[]
+  carrierRoutingRules CarrierRoutingRule[]
+  orderLegs           OrderLeg[]
+
+  @@unique([companyId, code], map: "uniq_route_template_company_code")
+  @@index([companyId, isActive, priority])
+  @@index([originCountryCode, destinationCountryCode, transportMode])
+  @@index([serviceType, transportMode, isActive])
+}
+
+model RouteTemplateLeg {
+  id String @id @default(uuid()) @db.Uuid
+
+  routeTemplateId String        @db.Uuid
+  routeTemplate   RouteTemplate @relation(fields: [routeTemplateId], references: [id], onDelete: Cascade)
+
+  sequence               Int
+  legCode                String
+  label                  String?
+  mode                   TransportMode @default(road)
+  originCountryCode      String?
+  destinationCountryCode String?
+  metadata               Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  carrierRoutingRules CarrierRoutingRule[]
+  orderLegs           OrderLeg[]
+
+  @@unique([routeTemplateId, sequence], map: "uniq_route_template_leg_sequence")
+  @@unique([routeTemplateId, legCode], map: "uniq_route_template_leg_code")
+  @@index([routeTemplateId, sequence])
+  @@index([originCountryCode, destinationCountryCode, mode])
+}
+
+model CarrierRoutingRule {
+  id String @id @default(uuid()) @db.Uuid
+
+  companyId String       @db.Uuid
+  company   Organization @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  providerId String              @db.Uuid
+  provider   IntegrationProvider @relation("CarrierRoutingRuleProvider", fields: [providerId], references: [id], onDelete: Restrict)
+
+  fallbackProviderId String?              @db.Uuid
+  fallbackProvider   IntegrationProvider? @relation("CarrierRoutingRuleFallbackProvider", fields: [fallbackProviderId], references: [id], onDelete: SetNull)
+
+  routeTemplateId String?        @db.Uuid
+  routeTemplate   RouteTemplate? @relation(fields: [routeTemplateId], references: [id], onDelete: SetNull)
+
+  routeTemplateLegId String?           @db.Uuid
+  routeTemplateLeg   RouteTemplateLeg? @relation(fields: [routeTemplateLegId], references: [id], onDelete: SetNull)
+
+  name     String
+  code     String?
+  isActive Boolean @default(true)
+  priority Int     @default(0)
+  autoBook Boolean @default(true)
+
+  serviceType            ServiceType?
+  transportMode          TransportMode?
+  originCountryCode      String?
+  destinationCountryCode String?
+  minWeightKg            Decimal?       @db.Decimal(10, 2)
+  maxWeightKg            Decimal?       @db.Decimal(10, 2)
+  legSequence            Int?
+  conditionsJson         Json?
+
+  createdByUserId String?  @db.Uuid
+  updatedByUserId String?  @db.Uuid
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([companyId, code], map: "uniq_carrier_routing_rule_company_code")
+  @@index([companyId, isActive, priority])
+  @@index([providerId, isActive])
+  @@index([routeTemplateId, isActive, priority])
+  @@index([routeTemplateLegId, isActive, priority])
+  @@index([originCountryCode, destinationCountryCode, transportMode])
+  @@index([serviceType, transportMode, isActive])
 }
 
 model IntegrationProviderSecret {
@@ -1137,6 +1246,10 @@ model OrderLeg {
 
   carrierCode           String?
   carrierRef            String?
+  routeTemplateId       String?              @db.Uuid
+  routeTemplate         RouteTemplate?       @relation(fields: [routeTemplateId], references: [id], onDelete: SetNull)
+  routeTemplateLegId    String?              @db.Uuid
+  routeTemplateLeg      RouteTemplateLeg?    @relation(fields: [routeTemplateLegId], references: [id], onDelete: SetNull)
   carrierProviderId     String?              @db.Uuid
   carrierBookingStatus  CarrierBookingStatus @default(not_requested)
   carrierTrackingNumber String?
@@ -1165,6 +1278,8 @@ model OrderLeg {
   @@index([mode, status])
   @@index([fromWarehouseId])
   @@index([toWarehouseId])
+  @@index([routeTemplateId])
+  @@index([routeTemplateLegId])
   @@index([carrierProviderId])
   @@index([carrierBookingStatus, updatedAt])
   @@index([carrierRef])
@@ -1277,6 +1392,8 @@ model TariffPlan {
   originCountryCode      String?
   destinationCountryCode String?
   transitPricingConfig   Json?
+  routeTemplateId        String?               @db.Uuid
+  routeTemplate          RouteTemplate?        @relation(fields: [routeTemplateId], references: [id], onDelete: SetNull)
   currency               String                @default("UZS")
   priority               Int                   @default(0)
   isDefault              Boolean               @default(false)
@@ -1290,6 +1407,7 @@ model TariffPlan {
   @@index([customerEntityId, status])
   @@index([coverageType, transportMode, status])
   @@index([originCountryCode, destinationCountryCode])
+  @@index([routeTemplateId, status])
 }
 
 model TariffRate {

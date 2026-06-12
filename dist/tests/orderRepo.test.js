@@ -23,7 +23,7 @@ describe("mapCreateOrderDtoToRepoPayload", () => {
                 weightKg: 2.5,
                 codEnabled: false,
                 codAmount: 50,
-                currency: "EUR",
+                currency: "USD",
             },
             payment: null,
             schedule: null,
@@ -40,7 +40,7 @@ describe("mapCreateOrderDtoToRepoPayload", () => {
         expect(payload.senderName).toBe("Alice");
         expect(payload.receiverName).toBe("Bob");
         expect(payload.codAmount).toBeNull();
-        expect(payload.currency).toBeNull();
+        expect(payload.currency).toBe("USD");
         expect(payload.amount).toBe(19.99);
     });
 });

@@ -58,7 +58,7 @@ function parseOrderListParams(query) {
     };
 }
 async function resolveOrderReadScope(actor) {
-    await (0, identity_access_1.authorize)(actor, "orders.read");
+    await (0, identity_access_1.authorize)(actor, "shipment.view");
     return (0, identity_access_1.buildOrderScopeWhere)(actor);
 }
 async function listOrdersForActor(args) {
@@ -75,12 +75,12 @@ async function getOrderForActor(args) {
     return { status: 200, order };
 }
 async function listDriverWorkloadForActor(actor) {
-    await (0, identity_access_1.authorize)(actor, "orders.read");
+    await (0, identity_access_1.authorize)(actor, "shipment.view");
     return (0, repo_1.listDriverWorkloads)();
 }
 async function exportOrdersCsvForActor(args) {
     const { actor, query } = args;
-    await (0, identity_access_1.authorize)(actor, "orders.export");
+    await (0, identity_access_1.authorize)(actor, "shipment.export");
     const enforcedScopeWhere = await (0, identity_access_1.buildOrderScopeWhere)(actor);
     const exportParams = {
         ...parseOrderListParams(query),
@@ -112,7 +112,7 @@ async function exportOrdersCsvForActor(args) {
         promiseDate: order.promiseDate ? new Date(order.promiseDate).toISOString() : "",
         customerName: order.customer?.name ?? "",
         customerEmail: order.customer?.email ?? "",
-        customerRole: order.customer?.role ?? "",
+        customerRole: order.customer?.driverType ? "driver" : "",
         customerEntityName: order.customerEntity?.name ?? "",
         customerEntityCompany: order.customerEntity?.companyName ?? "",
         customerEntityEmail: order.customerEntity?.email ?? "",
@@ -159,6 +159,7 @@ async function exportOrdersCsvForActor(args) {
             : "",
         codAmount: order.codAmount ?? "",
         currency: order.currency ?? "",
+        paymentState: order.paymentState ?? "",
         paymentType: order.paymentType ?? "",
         deliveryChargePaidBy: order.deliveryChargePaidBy ?? "",
         codPaidStatus: order.codPaidStatus ?? "",

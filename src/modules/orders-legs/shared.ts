@@ -9,6 +9,7 @@ import { orderError } from "../orders-core/shared";
 
 export type Actor = {
   id: string;
+  companyId?: string | null;
   tenantScope?: string | null;
   warehouseId?: string | null;
 };

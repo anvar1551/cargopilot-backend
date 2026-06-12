@@ -1,4 +1,5 @@
 import { TransportMode } from "@prisma/client";
+import { randomUUID } from "crypto";
 import prisma from "../../config/prismaClient";
 import { orderError } from "../orders-core/shared";
 import { enqueueCargoPilotDomainEventsTx } from "../analytics-core/infrastructure/analyticsOutbox";
@@ -11,6 +12,16 @@ type BookCarrierForOrderLegInput = {
   legId: string;
   providerId: string;
   actor: Actor & { companyId?: string | null };
+};
+
+type CarrierLegCommandInput = {
+  orderId: string;
+  legId: string;
+  actor: Actor & { companyId?: string | null };
+};
+
+type CancelCarrierForOrderLegInput = CarrierLegCommandInput & {
+  reason?: string | null;
 };
 
 function firstString(...values: unknown[]) {
@@ -284,5 +295,235 @@ export async function bookCarrierForOrderLeg(input: BookCarrierForOrderLegInput)
         providerCode: outbox.providerCode,
       },
     };
+  });
+}
+
+async function loadBookedCarrierLegOrThrow(tx: any, input: CarrierLegCommandInput) {
+  const companyId = firstString(input.actor.companyId);
+  if (!companyId) throw orderError("Active company membership is required", 403);
+
+  const leg = await tx.orderLeg.findFirst({
+    where: { id: input.legId, orderId: input.orderId },
+    include: {
+      order: { select: { id: true, ownerOrgId: true, assignedOrgId: true } },
+      carrierProvider: {
+        select: {
+          id: true,
+          companyId: true,
+          providerCode: true,
+          environment: true,
+          status: true,
+          domain: true,
+        },
+      },
+    },
+  });
+  if (!leg) throw orderError("Order leg not found for this order", 404);
+  if (!leg.carrierProvider) {
+    throw orderError("Order leg has no carrier provider", 400);
+  }
+  if (leg.carrierProvider.companyId !== companyId) {
+    throw orderError("Carrier provider is outside this active company scope", 403);
+  }
+  if (leg.carrierProvider.domain !== "carrier" || leg.carrierProvider.status !== "active") {
+    throw orderError("Carrier provider is not active", 400);
+  }
+
+  const [ownerAllowed, assignedAllowed] = await Promise.all([
+    isOrgInsideCompany(tx, leg.order.ownerOrgId, leg.carrierProvider.companyId),
+    isOrgInsideCompany(tx, leg.order.assignedOrgId, leg.carrierProvider.companyId),
+  ]);
+  if (!ownerAllowed || !assignedAllowed) {
+    throw orderError("Carrier provider is outside this order company scope", 403);
+  }
+
+  return leg;
+}
+
+function buildCarrierCommandEnvelope(args: {
+  action: "track" | "cancel_shipment";
+  idempotencyKey: string;
+  companyId: string;
+  leg: any;
+  input: Record<string, unknown>;
+}) {
+  const now = new Date();
+  return {
+    eventId: args.idempotencyKey,
+    eventType: "carrier.command.requested",
+    occurredAt: now.toISOString(),
+    companyId: args.companyId,
+    aggregateType: "shipment",
+    aggregateId: args.leg.id,
+    schemaVersion: 1,
+    source: "orders-core",
+    payload: {
+      action: args.action,
+      input: {
+        ...args.input,
+        metadata: {
+          orderId: args.leg.orderId,
+          orderLegId: args.leg.id,
+          legSequence: args.leg.sequence,
+        },
+      },
+    },
+  };
+}
+
+async function enqueueCarrierLegCommand(input: {
+  tx: any;
+  actor: Actor & { companyId?: string | null };
+  leg: any;
+  operation: "track" | "cancel_shipment";
+  commandInput: Record<string, unknown>;
+  idempotencyKey: string;
+  requeueExisting?: boolean;
+}) {
+  const provider = input.leg.carrierProvider;
+  const now = new Date();
+  const envelope = buildCarrierCommandEnvelope({
+    action: input.operation,
+    idempotencyKey: input.idempotencyKey,
+    companyId: provider.companyId,
+    leg: input.leg,
+    input: input.commandInput,
+  });
+  const uniqueWhere = {
+    companyId_providerCode_idempotencyKey: {
+      companyId: provider.companyId,
+      providerCode: provider.providerCode,
+      idempotencyKey: input.idempotencyKey,
+    },
+  };
+
+  if (input.requeueExisting === false) {
+    const existing = await input.tx.integrationOutbox.findUnique({
+      where: uniqueWhere,
+      select: {
+        id: true,
+        status: true,
+        idempotencyKey: true,
+        providerId: true,
+        providerCode: true,
+      },
+    });
+    if (existing) return existing;
+  }
+
+  const outbox = await input.tx.integrationOutbox.upsert({
+    where: uniqueWhere,
+    create: {
+      companyId: provider.companyId,
+      providerId: provider.id,
+      domain: "carrier",
+      providerCode: provider.providerCode,
+      environment: provider.environment,
+      eventType: "carrier.command.requested",
+      aggregateType: "shipment",
+      aggregateId: input.leg.id,
+      operation: input.operation,
+      status: "pending",
+      maxAttempts: 10,
+      attemptCount: 0,
+      nextAttemptAt: now,
+      lastError: null,
+      idempotencyKey: input.idempotencyKey,
+      payload: envelope,
+    },
+    update: {
+      providerId: provider.id,
+      environment: provider.environment,
+      aggregateType: "shipment",
+      aggregateId: input.leg.id,
+      operation: input.operation,
+      status: "pending",
+      nextAttemptAt: now,
+      lastError: null,
+      payload: envelope,
+    },
+  });
+
+  await enqueueCargoPilotDomainEventsTx(input.tx, [
+    {
+      type: "order_status_changed",
+      tenantScope: resolveActorTenantScope(input.actor),
+      entityId: input.leg.orderId,
+      payload: {
+        source: `carrier_${input.operation}`,
+        orderId: input.leg.orderId,
+        legId: input.leg.id,
+        providerId: provider.id,
+        providerCode: provider.providerCode,
+        actorId: input.actor.id,
+        actorRole: null,
+      },
+    },
+  ]);
+
+  return {
+    id: outbox.id,
+    status: outbox.status,
+    idempotencyKey: outbox.idempotencyKey,
+    providerId: outbox.providerId,
+    providerCode: outbox.providerCode,
+  };
+}
+
+export async function syncCarrierTrackingForOrderLeg(input: CarrierLegCommandInput) {
+  return db.$transaction(async (tx: any) => {
+    const leg = await loadBookedCarrierLegOrThrow(tx, input);
+    if (!leg.carrierRef && !leg.carrierTrackingNumber) {
+      throw orderError("Order leg has no carrier reference or tracking number to sync", 400);
+    }
+
+    const outbox = await enqueueCarrierLegCommand({
+      tx,
+      actor: input.actor,
+      leg,
+      operation: "track",
+      commandInput: {
+        partnerShipmentId: leg.carrierRef ?? undefined,
+        trackingNumber: leg.carrierTrackingNumber ?? undefined,
+      },
+      idempotencyKey: `carrier:track:${leg.id}:${leg.carrierProvider.id}:${randomUUID()}`,
+    });
+
+    return { leg, outbox };
+  });
+}
+
+export async function cancelCarrierForOrderLeg(input: CancelCarrierForOrderLegInput) {
+  return db.$transaction(async (tx: any) => {
+    const leg = await loadBookedCarrierLegOrThrow(tx, input);
+    if (!leg.carrierRef) {
+      throw orderError("Order leg has no carrier reference to cancel", 400);
+    }
+    if (leg.carrierBookingStatus === "cancelled" || leg.status === "cancelled") {
+      throw orderError("Carrier booking is already cancelled", 400);
+    }
+
+    const outbox = await enqueueCarrierLegCommand({
+      tx,
+      actor: input.actor,
+      leg,
+      operation: "cancel_shipment",
+      commandInput: {
+        partnerShipmentId: leg.carrierRef,
+        reason: firstString(input.reason) ?? "Cancelled from CargoPilot",
+      },
+      idempotencyKey: `carrier:cancel-shipment:${leg.id}:${leg.carrierProvider.id}:${leg.carrierRef}`,
+      requeueExisting: false,
+    });
+
+    await tx.orderLeg.update({
+      where: { id: leg.id },
+      data: {
+        carrierBookingError: null,
+        carrierLastStatusAt: new Date(),
+      },
+    });
+
+    return { leg, outbox };
   });
 }

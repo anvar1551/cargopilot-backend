@@ -1,15 +1,20 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const client_1 = require("@prisma/client");
-const authFastify_1 = require("../../../middleware/authFastify");
+const fastify_auth_1 = require("../../../modules/identity-access/transport/fastify-auth");
 const identity_access_1 = require("../../identity-access");
 const supportService_1 = require("../application/supportService");
 const supportRealtime_1 = require("../realtime/supportRealtime");
 const opsMetrics_1 = require("../../../modules/observability-core/application/opsMetrics");
+const sseHeaders_1 = require("../../../shared/http/sseHeaders");
+function isWritableStream(stream) {
+    return !stream.destroyed && stream.writable !== false;
+}
 function actorFromRequest(request) {
     return {
         id: request.user?.id || "",
-        role: request.user?.role,
+        roleCodes: Array.isArray(request.user?.roleCodes) ? request.user.roleCodes : [],
+        permissionCodes: Array.isArray(request.user?.permissionCodes) ? request.user.permissionCodes : [],
         name: request.user?.name,
         email: request.user?.email,
     };
@@ -34,28 +39,38 @@ function sendError(reply, err, fallbackMessage) {
         .send({ error: err?.message ?? fallbackMessage });
 }
 const supportFastifyRoutes = async (fastify) => {
-    fastify.get("/stream", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "support.read" }) }, async (request, reply) => {
-        reply.header("Content-Type", "text/event-stream");
-        reply.header("Cache-Control", "no-cache, no-transform");
-        reply.header("Connection", "keep-alive");
-        reply.header("X-Accel-Buffering", "no");
+    fastify.get("/stream", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "support.view" }) }, async (request, reply) => {
+        (0, sseHeaders_1.applySseHeaders)(request, reply);
         reply.raw.flushHeaders?.();
         const clientKey = `${request.user?.id || "anon"}:${request.ip || "ip"}`;
         const lastEventId = String(request.headers["last-event-id"] || request.headers["Last-Event-ID"] || "").trim();
+        let disconnected = false;
         (0, opsMetrics_1.recordSseConnected)({ stream: "support", clientKey });
         let closed = false;
         const send = (event, payload, id) => {
-            if (closed)
-                return;
-            if (id)
-                reply.raw.write(`id: ${id}\n`);
-            reply.raw.write(`event: ${event}\n`);
-            reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
+            if (closed || !isWritableStream(reply.raw))
+                return false;
+            try {
+                if (id)
+                    reply.raw.write(`id: ${id}\n`);
+                reply.raw.write(`event: ${event}\n`);
+                reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
+                return true;
+            }
+            catch {
+                return false;
+            }
         };
-        send("ready", {
+        if (!send("ready", {
             connectedAt: new Date().toISOString(),
             resumedFrom: lastEventId || null,
-        });
+        })) {
+            if (!disconnected) {
+                disconnected = true;
+                (0, opsMetrics_1.recordSseDisconnected)("support");
+            }
+            return reply.hijack();
+        }
         const redisReplayEvents = await (0, supportRealtime_1.replaySupportRefreshFromRedis)({
             lastEventId,
             limit: Number(process.env.SUPPORT_STREAM_REPLAY_MAX_EVENTS || 200),
@@ -75,21 +90,35 @@ const supportFastifyRoutes = async (fastify) => {
             });
         }
         const heartbeat = setInterval(() => {
-            if (!closed)
+            if (closed || !isWritableStream(reply.raw))
+                return;
+            try {
                 reply.raw.write(`: ping ${Date.now()}\n\n`);
+            }
+            catch {
+                closed = true;
+            }
         }, Math.max(10000, Number(process.env.SUPPORT_STREAM_HEARTBEAT_MS || 25000)));
         const unsubscribe = (0, supportRealtime_1.subscribeSupportRefresh)((event) => {
-            send("support-refresh", event, event.id);
+            const sent = send("support-refresh", event, event.id);
+            if (!sent)
+                closed = true;
         });
-        request.raw.on("close", () => {
+        const onClose = () => {
+            if (disconnected)
+                return;
+            disconnected = true;
             closed = true;
             (0, opsMetrics_1.recordSseDisconnected)("support");
             clearInterval(heartbeat);
             unsubscribe();
-        });
+        };
+        request.raw.on("close", onClose);
+        reply.raw.on("close", onClose);
+        reply.raw.on("error", onClose);
         return reply.hijack();
     });
-    fastify.get("/assignees", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "support.read" }) }, async (_request, reply) => {
+    fastify.get("/assignees", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "support.view" }) }, async (_request, reply) => {
         try {
             const assignees = await (0, supportService_1.listSupportAssignees)();
             return reply.send({ items: assignees });
@@ -98,7 +127,7 @@ const supportFastifyRoutes = async (fastify) => {
             return sendError(reply, err, "Failed to load support assignees");
         }
     });
-    fastify.get("/tickets", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "support.read" }) }, async (request, reply) => {
+    fastify.get("/tickets", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "support.view" }) }, async (request, reply) => {
         const startedAt = Date.now();
         try {
             const scopeWhere = await (0, identity_access_1.buildSupportScopeWhere)(request.user);
@@ -123,7 +152,7 @@ const supportFastifyRoutes = async (fastify) => {
             return sendError(reply, err, "Failed to load support tickets");
         }
     });
-    fastify.post("/tickets", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "support.create" }) }, async (request, reply) => {
+    fastify.post("/tickets", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "support.createTicket" }) }, async (request, reply) => {
         try {
             const body = (request.body ?? {});
             const ticket = await (0, supportService_1.createSupportTicket)({
@@ -148,7 +177,7 @@ const supportFastifyRoutes = async (fastify) => {
                 .send({ error: err?.message || "Failed to create support ticket" });
         }
     });
-    fastify.get("/tickets/:id", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "support.read" }) }, async (request, reply) => {
+    fastify.get("/tickets/:id", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "support.view" }) }, async (request, reply) => {
         const startedAt = Date.now();
         try {
             const scopeWhere = await (0, identity_access_1.buildSupportScopeWhere)(request.user);
@@ -165,7 +194,7 @@ const supportFastifyRoutes = async (fastify) => {
             return sendError(reply, err, "Failed to load support ticket");
         }
     });
-    fastify.patch("/tickets/:id/status", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "support.update" }) }, async (request, reply) => {
+    fastify.patch("/tickets/:id/status", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "support.update" }) }, async (request, reply) => {
         try {
             const status = asEnumValue(client_1.SupportTicketStatus, request.body?.status, client_1.SupportTicketStatus.open);
             const ticket = await (0, supportService_1.updateSupportTicketStatus)(String(request.params?.id || ""), status, actorFromRequest(request));
@@ -175,7 +204,7 @@ const supportFastifyRoutes = async (fastify) => {
             return sendError(reply, err, "Failed to update support ticket status");
         }
     });
-    fastify.patch("/tickets/:id/assign", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "support.update" }) }, async (request, reply) => {
+    fastify.patch("/tickets/:id/assign", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "support.assign" }) }, async (request, reply) => {
         try {
             const body = (request.body ?? {});
             const ownerId = body.ownerId === null
@@ -188,7 +217,7 @@ const supportFastifyRoutes = async (fastify) => {
             return sendError(reply, err, "Failed to assign support ticket");
         }
     });
-    fastify.post("/tickets/:id/notes", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "support.update" }) }, async (request, reply) => {
+    fastify.post("/tickets/:id/notes", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "support.update" }) }, async (request, reply) => {
         try {
             const ticket = await (0, supportService_1.addSupportTicketNote)(String(request.params?.id || ""), String(request.body?.body || ""), actorFromRequest(request));
             return reply.code(201).send(ticket);
@@ -202,7 +231,7 @@ const supportFastifyRoutes = async (fastify) => {
                 .send({ error: err?.message || "Failed to add support note" });
         }
     });
-    fastify.post("/tickets/:id/messages", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "support.update" }) }, async (request, reply) => {
+    fastify.post("/tickets/:id/messages", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "support.update" }) }, async (request, reply) => {
         try {
             const ticket = await (0, supportService_1.addSupportTicketMessage)(String(request.params?.id || ""), String(request.body?.body || ""), actorFromRequest(request));
             return reply.code(201).send(ticket);
@@ -216,7 +245,7 @@ const supportFastifyRoutes = async (fastify) => {
                 .send({ error: err?.message || "Failed to add support message" });
         }
     });
-    fastify.post("/tickets/:id/escalate", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "support.update" }) }, async (request, reply) => {
+    fastify.post("/tickets/:id/escalate", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "support.escalate" }) }, async (request, reply) => {
         try {
             const ticket = await (0, supportService_1.updateSupportTicketStatus)(String(request.params?.id || ""), client_1.SupportTicketStatus.escalated, actorFromRequest(request));
             return reply.send(ticket);

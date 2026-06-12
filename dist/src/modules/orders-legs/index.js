@@ -17,3 +17,6 @@ Object.defineProperty(exports, "__esModule", { value: true });
 __exportStar(require("./legs"), exports);
 __exportStar(require("./pricing"), exports);
 __exportStar(require("./documents"), exports);
+__exportStar(require("./carrier-booking"), exports);
+__exportStar(require("./carrier-auto-booking"), exports);
+__exportStar(require("./carrier-events"), exports);

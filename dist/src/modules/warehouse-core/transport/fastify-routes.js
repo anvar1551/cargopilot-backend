@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-const authFastify_1 = require("../../../middleware/authFastify");
+const fastify_auth_1 = require("../../../modules/identity-access/transport/fastify-auth");
 const warehouseRepo_1 = require("../application/warehouseRepo");
 const warehouse_shared_1 = require("../application/warehouse.shared");
 function parseCoordinate(value, axis) {
@@ -14,7 +14,7 @@ function parseCoordinate(value, axis) {
     return parsed >= -180 && parsed <= 180 ? parsed : null;
 }
 const warehouseFastifyRoutes = async (fastify) => {
-    fastify.post("/", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "orders.write" }) }, async (request, reply) => {
+    fastify.post("/", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "shipment.update" }) }, async (request, reply) => {
         try {
             const body = (request.body ?? {});
             const name = String(body.name || "").trim();
@@ -30,7 +30,7 @@ const warehouseFastifyRoutes = async (fastify) => {
             return reply.code(500).send({ error: "Failed to create warehouse" });
         }
     });
-    fastify.get("/", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "orders.read" }) }, async (_request, reply) => {
+    fastify.get("/", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "shipment.view" }) }, async (_request, reply) => {
         try {
             const warehouses = await (0, warehouseRepo_1.listWarehouses)();
             return reply.send(warehouses);
@@ -40,7 +40,7 @@ const warehouseFastifyRoutes = async (fastify) => {
             return reply.code(500).send({ error: "Failed to fetch warehouses" });
         }
     });
-    fastify.get("/:id", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "orders.read" }) }, async (request, reply) => {
+    fastify.get("/:id", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "shipment.view" }) }, async (request, reply) => {
         try {
             const id = String(request.params?.id || "").trim();
             const warehouse = await (0, warehouseRepo_1.getWarehouseById)(id);
@@ -53,7 +53,7 @@ const warehouseFastifyRoutes = async (fastify) => {
             return reply.code(500).send({ error: "Failed to fetch warehouse" });
         }
     });
-    fastify.put("/:id", { preHandler: (0, authFastify_1.fastifyAuth)({ permission: "orders.write" }) }, async (request, reply) => {
+    fastify.put("/:id", { preHandler: (0, fastify_auth_1.fastifyAuth)({ permission: "shipment.update" }) }, async (request, reply) => {
         try {
             const id = String(request.params?.id || "").trim();
             const body = (request.body ?? {});
