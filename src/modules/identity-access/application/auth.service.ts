@@ -74,6 +74,13 @@ function cleanRoleCodes(input: unknown): string[] {
   );
 }
 
+function roleCodesAllowCustomerEntity(roleCodes: string[]) {
+  return roleCodes.some((code) => {
+    const normalized = String(code || "").toLowerCase();
+    return normalized === "customer" || normalized === "client" || normalized.includes("customer");
+  });
+}
+
 function cleanScopeInput(
   input: unknown,
 ): Array<{
@@ -620,6 +627,22 @@ export async function updateUserAccessByCompanyAdmin(args: {
     throw new Error("At least one role is required");
   }
   const nextScopes = args.scopes === undefined ? undefined : cleanScopeInput(args.scopes);
+  const currentRoleCodes =
+    nextRoleCodes == null && args.customerEntityId !== undefined
+      ? (
+          await prisma.membershipRole.findMany({
+            where: { membershipId: membership.id },
+            select: { role: { select: { code: true } } },
+          })
+        ).map((entry) => entry.role.code)
+      : null;
+  const roleCodesForCustomerLink = nextRoleCodes ?? currentRoleCodes;
+  const nextCustomerEntityId =
+    args.customerEntityId === undefined
+      ? undefined
+      : roleCodesForCustomerLink && roleCodesAllowCustomerEntity(roleCodesForCustomerLink)
+        ? args.customerEntityId
+        : null;
 
   await prisma.$transaction(async (tx) => {
     if (nextName !== undefined || nextEmail !== undefined || args.warehouseId !== undefined || args.customerEntityId !== undefined || args.driverType !== undefined) {
@@ -629,7 +652,7 @@ export async function updateUserAccessByCompanyAdmin(args: {
           ...(nextName !== undefined ? { name: nextName } : {}),
           ...(nextEmail !== undefined ? { email: nextEmail } : {}),
           ...(args.warehouseId !== undefined ? { warehouseId: args.warehouseId } : {}),
-          ...(args.customerEntityId !== undefined ? { customerEntityId: args.customerEntityId } : {}),
+          ...(nextCustomerEntityId !== undefined ? { customerEntityId: nextCustomerEntityId } : {}),
           ...(args.driverType !== undefined ? { driverType: args.driverType } : {}),
         },
       });
@@ -715,6 +738,9 @@ export async function createUserByCompanyAdmin(args: {
   const roleCodes = cleanRoleCodes(args.roleCodes);
   if (roleCodes.length === 0) throw new Error("roleCodes is required");
   const scopes = cleanScopeInput(args.scopes);
+  const customerEntityId = roleCodesAllowCustomerEntity(roleCodes)
+    ? args.customerEntityId ?? null
+    : null;
   const hashedPassword = await bcrypt.hash(password, 10);
 
   const created = await prisma.$transaction(async (tx) => {
@@ -724,7 +750,7 @@ export async function createUserByCompanyAdmin(args: {
         email,
         password: hashedPassword,
         warehouseId: args.warehouseId ?? null,
-        customerEntityId: args.customerEntityId ?? null,
+        customerEntityId,
         driverType: args.driverType ?? null,
       },
       select: { id: true },

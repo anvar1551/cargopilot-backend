@@ -1,8 +1,9 @@
 import { MembershipStatus, Prisma } from "@prisma/client";
 import prisma from "../../config/prismaClient";
 import { AccessSnapshot, ScopeItem } from "./types";
+import type { AppUser } from "../../types/app-user";
 
-type AuthUser = Express.User;
+type AuthUser = AppUser;
 
 type CacheEntry = {
   expiresAt: number;
@@ -286,6 +287,37 @@ function buildOrgScopedOrderWhere(scopes: ScopeItem[]): Prisma.OrderWhereInput |
   };
 }
 
+function hasRoleCode(snapshot: AccessSnapshot, predicate: (code: string) => boolean) {
+  return snapshot.roleCodes.some((code) => predicate(String(code || "").toLowerCase()));
+}
+
+function isCustomerWorkspaceOnly(snapshot: AccessSnapshot) {
+  const hasCustomerRole = hasRoleCode(
+    snapshot,
+    (code) => code === "customer" || code === "client" || code.includes("customer"),
+  );
+  if (!hasCustomerRole) return false;
+
+  const hasOperationalRole = hasRoleCode(
+    snapshot,
+    (code) =>
+      code === "admin" ||
+      code === "super_admin" ||
+      code === "superadmin" ||
+      code === "owner" ||
+      code === "manager" ||
+      code.includes("manager") ||
+      code.includes("warehouse") ||
+      code.includes("driver") ||
+      code.includes("courier") ||
+      code.includes("dispatcher") ||
+      code.includes("support") ||
+      code.includes("accountant"),
+  );
+
+  return !hasOperationalRole;
+}
+
 export async function buildOrderScopeWhere(
   user: AuthUser,
 ): Promise<Prisma.OrderWhereInput | null> {
@@ -294,6 +326,12 @@ export async function buildOrderScopeWhere(
     membershipId: user.membershipId,
   });
   if (!snapshot) return { id: "__no_access__" };
+
+  if (isCustomerWorkspaceOnly(snapshot)) {
+    return snapshot.customerEntityId
+      ? { customerEntityId: snapshot.customerEntityId }
+      : { id: "__no_access__" };
+  }
 
   const clauses: Prisma.OrderWhereInput[] = [];
   const orgScope = buildOrgScopedOrderWhere(snapshot.scopes);
@@ -335,6 +373,12 @@ export async function buildSupportScopeWhere(
   });
   if (!snapshot) return { id: "__no_access__" };
 
+  if (isCustomerWorkspaceOnly(snapshot)) {
+    return snapshot.customerEntityId
+      ? { customerEntityId: snapshot.customerEntityId }
+      : { id: "__no_access__" };
+  }
+
   const clauses: Prisma.SupportTicketWhereInput[] = [];
   const orgIds = Array.from(
     new Set(
@@ -372,6 +416,12 @@ export async function buildCustomerEntityScopeWhere(
     membershipId: user.membershipId,
   });
   if (!snapshot) return { id: { in: [] } };
+
+  if (isCustomerWorkspaceOnly(snapshot)) {
+    return snapshot.customerEntityId
+      ? { id: snapshot.customerEntityId }
+      : { id: { in: [] } };
+  }
 
   // System override can read all customer entities.
   if (snapshot.permissionCodes.includes("policy.override")) {
