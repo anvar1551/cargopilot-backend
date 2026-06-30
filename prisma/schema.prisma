@@ -183,6 +183,7 @@ enum DriverType {
 enum NotificationType {
   order
   cash
+  support
   system
 }
 
@@ -455,7 +456,7 @@ enum IntegrationEventProcessStatus {
 }
 
 model Organization {
-  id   String           @id @default(uuid()) @db.Uuid
+  id   String           @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   name String
   type OrganizationType
   code String?          @unique
@@ -485,13 +486,17 @@ model Organization {
   integrationWebhookEvents IntegrationWebhookEvent[]
   routeTemplates           RouteTemplate[]
   carrierRoutingRules      CarrierRoutingRule[]
+  supportQueues            SupportQueue[]           @relation("SupportQueueCompany")
+  supportQueueDefaultOrgs  SupportQueue[]           @relation("SupportQueueDefaultOrg")
+  supportAssignmentRules   SupportAssignmentRule[]  @relation("SupportAssignmentRuleCompany")
+  supportSlaPolicies       SupportSlaPolicy[]       @relation("SupportSlaPolicyCompany")
 
   @@index([type, isActive])
   @@index([parentOrgId])
 }
 
 model CompanyPaymentSetting {
-  id String @id @default(uuid()) @db.Uuid
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   companyId String       @unique @db.Uuid
   company   Organization @relation(fields: [companyId], references: [id], onDelete: Cascade)
@@ -509,7 +514,7 @@ model CompanyPaymentSetting {
 }
 
 model Role {
-  id   String @id @default(uuid()) @db.Uuid
+  id   String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   code String
   name String
 
@@ -530,7 +535,7 @@ model Role {
 }
 
 model Permission {
-  id          String  @id @default(uuid()) @db.Uuid
+  id          String  @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   key         String  @unique
   resource    String
   action      String
@@ -545,7 +550,7 @@ model Permission {
 }
 
 model RolePermission {
-  id String @id @default(uuid()) @db.Uuid
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   roleId       String     @db.Uuid
   role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
@@ -559,7 +564,7 @@ model RolePermission {
 }
 
 model CompanyMembership {
-  id String @id @default(uuid()) @db.Uuid
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   userId String @db.Uuid
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -584,7 +589,7 @@ model CompanyMembership {
 }
 
 model MembershipRole {
-  id String @id @default(uuid()) @db.Uuid
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   membershipId String            @db.Uuid
   membership   CompanyMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
@@ -598,7 +603,7 @@ model MembershipRole {
 }
 
 model MembershipScope {
-  id String @id @default(uuid()) @db.Uuid
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   membershipId String              @db.Uuid
   membership   CompanyMembership   @relation(fields: [membershipId], references: [id], onDelete: Cascade)
@@ -614,7 +619,7 @@ model MembershipScope {
 }
 
 model User {
-  id       String @id @default(uuid()) @db.Uuid
+  id       String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   name     String
   email    String @unique
   password String
@@ -650,7 +655,7 @@ model User {
 }
 
 model Warehouse {
-  id                  String                  @id @default(uuid()) @db.Uuid
+  id                  String                  @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   name                String
   type                WarehouseType           @default(warehouse)
   location            String
@@ -671,7 +676,7 @@ model Warehouse {
 }
 
 model DriverWarehouseAccess {
-  id          String   @id @default(uuid()) @db.Uuid
+  id          String   @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   driverId    String   @db.Uuid
   warehouseId String   @db.Uuid
   createdAt   DateTime @default(now())
@@ -685,7 +690,7 @@ model DriverWarehouseAccess {
 }
 
 model Order {
-  id String @id @default(uuid()) @db.Uuid
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   // ✅ human readable number like 99000021
   orderNumber String @unique
@@ -828,7 +833,7 @@ model Order {
 }
 
 model PaymentProviderConfig {
-  id              String             @id @default(uuid()) @db.Uuid
+  id              String             @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   companyId       String             @db.Uuid
   company         Organization       @relation(fields: [companyId], references: [id], onDelete: Cascade)
   provider        PaymentProvider
@@ -851,7 +856,7 @@ model PaymentProviderConfig {
 }
 
 model PaymentIntent {
-  id                  String                @id @default(uuid()) @db.Uuid
+  id                  String                @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   companyId           String                @db.Uuid
   company             Organization          @relation(fields: [companyId], references: [id], onDelete: Cascade)
   orderId             String                @db.Uuid
@@ -880,7 +885,7 @@ model PaymentIntent {
 }
 
 model PaymentAttempt {
-  id              String               @id @default(uuid()) @db.Uuid
+  id              String               @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   paymentIntentId String               @db.Uuid
   paymentIntent   PaymentIntent        @relation(fields: [paymentIntentId], references: [id], onDelete: Cascade)
   provider        PaymentProvider
@@ -896,7 +901,7 @@ model PaymentAttempt {
 }
 
 model PaymentWebhookEvent {
-  id              String                      @id @default(uuid()) @db.Uuid
+  id              String                      @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   companyId       String?                     @db.Uuid
   company         Organization?               @relation(fields: [companyId], references: [id], onDelete: SetNull)
   provider        PaymentProvider
@@ -919,7 +924,7 @@ model PaymentWebhookEvent {
 }
 
 model PaymentLedgerEntry {
-  id              String          @id @default(uuid()) @db.Uuid
+  id              String          @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   companyId       String          @db.Uuid
   company         Organization    @relation(fields: [companyId], references: [id], onDelete: Cascade)
   paymentIntentId String          @db.Uuid
@@ -939,7 +944,7 @@ model PaymentLedgerEntry {
 }
 
 model IntegrationProvider {
-  id              String                    @id @default(uuid()) @db.Uuid
+  id              String                    @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   companyId       String                    @db.Uuid
   company         Organization              @relation(fields: [companyId], references: [id], onDelete: Cascade)
   domain          IntegrationDomain
@@ -969,7 +974,7 @@ model IntegrationProvider {
 }
 
 model RouteTemplate {
-  id String @id @default(uuid()) @db.Uuid
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   companyId String       @db.Uuid
   company   Organization @relation(fields: [companyId], references: [id], onDelete: Cascade)
@@ -1001,7 +1006,7 @@ model RouteTemplate {
 }
 
 model RouteTemplateLeg {
-  id String @id @default(uuid()) @db.Uuid
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   routeTemplateId String        @db.Uuid
   routeTemplate   RouteTemplate @relation(fields: [routeTemplateId], references: [id], onDelete: Cascade)
@@ -1027,7 +1032,7 @@ model RouteTemplateLeg {
 }
 
 model CarrierRoutingRule {
-  id String @id @default(uuid()) @db.Uuid
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   companyId String       @db.Uuid
   company   Organization @relation(fields: [companyId], references: [id], onDelete: Cascade)
@@ -1074,7 +1079,7 @@ model CarrierRoutingRule {
 }
 
 model IntegrationProviderSecret {
-  id                  String              @id @default(uuid()) @db.Uuid
+  id                  String              @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   providerId          String              @db.Uuid
   provider            IntegrationProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
   keyVersion          Int                 @default(1)
@@ -1089,7 +1094,7 @@ model IntegrationProviderSecret {
 }
 
 model IntegrationOutbox {
-  id             String                  @id @default(uuid()) @db.Uuid
+  id             String                  @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   companyId      String                  @db.Uuid
   company        Organization            @relation(fields: [companyId], references: [id], onDelete: Cascade)
   providerId     String?                 @db.Uuid
@@ -1122,7 +1127,7 @@ model IntegrationOutbox {
 }
 
 model IntegrationDeliveryAttempt {
-  id                String                    @id @default(uuid()) @db.Uuid
+  id                String                    @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   outboxId          String                    @db.Uuid
   outbox            IntegrationOutbox         @relation(fields: [outboxId], references: [id], onDelete: Cascade)
   attemptNo         Int
@@ -1143,7 +1148,7 @@ model IntegrationDeliveryAttempt {
 }
 
 model IntegrationWebhookEvent {
-  id                String                 @id @default(uuid()) @db.Uuid
+  id                String                 @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   companyId         String?                @db.Uuid
   company           Organization?          @relation(fields: [companyId], references: [id], onDelete: SetNull)
   providerId        String?                @db.Uuid
@@ -1171,7 +1176,7 @@ model IntegrationWebhookEvent {
 }
 
 model IntegrationWebhookCanonicalEvent {
-  id             String                  @id @default(uuid()) @db.Uuid
+  id             String                  @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   webhookEventId String                  @unique @db.Uuid
   webhookEvent   IntegrationWebhookEvent @relation(fields: [webhookEventId], references: [id], onDelete: Cascade)
   providerCode   String
@@ -1190,7 +1195,7 @@ model IntegrationWebhookCanonicalEvent {
 }
 
 model IntegrationCanonicalEvent {
-  id     String                        @id @default(uuid()) @db.Uuid
+  id     String                        @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   source IntegrationEventSource
   status IntegrationEventProcessStatus @default(pending)
 
@@ -1226,7 +1231,7 @@ model IntegrationCanonicalEvent {
 }
 
 model OrderLeg {
-  id String @id @default(uuid()) @db.Uuid
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   orderId String @db.Uuid
   order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -1286,7 +1291,7 @@ model OrderLeg {
 }
 
 model PricingComponent {
-  id String @id @default(uuid()) @db.Uuid
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   orderId String @db.Uuid
   order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -1314,7 +1319,7 @@ model PricingComponent {
 }
 
 model OrderDocument {
-  id String @id @default(uuid()) @db.Uuid
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   orderId String @db.Uuid
   order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -1347,7 +1352,7 @@ model OrderDocument {
 }
 
 model PricingRegion {
-  id                     String            @id @default(uuid()) @db.Uuid
+  id                     String            @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   code                   String            @unique
   name                   String
   aliases                String[]          @default([])
@@ -1365,7 +1370,7 @@ model PricingRegion {
 }
 
 model ZoneMatrixEntry {
-  id                  String        @id @default(uuid()) @db.Uuid
+  id                  String        @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   originRegionId      String        @db.Uuid
   originRegion        PricingRegion @relation("ZoneMatrixOrigin", fields: [originRegionId], references: [id])
   destinationRegionId String        @db.Uuid
@@ -1379,7 +1384,7 @@ model ZoneMatrixEntry {
 }
 
 model TariffPlan {
-  id                     String                @id @default(uuid()) @db.Uuid
+  id                     String                @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   name                   String
   code                   String?               @unique
   description            String?
@@ -1411,7 +1416,7 @@ model TariffPlan {
 }
 
 model TariffRate {
-  id           String     @id @default(uuid()) @db.Uuid
+  id           String     @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   tariffPlanId String     @db.Uuid
   tariffPlan   TariffPlan @relation(fields: [tariffPlanId], references: [id], onDelete: Cascade)
   zone         Int
@@ -1426,7 +1431,7 @@ model TariffRate {
 }
 
 model DeliverySlaRule {
-  id                  String         @id @default(uuid()) @db.Uuid
+  id                  String         @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   name                String
   description         String?
   serviceType         ServiceType
@@ -1448,7 +1453,7 @@ model DeliverySlaRule {
 }
 
 model OperationalSlaPolicy {
-  id                String   @id @default(uuid()) @db.Uuid
+  id                String   @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   singletonKey      String   @unique @default("global")
   staleHours        Int      @default(48)
   dueSoonHours      Int      @default(24)
@@ -1458,7 +1463,7 @@ model OperationalSlaPolicy {
 }
 
 model CashCollection {
-  id String @id @default(uuid()) @db.Uuid
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   orderId String @db.Uuid
   order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -1494,7 +1499,7 @@ model CashCollection {
 }
 
 model CashCollectionEvent {
-  id String @id @default(uuid()) @db.Uuid
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   cashCollectionId String         @db.Uuid
   cashCollection   CashCollection @relation(fields: [cashCollectionId], references: [id], onDelete: Cascade)
@@ -1522,7 +1527,7 @@ model CashCollectionEvent {
 }
 
 model OrderLabelJob {
-  id String @id @default(uuid()) @db.Uuid
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   orderId String @unique @db.Uuid
   order   Order  @relation(fields: [orderId], references: [id])
@@ -1542,7 +1547,7 @@ model OrderLabelJob {
 }
 
 model Tracking {
-  id String @id @default(uuid()) @db.Uuid
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   orderId String @db.Uuid
   order   Order  @relation(fields: [orderId], references: [id])
@@ -1577,7 +1582,7 @@ model Tracking {
 }
 
 model Address {
-  id String @id @default(uuid()) @db.Uuid
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   // ✅ Address book owner relation (named, to avoid conflict with defaultAddress)
   customerEntityId String?         @db.Uuid
@@ -1618,7 +1623,7 @@ model Address {
 }
 
 model CustomerEntity {
-  id String @id @default(uuid()) @db.Uuid
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   type CustomerType @default(PERSON)
 
@@ -1657,7 +1662,7 @@ model CustomerEntity {
 }
 
 model OrderAttachment {
-  id String @id @default(uuid()) @db.Uuid
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   orderId String @db.Uuid
   order   Order  @relation(fields: [orderId], references: [id])
@@ -1673,7 +1678,7 @@ model OrderAttachment {
 }
 
 model Invoice {
-  id         String        @id @default(uuid()) @db.Uuid
+  id         String        @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   orderId    String        @unique @db.Uuid
   customerId String        @db.Uuid
   amount     Float
@@ -1690,7 +1695,7 @@ model Invoice {
 }
 
 model Parcel {
-  id String @id @default(uuid()) @db.Uuid
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   orderId String @db.Uuid
   order   Order  @relation(fields: [orderId], references: [id])
@@ -1716,7 +1721,7 @@ model Parcel {
 }
 
 model UserNotification {
-  id String @id @default(uuid()) @db.Uuid
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   userId String @db.Uuid
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -1736,7 +1741,7 @@ model UserNotification {
 }
 
 model SupportTicket {
-  id           String  @id @default(uuid()) @db.Uuid
+  id           String  @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   ticketNumber String  @unique
   sourceKey    String? @unique
   orderId      String? @db.Uuid
@@ -1759,6 +1764,8 @@ model SupportTicket {
   ownerOrg      Organization? @relation("SupportTicketOwnerOrganization", fields: [ownerOrgId], references: [id], onDelete: SetNull)
   assignedOrgId String?       @db.Uuid
   assignedOrg   Organization? @relation("SupportTicketAssignedOrganization", fields: [assignedOrgId], references: [id], onDelete: SetNull)
+  queueId       String?       @db.Uuid
+  queue         SupportQueue? @relation(fields: [queueId], references: [id], onDelete: SetNull)
 
   customerName   String?
   companyName    String?
@@ -1792,10 +1799,90 @@ model SupportTicket {
   @@index([slaDueAt])
   @@index([ownerOrgId, status, lastActivityAt])
   @@index([assignedOrgId, status, lastActivityAt])
+  @@index([queueId, status, lastActivityAt])
+}
+
+model SupportQueue {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+
+  companyId String       @db.Uuid
+  company   Organization @relation("SupportQueueCompany", fields: [companyId], references: [id], onDelete: Cascade)
+
+  code        String
+  name        String
+  description String?
+
+  defaultOrgId   String?       @db.Uuid
+  defaultOrg     Organization? @relation("SupportQueueDefaultOrg", fields: [defaultOrgId], references: [id], onDelete: SetNull)
+  defaultOwnerId String?       @db.Uuid
+
+  isDefault Boolean @default(false)
+  isActive  Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tickets         SupportTicket[]
+  assignmentRules SupportAssignmentRule[]
+  slaPolicies     SupportSlaPolicy[]
+
+  @@unique([companyId, code])
+  @@index([companyId, isActive])
+  @@index([companyId, isDefault])
+}
+
+model SupportAssignmentRule {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+
+  companyId String       @db.Uuid
+  company   Organization @relation("SupportAssignmentRuleCompany", fields: [companyId], references: [id], onDelete: Cascade)
+
+  queueId String?       @db.Uuid
+  queue   SupportQueue? @relation(fields: [queueId], references: [id], onDelete: SetNull)
+
+  name          String
+  code          String
+  source        SupportTicketSource?
+  priority      SupportTicketPriority?
+  routeContains String?
+  defaultOwnerId String? @db.Uuid
+  conditionsJson Json?
+  sortOrder     Int     @default(100)
+  isActive      Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([companyId, code])
+  @@index([companyId, isActive, sortOrder])
+  @@index([queueId])
+}
+
+model SupportSlaPolicy {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+
+  companyId String       @db.Uuid
+  company   Organization @relation("SupportSlaPolicyCompany", fields: [companyId], references: [id], onDelete: Cascade)
+
+  queueId String?       @db.Uuid
+  queue   SupportQueue? @relation(fields: [queueId], references: [id], onDelete: Cascade)
+
+  code        String
+  name        String
+  priority    SupportTicketPriority
+  targetMinutes Int
+  warningMinutes Int?
+  isActive    Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([companyId, code])
+  @@index([companyId, queueId, priority, isActive])
 }
 
 model SupportTicketMessage {
-  id         String                  @id @default(uuid()) @db.Uuid
+  id         String                  @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   ticketId   String                  @db.Uuid
   ticket     SupportTicket           @relation(fields: [ticketId], references: [id], onDelete: Cascade)
   authorType SupportTicketAuthorType
@@ -1809,7 +1896,7 @@ model SupportTicketMessage {
 }
 
 model SupportTicketNote {
-  id        String        @id @default(uuid()) @db.Uuid
+  id        String        @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   ticketId  String        @db.Uuid
   ticket    SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
   actorId   String?       @db.Uuid
@@ -1822,7 +1909,7 @@ model SupportTicketNote {
 }
 
 model SupportTicketEvent {
-  id        String                 @id @default(uuid()) @db.Uuid
+  id        String                 @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   ticketId  String                 @db.Uuid
   ticket    SupportTicket          @relation(fields: [ticketId], references: [id], onDelete: Cascade)
   eventType SupportTicketEventType
@@ -1862,7 +1949,7 @@ model UserRefreshSession {
 }
 
 model AnalyticsDomainEventOutbox {
-  id String @id @default(uuid()) @db.Uuid
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   eventId       String   @unique
   type          String

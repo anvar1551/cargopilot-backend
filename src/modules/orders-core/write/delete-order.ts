@@ -2,8 +2,10 @@ import prisma from "../../../config/prismaClient";
 import { authorize, buildOrderScopeWhere } from "../../identity-access";
 import { clearOrderListCache } from "../repo";
 import { orderError } from "../shared";
+import type { AppUser } from "../../../types/app-user";
+import { collectS3ObjectKeys, deleteS3ObjectsBestEffort } from "../../../utils/s3Cleanup";
 
-type DeleteOrderActor = Express.User;
+type DeleteOrderActor = AppUser;
 
 function isEmptyWhere(value: unknown) {
   return !value || (typeof value === "object" && Object.keys(value as object).length === 0);
@@ -27,7 +29,7 @@ export async function deleteOrderForActor(args: {
         scopeWhere && !isEmptyWhere(scopeWhere)
           ? { AND: [{ id: orderId }, scopeWhere] }
           : { id: orderId },
-      select: { id: true, orderNumber: true },
+      select: { id: true, orderNumber: true, labelKey: true },
     });
 
     if (!order) {
@@ -52,6 +54,30 @@ export async function deleteOrderForActor(args: {
       select: { id: true },
     });
     const cashCollectionIds = cashCollections.map((item) => item.id);
+
+    const parcelsWithStorage = await tx.parcel.findMany({
+      where: { orderId },
+      select: { labelKey: true },
+    });
+    const documentsWithStorage = await tx.orderDocument.findMany({
+      where: { orderId },
+      select: { storageKey: true },
+    });
+    const attachmentsWithStorage = await tx.orderAttachment.findMany({
+      where: { orderId },
+      select: { key: true },
+    });
+    const invoicesWithStorage = await tx.invoice.findMany({
+      where: { orderId },
+      select: { invoiceKey: true },
+    });
+    const storageKeys = collectS3ObjectKeys([
+      order.labelKey,
+      ...parcelsWithStorage.map((item) => item.labelKey),
+      ...documentsWithStorage.map((item) => item.storageKey),
+      ...attachmentsWithStorage.map((item) => item.key),
+      ...invoicesWithStorage.map((item) => item.invoiceKey),
+    ]);
 
     const integrationOutboxes = await tx.integrationOutbox.findMany({
       where: { aggregateId: { in: aggregateIds } },
@@ -152,9 +178,29 @@ export async function deleteOrderForActor(args: {
       orderId: order.id,
       orderNumber: order.orderNumber,
       cleanup: deleted,
+      storageKeys,
     };
   });
 
+  const storageCleanup = await deleteS3ObjectsBestEffort(result.storageKeys);
+  if (storageCleanup.failed > 0 || storageCleanup.skipped > 0) {
+    console.warn("[order-delete] S3 cleanup incomplete", {
+      orderId,
+      requested: storageCleanup.requested,
+      deleted: storageCleanup.deleted,
+      failed: storageCleanup.failed,
+      skipped: storageCleanup.skipped,
+      errors: storageCleanup.errors.slice(0, 5),
+    });
+  }
+
   clearOrderListCache();
-  return result;
+  const { storageKeys: _storageKeys, ...response } = result;
+  return {
+    ...response,
+    cleanup: {
+      ...response.cleanup,
+      s3Objects: storageCleanup,
+    },
+  };
 }

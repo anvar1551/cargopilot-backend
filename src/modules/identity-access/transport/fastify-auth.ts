@@ -2,12 +2,7 @@ import jwt from "jsonwebtoken";
 import { FastifyReply, FastifyRequest } from "fastify";
 import { authorize, loadAccessSnapshot } from "../access-control";
 import { AccessTokenPayload } from "../types";
-
-declare module "fastify" {
-  interface FastifyRequest {
-    user?: Express.User;
-  }
-}
+import type { AppUser } from "../../../types/app-user";
 
 function getBearerTokenFromHeader(header: string | undefined) {
   if (!header) return null;
@@ -56,7 +51,7 @@ async function resolveAuthenticatedUserFromAuthHeader(
     roleCodes: snapshot.roleCodes,
     permissionCodes: snapshot.permissionCodes,
     scopes: snapshot.scopes,
-  } satisfies Express.User;
+  } satisfies AppUser;
 }
 
 type AuthOptions = {

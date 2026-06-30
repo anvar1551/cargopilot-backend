@@ -1,7 +1,7 @@
-import { OrderStatus, SupportTicketPriority, SupportTicketSource } from "@prisma/client";
+import { OrderStatus, SupportTicketPriority } from "@prisma/client";
 import prisma from "../../../config/prismaClient";
 import { subscribeAnalyticsInvalidation } from "../../analytics-core/realtime/analyticsV2Realtime";
-import { createSupportTicket } from "./supportService";
+import { createSystemSupportTicket } from "./autoTriage";
 
 let started = false;
 let running = false;
@@ -53,26 +53,16 @@ async function createStalePendingTickets() {
     const ageHours = Math.max(1, Math.floor((Date.now() - order.createdAt.getTime()) / 3_600_000));
     const priority =
       order.createdAt < urgentCutoff ? SupportTicketPriority.urgent : SupportTicketPriority.high;
-    await createSupportTicket(
-      {
-        orderId: order.id,
-        title: order.status === OrderStatus.pending
-          ? "Pending order needs dispatch action"
-          : "Assigned order needs movement check",
-        summary: `Order #${order.orderNumber} has been ${order.status} for ${ageHours}h. Route: ${order.pickupAddress || "-"} -> ${order.dropoffAddress || "-"}.`,
-        priority,
-        source: SupportTicketSource.system_alert,
-        ownerId: null,
-        sourceKey: `order:${order.id}:stale_${order.status}:v1`,
-      },
-      {
-        id: "",
-        roleCodes: ["manager"],
-        permissionCodes: [],
-        name: "CargoPilot Auto Triage",
-        email: "system@cargopilot.local",
-      },
-    );
+    await createSystemSupportTicket({
+      orderId: order.id,
+      title: order.status === OrderStatus.pending
+        ? "Pending order needs dispatch action"
+        : "Assigned order needs movement check",
+      summary: `Order #${order.orderNumber} has been ${order.status} for ${ageHours}h. Route: ${order.pickupAddress || "-"} -> ${order.dropoffAddress || "-"}.`,
+      priority,
+      sourceKey: `order:${order.id}:stale_${order.status}:v1`,
+      routingKey: "order_stale",
+    });
   }
 
   return orders.length;

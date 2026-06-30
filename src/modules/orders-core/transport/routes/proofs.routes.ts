@@ -3,6 +3,7 @@ import fastifyMultipart from "@fastify/multipart";
 import { fastifyAuth } from "../../../identity-access/transport/fastify-auth";
 import { listOrderProofLinksForActor, requireOrderActor, submitProofForActor } from "../..";
 import { emitMutationInvalidation, fieldValue, parseMaxPhotoBytes, sendError } from "../shared";
+import type { AppUser } from "../../../../types/app-user";
 
 async function handleProofSubmit(request: any, reply: any, forcedStage?: "delivery") {
   const file = await request.file();
@@ -34,7 +35,7 @@ const proofsRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.get("/:id/proofs", { preHandler: fastifyAuth({ permission: "shipment.view" }) }, async (request, reply) => {
     try {
-      const user = request.user as Express.User;
+      const user = request.user as AppUser;
       const result = await listOrderProofLinksForActor({
         user,
         orderId: String((request.params as any)?.id ?? "").trim(),

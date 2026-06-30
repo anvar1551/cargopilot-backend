@@ -16,7 +16,6 @@ import {
   createRoleForCompany,
   listPermissions,
   listRolesForCompany,
-  seedSystemPermissions,
 } from "../application/iam.service";
 
 function extractClientIp(request: any) {
@@ -54,8 +53,6 @@ const changePasswordSchema = z
   });
 
 const usersFastifyRoutes: FastifyPluginAsync = async (fastify) => {
-  await seedSystemPermissions();
-
   fastify.post("/register", async (request, reply) => {
     try {
       const body = (request.body ?? {}) as Record<string, unknown>;
@@ -260,15 +257,19 @@ const usersFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           return reply.code(401).send({ error: "Unauthorized" });
         }
         const userId = typeof (request.params as any)?.id === "string" ? (request.params as any).id : "";
-        await deleteUserMembershipFromCompany({
+        const result = await deleteUserMembershipFromCompany({
           actorUserId: request.user.id,
           targetUserId: userId,
           companyId: request.user.companyId,
         });
-        return reply.send({ message: "User deleted successfully" });
+        return reply.send({
+          message: result.deleted
+            ? "User deleted permanently"
+            : "User access removed and active sessions revoked",
+        });
       } catch (err: any) {
         return reply.code(400).send({
-          error: err?.message ?? "Failed to delete user",
+          error: err?.message ?? "Failed to remove user access",
         });
       }
     },

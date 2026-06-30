@@ -2,11 +2,12 @@ import { FastifyPluginAsync } from "fastify";
 import { fastifyAuth } from "../../../identity-access/transport/fastify-auth";
 import { deleteOrderForActor, getOrderForActor } from "../..";
 import { emitMutationInvalidation, sendError } from "../shared";
+import type { AppUser } from "../../../../types/app-user";
 
 const orderDetailRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get("/:id", { preHandler: fastifyAuth({ permission: "shipment.view" }) }, async (request, reply) => {
     try {
-      const actor = request.user as Express.User;
+      const actor = request.user as AppUser;
       const orderId = String((request.params as any)?.id ?? "").trim();
       const result = await getOrderForActor({ actor, orderId });
       if (result.status === 200) return reply.send(result.order);
@@ -19,7 +20,7 @@ const orderDetailRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.delete("/:id", { preHandler: fastifyAuth({ permission: "shipment.delete" }) }, async (request, reply) => {
     try {
-      const actor = request.user as Express.User;
+      const actor = request.user as AppUser;
       const orderId = String((request.params as any)?.id ?? "").trim();
       const result = await deleteOrderForActor({ actor, orderId });
       await emitMutationInvalidation("order_mutation");

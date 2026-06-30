@@ -65,6 +65,19 @@ type QueueParams = {
   scope: Scope;
 };
 
+type MoneyBucket = {
+  currency: string;
+  amount: number;
+};
+
+function normalizeCurrency(value: string | null | undefined) {
+  return String(value || "UZS").trim().toUpperCase() || "UZS";
+}
+
+function sumMoneyBuckets(rows: MoneyBucket[]) {
+  return rows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+}
+
 function clampInt(value: unknown, min: number, max: number, fallback: number) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
@@ -278,7 +291,7 @@ export async function getAnalyticsSummaryV2(params: SummaryParams) {
       )}]::"OrderStatus"[]`;
       const scopeSql = buildScopeOrderSql(params.scope, "o");
 
-      const [ordersAggRows, invoiceAggRows] = await Promise.all([
+      const [ordersAggRows, invoiceAggRows, financeCurrencyRows] = await Promise.all([
         prisma.$queryRaw<
           Array<{
             totalOrders: bigint;
@@ -391,6 +404,57 @@ export async function getAnalyticsSummaryV2(params: SummaryParams) {
             WHERE ${scopeSql}
           `,
         ),
+        prisma.$queryRaw<
+          Array<{
+            currency: string | null;
+            serviceChargeExpected: number | null;
+            codExpected: number | null;
+            invoicedPaidAmount: number | null;
+          }>
+        >(
+          Prisma.sql`
+            SELECT
+              COALESCE(NULLIF(UPPER(TRIM(o.currency)), ''), 'UZS') AS currency,
+              COALESCE(SUM(o."serviceCharge") FILTER (
+                WHERE o."createdAt" >= ${rangeStart}
+                  AND o."createdAt" <= ${rangeEnd}
+                  AND COALESCE(o."serviceCharge", 0) > 0
+                  AND o."serviceChargePaidStatus" IN ('NOT_PAID'::"PaidStatus", 'PARTIAL'::"PaidStatus")
+              ), 0)::double precision AS "serviceChargeExpected",
+              COALESCE(SUM(o."codAmount") FILTER (
+                WHERE o."createdAt" >= ${rangeStart}
+                  AND o."createdAt" <= ${rangeEnd}
+                  AND COALESCE(o."codAmount", 0) > 0
+                  AND o."codPaidStatus" IN ('NOT_PAID'::"PaidStatus", 'PARTIAL'::"PaidStatus")
+              ), 0)::double precision AS "codExpected",
+              COALESCE(SUM(
+                COALESCE(
+                  NULLIF(pi."paidInvoiceAmount", 0),
+                  CASE
+                    WHEN o."createdAt" >= ${rangeStart}
+                      AND o."createdAt" <= ${rangeEnd}
+                      AND o."serviceChargePaidStatus" = 'PAID'::"PaidStatus"
+                    THEN COALESCE(o."serviceCharge", 0)
+                    ELSE 0
+                  END
+                )
+              ), 0)::double precision AS "invoicedPaidAmount"
+            FROM "Order" o
+            LEFT JOIN (
+              SELECT
+                i."orderId",
+                COALESCE(SUM(i.amount) FILTER (
+                  WHERE i.status = 'paid'::"InvoiceStatus"
+                    AND i."createdAt" >= ${rangeStart}
+                    AND i."createdAt" <= ${rangeEnd}
+                ), 0)::double precision AS "paidInvoiceAmount"
+              FROM "Invoice" i
+              GROUP BY i."orderId"
+            ) pi ON pi."orderId" = o.id
+            WHERE ${scopeSql}
+            GROUP BY COALESCE(NULLIF(UPPER(TRIM(o.currency)), ''), 'UZS')
+          `,
+        ),
       ]);
 
       const ordersAgg = ordersAggRows[0];
@@ -409,9 +473,27 @@ export async function getAnalyticsSummaryV2(params: SummaryParams) {
       const deliveredInRange = Number(ordersAgg?.deliveredInRange ?? 0);
       const returnedInRange = Number(ordersAgg?.returnedInRange ?? 0);
       const pendingInvoicesCount = Number(invoiceAgg?.pendingInvoicesCount ?? 0);
-      const invoicedPaidAmount = Number(invoiceAgg?.invoicedPaidAmount ?? 0);
-      const serviceChargeExpected = Number(ordersAgg?.serviceChargeExpected ?? 0);
-      const codExpected = Number(ordersAgg?.codExpected ?? 0);
+      const serviceChargeExpectedByCurrency = financeCurrencyRows
+        .map((row) => ({
+          currency: normalizeCurrency(row.currency),
+          amount: Number(row.serviceChargeExpected ?? 0),
+        }))
+        .filter((row) => row.amount > 0);
+      const codExpectedByCurrency = financeCurrencyRows
+        .map((row) => ({
+          currency: normalizeCurrency(row.currency),
+          amount: Number(row.codExpected ?? 0),
+        }))
+        .filter((row) => row.amount > 0);
+      const invoicedPaidAmountByCurrency = financeCurrencyRows
+        .map((row) => ({
+          currency: normalizeCurrency(row.currency),
+          amount: Number(row.invoicedPaidAmount ?? 0),
+        }))
+        .filter((row) => row.amount > 0);
+      const invoicedPaidAmount = sumMoneyBuckets(invoicedPaidAmountByCurrency);
+      const serviceChargeExpected = sumMoneyBuckets(serviceChargeExpectedByCurrency);
+      const codExpected = sumMoneyBuckets(codExpectedByCurrency);
       const unpaidServiceCount = Number(ordersAgg?.unpaidServiceCount ?? 0);
       const unpaidCodCount = Number(ordersAgg?.unpaidCodCount ?? 0);
 
@@ -444,9 +526,12 @@ export async function getAnalyticsSummaryV2(params: SummaryParams) {
         },
         finance: {
           invoicedPaidAmount,
+          invoicedPaidAmountByCurrency,
           pendingInvoicesCount,
           serviceChargeExpected,
+          serviceChargeExpectedByCurrency,
           codExpected,
+          codExpectedByCurrency,
           unpaidServiceCount,
           unpaidCodCount,
         },

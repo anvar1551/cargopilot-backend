@@ -1,6 +1,12 @@
 import "dotenv/config";
 import Fastify from "fastify";
+import fastifyCors from "@fastify/cors";
+import {
+  serializerCompiler,
+  validatorCompiler,
+} from "@fastify/type-provider-zod";
 import prisma from "./config/prismaClient";
+import { loadAppEnv } from "./config/env";
 import { getRedisClient, getRedisHealthSnapshot } from "./config/redis";
 import { initRealtimeHub } from "./modules/realtime-core/realtimeHub";
 import { startNotificationRetentionWorker } from "./modules/notifications-core/application/notificationRetention";
@@ -11,6 +17,7 @@ import { startAnalyticsOutboxPublisher } from "./modules/analytics-core/infrastr
 import { analyticsConfig } from "./modules/analytics-core/config/analyticsConfig";
 import { startSupportRetentionWorker } from "./modules/support-core/application/supportRetention";
 import { startSupportRulesWorker } from "./modules/support-core/application/supportRules";
+import { startSupportSlaMonitorWorker } from "./modules/support-core/application/supportSlaMonitor";
 import ordersFastifyRoutes from "./modules/orders-core/transport/fastify-routes";
 import pricingFastifyRoutes from "./modules/pricing-core/transport/fastify-routes";
 import supportFastifyRoutes from "./modules/support-core/transport/fastify-routes";
@@ -32,63 +39,46 @@ import integrationsFastifyRoutes from "./modules/integrations-core/transport/fas
 import { integrationOutboxConfig } from "./modules/integrations-core/config/outbox.config";
 import { startIntegrationOutboxPublisher } from "./modules/integrations-core/infrastructure/integration-outbox.publisher";
 
-function resolveAllowedOrigins() {
-  return Array.from(
-    new Set(
-      [
-        process.env.CLIENT_URL,
-        ...(process.env.CORS_ORIGINS || "")
-          .split(",")
-          .map((value) => value.trim()),
-        ...(process.env.ADDITIONAL_ALLOWED_ORIGINS || "")
-          .split(",")
-          .map((value) => value.trim()),
-      ].filter((value): value is string => Boolean(value)),
-    ),
-  );
-}
-
 async function start() {
-  const portFromEnv = Number(process.env.PORT);
-  const port = Number.isFinite(portFromEnv) && portFromEnv > 0 ? portFromEnv : 4000;
-  const trustProxy = process.env.TRUST_PROXY === "false" ? false : true;
+  const env = loadAppEnv();
 
   const fastify = Fastify({
-    trustProxy,
+    trustProxy: env.TRUST_PROXY,
     logger: false,
-    bodyLimit: Number(process.env.FASTIFY_BODY_LIMIT_BYTES || 5 * 1024 * 1024),
+    bodyLimit: env.FASTIFY_BODY_LIMIT_BYTES,
   });
-  const allowedOrigins = resolveAllowedOrigins();
+  fastify.setValidatorCompiler(validatorCompiler);
+  fastify.setSerializerCompiler(serializerCompiler);
+
+  const allowedOrigins = env.allowedOrigins;
   const allowedOriginSet = new Set(allowedOrigins);
 
-  fastify.addHook("onRequest", async (request, reply) => {
-    const origin = String(request.headers.origin || "");
-    if (!origin || allowedOriginSet.size === 0 || allowedOriginSet.has(origin)) {
-      if (origin) {
-        reply.header("Access-Control-Allow-Origin", origin);
-        reply.header("Access-Control-Allow-Credentials", "true");
+  await fastify.register(fastifyCors, {
+    origin: (origin, callback) => {
+      if (!origin) {
+        callback(null, false);
+        return;
       }
-      reply.header("Vary", "Origin");
-      reply.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-      reply.header(
-        "Access-Control-Allow-Headers",
-        [
-          "Authorization",
-          "Content-Type",
-          "Accept",
-          "Origin",
-          "X-Requested-With",
-          "Last-Event-ID",
-          "Cache-Control",
-          "Pragma",
-        ].join(","),
-      );
-      if (request.method === "OPTIONS") {
-        return reply.code(204).send();
+      if (allowedOriginSet.size === 0 || allowedOriginSet.has(origin)) {
+        callback(null, origin);
+        return;
       }
-      return;
-    }
-    return reply.code(403).send({ error: "CORS origin blocked" });
+      callback(null, false);
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: [
+      "Authorization",
+      "Content-Type",
+      "Accept",
+      "Origin",
+      "X-Requested-With",
+      "Last-Event-ID",
+      "Cache-Control",
+      "Pragma",
+    ],
+    maxAge: env.CORS_MAX_AGE_SECONDS,
+    strictPreflight: true,
   });
 
   // First native Fastify route: readiness check without Express bridge.
@@ -157,6 +147,7 @@ async function start() {
   startNotificationRetentionWorker();
   startSupportRetentionWorker();
   startSupportRulesWorker();
+  startSupportSlaMonitorWorker();
   ensureAnalyticsInvalidationConsumer();
   if (analyticsConfig.warmup.inApi) {
     startAnalyticsWarmupLoop();
@@ -174,8 +165,8 @@ async function start() {
     void startAnalyticsWorker({ leaderLock: true });
   }
 
-  await fastify.listen({ port, host: "0.0.0.0" });
-  console.log(`Server running on port ${port}`);
+  await fastify.listen({ port: env.PORT, host: "0.0.0.0" });
+  console.log(`Server running on port ${env.PORT}`);
 }
 
 void start().catch((err) => {

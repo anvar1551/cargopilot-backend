@@ -6,8 +6,9 @@ import {
   secretPayloadToString,
   summarizeSecretPayload,
 } from "./integration-secret.crypto";
+import type { AppUser } from "../../../types/app-user";
 
-type AuthUser = Express.User;
+type AuthUser = AppUser;
 type IntegrationDomain = "carrier" | "sms" | "payment" | "webhook_sink";
 type IntegrationEnvironment = "sandbox" | "production";
 type IntegrationProviderStatus = "active" | "paused" | "disabled";

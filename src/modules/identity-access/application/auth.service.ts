@@ -827,16 +827,53 @@ export async function deleteUserMembershipFromCompany(args: {
   });
   if (!membership) throw new Error("Membership not found");
 
+  const [
+    otherMemberships,
+    customerOrders,
+    driverOrders,
+    invoices,
+    trackingEvents,
+    heldCashCollections,
+    cashCollectionEvents,
+  ] = await prisma.$transaction([
+    prisma.companyMembership.count({
+      where: {
+        userId: args.targetUserId,
+        id: { not: membership.id },
+      },
+    }),
+    prisma.order.count({ where: { customerId: args.targetUserId } }),
+    prisma.order.count({ where: { assignedDriverId: args.targetUserId } }),
+    prisma.invoice.count({ where: { customerId: args.targetUserId } }),
+    prisma.tracking.count({ where: { actorId: args.targetUserId } }),
+    prisma.cashCollection.count({ where: { currentHolderUserId: args.targetUserId } }),
+    prisma.cashCollectionEvent.count({ where: { actorId: args.targetUserId } }),
+  ]);
+  const hasOperationalHistory =
+    otherMemberships > 0 ||
+    customerOrders > 0 ||
+    driverOrders > 0 ||
+    invoices > 0 ||
+    trackingEvents > 0 ||
+    heldCashCollections > 0 ||
+    cashCollectionEvents > 0;
+
   await prisma.$transaction(async (tx) => {
-    await tx.membershipScope.deleteMany({
-      where: { membershipId: membership.id },
+    await tx.userRefreshSession.updateMany({
+      where: { userId: args.targetUserId, revokedAt: null },
+      data: { revokedAt: new Date() },
     });
-    await tx.membershipRole.deleteMany({
-      where: { membershipId: membership.id },
-    });
-    await tx.companyMembership.delete({
-      where: { id: membership.id },
-    });
+
+    if (hasOperationalHistory) {
+      await tx.companyMembership.update({
+        where: { id: membership.id },
+        data: { status: MembershipStatus.suspended },
+      });
+      return;
+    }
+
+    await tx.user.delete({ where: { id: args.targetUserId } });
   });
   clearIdentityAccessCacheForUser(args.targetUserId);
+  return { deleted: !hasOperationalHistory };
 }

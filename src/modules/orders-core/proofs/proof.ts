@@ -9,6 +9,7 @@ import { presignGetObject } from "../../../utils/s3Presign";
 import { getOrderById } from "../repo";
 import { orderError } from "../shared";
 import type { OrderActor } from "../shared";
+import type { AppUser } from "../../../types/app-user";
 
 const PROOF_STAGES = new Set(["pickup", "delivery"]);
 
@@ -33,7 +34,7 @@ type ProofBundle = {
   signature: ProofAsset | null;
 };
 
-type ProofReaderUser = Express.User;
+type ProofReaderUser = AppUser;
 
 
 type SubmitProofInput = {

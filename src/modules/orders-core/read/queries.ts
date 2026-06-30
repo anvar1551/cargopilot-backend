@@ -6,11 +6,12 @@ import {
   listOrders,
   listOrdersForExport,
 } from "../repo";
+import type { AppUser } from "../../../types/app-user";
 
 type ListMode = "page" | "cursor";
 type SearchScope = "fast" | "deep";
 
-export type OrdersCoreActor = Express.User;
+export type OrdersCoreActor = AppUser;
 
 type ListOrdersQuery = {
   q?: string;

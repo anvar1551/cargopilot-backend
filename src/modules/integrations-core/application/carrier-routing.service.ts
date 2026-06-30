@@ -1,8 +1,9 @@
 import { MembershipStatus, Prisma, ServiceType, TransportMode } from "@prisma/client";
 import prisma from "../../../config/prismaClient";
 import { authorize, hasAnyPermissionSync } from "../../identity-access";
+import type { AppUser } from "../../../types/app-user";
 
-type AuthUser = Express.User;
+type AuthUser = AppUser;
 
 const db = prisma as any;
 

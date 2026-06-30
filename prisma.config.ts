@@ -10,6 +10,6 @@ export default defineConfig({
     url: process.env.DATABASE_URL,
   },
   migrate: {
-    url: process.env.DATABASE_URL,
+    url: process.env.DIRECT_URL ?? process.env.DATABASE_URL,
   },
 });

@@ -4,6 +4,7 @@ import prisma from "../../../config/prismaClient";
 import { generateLabelPDF } from "../../../modules/labels-core/application/labelService";
 import { uploadLabel } from "../../../utils/uploadLabel";
 import { orderError } from "../shared";
+import { createLabelFailureSupportTicket } from "../../support-core/application/autoTriage";
 
 type LabelJobLike = {
   id: string;
@@ -324,17 +325,27 @@ async function markJobFailure(job: LabelJobLike, error: unknown) {
   const exhausted = job.attempts >= job.maxAttempts;
   const nextStatus = exhausted ? OrderLabelJobStatus.failed : OrderLabelJobStatus.pending;
   const retryAt = new Date(Date.now() + buildRetryDelayMs(job.attempts));
+  const errorMessage = trimError(error);
 
   await prisma.orderLabelJob.update({
     where: { id: job.id },
     data: {
       status: nextStatus,
-      error: trimError(error),
+      error: errorMessage,
       lockedAt: null,
       lockedBy: null,
       availableAt: exhausted ? new Date() : retryAt,
     },
   });
+
+  if (exhausted) {
+    void createLabelFailureSupportTicket({
+      orderId: job.orderId,
+      jobId: job.id,
+      reason: errorMessage,
+      exhausted: true,
+    }).catch(() => undefined);
+  }
 
   return exhausted;
 }

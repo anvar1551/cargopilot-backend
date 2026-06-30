@@ -3,7 +3,6 @@ import { FastifyPluginAsync } from "fastify";
 
 import { emitDriverUnreadCount } from "../../../modules/realtime-core/realtimeHub";
 import { fastifyAuth } from "../../../modules/identity-access/transport/fastify-auth";
-import { hasPermission } from "../../identity-access";
 import { requireOrderActor } from "../../orders-core/shared";
 import {
   countUnreadUserNotifications,
@@ -15,6 +14,7 @@ import {
 function parseType(value: unknown): NotificationType | null {
   if (value === NotificationType.order) return NotificationType.order;
   if (value === NotificationType.cash) return NotificationType.cash;
+  if (value === NotificationType.support) return NotificationType.support;
   if (value === NotificationType.system) return NotificationType.system;
   return null;
 }
@@ -25,24 +25,9 @@ function parseUnread(value: unknown): boolean | null {
   return null;
 }
 
-async function ensureNotificationsAccess(user?: Express.User | null) {
-  if (!user) {
-    const err = new Error("Unauthorized") as Error & { statusCode: number };
-    err.statusCode = 401;
-    throw err;
-  }
-  const allowed = await hasPermission(user, "drivers.telemetry");
-  if (!allowed) {
-    const err = new Error("Forbidden") as Error & { statusCode: number };
-    err.statusCode = 403;
-    throw err;
-  }
-}
-
 const notificationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get("/", { preHandler: fastifyAuth() }, async (request, reply) => {
     try {
-      await ensureNotificationsAccess(request.user);
       const actor = requireOrderActor(request.user);
       const data = await listUserNotifications(actor.id, {
         limit: (request.query as any)?.limit ? Number((request.query as any).limit) : undefined,
@@ -60,7 +45,6 @@ const notificationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.get("/unread-count", { preHandler: fastifyAuth() }, async (request, reply) => {
     try {
-      await ensureNotificationsAccess(request.user);
       const actor = requireOrderActor(request.user);
       const unreadCount = await countUnreadUserNotifications(
         actor.id,
@@ -76,7 +60,6 @@ const notificationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post("/:id/read", { preHandler: fastifyAuth() }, async (request, reply) => {
     try {
-      await ensureNotificationsAccess(request.user);
       const actor = requireOrderActor(request.user);
       const notificationId = String((request.params as any)?.id ?? "").trim();
       if (!notificationId) return reply.code(400).send({ error: "Missing notification id" });
@@ -95,7 +78,6 @@ const notificationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post("/read-all", { preHandler: fastifyAuth() }, async (request, reply) => {
     try {
-      await ensureNotificationsAccess(request.user);
       const actor = requireOrderActor(request.user);
       const type = parseType((request.body as any)?.type ?? (request.query as any)?.type);
       const updatedCount = await markAllUserNotificationsRead(actor.id, type);

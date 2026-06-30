@@ -20,14 +20,14 @@ ENV PORT=4000
 
 RUN addgroup --system nodejs && adduser --system --ingroup nodejs appuser
 
-COPY --from=build /app/package.json ./package.json
-COPY --from=build /app/package-lock.json ./package-lock.json
-COPY --from=build /app/prisma.config.ts ./prisma.config.ts
-COPY --from=build /app/prisma ./prisma
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/dist ./dist
-COPY docker-entrypoint.sh ./docker-entrypoint.sh
-RUN sed -i 's/\r$//' ./docker-entrypoint.sh && chmod +x ./docker-entrypoint.sh && chown -R appuser:nodejs /app
+COPY --chown=appuser:nodejs --from=build /app/package.json ./package.json
+COPY --chown=appuser:nodejs --from=build /app/package-lock.json ./package-lock.json
+COPY --chown=appuser:nodejs --from=build /app/prisma.config.ts ./prisma.config.ts
+COPY --chown=appuser:nodejs --from=build /app/prisma ./prisma
+COPY --chown=appuser:nodejs --from=build /app/node_modules ./node_modules
+COPY --chown=appuser:nodejs --from=build /app/dist ./dist
+COPY --chown=appuser:nodejs docker-entrypoint.sh ./docker-entrypoint.sh
+RUN sed -i 's/\r$//' ./docker-entrypoint.sh && chmod +x ./docker-entrypoint.sh
 
 EXPOSE 4000
 ENTRYPOINT ["./docker-entrypoint.sh"]
