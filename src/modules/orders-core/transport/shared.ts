@@ -50,11 +50,26 @@ export function parseNumber(value: unknown, fieldName: string, required = false)
 }
 
 export async function emitMutationInvalidation(reason: "order_mutation" | "cash_mutation") {
-  await emitAnalyticsInvalidationForMutation({ reason });
+  try {
+    await emitAnalyticsInvalidationForMutation({ reason });
+  } catch (err) {
+    console.warn("[orders] analytics invalidation skipped", {
+      reason,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 export function sendError(reply: any, err: any, fallback = "Failed") {
-  return reply.code(err?.statusCode ?? 500).send({ error: err?.message ?? fallback });
+  const statusCode = err?.statusCode ?? 500;
+  if (statusCode >= 500) {
+    console.error("[orders] request failed", {
+      fallback,
+      error: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
+    });
+  }
+  return reply.code(statusCode).send({ error: err?.message ?? fallback });
 }
 
 export async function ensureOrderInScope(request: any, orderId: string) {
