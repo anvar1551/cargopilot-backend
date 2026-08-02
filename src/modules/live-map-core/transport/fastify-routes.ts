@@ -11,14 +11,12 @@ import {
 import {
   getLiveMapSnapshot,
 } from "../application/liveMapService";
+import { canDeliverLiveMapEvent } from "../application/liveMapEventPolicy";
 import {
   recordSseConnected,
   recordSseDisconnected,
 } from "../../../modules/observability-core/application/opsMetrics";
-import type {
-  LiveMapViewport,
-  ManagerLiveMapSnapshot,
-} from "../application/liveMap.types";
+import type { LiveMapViewport, ManagerLiveMapSnapshot } from "../application/liveMap.types";
 import { applySseHeaders } from "../../../shared/http/sseHeaders";
 
 function isWritableStream(stream: NodeJS.WritableStream & { destroyed?: boolean }) {
@@ -49,16 +47,6 @@ function parseViewport(raw: Record<string, unknown>): LiveMapViewport | null {
   if (minLat < -90 || maxLat > 90 || minLng < -180 || maxLng > 180) return null;
   if (minLat >= maxLat || minLng >= maxLng) return null;
   return { minLat, minLng, maxLat, maxLng };
-}
-
-function isInViewport(lat: number, lng: number, viewport?: LiveMapViewport | null) {
-  if (!viewport) return true;
-  return (
-    lat >= viewport.minLat &&
-    lat <= viewport.maxLat &&
-    lng >= viewport.minLng &&
-    lng <= viewport.maxLng
-  );
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
@@ -246,6 +234,9 @@ const liveMapFastifyRoutes: FastifyPluginAsync = async (fastify) => {
       if (!actor) return reply.code(401).send({ error: "Unauthorized" });
 
       const viewport = parseViewport((request.query ?? {}) as Record<string, unknown>);
+      const canDeliverEvent = (
+        event: Parameters<typeof canDeliverLiveMapEvent>[0]["event"],
+      ) => canDeliverLiveMapEvent({ actor, event, viewport });
       const clientKey = `${request.user?.id || "anon"}:${request.ip || "ip"}`;
       const lastEventId = String(
         request.headers["last-event-id"] || request.headers["Last-Event-ID"] || "",
@@ -287,7 +278,7 @@ const liveMapFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         : replayLiveMapEventsSince(lastEventId);
       const replayLimit = Math.max(10, Number(process.env.LIVE_MAP_STREAM_REPLAY_MAX_EVENTS || 300));
       const replaySlice = replayEvents.slice(-replayLimit);
-      replaySlice.forEach((event) => {
+      replaySlice.filter(canDeliverEvent).forEach((event) => {
         if (!isWritableStream(reply.raw)) return;
         try {
           reply.raw.write(`id: ${event.id || ""}\n`);
@@ -317,14 +308,7 @@ const liveMapFastifyRoutes: FastifyPluginAsync = async (fastify) => {
       }, heartbeatMs);
 
       const unsubscribe = subscribeLiveMapEvents((event) => {
-        if (!actor.permissionCodes.includes("drivers.manage") && actor.warehouseId) {
-          if (event.type !== "driver_location_upsert") return;
-          const eventWarehouseId = event.payload.warehouseId;
-          if (eventWarehouseId && eventWarehouseId !== actor.warehouseId) return;
-        }
-        if (viewport && event.type === "driver_location_upsert") {
-          if (!isInViewport(event.payload.lat, event.payload.lng, viewport)) return;
-        }
+        if (!canDeliverEvent(event)) return;
         if (!isWritableStream(reply.raw)) return;
         try {
           reply.raw.write(`id: ${event.id || ""}\n`);

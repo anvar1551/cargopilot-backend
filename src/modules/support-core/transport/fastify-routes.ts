@@ -6,8 +6,9 @@ import {
 } from "@prisma/client";
 import { z } from "zod/v4";
 
+import prisma from "../../../config/prismaClient";
 import { fastifyAuth } from "../../../modules/identity-access/transport/fastify-auth";
-import { buildSupportScopeWhere } from "../../identity-access";
+import { buildOrderScopeWhere, buildSupportScopeWhere } from "../../identity-access";
 import {
   addSupportTicketMessage,
   addSupportTicketNote,
@@ -18,6 +19,7 @@ import {
   deleteSupportAssignmentRule,
   deleteSupportQueue,
   getSupportTicketScoped,
+  getSupportSummary,
   listSupportAssignmentRules,
   listSupportAssignees,
   listSupportQueues,
@@ -47,8 +49,8 @@ function actorFromRequest(request: any) {
   return {
     id: request.user?.id || "",
     companyId: request.user?.companyId || null,
-    roleCodes: Array.isArray(request.user?.roleCodes) ? request.user.roleCodes : [],
     permissionCodes: Array.isArray(request.user?.permissionCodes) ? request.user.permissionCodes : [],
+    customerEntityId: request.user?.customerEntityId || null,
     name: request.user?.name,
     email: request.user?.email,
   };
@@ -80,10 +82,103 @@ function asNullableString(value: unknown) {
 }
 
 function companyIdFromRequest(request: any) {
-  return asOptionalString((request.query as any)?.companyId)
+  const requestedCompanyId = asOptionalString((request.query as any)?.companyId)
     || asOptionalString((request.body as any)?.companyId)
     || request.user?.companyId
     || "";
+  const actorCompanyId = String(request.user?.companyId || "").trim();
+  const canOverride = Array.isArray(request.user?.permissionCodes)
+    && request.user.permissionCodes.includes("policy.override");
+  if (requestedCompanyId && requestedCompanyId !== actorCompanyId && !canOverride) {
+    const err = new Error("Forbidden for this company") as Error & { statusCode: number };
+    err.statusCode = 403;
+    throw err;
+  }
+  return requestedCompanyId;
+}
+
+function hasRequestPermission(request: any, permission: string) {
+  return Array.isArray(request.user?.permissionCodes)
+    && request.user.permissionCodes.includes(permission);
+}
+
+async function assertSupportTicketInScope(request: any, ticketId: string) {
+  const scopeWhere = (await buildSupportScopeWhere(request.user!)) ?? { id: "__no_access__" };
+  const ticket = await prisma.supportTicket.findFirst({
+    where: { AND: [{ id: ticketId }, scopeWhere] },
+    select: { id: true },
+  });
+  if (!ticket) {
+    const err = new Error("Support ticket not found") as Error & { statusCode: number };
+    err.statusCode = 404;
+    throw err;
+  }
+}
+
+async function assertOrderReferenceInScope(
+  request: any,
+  reference: { orderId?: string | null; orderNumber?: string | null },
+) {
+  const orderId = String(reference.orderId || "").trim();
+  const orderNumber = String(reference.orderNumber || "").trim().replace(/^#/, "");
+  if (!orderId && !orderNumber) return;
+  const scopeWhere = (await buildOrderScopeWhere(request.user!)) ?? { id: "__no_access__" };
+  const order = await prisma.order.findFirst({
+    where: {
+      AND: [orderId ? { id: orderId } : { orderNumber }, scopeWhere],
+    },
+    select: { id: true },
+  });
+  if (!order) {
+    const err = new Error("Order not found") as Error & { statusCode: number };
+    err.statusCode = 404;
+    throw err;
+  }
+}
+
+async function assertQueueInCompany(request: any, queueId: string) {
+  const canOverride = hasRequestPermission(request, "policy.override");
+  const companyId = String(request.user?.companyId || "").trim();
+  const queue = await prisma.supportQueue.findFirst({
+    where: {
+      id: queueId,
+      ...(canOverride ? {} : { companyId }),
+    },
+    select: { id: true },
+  });
+  if (!queue) {
+    const err = new Error("Support queue not found") as Error & { statusCode: number };
+    err.statusCode = 404;
+    throw err;
+  }
+}
+
+async function assertAssignmentRuleInCompany(request: any, ruleId: string) {
+  const canOverride = hasRequestPermission(request, "policy.override");
+  const companyId = String(request.user?.companyId || "").trim();
+  const rule = await prisma.supportAssignmentRule.findFirst({
+    where: {
+      id: ruleId,
+      ...(canOverride ? {} : { companyId }),
+    },
+    select: { id: true },
+  });
+  if (!rule) {
+    const err = new Error("Support assignment rule not found") as Error & { statusCode: number };
+    err.statusCode = 404;
+    throw err;
+  }
+}
+
+async function assertEligibleSupportOwner(request: any, ownerId?: string | null) {
+  if (!ownerId) return;
+  const assignees = await listSupportAssignees(actorFromRequest(request));
+  if (assignees.some((assignee) => assignee.id === ownerId)) return;
+  const err = new Error("Selected user is not an active support operator for this company") as Error & {
+    statusCode: number;
+  };
+  err.statusCode = 400;
+  throw err;
 }
 
 function sendError(reply: any, err: any, fallbackMessage: string) {
@@ -233,12 +328,30 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get(
     "/assignees",
     { preHandler: fastifyAuth({ permission: "support.view" }) },
-    async (_request, reply) => {
+    async (request, reply) => {
       try {
-        const assignees = await listSupportAssignees();
+        const assignees = await listSupportAssignees(actorFromRequest(request));
         return reply.send({ items: assignees });
       } catch (err: any) {
         return sendError(reply, err, "Failed to load support assignees");
+      }
+    },
+  );
+
+  fastify.get(
+    "/summary",
+    { preHandler: fastifyAuth({ permission: "support.view" }) },
+    async (request, reply) => {
+      try {
+        const scopeWhere = await buildSupportScopeWhere(request.user!);
+        const summary = await getSupportSummary({
+          includeArchived: (request.query as any)?.includeArchived === "true",
+          actor: actorFromRequest(request),
+          scopeWhere,
+        });
+        return reply.send(summary);
+      } catch (err: any) {
+        return sendError(reply, err, "Failed to load support summary");
       }
     },
   );
@@ -265,13 +378,15 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const body = (request.body ?? {}) as Record<string, unknown>;
+        const defaultOwnerId = asNullableString(body.defaultOwnerId) ?? null;
+        await assertEligibleSupportOwner(request, defaultOwnerId);
         const queue = await createSupportQueue({
           companyId: companyIdFromRequest(request),
           code: asNullableString(body.code) ?? null,
           name: String(body.name || "").trim(),
           description: asNullableString(body.description) ?? null,
           defaultOrgId: asNullableString(body.defaultOrgId) ?? null,
-          defaultOwnerId: asNullableString(body.defaultOwnerId) ?? null,
+          defaultOwnerId,
           isDefault: Boolean(body.isDefault),
           isActive: body.isActive !== false,
         });
@@ -290,16 +405,21 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       try {
+        const queueId = String((request.params as any)?.id || "");
+        await assertQueueInCompany(request, queueId);
         const body = (request.body ?? {}) as Record<string, unknown>;
-        const queue = await updateSupportQueue(String((request.params as any)?.id || ""), {
+        const defaultOwnerId = body.defaultOwnerId === undefined
+          ? undefined
+          : asNullableString(body.defaultOwnerId) ?? null;
+        await assertEligibleSupportOwner(request, defaultOwnerId);
+        const queue = await updateSupportQueue(queueId, {
           code: body.code === undefined ? undefined : asNullableString(body.code) ?? null,
           name: body.name === undefined ? undefined : String(body.name || "").trim(),
           description:
             body.description === undefined ? undefined : asNullableString(body.description) ?? null,
           defaultOrgId:
             body.defaultOrgId === undefined ? undefined : asNullableString(body.defaultOrgId) ?? null,
-          defaultOwnerId:
-            body.defaultOwnerId === undefined ? undefined : asNullableString(body.defaultOwnerId) ?? null,
+          defaultOwnerId,
           isDefault: body.isDefault === undefined ? undefined : Boolean(body.isDefault),
           isActive: body.isActive === undefined ? undefined : Boolean(body.isActive),
         });
@@ -318,7 +438,9 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       try {
-        const result = await deleteSupportQueue(String((request.params as any)?.id || ""));
+        const queueId = String((request.params as any)?.id || "");
+        await assertQueueInCompany(request, queueId);
+        const result = await deleteSupportQueue(queueId);
         return reply.send(result);
       } catch (err: any) {
         return sendError(reply, err, "Failed to delete support queue");
@@ -348,15 +470,19 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const body = (request.body ?? {}) as Record<string, unknown>;
+        const queueId = asNullableString(body.queueId) ?? null;
+        if (queueId) await assertQueueInCompany(request, queueId);
+        const defaultOwnerId = asNullableString(body.defaultOwnerId) ?? null;
+        await assertEligibleSupportOwner(request, defaultOwnerId);
         const rule = await createSupportAssignmentRule({
           companyId: companyIdFromRequest(request),
-          queueId: asNullableString(body.queueId) ?? null,
+          queueId,
           name: String(body.name || "").trim(),
           code: asNullableString(body.code) ?? null,
           source: optionalEnumValue(SupportTicketSource, body.source),
           priority: optionalEnumValue(SupportTicketPriority, body.priority),
           routeContains: asNullableString(body.routeContains) ?? null,
-          defaultOwnerId: asNullableString(body.defaultOwnerId) ?? null,
+          defaultOwnerId,
           conditionsJson: typeof body.conditionsJson === "object" && body.conditionsJson !== null
             ? (body.conditionsJson as any)
             : null,
@@ -381,9 +507,17 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       try {
+        const ruleId = String((request.params as any)?.id || "");
+        await assertAssignmentRuleInCompany(request, ruleId);
         const body = (request.body ?? {}) as Record<string, unknown>;
-        const rule = await updateSupportAssignmentRule(String((request.params as any)?.id || ""), {
-          queueId: body.queueId === undefined ? undefined : asNullableString(body.queueId) ?? null,
+        const queueId = body.queueId === undefined ? undefined : asNullableString(body.queueId) ?? null;
+        if (queueId) await assertQueueInCompany(request, queueId);
+        const defaultOwnerId = body.defaultOwnerId === undefined
+          ? undefined
+          : asNullableString(body.defaultOwnerId) ?? null;
+        await assertEligibleSupportOwner(request, defaultOwnerId);
+        const rule = await updateSupportAssignmentRule(ruleId, {
+          queueId,
           name: body.name === undefined ? undefined : String(body.name || "").trim(),
           code: body.code === undefined ? undefined : asNullableString(body.code) ?? null,
           source: body.source === undefined ? undefined : optionalEnumValue(SupportTicketSource, body.source),
@@ -391,8 +525,7 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
             body.priority === undefined ? undefined : optionalEnumValue(SupportTicketPriority, body.priority),
           routeContains:
             body.routeContains === undefined ? undefined : asNullableString(body.routeContains) ?? null,
-          defaultOwnerId:
-            body.defaultOwnerId === undefined ? undefined : asNullableString(body.defaultOwnerId) ?? null,
+          defaultOwnerId,
           conditionsJson:
             body.conditionsJson === undefined
               ? undefined
@@ -417,7 +550,9 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       try {
-        const result = await deleteSupportAssignmentRule(String((request.params as any)?.id || ""));
+        const ruleId = String((request.params as any)?.id || "");
+        await assertAssignmentRuleInCompany(request, ruleId);
+        const result = await deleteSupportAssignmentRule(ruleId);
         return reply.send(result);
       } catch (err: any) {
         return sendError(reply, err, "Failed to delete support assignment rule");
@@ -466,10 +601,13 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const body = (request.body ?? {}) as Record<string, unknown>;
+        const orderId = asNullableString(body.orderId) ?? null;
+        const orderNumber = asNullableString(body.orderNumber) ?? null;
+        await assertOrderReferenceInScope(request, { orderId, orderNumber });
         const ticket = await createSupportTicket(
           {
-            orderId: asNullableString(body.orderId) ?? null,
-            orderNumber: asNullableString(body.orderNumber) ?? null,
+            orderId,
+            orderNumber,
             title: String(body.title || "").trim(),
             summary: asNullableString(body.summary) ?? null,
             priority: asEnumValue(
@@ -477,20 +615,15 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
               body.priority,
               SupportTicketPriority.normal,
             ),
-            source: asEnumValue(
-              SupportTicketSource,
-              body.source,
-              SupportTicketSource.manager,
-            ),
-            status: asEnumValue(
-              SupportTicketStatus,
-              body.status,
-              SupportTicketStatus.open,
-            ),
-            ownerId:
-              body.ownerId === null ? null : asOptionalString(body.ownerId),
-            sourceKey: asNullableString(body.sourceKey) ?? null,
-            companyId: asNullableString(body.companyId) ?? request.user?.companyId ?? null,
+            source: SupportTicketSource.manager,
+            status: SupportTicketStatus.open,
+            ownerId: hasRequestPermission(request, "support.assign")
+              ? body.ownerId === null
+                ? null
+                : asOptionalString(body.ownerId)
+              : undefined,
+            sourceKey: null,
+            companyId: request.user?.companyId ?? null,
           },
           actorFromRequest(request),
         );
@@ -534,13 +667,21 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     { preHandler: fastifyAuth({ permission: "support.update" }) },
     async (request, reply) => {
       try {
+        const ticketId = String((request.params as any)?.id || "");
         const status = asEnumValue(
           SupportTicketStatus,
           (request.body as any)?.status,
           SupportTicketStatus.open,
         );
+        if (status === SupportTicketStatus.resolved && !hasRequestPermission(request, "support.resolve")) {
+          return reply.code(403).send({ error: "Missing permission: support.resolve" });
+        }
+        if (status === SupportTicketStatus.escalated && !hasRequestPermission(request, "support.escalate")) {
+          return reply.code(403).send({ error: "Missing permission: support.escalate" });
+        }
+        await assertSupportTicketInScope(request, ticketId);
         const ticket = await updateSupportTicketStatus(
-          String((request.params as any)?.id || ""),
+          ticketId,
           status,
           actorFromRequest(request),
         );
@@ -555,13 +696,15 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     "/tickets/:id/assign", { preHandler: fastifyAuth({ permission: "support.assign" }) },
     async (request, reply) => {
       try {
+        const ticketId = String((request.params as any)?.id || "");
+        await assertSupportTicketInScope(request, ticketId);
         const body = (request.body ?? {}) as Record<string, unknown>;
         const ownerId =
           body.ownerId === null
             ? null
             : asOptionalString(body.ownerId) || request.user?.id || null;
         const ticket = await assignSupportTicket(
-          String((request.params as any)?.id || ""),
+          ticketId,
           ownerId,
           actorFromRequest(request),
         );
@@ -577,8 +720,10 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     { preHandler: fastifyAuth({ permission: "support.update" }) },
     async (request, reply) => {
       try {
+        const ticketId = String((request.params as any)?.id || "");
+        await assertSupportTicketInScope(request, ticketId);
         const ticket = await addSupportTicketNote(
-          String((request.params as any)?.id || ""),
+          ticketId,
           String((request.body as any)?.body || ""),
           actorFromRequest(request),
         );
@@ -599,8 +744,10 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     { preHandler: fastifyAuth({ permission: "support.update" }) },
     async (request, reply) => {
       try {
+        const ticketId = String((request.params as any)?.id || "");
+        await assertSupportTicketInScope(request, ticketId);
         const ticket = await addSupportTicketMessage(
-          String((request.params as any)?.id || ""),
+          ticketId,
           String((request.body as any)?.body || ""),
           actorFromRequest(request),
         );
@@ -620,8 +767,10 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     "/tickets/:id/escalate", { preHandler: fastifyAuth({ permission: "support.escalate" }) },
     async (request, reply) => {
       try {
+        const ticketId = String((request.params as any)?.id || "");
+        await assertSupportTicketInScope(request, ticketId);
         const ticket = await updateSupportTicketStatus(
-          String((request.params as any)?.id || ""),
+          ticketId,
           SupportTicketStatus.escalated,
           actorFromRequest(request),
         );

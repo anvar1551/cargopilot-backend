@@ -5,7 +5,10 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
 const fastify_1 = __importDefault(require("fastify"));
+const cors_1 = __importDefault(require("@fastify/cors"));
+const type_provider_zod_1 = require("@fastify/type-provider-zod");
 const prismaClient_1 = __importDefault(require("./config/prismaClient"));
+const env_1 = require("./config/env");
 const redis_1 = require("./config/redis");
 const realtimeHub_1 = require("./modules/realtime-core/realtimeHub");
 const notificationRetention_1 = require("./modules/notifications-core/application/notificationRetention");
@@ -16,6 +19,7 @@ const analyticsOutboxPublisher_1 = require("./modules/analytics-core/infrastruct
 const analyticsConfig_1 = require("./modules/analytics-core/config/analyticsConfig");
 const supportRetention_1 = require("./modules/support-core/application/supportRetention");
 const supportRules_1 = require("./modules/support-core/application/supportRules");
+const supportSlaMonitor_1 = require("./modules/support-core/application/supportSlaMonitor");
 const fastify_routes_1 = __importDefault(require("./modules/orders-core/transport/fastify-routes"));
 const fastify_routes_2 = __importDefault(require("./modules/pricing-core/transport/fastify-routes"));
 const fastify_routes_3 = __importDefault(require("./modules/support-core/transport/fastify-routes"));
@@ -36,53 +40,43 @@ const fastify_routes_17 = __importDefault(require("./modules/organizations-core/
 const fastify_routes_18 = __importDefault(require("./modules/integrations-core/transport/fastify-routes"));
 const outbox_config_1 = require("./modules/integrations-core/config/outbox.config");
 const integration_outbox_publisher_1 = require("./modules/integrations-core/infrastructure/integration-outbox.publisher");
-function resolveAllowedOrigins() {
-    return Array.from(new Set([
-        process.env.CLIENT_URL,
-        ...(process.env.CORS_ORIGINS || "")
-            .split(",")
-            .map((value) => value.trim()),
-        ...(process.env.ADDITIONAL_ALLOWED_ORIGINS || "")
-            .split(",")
-            .map((value) => value.trim()),
-    ].filter((value) => Boolean(value))));
-}
 async function start() {
-    const portFromEnv = Number(process.env.PORT);
-    const port = Number.isFinite(portFromEnv) && portFromEnv > 0 ? portFromEnv : 4000;
-    const trustProxy = process.env.TRUST_PROXY === "false" ? false : true;
+    const env = (0, env_1.loadAppEnv)();
     const fastify = (0, fastify_1.default)({
-        trustProxy,
+        trustProxy: env.TRUST_PROXY,
         logger: false,
-        bodyLimit: Number(process.env.FASTIFY_BODY_LIMIT_BYTES || 5 * 1024 * 1024),
+        bodyLimit: env.FASTIFY_BODY_LIMIT_BYTES,
     });
-    const allowedOrigins = resolveAllowedOrigins();
+    fastify.setValidatorCompiler(type_provider_zod_1.validatorCompiler);
+    fastify.setSerializerCompiler(type_provider_zod_1.serializerCompiler);
+    const allowedOrigins = env.allowedOrigins;
     const allowedOriginSet = new Set(allowedOrigins);
-    fastify.addHook("onRequest", async (request, reply) => {
-        const origin = String(request.headers.origin || "");
-        if (!origin || allowedOriginSet.size === 0 || allowedOriginSet.has(origin)) {
-            if (origin) {
-                reply.header("Access-Control-Allow-Origin", origin);
-                reply.header("Access-Control-Allow-Credentials", "true");
+    await fastify.register(cors_1.default, {
+        origin: (origin, callback) => {
+            if (!origin) {
+                callback(null, false);
+                return;
             }
-            reply.header("Vary", "Origin");
-            reply.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-            reply.header("Access-Control-Allow-Headers", [
-                "Authorization",
-                "Content-Type",
-                "Accept",
-                "Origin",
-                "X-Requested-With",
-                "Last-Event-ID",
-                "Cache-Control",
-                "Pragma",
-            ].join(","));
-            if (request.method === "OPTIONS") {
-                return reply.code(204).send();
+            if (allowedOriginSet.size === 0 || allowedOriginSet.has(origin)) {
+                callback(null, origin);
+                return;
             }
-            return;
-        }
-        return reply.code(403).send({ error: "CORS origin blocked" });
+            callback(null, false);
+        },
+        credentials: true,
+        methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allowedHeaders: [
+            "Authorization",
+            "Content-Type",
+            "Accept",
+            "Origin",
+            "X-Requested-With",
+            "Last-Event-ID",
+            "Cache-Control",
+            "Pragma",
+        ],
+        maxAge: env.CORS_MAX_AGE_SECONDS,
+        strictPreflight: true,
     });
     // First native Fastify route: readiness check without Express bridge.
     fastify.get("/api/health", async (_request, reply) => {
@@ -149,6 +143,7 @@ async function start() {
     (0, notificationRetention_1.startNotificationRetentionWorker)();
     (0, supportRetention_1.startSupportRetentionWorker)();
     (0, supportRules_1.startSupportRulesWorker)();
+    (0, supportSlaMonitor_1.startSupportSlaMonitorWorker)();
     (0, analyticsV2Realtime_1.ensureAnalyticsInvalidationConsumer)();
     if (analyticsConfig_1.analyticsConfig.warmup.inApi) {
         (0, analyticsWarmup_1.startAnalyticsWarmupLoop)();
@@ -163,8 +158,8 @@ async function start() {
     if (runAnalyticsWorkerInProcess) {
         void (0, analytics_worker_1.startAnalyticsWorker)({ leaderLock: true });
     }
-    await fastify.listen({ port, host: "0.0.0.0" });
-    console.log(`Server running on port ${port}`);
+    await fastify.listen({ port: env.PORT, host: "0.0.0.0" });
+    console.log(`Server running on port ${env.PORT}`);
 }
 void start().catch((err) => {
     console.error("[server] failed to start", err);

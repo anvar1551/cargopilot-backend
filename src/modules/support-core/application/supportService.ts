@@ -16,8 +16,8 @@ import { createUserNotification } from "../../notifications-core/application/not
 type Actor = {
   id: string;
   companyId?: string | null;
-  roleCodes?: string[];
   permissionCodes?: string[];
+  customerEntityId?: string | null;
   name?: string;
   email?: string;
 };
@@ -69,9 +69,8 @@ function scheduleSupportRefresh(
 }
 
 function supportTenantScope(actor: Actor) {
-  if (Array.isArray(actor.roleCodes) && actor.roleCodes.length > 0) {
-    return `role:${actor.roleCodes.slice().sort().join("|")}`;
-  }
+  const companyId = actorCompanyId(actor);
+  if (companyId) return `company:${companyId}`;
   return actor.id ? `user:${actor.id}` : "global";
 }
 
@@ -147,20 +146,16 @@ function actorId(actor: Actor) {
 }
 
 function getAuthorType(actor: Actor): SupportTicketAuthorType {
-  const roles = new Set(
-    Array.isArray(actor.roleCodes)
-      ? actor.roleCodes.map((value) => String(value || "").trim().toLowerCase())
-      : [],
-  );
+  if (!actorId(actor)) return SupportTicketAuthorType.system;
   const permissions = new Set(
     Array.isArray(actor.permissionCodes)
       ? actor.permissionCodes.map((value) => String(value || "").trim())
       : [],
   );
-  if (roles.has("driver") || permissions.has("drivers.telemetry")) {
+  if (permissions.has("drivers.telemetry")) {
     return SupportTicketAuthorType.driver;
   }
-  if (roles.has("customer") || roles.has("client")) {
+  if (actor.customerEntityId) {
     return SupportTicketAuthorType.customer;
   }
   return SupportTicketAuthorType.support;
@@ -495,53 +490,61 @@ function buildListWhere(args: ListSupportTicketsArgs) {
   return where;
 }
 
-function intFromDb(value: unknown) {
-  if (typeof value === "bigint") return Number(value);
-  if (typeof value === "number") return value;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : 0;
+function combineSupportWhere(
+  scopeWhere: Prisma.SupportTicketWhereInput | null | undefined,
+  condition: Prisma.SupportTicketWhereInput,
+): Prisma.SupportTicketWhereInput {
+  const clauses: Prisma.SupportTicketWhereInput[] = [];
+  if (scopeWhere && Object.keys(scopeWhere).length > 0) clauses.push(scopeWhere);
+  clauses.push(condition);
+  return clauses.length === 1 ? clauses[0] : { AND: clauses };
 }
 
-async function computeSupportSummary(args: { includeArchived?: boolean }) {
+async function computeSupportSummary(args: {
+  includeArchived?: boolean;
+  scopeWhere?: Prisma.SupportTicketWhereInput | null;
+}) {
   const todayStart = new Date(new Date().setHours(0, 0, 0, 0));
   const now = new Date();
-  const archivedFilter = args.includeArchived
-    ? Prisma.empty
-    : Prisma.sql`WHERE "archivedAt" IS NULL`;
+  const visibleWhere = combineSupportWhere(args.scopeWhere, {
+    ...(args.includeArchived ? {} : { archivedAt: null }),
+  });
 
-  const [row] = await prisma.$queryRaw<
-    Array<{
-      open: bigint | number;
-      escalated: bigint | number;
-      waitingCustomer: bigint | number;
-      waitingDriver: bigint | number;
-      resolvedToday: bigint | number;
-      slaRisk: bigint | number;
-    }>
-  >`
-    SELECT
-      COUNT(*) FILTER (WHERE "status" <> 'resolved') AS "open",
-      COUNT(*) FILTER (WHERE "status" = 'escalated') AS "escalated",
-      COUNT(*) FILTER (WHERE "status" = 'waiting_customer') AS "waitingCustomer",
-      COUNT(*) FILTER (WHERE "status" = 'waiting_driver') AS "waitingDriver",
-      COUNT(*) FILTER (
-        WHERE "status" = 'resolved'
-          AND "resolvedAt" >= ${todayStart}
-      ) AS "resolvedToday",
-      COUNT(*) FILTER (
-        WHERE "status" <> 'resolved'
-          AND ("slaPercent" <= 25 OR "slaDueAt" <= ${now})
-      ) AS "slaRisk"
-    FROM "SupportTicket"
-    ${archivedFilter}
-  `;
-
-  const open = intFromDb(row?.open);
-  const escalated = intFromDb(row?.escalated);
-  const waitingCustomer = intFromDb(row?.waitingCustomer);
-  const waitingDriver = intFromDb(row?.waitingDriver);
-  const resolvedToday = intFromDb(row?.resolvedToday);
-  const slaRisk = intFromDb(row?.slaRisk);
+  const [open, escalated, waitingCustomer, waitingDriver, resolvedToday, slaRisk] =
+    await Promise.all([
+      prisma.supportTicket.count({
+        where: combineSupportWhere(visibleWhere, {
+          status: { not: SupportTicketStatus.resolved },
+        }),
+      }),
+      prisma.supportTicket.count({
+        where: combineSupportWhere(visibleWhere, {
+          status: SupportTicketStatus.escalated,
+        }),
+      }),
+      prisma.supportTicket.count({
+        where: combineSupportWhere(visibleWhere, {
+          status: SupportTicketStatus.waiting_customer,
+        }),
+      }),
+      prisma.supportTicket.count({
+        where: combineSupportWhere(visibleWhere, {
+          status: SupportTicketStatus.waiting_driver,
+        }),
+      }),
+      prisma.supportTicket.count({
+        where: combineSupportWhere(visibleWhere, {
+          status: SupportTicketStatus.resolved,
+          resolvedAt: { gte: todayStart },
+        }),
+      }),
+      prisma.supportTicket.count({
+        where: combineSupportWhere(visibleWhere, {
+          status: { not: SupportTicketStatus.resolved },
+          OR: [{ slaPercent: { lte: 25 } }, { slaDueAt: { lte: now } }],
+        }),
+      }),
+    ]);
 
   return {
     open,
@@ -554,8 +557,17 @@ async function computeSupportSummary(args: { includeArchived?: boolean }) {
   };
 }
 
-async function getSupportSummaryCached(args: { includeArchived?: boolean }) {
-  const key = JSON.stringify({ includeArchived: Boolean(args.includeArchived) });
+async function getSupportSummaryCached(args: {
+  includeArchived?: boolean;
+  actor: Actor;
+  scopeWhere?: Prisma.SupportTicketWhereInput | null;
+}) {
+  const key = JSON.stringify({
+    includeArchived: Boolean(args.includeArchived),
+    actorId: args.actor.id,
+    companyId: actorCompanyId(args.actor),
+    scopeWhere: args.scopeWhere ?? null,
+  });
   const result = await getOrComputeSupportCached({
     namespace: "summary",
     key,
@@ -563,6 +575,14 @@ async function getSupportSummaryCached(args: { includeArchived?: boolean }) {
     compute: () => computeSupportSummary(args),
   });
   return result.payload;
+}
+
+export async function getSupportSummary(args: {
+  includeArchived?: boolean;
+  actor: Actor;
+  scopeWhere?: Prisma.SupportTicketWhereInput | null;
+}) {
+  return getSupportSummaryCached(args);
 }
 
 export async function listSupportTickets(args: ListSupportTicketsArgs) {
@@ -577,6 +597,8 @@ export async function listSupportTickets(args: ListSupportTicketsArgs) {
     limit,
     includeArchived: Boolean(args.includeArchived),
     actorId: args.actor.id,
+    companyId: actorCompanyId(args.actor),
+    scopeWhere: args.scopeWhere ?? null,
   });
 
   return getOrComputeSupportCached({
@@ -597,6 +619,8 @@ export async function listSupportTickets(args: ListSupportTicketsArgs) {
       const last = pageRows[pageRows.length - 1];
       const summary = await getSupportSummaryCached({
         includeArchived: Boolean(args.includeArchived),
+        actor: args.actor,
+        scopeWhere: args.scopeWhere,
       });
 
       return {
@@ -1020,6 +1044,35 @@ async function notifySupportUser(input: {
   });
 }
 
+async function findEligibleSupportAssignee(
+  userId: string,
+  companyId: string | null,
+  client: Pick<typeof prisma, "user"> = prisma,
+) {
+  if (!userId || !companyId) return null;
+  return client.user.findFirst({
+    where: {
+      id: userId,
+      memberships: {
+        some: {
+          companyId,
+          status: "active",
+          roles: {
+            some: {
+              role: {
+                rolePermissions: {
+                  some: { permission: { key: "support.update" } },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    select: { id: true, name: true, email: true },
+  });
+}
+
 export async function createSupportTicket(input: CreateSupportTicketInput, actor: Actor) {
   const order = await loadOrderSnapshot({
     orderId: input.orderId,
@@ -1050,11 +1103,15 @@ export async function createSupportTicket(input: CreateSupportTicketInput, actor
     explicitOwnerProvided: input.ownerId !== undefined,
   });
   const assignedOwner = assignment.ownerId
-    ? await prisma.user.findUnique({
-        where: { id: assignment.ownerId },
-        select: { id: true, name: true, email: true },
-      })
+    ? await findEligibleSupportAssignee(assignment.ownerId, companyId)
     : null;
+  if (input.ownerId && !assignedOwner) {
+    const err = new Error("Selected user is not an active support operator for this company") as Error & {
+      statusCode: number;
+    };
+    err.statusCode = 400;
+    throw err;
+  }
   const sla = await resolveSupportSla({
     companyId,
     queueId: assignment.queueId,
@@ -1090,12 +1147,7 @@ export async function createSupportTicket(input: CreateSupportTicketInput, actor
 
     if (existingForOrder) {
       const merged = await prisma.$transaction(async (tx) => {
-        const owner = input.ownerId
-          ? await tx.user.findUnique({
-              where: { id: input.ownerId },
-              select: { id: true, name: true, email: true },
-            })
-          : null;
+        const owner = input.ownerId ? assignedOwner : null;
         const shouldChangeOwner = input.ownerId !== undefined;
         const mergedSummary = input.summary?.trim() || title;
         const mergedStatus =
@@ -1255,18 +1307,22 @@ export async function createSupportTicket(input: CreateSupportTicketInput, actor
   return serializeTicket(created);
 }
 
-export async function listSupportAssignees(): Promise<SupportAssignee[]> {
+export async function listSupportAssignees(actor: Actor): Promise<SupportAssignee[]> {
+  const companyId = actorCompanyId(actor);
+  if (!companyId) return [];
+
   const users = await prisma.user.findMany({
     where: {
       memberships: {
         some: {
+          companyId,
           status: "active",
           roles: {
             some: {
               role: {
                 rolePermissions: {
                   some: {
-                    permission: { key: "support.assign" },
+                    permission: { key: "support.update" },
                   },
                 },
               },
@@ -1337,8 +1393,15 @@ export async function updateSupportTicketStatus(ticketId: string, status: Suppor
 export async function assignSupportTicket(ticketId: string, ownerId: string | null, actor: Actor) {
   const updated = await prisma.$transaction(async (tx) => {
     const owner = ownerId
-      ? await tx.user.findUnique({ where: { id: ownerId }, select: { id: true, name: true, email: true } })
+      ? await findEligibleSupportAssignee(ownerId, actorCompanyId(actor), tx as typeof prisma)
       : null;
+    if (ownerId && !owner) {
+      const err = new Error("Selected user is not an active support operator for this company") as Error & {
+        statusCode: number;
+      };
+      err.statusCode = 400;
+      throw err;
+    }
     const ticket = await tx.supportTicket.update({
       where: { id: ticketId },
       data: {

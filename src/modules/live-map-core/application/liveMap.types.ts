@@ -9,8 +9,8 @@ export type ManagerLiveMapDriver = {
   warehouseIds: string[];
   driverType: "local" | "linehaul";
   liveEnabled: boolean;
-  lat: number;
-  lng: number;
+  lat: number | null;
+  lng: number | null;
   headingDeg: number;
   speedKmh: number;
   lastSeenAt: string;

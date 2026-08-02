@@ -58,10 +58,26 @@ function parseNumber(value, fieldName, required = false) {
     return parsed;
 }
 async function emitMutationInvalidation(reason) {
-    await (0, analyticsInvalidate_1.emitAnalyticsInvalidationForMutation)({ reason });
+    try {
+        await (0, analyticsInvalidate_1.emitAnalyticsInvalidationForMutation)({ reason });
+    }
+    catch (err) {
+        console.warn("[orders] analytics invalidation skipped", {
+            reason,
+            error: err instanceof Error ? err.message : String(err),
+        });
+    }
 }
 function sendError(reply, err, fallback = "Failed") {
-    return reply.code(err?.statusCode ?? 500).send({ error: err?.message ?? fallback });
+    const statusCode = err?.statusCode ?? 500;
+    if (statusCode >= 500) {
+        console.error("[orders] request failed", {
+            fallback,
+            error: err instanceof Error ? err.message : String(err),
+            stack: err instanceof Error ? err.stack : undefined,
+        });
+    }
+    return reply.code(statusCode).send({ error: err?.message ?? fallback });
 }
 async function ensureOrderInScope(request, orderId) {
     const user = request.user;

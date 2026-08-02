@@ -3,9 +3,18 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.getSupportSummary = getSupportSummary;
 exports.listSupportTickets = listSupportTickets;
 exports.getSupportTicket = getSupportTicket;
 exports.getSupportTicketScoped = getSupportTicketScoped;
+exports.listSupportQueues = listSupportQueues;
+exports.createSupportQueue = createSupportQueue;
+exports.updateSupportQueue = updateSupportQueue;
+exports.deleteSupportQueue = deleteSupportQueue;
+exports.listSupportAssignmentRules = listSupportAssignmentRules;
+exports.createSupportAssignmentRule = createSupportAssignmentRule;
+exports.updateSupportAssignmentRule = updateSupportAssignmentRule;
+exports.deleteSupportAssignmentRule = deleteSupportAssignmentRule;
 exports.createSupportTicket = createSupportTicket;
 exports.listSupportAssignees = listSupportAssignees;
 exports.updateSupportTicketStatus = updateSupportTicketStatus;
@@ -18,6 +27,7 @@ const client_1 = require("@prisma/client");
 const supportCache_1 = require("../infrastructure/supportCache");
 const supportRealtime_1 = require("../realtime/supportRealtime");
 const analyticsOutbox_1 = require("../../analytics-core/infrastructure/analyticsOutbox");
+const notificationService_1 = require("../../notifications-core/application/notificationService");
 function scheduleSupportRefresh(reason, ticketId) {
     void (0, supportCache_1.invalidateSupportCache)(ticketId).catch((err) => {
         console.error(`[support] async cache invalidation failed: ${err?.message || "unknown"}`);
@@ -29,9 +39,9 @@ function scheduleSupportRefresh(reason, ticketId) {
     });
 }
 function supportTenantScope(actor) {
-    if (Array.isArray(actor.roleCodes) && actor.roleCodes.length > 0) {
-        return `role:${actor.roleCodes.slice().sort().join("|")}`;
-    }
+    const companyId = actorCompanyId(actor);
+    if (companyId)
+        return `company:${companyId}`;
     return actor.id ? `user:${actor.id}` : "global";
 }
 async function enqueueSupportTicketChangedTx(tx, args) {
@@ -94,19 +104,29 @@ function actorId(actor) {
     return id || null;
 }
 function getAuthorType(actor) {
-    const roles = new Set(Array.isArray(actor.roleCodes)
-        ? actor.roleCodes.map((value) => String(value || "").trim().toLowerCase())
-        : []);
+    if (!actorId(actor))
+        return client_1.SupportTicketAuthorType.system;
     const permissions = new Set(Array.isArray(actor.permissionCodes)
         ? actor.permissionCodes.map((value) => String(value || "").trim())
         : []);
-    if (roles.has("driver") || permissions.has("drivers.telemetry")) {
+    if (permissions.has("drivers.telemetry")) {
         return client_1.SupportTicketAuthorType.driver;
     }
-    if (roles.has("customer") || roles.has("client")) {
+    if (actor.customerEntityId) {
         return client_1.SupportTicketAuthorType.customer;
     }
     return client_1.SupportTicketAuthorType.support;
+}
+function actorCompanyId(actor) {
+    return String(actor.companyId || "").trim() || null;
+}
+function normalizeCode(value) {
+    return String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+        .slice(0, 80);
 }
 function strongestPriority(current, next) {
     const rank = {
@@ -118,12 +138,89 @@ function strongestPriority(current, next) {
     const nextPriority = next || client_1.SupportTicketPriority.normal;
     return rank[nextPriority] > rank[currentPriority] ? nextPriority : currentPriority;
 }
+function fallbackSlaTargetMinutes(priority) {
+    switch (priority) {
+        case client_1.SupportTicketPriority.urgent:
+            return 2 * 60;
+        case client_1.SupportTicketPriority.high:
+            return 8 * 60;
+        case client_1.SupportTicketPriority.normal:
+        default:
+            return 24 * 60;
+    }
+}
+async function resolveSupportSla(args) {
+    const companyId = String(args.companyId || "").trim();
+    const queueId = String(args.queueId || "").trim() || null;
+    let targetMinutes = fallbackSlaTargetMinutes(args.priority);
+    let policyId = null;
+    if (companyId) {
+        const policies = await prismaClient_1.default.supportSlaPolicy.findMany({
+            where: {
+                companyId,
+                priority: args.priority,
+                isActive: true,
+                OR: queueId ? [{ queueId }, { queueId: null }] : [{ queueId: null }],
+            },
+            orderBy: [{ queueId: "desc" }, { createdAt: "asc" }],
+            take: 10,
+            select: { id: true, queueId: true, targetMinutes: true },
+        });
+        const policy = (queueId ? policies.find((item) => item.queueId === queueId) : null)
+            ?? policies.find((item) => item.queueId === null)
+            ?? null;
+        if (policy && Number.isFinite(policy.targetMinutes) && policy.targetMinutes > 0) {
+            targetMinutes = policy.targetMinutes;
+            policyId = policy.id;
+        }
+    }
+    return {
+        policyId,
+        targetMinutes,
+        dueAt: new Date(args.from.getTime() + targetMinutes * 60000),
+    };
+}
 function buildRoute(order) {
     const from = String(order?.pickupAddress || "").trim();
     const to = String(order?.dropoffAddress || "").trim();
     if (from && to)
         return `${from} -> ${to}`;
     return from || to || null;
+}
+function asObject(value) {
+    return value && typeof value === "object" && !Array.isArray(value)
+        ? value
+        : {};
+}
+function conditionValues(value) {
+    if (Array.isArray(value)) {
+        return value.map((item) => String(item ?? "").trim()).filter(Boolean);
+    }
+    const raw = String(value ?? "").trim();
+    return raw ? [raw] : [];
+}
+function ruleConditionsMatch(conditions, args) {
+    const object = asObject(conditions);
+    const routingKeys = conditionValues(object.routingKey).map((value) => value.toLowerCase());
+    if (routingKeys.length) {
+        const routingKey = String(args.routingKey || "").trim().toLowerCase();
+        if (!routingKey || !routingKeys.includes(routingKey))
+            return false;
+    }
+    const sourceKeyPrefixes = conditionValues(object.sourceKeyPrefix).map((value) => value.toLowerCase());
+    if (sourceKeyPrefixes.length) {
+        const sourceKey = String(args.sourceKey || "").trim().toLowerCase();
+        if (!sourceKey || !sourceKeyPrefixes.some((prefix) => sourceKey.startsWith(prefix))) {
+            return false;
+        }
+    }
+    const titleNeedles = conditionValues(object.titleContains).map((value) => value.toLowerCase());
+    if (titleNeedles.length) {
+        const title = String(args.title || "").trim().toLowerCase();
+        if (!title || !titleNeedles.some((needle) => title.includes(needle)))
+            return false;
+    }
+    return true;
 }
 function serializeTicket(ticket) {
     const messages = Array.isArray(ticket.messages) ? ticket.messages : [];
@@ -146,6 +243,11 @@ function serializeTicket(ticket) {
         warehouseId: ticket.warehouseId,
         ownerId: ticket.ownerId,
         ownerName: ticket.ownerName,
+        ownerOrgId: ticket.ownerOrgId,
+        assignedOrgId: ticket.assignedOrgId,
+        queueId: ticket.queueId,
+        queueCode: ticket.queue?.code ?? null,
+        queueName: ticket.queue?.name ?? null,
         customerName: ticket.customerName,
         companyName: ticket.companyName,
         route: ticket.routeSnapshot,
@@ -203,6 +305,16 @@ const ticketListSelect = {
     warehouseId: true,
     ownerId: true,
     ownerName: true,
+    ownerOrgId: true,
+    assignedOrgId: true,
+    queueId: true,
+    queue: {
+        select: {
+            id: true,
+            code: true,
+            name: true,
+        },
+    },
     customerName: true,
     companyName: true,
     routeSnapshot: true,
@@ -295,43 +407,53 @@ function buildListWhere(args) {
     }
     return where;
 }
-function intFromDb(value) {
-    if (typeof value === "bigint")
-        return Number(value);
-    if (typeof value === "number")
-        return value;
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : 0;
+function combineSupportWhere(scopeWhere, condition) {
+    const clauses = [];
+    if (scopeWhere && Object.keys(scopeWhere).length > 0)
+        clauses.push(scopeWhere);
+    clauses.push(condition);
+    return clauses.length === 1 ? clauses[0] : { AND: clauses };
 }
 async function computeSupportSummary(args) {
     const todayStart = new Date(new Date().setHours(0, 0, 0, 0));
     const now = new Date();
-    const archivedFilter = args.includeArchived
-        ? client_1.Prisma.empty
-        : client_1.Prisma.sql `WHERE "archivedAt" IS NULL`;
-    const [row] = await prismaClient_1.default.$queryRaw `
-    SELECT
-      COUNT(*) FILTER (WHERE "status" <> 'resolved') AS "open",
-      COUNT(*) FILTER (WHERE "status" = 'escalated') AS "escalated",
-      COUNT(*) FILTER (WHERE "status" = 'waiting_customer') AS "waitingCustomer",
-      COUNT(*) FILTER (WHERE "status" = 'waiting_driver') AS "waitingDriver",
-      COUNT(*) FILTER (
-        WHERE "status" = 'resolved'
-          AND "resolvedAt" >= ${todayStart}
-      ) AS "resolvedToday",
-      COUNT(*) FILTER (
-        WHERE "status" <> 'resolved'
-          AND ("slaPercent" <= 25 OR "slaDueAt" <= ${now})
-      ) AS "slaRisk"
-    FROM "SupportTicket"
-    ${archivedFilter}
-  `;
-    const open = intFromDb(row?.open);
-    const escalated = intFromDb(row?.escalated);
-    const waitingCustomer = intFromDb(row?.waitingCustomer);
-    const waitingDriver = intFromDb(row?.waitingDriver);
-    const resolvedToday = intFromDb(row?.resolvedToday);
-    const slaRisk = intFromDb(row?.slaRisk);
+    const visibleWhere = combineSupportWhere(args.scopeWhere, {
+        ...(args.includeArchived ? {} : { archivedAt: null }),
+    });
+    const [open, escalated, waitingCustomer, waitingDriver, resolvedToday, slaRisk] = await Promise.all([
+        prismaClient_1.default.supportTicket.count({
+            where: combineSupportWhere(visibleWhere, {
+                status: { not: client_1.SupportTicketStatus.resolved },
+            }),
+        }),
+        prismaClient_1.default.supportTicket.count({
+            where: combineSupportWhere(visibleWhere, {
+                status: client_1.SupportTicketStatus.escalated,
+            }),
+        }),
+        prismaClient_1.default.supportTicket.count({
+            where: combineSupportWhere(visibleWhere, {
+                status: client_1.SupportTicketStatus.waiting_customer,
+            }),
+        }),
+        prismaClient_1.default.supportTicket.count({
+            where: combineSupportWhere(visibleWhere, {
+                status: client_1.SupportTicketStatus.waiting_driver,
+            }),
+        }),
+        prismaClient_1.default.supportTicket.count({
+            where: combineSupportWhere(visibleWhere, {
+                status: client_1.SupportTicketStatus.resolved,
+                resolvedAt: { gte: todayStart },
+            }),
+        }),
+        prismaClient_1.default.supportTicket.count({
+            where: combineSupportWhere(visibleWhere, {
+                status: { not: client_1.SupportTicketStatus.resolved },
+                OR: [{ slaPercent: { lte: 25 } }, { slaDueAt: { lte: now } }],
+            }),
+        }),
+    ]);
     return {
         open,
         escalated,
@@ -343,7 +465,12 @@ async function computeSupportSummary(args) {
     };
 }
 async function getSupportSummaryCached(args) {
-    const key = JSON.stringify({ includeArchived: Boolean(args.includeArchived) });
+    const key = JSON.stringify({
+        includeArchived: Boolean(args.includeArchived),
+        actorId: args.actor.id,
+        companyId: actorCompanyId(args.actor),
+        scopeWhere: args.scopeWhere ?? null,
+    });
     const result = await (0, supportCache_1.getOrComputeSupportCached)({
         namespace: "summary",
         key,
@@ -351,6 +478,9 @@ async function getSupportSummaryCached(args) {
         compute: () => computeSupportSummary(args),
     });
     return result.payload;
+}
+async function getSupportSummary(args) {
+    return getSupportSummaryCached(args);
 }
 async function listSupportTickets(args) {
     const limit = normalizeLimit(args.limit);
@@ -364,6 +494,8 @@ async function listSupportTickets(args) {
         limit,
         includeArchived: Boolean(args.includeArchived),
         actorId: args.actor.id,
+        companyId: actorCompanyId(args.actor),
+        scopeWhere: args.scopeWhere ?? null,
     });
     return (0, supportCache_1.getOrComputeSupportCached)({
         namespace: "list",
@@ -383,6 +515,8 @@ async function listSupportTickets(args) {
             const last = pageRows[pageRows.length - 1];
             const summary = await getSupportSummaryCached({
                 includeArchived: Boolean(args.includeArchived),
+                actor: args.actor,
+                scopeWhere: args.scopeWhere,
             });
             return {
                 items,
@@ -443,11 +577,313 @@ async function loadOrderSnapshot(input) {
             customerEntityId: true,
             assignedDriverId: true,
             currentWarehouseId: true,
+            ownerOrgId: true,
+            assignedOrgId: true,
             customer: { select: { name: true, email: true } },
             customerEntity: { select: { name: true, email: true } },
             assignedDriver: { select: { name: true, email: true } },
             currentWarehouse: { select: { name: true, location: true } },
         },
+    });
+}
+function serializeSupportQueue(queue) {
+    return {
+        id: queue.id,
+        companyId: queue.companyId,
+        code: queue.code,
+        name: queue.name,
+        description: queue.description ?? null,
+        defaultOrgId: queue.defaultOrgId ?? null,
+        defaultOrgName: queue.defaultOrg?.name ?? null,
+        defaultOwnerId: queue.defaultOwnerId ?? null,
+        isDefault: Boolean(queue.isDefault),
+        isActive: Boolean(queue.isActive),
+        createdAt: queue.createdAt?.toISOString?.() ?? null,
+        updatedAt: queue.updatedAt?.toISOString?.() ?? null,
+    };
+}
+function serializeSupportAssignmentRule(rule) {
+    return {
+        id: rule.id,
+        companyId: rule.companyId,
+        queueId: rule.queueId ?? null,
+        queueCode: rule.queue?.code ?? null,
+        queueName: rule.queue?.name ?? null,
+        name: rule.name,
+        code: rule.code,
+        source: rule.source ?? null,
+        priority: rule.priority ?? null,
+        routeContains: rule.routeContains ?? null,
+        defaultOwnerId: rule.defaultOwnerId ?? null,
+        conditionsJson: rule.conditionsJson ?? null,
+        sortOrder: rule.sortOrder,
+        isActive: Boolean(rule.isActive),
+        createdAt: rule.createdAt?.toISOString?.() ?? null,
+        updatedAt: rule.updatedAt?.toISOString?.() ?? null,
+    };
+}
+async function listSupportQueues(companyId) {
+    const normalizedCompanyId = String(companyId || "").trim();
+    if (!normalizedCompanyId)
+        throw new Error("companyId is required");
+    const rows = await prismaClient_1.default.supportQueue.findMany({
+        where: { companyId: normalizedCompanyId },
+        orderBy: [{ isDefault: "desc" }, { name: "asc" }],
+        include: { defaultOrg: { select: { id: true, name: true } } },
+    });
+    return rows.map(serializeSupportQueue);
+}
+async function createSupportQueue(input) {
+    const companyId = String(input.companyId || "").trim();
+    const name = String(input.name || "").trim();
+    const code = normalizeCode(input.code || name);
+    if (!companyId)
+        throw new Error("companyId is required");
+    if (!name)
+        throw new Error("Queue name is required");
+    if (!code)
+        throw new Error("Queue code is required");
+    const queue = await prismaClient_1.default.$transaction(async (tx) => {
+        if (input.isDefault) {
+            await tx.supportQueue.updateMany({
+                where: { companyId, isDefault: true },
+                data: { isDefault: false },
+            });
+        }
+        return tx.supportQueue.create({
+            data: {
+                companyId,
+                code,
+                name,
+                description: input.description?.trim() || null,
+                defaultOrgId: input.defaultOrgId || null,
+                defaultOwnerId: input.defaultOwnerId || null,
+                isDefault: Boolean(input.isDefault),
+                isActive: input.isActive !== false,
+            },
+            include: { defaultOrg: { select: { id: true, name: true } } },
+        });
+    });
+    await (0, supportCache_1.invalidateSupportCache)();
+    return serializeSupportQueue(queue);
+}
+async function updateSupportQueue(id, input) {
+    const queueId = String(id || "").trim();
+    if (!queueId)
+        throw new Error("queue id is required");
+    const existing = await prismaClient_1.default.supportQueue.findUnique({
+        where: { id: queueId },
+        select: { id: true, companyId: true },
+    });
+    if (!existing)
+        throw new Error("Support queue not found");
+    const queue = await prismaClient_1.default.$transaction(async (tx) => {
+        if (input.isDefault) {
+            await tx.supportQueue.updateMany({
+                where: { companyId: existing.companyId, isDefault: true, id: { not: queueId } },
+                data: { isDefault: false },
+            });
+        }
+        return tx.supportQueue.update({
+            where: { id: queueId },
+            data: {
+                ...(input.code !== undefined ? { code: normalizeCode(input.code || "") } : {}),
+                ...(input.name !== undefined ? { name: String(input.name || "").trim() } : {}),
+                ...(input.description !== undefined
+                    ? { description: input.description?.trim() || null }
+                    : {}),
+                ...(input.defaultOrgId !== undefined ? { defaultOrgId: input.defaultOrgId || null } : {}),
+                ...(input.defaultOwnerId !== undefined ? { defaultOwnerId: input.defaultOwnerId || null } : {}),
+                ...(input.isDefault !== undefined ? { isDefault: Boolean(input.isDefault) } : {}),
+                ...(input.isActive !== undefined ? { isActive: Boolean(input.isActive) } : {}),
+            },
+            include: { defaultOrg: { select: { id: true, name: true } } },
+        });
+    });
+    await (0, supportCache_1.invalidateSupportCache)();
+    return serializeSupportQueue(queue);
+}
+async function deleteSupportQueue(id) {
+    const queueId = String(id || "").trim();
+    if (!queueId)
+        throw new Error("queue id is required");
+    await prismaClient_1.default.supportQueue.delete({ where: { id: queueId } });
+    await (0, supportCache_1.invalidateSupportCache)();
+    return { success: true };
+}
+async function listSupportAssignmentRules(companyId) {
+    const normalizedCompanyId = String(companyId || "").trim();
+    if (!normalizedCompanyId)
+        throw new Error("companyId is required");
+    const rows = await prismaClient_1.default.supportAssignmentRule.findMany({
+        where: { companyId: normalizedCompanyId },
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        include: { queue: { select: { id: true, code: true, name: true } } },
+    });
+    return rows.map(serializeSupportAssignmentRule);
+}
+async function createSupportAssignmentRule(input) {
+    const companyId = String(input.companyId || "").trim();
+    const name = String(input.name || "").trim();
+    const code = normalizeCode(input.code || name);
+    if (!companyId)
+        throw new Error("companyId is required");
+    if (!name)
+        throw new Error("Rule name is required");
+    if (!code)
+        throw new Error("Rule code is required");
+    const rule = await prismaClient_1.default.supportAssignmentRule.create({
+        data: {
+            companyId,
+            queueId: input.queueId || null,
+            name,
+            code,
+            source: input.source || null,
+            priority: input.priority || null,
+            routeContains: input.routeContains?.trim() || null,
+            defaultOwnerId: input.defaultOwnerId || null,
+            conditionsJson: input.conditionsJson == null ? client_1.Prisma.JsonNull : input.conditionsJson,
+            sortOrder: Number.isFinite(Number(input.sortOrder)) ? Number(input.sortOrder) : 100,
+            isActive: input.isActive !== false,
+        },
+        include: { queue: { select: { id: true, code: true, name: true } } },
+    });
+    await (0, supportCache_1.invalidateSupportCache)();
+    return serializeSupportAssignmentRule(rule);
+}
+async function updateSupportAssignmentRule(id, input) {
+    const ruleId = String(id || "").trim();
+    if (!ruleId)
+        throw new Error("rule id is required");
+    const rule = await prismaClient_1.default.supportAssignmentRule.update({
+        where: { id: ruleId },
+        data: {
+            ...(input.queueId !== undefined ? { queueId: input.queueId || null } : {}),
+            ...(input.name !== undefined ? { name: String(input.name || "").trim() } : {}),
+            ...(input.code !== undefined ? { code: normalizeCode(input.code || "") } : {}),
+            ...(input.source !== undefined ? { source: input.source || null } : {}),
+            ...(input.priority !== undefined ? { priority: input.priority || null } : {}),
+            ...(input.routeContains !== undefined
+                ? { routeContains: input.routeContains?.trim() || null }
+                : {}),
+            ...(input.defaultOwnerId !== undefined ? { defaultOwnerId: input.defaultOwnerId || null } : {}),
+            ...(input.conditionsJson !== undefined
+                ? { conditionsJson: input.conditionsJson == null ? client_1.Prisma.JsonNull : input.conditionsJson }
+                : {}),
+            ...(input.sortOrder !== undefined ? { sortOrder: Number(input.sortOrder) || 100 } : {}),
+            ...(input.isActive !== undefined ? { isActive: Boolean(input.isActive) } : {}),
+        },
+        include: { queue: { select: { id: true, code: true, name: true } } },
+    });
+    await (0, supportCache_1.invalidateSupportCache)();
+    return serializeSupportAssignmentRule(rule);
+}
+async function deleteSupportAssignmentRule(id) {
+    const ruleId = String(id || "").trim();
+    if (!ruleId)
+        throw new Error("rule id is required");
+    await prismaClient_1.default.supportAssignmentRule.delete({ where: { id: ruleId } });
+    await (0, supportCache_1.invalidateSupportCache)();
+    return { success: true };
+}
+async function resolveSupportAssignment(args) {
+    const companyId = String(args.companyId || "").trim();
+    if (!companyId) {
+        return {
+            queueId: null,
+            ownerOrgId: null,
+            assignedOrgId: null,
+            ownerId: args.explicitOwnerProvided ? args.explicitOwnerId ?? null : null,
+            assignmentSource: "none",
+        };
+    }
+    const route = String(args.routeSnapshot || "").toLowerCase();
+    const rules = await prismaClient_1.default.supportAssignmentRule.findMany({
+        where: { companyId, isActive: true },
+        orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+        include: { queue: true },
+        take: 100,
+    });
+    const matchedRule = rules.find((rule) => {
+        if (rule.source && rule.source !== args.source)
+            return false;
+        if (rule.priority && rule.priority !== args.priority)
+            return false;
+        const routeNeedle = String(rule.routeContains || "").trim().toLowerCase();
+        if (routeNeedle && !route.includes(routeNeedle))
+            return false;
+        if (!ruleConditionsMatch(rule.conditionsJson, {
+            routingKey: args.routingKey,
+            sourceKey: args.sourceKey,
+            title: args.title,
+        })) {
+            return false;
+        }
+        return true;
+    });
+    const fallbackQueue = matchedRule?.queue
+        ?? await prismaClient_1.default.supportQueue.findFirst({
+            where: { companyId, isActive: true, isDefault: true },
+            orderBy: [{ createdAt: "asc" }],
+        })
+        ?? await prismaClient_1.default.supportQueue.findFirst({
+            where: { companyId, isActive: true },
+            orderBy: [{ createdAt: "asc" }],
+        });
+    const ownerId = args.explicitOwnerProvided
+        ? args.explicitOwnerId ?? null
+        : matchedRule?.defaultOwnerId || fallbackQueue?.defaultOwnerId || null;
+    return {
+        queueId: fallbackQueue?.id ?? null,
+        ownerOrgId: companyId,
+        assignedOrgId: fallbackQueue?.defaultOrgId ?? null,
+        ownerId,
+        assignmentSource: matchedRule ? "rule" : fallbackQueue ? "default_queue" : "company",
+        assignmentRuleId: matchedRule?.id ?? null,
+    };
+}
+async function notifySupportUser(input) {
+    const userId = String(input.userId || "").trim();
+    if (!userId)
+        return;
+    await (0, notificationService_1.createUserNotification)({
+        userId,
+        type: client_1.NotificationType.support,
+        title: input.title,
+        body: input.body,
+        orderId: input.orderId ?? null,
+        data: {
+            ticketId: input.ticketId,
+            ticketNumber: input.ticketNumber ?? null,
+            reason: input.reason,
+        },
+    }).catch((err) => {
+        console.error(`[support] notification failed: ${err?.message || "unknown"}`);
+    });
+}
+async function findEligibleSupportAssignee(userId, companyId, client = prismaClient_1.default) {
+    if (!userId || !companyId)
+        return null;
+    return client.user.findFirst({
+        where: {
+            id: userId,
+            memberships: {
+                some: {
+                    companyId,
+                    status: "active",
+                    roles: {
+                        some: {
+                            role: {
+                                rolePermissions: {
+                                    some: { permission: { key: "support.update" } },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+        select: { id: true, name: true, email: true },
     });
 }
 async function createSupportTicket(input, actor) {
@@ -462,7 +898,38 @@ async function createSupportTicket(input, actor) {
     if ((input.orderId || input.orderNumber) && !order) {
         throw new Error("Order not found");
     }
+    const priority = input.priority || client_1.SupportTicketPriority.normal;
+    const source = input.source || client_1.SupportTicketSource.manager;
+    const status = input.status || client_1.SupportTicketStatus.open;
     const sourceKey = String(input.sourceKey || "").trim() || null;
+    const routingKey = String(input.routingKey || "").trim() || null;
+    const routeSnapshot = buildRoute(order);
+    const companyId = String(input.companyId || order?.ownerOrgId || actorCompanyId(actor) || "").trim() || null;
+    const assignment = await resolveSupportAssignment({
+        companyId,
+        source,
+        priority,
+        routeSnapshot,
+        sourceKey,
+        routingKey,
+        title,
+        explicitOwnerId: input.ownerId ?? null,
+        explicitOwnerProvided: input.ownerId !== undefined,
+    });
+    const assignedOwner = assignment.ownerId
+        ? await findEligibleSupportAssignee(assignment.ownerId, companyId)
+        : null;
+    if (input.ownerId && !assignedOwner) {
+        const err = new Error("Selected user is not an active support operator for this company");
+        err.statusCode = 400;
+        throw err;
+    }
+    const sla = await resolveSupportSla({
+        companyId,
+        queueId: assignment.queueId,
+        priority,
+        from: now,
+    });
     if (sourceKey) {
         const existing = await prismaClient_1.default.supportTicket.findUnique({
             where: { sourceKey },
@@ -477,7 +944,7 @@ async function createSupportTicket(input, actor) {
             return serializeTicket(existing);
         }
     }
-    if (order?.id) {
+    if (order?.id && !sourceKey) {
         const existingForOrder = await prismaClient_1.default.supportTicket.findFirst({
             where: {
                 orderId: order.id,
@@ -489,18 +956,21 @@ async function createSupportTicket(input, actor) {
         });
         if (existingForOrder) {
             const merged = await prismaClient_1.default.$transaction(async (tx) => {
-                const owner = input.ownerId
-                    ? await tx.user.findUnique({
-                        where: { id: input.ownerId },
-                        select: { id: true, name: true, email: true },
-                    })
-                    : null;
+                const owner = input.ownerId ? assignedOwner : null;
                 const shouldChangeOwner = input.ownerId !== undefined;
                 const mergedSummary = input.summary?.trim() || title;
                 const mergedStatus = input.status === client_1.SupportTicketStatus.escalated
                     ? client_1.SupportTicketStatus.escalated
                     : existingForOrder.status;
                 const mergedPriority = strongestPriority(existingForOrder.priority, input.priority);
+                const mergedSla = mergedPriority !== existingForOrder.priority || !existingForOrder.slaDueAt
+                    ? await resolveSupportSla({
+                        companyId,
+                        queueId: existingForOrder.queueId,
+                        priority: mergedPriority,
+                        from: now,
+                    })
+                    : null;
                 const ticket = await tx.supportTicket.update({
                     where: { id: existingForOrder.id },
                     data: {
@@ -513,6 +983,9 @@ async function createSupportTicket(input, actor) {
                         lastMessage: mergedSummary,
                         lastReplyBy: getAuthorType(actor),
                         lastActivityAt: now,
+                        ...(mergedSla
+                            ? { slaDueAt: mergedSla.dueAt, slaPercent: 100 }
+                            : {}),
                     },
                     select: ticketListSelect,
                 });
@@ -526,8 +999,12 @@ async function createSupportTicket(input, actor) {
                         actorName: actorName(actor),
                         body: `Merged new support request: ${title}`,
                         metadata: {
-                            source: input.source || client_1.SupportTicketSource.manager,
-                            requestedPriority: input.priority || client_1.SupportTicketPriority.normal,
+                            source,
+                            sourceKey,
+                            routingKey,
+                            requestedPriority: priority,
+                            slaPolicyId: mergedSla?.policyId ?? null,
+                            slaTargetMinutes: mergedSla?.targetMinutes ?? null,
                             summary: input.summary?.trim() || null,
                         },
                     },
@@ -539,7 +1016,8 @@ async function createSupportTicket(input, actor) {
                     payload: {
                         status: mergedStatus,
                         priority: mergedPriority,
-                        source: input.source || client_1.SupportTicketSource.manager,
+                        source,
+                        slaPolicyId: mergedSla?.policyId ?? null,
                     },
                 });
                 return ticket;
@@ -557,25 +1035,28 @@ async function createSupportTicket(input, actor) {
                 orderId: order?.id ?? null,
                 title,
                 summary: input.summary?.trim() || null,
-                priority: input.priority || client_1.SupportTicketPriority.normal,
-                status: input.status || client_1.SupportTicketStatus.open,
-                source: input.source || client_1.SupportTicketSource.manager,
+                priority,
+                status,
+                source,
                 customerUserId: order?.customerId ?? null,
                 customerEntityId: order?.customerEntityId ?? null,
                 driverId: order?.assignedDriverId ?? null,
                 warehouseId: order?.currentWarehouseId ?? null,
-                ownerId: input.ownerId === undefined ? actor.id : input.ownerId,
-                ownerName: input.ownerId === null ? null : actorName(actor),
+                ownerOrgId: assignment.ownerOrgId,
+                assignedOrgId: assignment.assignedOrgId,
+                queueId: assignment.queueId,
+                ownerId: assignedOwner?.id ?? null,
+                ownerName: assignedOwner?.name || assignedOwner?.email || null,
                 customerName: order?.customerEntity?.name || order?.customer?.name || null,
                 companyName: order?.customerEntity?.name || order?.customer?.email || null,
-                routeSnapshot: buildRoute(order),
+                routeSnapshot,
                 driverName: order?.assignedDriver?.name || null,
                 driverPhone: order?.assignedDriver?.email || null,
                 warehouseLabel: order?.currentWarehouse?.name || null,
                 lastMessage: input.summary?.trim() || title,
                 lastReplyBy: getAuthorType(actor),
                 slaPercent: 100,
-                slaDueAt: new Date(now.getTime() + 4 * 60 * 60 * 1000),
+                slaDueAt: sla.dueAt,
                 lastActivityAt: now,
             },
             select: ticketListSelect,
@@ -587,7 +1068,17 @@ async function createSupportTicket(input, actor) {
                 actorId: actorId(actor),
                 actorName: actorName(actor),
                 body: "Ticket created",
-                metadata: { source: input.source || client_1.SupportTicketSource.manager },
+                metadata: {
+                    source,
+                    queueId: assignment.queueId,
+                    assignedOrgId: assignment.assignedOrgId,
+                    sourceKey,
+                    routingKey,
+                    assignmentSource: assignment.assignmentSource,
+                    assignmentRuleId: assignment.assignmentRuleId ?? null,
+                    slaPolicyId: sla.policyId,
+                    slaTargetMinutes: sla.targetMinutes,
+                },
             },
         });
         await enqueueSupportTicketChangedTx(tx, {
@@ -597,26 +1088,40 @@ async function createSupportTicket(input, actor) {
             payload: {
                 status: ticket.status,
                 priority: ticket.priority,
-                source: input.source || client_1.SupportTicketSource.manager,
+                source,
+                queueId: assignment.queueId,
             },
         });
         return ticket;
     });
     scheduleSupportRefresh("ticket_created", created.id);
+    void notifySupportUser({
+        userId: created.ownerId,
+        ticketId: created.id,
+        ticketNumber: created.ticketNumber,
+        title: `New support ticket ${created.ticketNumber}`,
+        body: created.title,
+        orderId: created.orderId,
+        reason: "ticket_created",
+    });
     return serializeTicket(created);
 }
-async function listSupportAssignees() {
+async function listSupportAssignees(actor) {
+    const companyId = actorCompanyId(actor);
+    if (!companyId)
+        return [];
     const users = await prismaClient_1.default.user.findMany({
         where: {
             memberships: {
                 some: {
+                    companyId,
                     status: "active",
                     roles: {
                         some: {
                             role: {
                                 rolePermissions: {
                                     some: {
-                                        permission: { key: "support.assign" },
+                                        permission: { key: "support.update" },
                                     },
                                 },
                             },
@@ -670,13 +1175,27 @@ async function updateSupportTicketStatus(ticketId, status, actor) {
         return ticket;
     });
     scheduleSupportRefresh("ticket_updated", ticketId);
+    void notifySupportUser({
+        userId: updated.ownerId,
+        ticketId: updated.id,
+        ticketNumber: updated.ticketNumber,
+        title: `Support ticket ${updated.ticketNumber} ${status}`,
+        body: updated.title,
+        orderId: updated.orderId,
+        reason: status === client_1.SupportTicketStatus.escalated ? "ticket_escalated" : "status_changed",
+    });
     return serializeTicket(updated);
 }
 async function assignSupportTicket(ticketId, ownerId, actor) {
     const updated = await prismaClient_1.default.$transaction(async (tx) => {
         const owner = ownerId
-            ? await tx.user.findUnique({ where: { id: ownerId }, select: { id: true, name: true, email: true } })
+            ? await findEligibleSupportAssignee(ownerId, actorCompanyId(actor), tx)
             : null;
+        if (ownerId && !owner) {
+            const err = new Error("Selected user is not an active support operator for this company");
+            err.statusCode = 400;
+            throw err;
+        }
         const ticket = await tx.supportTicket.update({
             where: { id: ticketId },
             data: {
@@ -704,6 +1223,15 @@ async function assignSupportTicket(ticketId, ownerId, actor) {
         return ticket;
     });
     scheduleSupportRefresh("ticket_updated", ticketId);
+    void notifySupportUser({
+        userId: updated.ownerId,
+        ticketId: updated.id,
+        ticketNumber: updated.ticketNumber,
+        title: `Support ticket assigned`,
+        body: `${updated.ticketNumber}: ${updated.title}`,
+        orderId: updated.orderId,
+        reason: "ticket_assigned",
+    });
     return serializeTicket(updated);
 }
 async function addSupportTicketNote(ticketId, body, actor) {
@@ -781,7 +1309,17 @@ async function addSupportTicketMessage(ticketId, body, actor) {
         });
     });
     scheduleSupportRefresh("message_added", ticketId);
-    return loadSerializedTicketFresh(ticketId);
+    const ticket = await loadSerializedTicketFresh(ticketId);
+    void notifySupportUser({
+        userId: ticket?.ownerId,
+        ticketId,
+        ticketNumber: ticket?.ticketNumber,
+        title: `New support reply`,
+        body: ticket?.title || text,
+        orderId: ticket?.orderId,
+        reason: "message_added",
+    });
+    return ticket;
 }
 async function archiveResolvedSupportTickets(days = 30) {
     const cutoff = new Date(Date.now() - Math.max(1, days) * 24 * 60 * 60 * 1000);

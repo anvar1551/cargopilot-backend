@@ -3,7 +3,6 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const client_1 = require("@prisma/client");
 const realtimeHub_1 = require("../../../modules/realtime-core/realtimeHub");
 const fastify_auth_1 = require("../../../modules/identity-access/transport/fastify-auth");
-const identity_access_1 = require("../../identity-access");
 const shared_1 = require("../../orders-core/shared");
 const notificationService_1 = require("../application/notificationService");
 function parseType(value) {
@@ -11,6 +10,8 @@ function parseType(value) {
         return client_1.NotificationType.order;
     if (value === client_1.NotificationType.cash)
         return client_1.NotificationType.cash;
+    if (value === client_1.NotificationType.support)
+        return client_1.NotificationType.support;
     if (value === client_1.NotificationType.system)
         return client_1.NotificationType.system;
     return null;
@@ -22,23 +23,9 @@ function parseUnread(value) {
         return false;
     return null;
 }
-async function ensureNotificationsAccess(user) {
-    if (!user) {
-        const err = new Error("Unauthorized");
-        err.statusCode = 401;
-        throw err;
-    }
-    const allowed = await (0, identity_access_1.hasPermission)(user, "drivers.telemetry");
-    if (!allowed) {
-        const err = new Error("Forbidden");
-        err.statusCode = 403;
-        throw err;
-    }
-}
 const notificationsFastifyRoutes = async (fastify) => {
     fastify.get("/", { preHandler: (0, fastify_auth_1.fastifyAuth)() }, async (request, reply) => {
         try {
-            await ensureNotificationsAccess(request.user);
             const actor = (0, shared_1.requireOrderActor)(request.user);
             const data = await (0, notificationService_1.listUserNotifications)(actor.id, {
                 limit: request.query?.limit ? Number(request.query.limit) : undefined,
@@ -56,7 +43,6 @@ const notificationsFastifyRoutes = async (fastify) => {
     });
     fastify.get("/unread-count", { preHandler: (0, fastify_auth_1.fastifyAuth)() }, async (request, reply) => {
         try {
-            await ensureNotificationsAccess(request.user);
             const actor = (0, shared_1.requireOrderActor)(request.user);
             const unreadCount = await (0, notificationService_1.countUnreadUserNotifications)(actor.id, parseType(request.query?.type));
             return reply.send({ unreadCount });
@@ -69,7 +55,6 @@ const notificationsFastifyRoutes = async (fastify) => {
     });
     fastify.post("/:id/read", { preHandler: (0, fastify_auth_1.fastifyAuth)() }, async (request, reply) => {
         try {
-            await ensureNotificationsAccess(request.user);
             const actor = (0, shared_1.requireOrderActor)(request.user);
             const notificationId = String(request.params?.id ?? "").trim();
             if (!notificationId)
@@ -88,7 +73,6 @@ const notificationsFastifyRoutes = async (fastify) => {
     });
     fastify.post("/read-all", { preHandler: (0, fastify_auth_1.fastifyAuth)() }, async (request, reply) => {
         try {
-            await ensureNotificationsAccess(request.user);
             const actor = (0, shared_1.requireOrderActor)(request.user);
             const type = parseType(request.body?.type ?? request.query?.type);
             const updatedCount = await (0, notificationService_1.markAllUserNotificationsRead)(actor.id, type);

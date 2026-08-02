@@ -67,6 +67,12 @@ function cleanRoleCodes(input) {
         .map((value) => String(value || "").trim().toLowerCase())
         .filter(Boolean)));
 }
+function roleCodesAllowCustomerEntity(roleCodes) {
+    return roleCodes.some((code) => {
+        const normalized = String(code || "").toLowerCase();
+        return normalized === "customer" || normalized === "client" || normalized.includes("customer");
+    });
+}
 function cleanScopeInput(input) {
     if (!Array.isArray(input))
         return [];
@@ -518,6 +524,18 @@ async function updateUserAccessByCompanyAdmin(args) {
         throw new Error("At least one role is required");
     }
     const nextScopes = args.scopes === undefined ? undefined : cleanScopeInput(args.scopes);
+    const currentRoleCodes = nextRoleCodes == null && args.customerEntityId !== undefined
+        ? (await prismaClient_1.default.membershipRole.findMany({
+            where: { membershipId: membership.id },
+            select: { role: { select: { code: true } } },
+        })).map((entry) => entry.role.code)
+        : null;
+    const roleCodesForCustomerLink = nextRoleCodes ?? currentRoleCodes;
+    const nextCustomerEntityId = args.customerEntityId === undefined
+        ? undefined
+        : roleCodesForCustomerLink && roleCodesAllowCustomerEntity(roleCodesForCustomerLink)
+            ? args.customerEntityId
+            : null;
     await prismaClient_1.default.$transaction(async (tx) => {
         if (nextName !== undefined || nextEmail !== undefined || args.warehouseId !== undefined || args.customerEntityId !== undefined || args.driverType !== undefined) {
             await tx.user.update({
@@ -526,7 +544,7 @@ async function updateUserAccessByCompanyAdmin(args) {
                     ...(nextName !== undefined ? { name: nextName } : {}),
                     ...(nextEmail !== undefined ? { email: nextEmail } : {}),
                     ...(args.warehouseId !== undefined ? { warehouseId: args.warehouseId } : {}),
-                    ...(args.customerEntityId !== undefined ? { customerEntityId: args.customerEntityId } : {}),
+                    ...(nextCustomerEntityId !== undefined ? { customerEntityId: nextCustomerEntityId } : {}),
                     ...(args.driverType !== undefined ? { driverType: args.driverType } : {}),
                 },
             });
@@ -599,6 +617,9 @@ async function createUserByCompanyAdmin(args) {
     if (roleCodes.length === 0)
         throw new Error("roleCodes is required");
     const scopes = cleanScopeInput(args.scopes);
+    const customerEntityId = roleCodesAllowCustomerEntity(roleCodes)
+        ? args.customerEntityId ?? null
+        : null;
     const hashedPassword = await bcryptjs_1.default.hash(password, 10);
     const created = await prismaClient_1.default.$transaction(async (tx) => {
         const user = await tx.user.create({
@@ -607,7 +628,7 @@ async function createUserByCompanyAdmin(args) {
                 email,
                 password: hashedPassword,
                 warehouseId: args.warehouseId ?? null,
-                customerEntityId: args.customerEntityId ?? null,
+                customerEntityId,
                 driverType: args.driverType ?? null,
             },
             select: { id: true },
@@ -672,16 +693,41 @@ async function deleteUserMembershipFromCompany(args) {
     });
     if (!membership)
         throw new Error("Membership not found");
+    const [otherMemberships, customerOrders, driverOrders, invoices, trackingEvents, heldCashCollections, cashCollectionEvents,] = await prismaClient_1.default.$transaction([
+        prismaClient_1.default.companyMembership.count({
+            where: {
+                userId: args.targetUserId,
+                id: { not: membership.id },
+            },
+        }),
+        prismaClient_1.default.order.count({ where: { customerId: args.targetUserId } }),
+        prismaClient_1.default.order.count({ where: { assignedDriverId: args.targetUserId } }),
+        prismaClient_1.default.invoice.count({ where: { customerId: args.targetUserId } }),
+        prismaClient_1.default.tracking.count({ where: { actorId: args.targetUserId } }),
+        prismaClient_1.default.cashCollection.count({ where: { currentHolderUserId: args.targetUserId } }),
+        prismaClient_1.default.cashCollectionEvent.count({ where: { actorId: args.targetUserId } }),
+    ]);
+    const hasOperationalHistory = otherMemberships > 0 ||
+        customerOrders > 0 ||
+        driverOrders > 0 ||
+        invoices > 0 ||
+        trackingEvents > 0 ||
+        heldCashCollections > 0 ||
+        cashCollectionEvents > 0;
     await prismaClient_1.default.$transaction(async (tx) => {
-        await tx.membershipScope.deleteMany({
-            where: { membershipId: membership.id },
+        await tx.userRefreshSession.updateMany({
+            where: { userId: args.targetUserId, revokedAt: null },
+            data: { revokedAt: new Date() },
         });
-        await tx.membershipRole.deleteMany({
-            where: { membershipId: membership.id },
-        });
-        await tx.companyMembership.delete({
-            where: { id: membership.id },
-        });
+        if (hasOperationalHistory) {
+            await tx.companyMembership.update({
+                where: { id: membership.id },
+                data: { status: client_1.MembershipStatus.suspended },
+            });
+            return;
+        }
+        await tx.user.delete({ where: { id: args.targetUserId } });
     });
     (0, access_control_1.clearIdentityAccessCacheForUser)(args.targetUserId);
+    return { deleted: !hasOperationalHistory };
 }

@@ -8,6 +8,7 @@ const prismaClient_1 = __importDefault(require("../../../config/prismaClient"));
 const identity_access_1 = require("../../identity-access");
 const repo_1 = require("../repo");
 const shared_1 = require("../shared");
+const s3Cleanup_1 = require("../../../utils/s3Cleanup");
 function isEmptyWhere(value) {
     return !value || (typeof value === "object" && Object.keys(value).length === 0);
 }
@@ -23,7 +24,7 @@ async function deleteOrderForActor(args) {
             where: scopeWhere && !isEmptyWhere(scopeWhere)
                 ? { AND: [{ id: orderId }, scopeWhere] }
                 : { id: orderId },
-            select: { id: true, orderNumber: true },
+            select: { id: true, orderNumber: true, labelKey: true },
         });
         if (!order) {
             throw (0, shared_1.orderError)("Order not found", 404);
@@ -44,6 +45,29 @@ async function deleteOrderForActor(args) {
             select: { id: true },
         });
         const cashCollectionIds = cashCollections.map((item) => item.id);
+        const parcelsWithStorage = await tx.parcel.findMany({
+            where: { orderId },
+            select: { labelKey: true },
+        });
+        const documentsWithStorage = await tx.orderDocument.findMany({
+            where: { orderId },
+            select: { storageKey: true },
+        });
+        const attachmentsWithStorage = await tx.orderAttachment.findMany({
+            where: { orderId },
+            select: { key: true },
+        });
+        const invoicesWithStorage = await tx.invoice.findMany({
+            where: { orderId },
+            select: { invoiceKey: true },
+        });
+        const storageKeys = (0, s3Cleanup_1.collectS3ObjectKeys)([
+            order.labelKey,
+            ...parcelsWithStorage.map((item) => item.labelKey),
+            ...documentsWithStorage.map((item) => item.storageKey),
+            ...attachmentsWithStorage.map((item) => item.key),
+            ...invoicesWithStorage.map((item) => item.invoiceKey),
+        ]);
         const integrationOutboxes = await tx.integrationOutbox.findMany({
             where: { aggregateId: { in: aggregateIds } },
             select: { id: true },
@@ -108,8 +132,27 @@ async function deleteOrderForActor(args) {
             orderId: order.id,
             orderNumber: order.orderNumber,
             cleanup: deleted,
+            storageKeys,
         };
     });
+    const storageCleanup = await (0, s3Cleanup_1.deleteS3ObjectsBestEffort)(result.storageKeys);
+    if (storageCleanup.failed > 0 || storageCleanup.skipped > 0) {
+        console.warn("[order-delete] S3 cleanup incomplete", {
+            orderId,
+            requested: storageCleanup.requested,
+            deleted: storageCleanup.deleted,
+            failed: storageCleanup.failed,
+            skipped: storageCleanup.skipped,
+            errors: storageCleanup.errors.slice(0, 5),
+        });
+    }
     (0, repo_1.clearOrderListCache)();
-    return result;
+    const { storageKeys: _storageKeys, ...response } = result;
+    return {
+        ...response,
+        cleanup: {
+            ...response.cleanup,
+            s3Objects: storageCleanup,
+        },
+    };
 }

@@ -8,7 +8,7 @@ exports.startSupportRulesWorker = startSupportRulesWorker;
 const client_1 = require("@prisma/client");
 const prismaClient_1 = __importDefault(require("../../../config/prismaClient"));
 const analyticsV2Realtime_1 = require("../../analytics-core/realtime/analyticsV2Realtime");
-const supportService_1 = require("./supportService");
+const autoTriage_1 = require("./autoTriage");
 let started = false;
 let running = false;
 let debounceTimer = null;
@@ -51,22 +51,15 @@ async function createStalePendingTickets() {
     for (const order of orders) {
         const ageHours = Math.max(1, Math.floor((Date.now() - order.createdAt.getTime()) / 3600000));
         const priority = order.createdAt < urgentCutoff ? client_1.SupportTicketPriority.urgent : client_1.SupportTicketPriority.high;
-        await (0, supportService_1.createSupportTicket)({
+        await (0, autoTriage_1.createSystemSupportTicket)({
             orderId: order.id,
             title: order.status === client_1.OrderStatus.pending
                 ? "Pending order needs dispatch action"
                 : "Assigned order needs movement check",
             summary: `Order #${order.orderNumber} has been ${order.status} for ${ageHours}h. Route: ${order.pickupAddress || "-"} -> ${order.dropoffAddress || "-"}.`,
             priority,
-            source: client_1.SupportTicketSource.system_alert,
-            ownerId: null,
             sourceKey: `order:${order.id}:stale_${order.status}:v1`,
-        }, {
-            id: "",
-            roleCodes: ["manager"],
-            permissionCodes: [],
-            name: "CargoPilot Auto Triage",
-            email: "system@cargopilot.local",
+            routingKey: "order_stale",
         });
     }
     return orders.length;

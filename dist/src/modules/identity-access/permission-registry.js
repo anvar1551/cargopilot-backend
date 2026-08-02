@@ -20,6 +20,8 @@ exports.SYSTEM_PERMISSIONS = [
     permission("support.update", "support", "update", "Update support tickets"),
     permission("support.escalate", "support", "manage", "Escalate support tickets"),
     permission("support.resolve", "support", "manage", "Resolve support tickets"),
+    permission("support.configure", "support", "manage", "Configure support queues and assignment rules"),
+    permission("notifications.read", "notifications", "read", "Read own notifications"),
     permission("pricing.read", "pricing", "read", "Read pricing configuration"),
     permission("pricing.write", "pricing", "update", "Write pricing configuration"),
     permission("customers.read", "customers", "read", "Read customer entities"),

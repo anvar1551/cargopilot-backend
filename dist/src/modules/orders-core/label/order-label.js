@@ -17,6 +17,7 @@ const prismaClient_1 = __importDefault(require("../../../config/prismaClient"));
 const labelService_1 = require("../../../modules/labels-core/application/labelService");
 const uploadLabel_1 = require("../../../utils/uploadLabel");
 const shared_1 = require("../shared");
+const autoTriage_1 = require("../../support-core/application/autoTriage");
 function parsePositiveInt(value, fallback) {
     const parsed = Number(value);
     if (!Number.isFinite(parsed) || parsed <= 0)
@@ -273,16 +274,25 @@ async function markJobFailure(job, error) {
     const exhausted = job.attempts >= job.maxAttempts;
     const nextStatus = exhausted ? client_1.OrderLabelJobStatus.failed : client_1.OrderLabelJobStatus.pending;
     const retryAt = new Date(Date.now() + buildRetryDelayMs(job.attempts));
+    const errorMessage = trimError(error);
     await prismaClient_1.default.orderLabelJob.update({
         where: { id: job.id },
         data: {
             status: nextStatus,
-            error: trimError(error),
+            error: errorMessage,
             lockedAt: null,
             lockedBy: null,
             availableAt: exhausted ? new Date() : retryAt,
         },
     });
+    if (exhausted) {
+        void (0, autoTriage_1.createLabelFailureSupportTicket)({
+            orderId: job.orderId,
+            jobId: job.id,
+            reason: errorMessage,
+            exhausted: true,
+        }).catch(() => undefined);
+    }
     return exhausted;
 }
 async function runOrderLabelQueueTick(args) {

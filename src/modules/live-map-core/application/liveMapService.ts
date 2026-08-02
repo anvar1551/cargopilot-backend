@@ -28,11 +28,6 @@ function hasPermission(actor: LiveMapActor, permission: string) {
   return Array.isArray(actor.permissionCodes) && actor.permissionCodes.includes(permission);
 }
 
-const DEFAULT_CENTER = {
-  lat: 41.2995,
-  lng: 69.2401,
-};
-
 const DRIVER_STATUS_ONLINE_SEC = Math.min(
   Math.max(Number(process.env.LIVE_MAP_DRIVER_ONLINE_SEC || 70), 15),
   600,
@@ -514,7 +509,6 @@ export async function getLiveMapSnapshot(args: {
     .slice(0, maxOrders);
   const orders = orderRows.map(mapOrderRecord);
   const orderByAssignedDriver = new Map<string, ManagerLiveMapOrder>();
-  const orderCoords: Array<{ lat: number; lng: number }> = [];
   const warehouseSeed = new Map<string, { latSum: number; lngSum: number; count: number }>();
   for (const order of orders) {
     if (order.assignedDriverId && !orderByAssignedDriver.has(order.assignedDriverId)) {
@@ -522,7 +516,6 @@ export async function getLiveMapSnapshot(args: {
     }
 
     if (order.pickupLat != null && order.pickupLng != null) {
-      orderCoords.push({ lat: order.pickupLat, lng: order.pickupLng });
       if (order.warehouseId) {
         const current = warehouseSeed.get(order.warehouseId) ?? {
           latSum: 0,
@@ -534,9 +527,6 @@ export async function getLiveMapSnapshot(args: {
         current.count += 1;
         warehouseSeed.set(order.warehouseId, current);
       }
-    }
-    if (order.dropoffLat != null && order.dropoffLng != null) {
-      orderCoords.push({ lat: order.dropoffLat, lng: order.dropoffLng });
     }
   }
 
@@ -711,15 +701,6 @@ export async function getLiveMapSnapshot(args: {
 
     const warehouseIds = driver.warehouseId ? [driver.warehouseId] : [];
 
-    const fallbackAnchor =
-      assignedOrder && assignedOrder.dropoffLat != null && assignedOrder.dropoffLng != null
-        ? { lat: assignedOrder.dropoffLat, lng: assignedOrder.dropoffLng }
-        : assignedOrder && assignedOrder.pickupLat != null && assignedOrder.pickupLng != null
-          ? { lat: assignedOrder.pickupLat, lng: assignedOrder.pickupLng }
-          : orderCoords.length > 0
-            ? orderCoords[seed % orderCoords.length]
-            : DEFAULT_CENTER;
-
     // In RBAC mode, telemetry-capable non-driver profiles are included only after
     // they publish a real location (or are explicitly assigned), to avoid showing
     // admin/operator users as pseudo-drivers.
@@ -741,8 +722,8 @@ export async function getLiveMapSnapshot(args: {
       email: driver.email,
       warehouseId: driver.warehouseId ?? null,
       liveEnabled,
-      lat: location?.lat ?? fallbackAnchor.lat,
-      lng: location?.lng ?? fallbackAnchor.lng,
+      lat: location?.lat ?? null,
+      lng: location?.lng ?? null,
       headingDeg: Math.round(location?.headingDeg ?? (seed % 360)),
       speedKmh: Math.round(location?.speedKmh ?? 0),
       lastSeenAt,
@@ -776,6 +757,8 @@ export async function getLiveMapSnapshot(args: {
   const viewportFilteredDrivers = viewport
     ? drivers.filter(
         (driver) =>
+          driver.lat == null ||
+          driver.lng == null ||
           driverLocations.has(driver.id) ||
           isInViewport(driver.lat, driver.lng, viewport),
       )

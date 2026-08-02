@@ -7,3 +7,7 @@ invoices/*.pdf
 rootkey.csv
 
 /src/generated/prisma
+
+# Local Word authoring/render artifacts
+.docx-work/
+**/~$*.docx

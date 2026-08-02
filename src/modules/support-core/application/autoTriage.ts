@@ -9,7 +9,6 @@ import { createSupportTicket } from "./supportService";
 
 const systemActor = {
   id: "",
-  roleCodes: ["system"],
   permissionCodes: [],
   name: "CargoPilot Auto Triage",
   email: "system@cargopilot.local",
@@ -44,7 +43,6 @@ export async function createSystemSupportTicket(input: {
       summary: input.summary ? trim(input.summary, 2000) : null,
       priority: input.priority ?? SupportTicketPriority.high,
       source: SupportTicketSource.system_alert,
-      ownerId: null,
       sourceKey: trim(input.sourceKey, 500),
       routingKey: input.routingKey ? trim(input.routingKey, 80) : null,
     },

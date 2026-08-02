@@ -234,6 +234,27 @@ function buildOrgScopedOrderWhere(scopes) {
         OR: [{ ownerOrgId: { in: orgIds } }, { assignedOrgId: { in: orgIds } }],
     };
 }
+function hasRoleCode(snapshot, predicate) {
+    return snapshot.roleCodes.some((code) => predicate(String(code || "").toLowerCase()));
+}
+function isCustomerWorkspaceOnly(snapshot) {
+    const hasCustomerRole = hasRoleCode(snapshot, (code) => code === "customer" || code === "client" || code.includes("customer"));
+    if (!hasCustomerRole)
+        return false;
+    const hasOperationalRole = hasRoleCode(snapshot, (code) => code === "admin" ||
+        code === "super_admin" ||
+        code === "superadmin" ||
+        code === "owner" ||
+        code === "manager" ||
+        code.includes("manager") ||
+        code.includes("warehouse") ||
+        code.includes("driver") ||
+        code.includes("courier") ||
+        code.includes("dispatcher") ||
+        code.includes("support") ||
+        code.includes("accountant"));
+    return !hasOperationalRole;
+}
 async function buildOrderScopeWhere(user) {
     const snapshot = await loadAccessSnapshot({
         userId: user.id,
@@ -241,6 +262,11 @@ async function buildOrderScopeWhere(user) {
     });
     if (!snapshot)
         return { id: "__no_access__" };
+    if (isCustomerWorkspaceOnly(snapshot)) {
+        return snapshot.customerEntityId
+            ? { customerEntityId: snapshot.customerEntityId }
+            : { id: "__no_access__" };
+    }
     const clauses = [];
     const orgScope = buildOrgScopedOrderWhere(snapshot.scopes);
     if (orgScope)
@@ -270,6 +296,11 @@ async function buildSupportScopeWhere(user) {
     });
     if (!snapshot)
         return { id: "__no_access__" };
+    if (isCustomerWorkspaceOnly(snapshot)) {
+        return snapshot.customerEntityId
+            ? { customerEntityId: snapshot.customerEntityId }
+            : { id: "__no_access__" };
+    }
     const clauses = [];
     const orgIds = Array.from(new Set(snapshot.scopes
         .filter((item) => item.scopeType === "company" ||
@@ -299,6 +330,11 @@ async function buildCustomerEntityScopeWhere(user) {
     });
     if (!snapshot)
         return { id: { in: [] } };
+    if (isCustomerWorkspaceOnly(snapshot)) {
+        return snapshot.customerEntityId
+            ? { id: snapshot.customerEntityId }
+            : { id: { in: [] } };
+    }
     // System override can read all customer entities.
     if (snapshot.permissionCodes.includes("policy.override")) {
         return null;

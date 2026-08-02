@@ -11,6 +11,7 @@ const label_1 = require("../label");
 const orders_legs_1 = require("../../orders-legs");
 const pricing_core_1 = require("../../pricing-core");
 const validation_1 = require("../../pricing-core/shared/validation");
+const autoTriage_1 = require("../../support-core/application/autoTriage");
 function majorToMinor(amountMajor) {
     return BigInt(Math.round(amountMajor * 100));
 }
@@ -211,12 +212,26 @@ async function createOrderForActor(args) {
         const failedMatches = autoBookResults.filter((item) => item.matched && !item.booked && item.skippedReason !== "matched rule has autoBook disabled");
         if (failedMatches.length > 0) {
             carrierRoutingWarning = "Carrier routing matched but auto-booking was not completed for every leg";
+            void (0, autoTriage_1.createSystemSupportTicket)({
+                sourceKey: `carrier:auto-book:${order.id}:partial:v1`,
+                orderId: order.id,
+                title: "Carrier auto-booking did not complete",
+                summary: `${failedMatches.length} carrier routing match(es) did not complete during order creation.`,
+                routingKey: "carrier",
+            }).catch(() => undefined);
         }
     }
     catch (carrierRoutingErr) {
         carrierRoutingWarning =
             carrierRoutingErr?.message ?? "Carrier routing auto-book failed";
         console.error(`Carrier auto-book failed for order ${order.id}:`, carrierRoutingErr);
+        void (0, autoTriage_1.createSystemSupportTicket)({
+            sourceKey: `carrier:auto-book:${order.id}:failed:v1`,
+            orderId: order.id,
+            title: "Carrier auto-booking failed",
+            summary: carrierRoutingWarning,
+            routingKey: "carrier",
+        }).catch(() => undefined);
     }
     const runLabelWork = async () => {
         if (labelMode === "queue") {
@@ -250,11 +265,19 @@ async function createOrderForActor(args) {
                 labelErr?.message ??
                     "Order created, but parcel label generation failed";
             console.error(`Label generation failed for order ${order.id}:`, labelErr);
+            void (0, autoTriage_1.createLabelFailureSupportTicket)({
+                orderId: order.id,
+                reason: labelWarning,
+            }).catch(() => undefined);
         }
     }
     else {
         void runLabelWork().catch((labelErr) => {
             console.error(`Label generation failed for order ${order.id}:`, labelErr);
+            void (0, autoTriage_1.createLabelFailureSupportTicket)({
+                orderId: order.id,
+                reason: labelErr?.message ?? "Order label generation failed",
+            }).catch(() => undefined);
         });
     }
     const companyId = actorCompanyId ?? "";

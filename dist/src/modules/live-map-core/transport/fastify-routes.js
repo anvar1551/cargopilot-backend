@@ -5,6 +5,7 @@ const redis_1 = require("../../../config/redis");
 const fastify_auth_1 = require("../../../modules/identity-access/transport/fastify-auth");
 const liveMapStore_1 = require("../infrastructure/liveMapStore");
 const liveMapService_1 = require("../application/liveMapService");
+const liveMapEventPolicy_1 = require("../application/liveMapEventPolicy");
 const opsMetrics_1 = require("../../../modules/observability-core/application/opsMetrics");
 const sseHeaders_1 = require("../../../shared/http/sseHeaders");
 function isWritableStream(stream) {
@@ -33,14 +34,6 @@ function parseViewport(raw) {
     if (minLat >= maxLat || minLng >= maxLng)
         return null;
     return { minLat, minLng, maxLat, maxLng };
-}
-function isInViewport(lat, lng, viewport) {
-    if (!viewport)
-        return true;
-    return (lat >= viewport.minLat &&
-        lat <= viewport.maxLat &&
-        lng >= viewport.minLng &&
-        lng <= viewport.maxLng);
 }
 function withTimeout(promise, timeoutMs) {
     return new Promise((resolve, reject) => {
@@ -201,6 +194,7 @@ const liveMapFastifyRoutes = async (fastify) => {
         if (!actor)
             return reply.code(401).send({ error: "Unauthorized" });
         const viewport = parseViewport((request.query ?? {}));
+        const canDeliverEvent = (event) => (0, liveMapEventPolicy_1.canDeliverLiveMapEvent)({ actor, event, viewport });
         const clientKey = `${request.user?.id || "anon"}:${request.ip || "ip"}`;
         const lastEventId = String(request.headers["last-event-id"] || request.headers["Last-Event-ID"] || "").trim();
         let disconnected = false;
@@ -236,7 +230,7 @@ const liveMapFastifyRoutes = async (fastify) => {
             : (0, liveMapStore_1.replayLiveMapEventsSince)(lastEventId);
         const replayLimit = Math.max(10, Number(process.env.LIVE_MAP_STREAM_REPLAY_MAX_EVENTS || 300));
         const replaySlice = replayEvents.slice(-replayLimit);
-        replaySlice.forEach((event) => {
+        replaySlice.filter(canDeliverEvent).forEach((event) => {
             if (!isWritableStream(reply.raw))
                 return;
             try {
@@ -265,17 +259,8 @@ const liveMapFastifyRoutes = async (fastify) => {
             }
         }, heartbeatMs);
         const unsubscribe = (0, liveMapStore_1.subscribeLiveMapEvents)((event) => {
-            if (!actor.permissionCodes.includes("drivers.manage") && actor.warehouseId) {
-                if (event.type !== "driver_location_upsert")
-                    return;
-                const eventWarehouseId = event.payload.warehouseId;
-                if (eventWarehouseId && eventWarehouseId !== actor.warehouseId)
-                    return;
-            }
-            if (viewport && event.type === "driver_location_upsert") {
-                if (!isInViewport(event.payload.lat, event.payload.lng, viewport))
-                    return;
-            }
+            if (!canDeliverEvent(event))
+                return;
             if (!isWritableStream(reply.raw))
                 return;
             try {

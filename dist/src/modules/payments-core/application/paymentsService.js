@@ -25,6 +25,7 @@ const identity_access_1 = require("../../identity-access");
 const contracts_1 = require("../domain/contracts");
 const providerAdapter_1 = require("../infrastructure/providers/providerAdapter");
 const paymentCrypto_1 = require("./paymentCrypto");
+const autoTriage_1 = require("../../support-core/application/autoTriage");
 function callbackPathForProvider(provider) {
     return `/api/payments/${provider.toLowerCase()}/callback`;
 }
@@ -844,6 +845,17 @@ async function createPaymentIntentForActor(args) {
             },
         });
     });
+    if (nextIntentStatus === client_1.PaymentIntentStatus.FAILED) {
+        void (0, autoTriage_1.createPaymentFailureSupportTicket)({
+            orderId: args.input.orderId,
+            companyId: args.input.companyId,
+            paymentIntentId: intent.id,
+            provider: config.provider,
+            environment: config.environment,
+            status: nextIntentStatus,
+            reason: errorMessage ?? "Provider payment init failed",
+        }).catch(() => undefined);
+    }
     const resolvedIntent = await prismaClient_1.default.paymentIntent.findUnique({
         where: { id: intent.id },
         select: {
@@ -904,6 +916,10 @@ async function applyPaymentIntentProviderStatus(tx, args) {
         },
         select: {
             orderId: true,
+            companyId: true,
+            id: true,
+            provider: true,
+            environment: true,
             status: true,
         },
     });
@@ -930,6 +946,7 @@ async function applyPaymentIntentProviderStatus(tx, args) {
             responseJson: args.responseJson,
         },
     });
+    return updatedIntent;
 }
 async function getPaymentIntentForActor(args) {
     await (0, identity_access_1.authorize)(args.user, "payments.intents.read");
@@ -1064,7 +1081,7 @@ async function syncPaymentIntentForActor(args) {
         intent,
     });
     const nextStatus = canonicalToIntentStatus(providerStatus.status) ?? intent.status;
-    await prismaClient_1.default.$transaction((tx) => applyPaymentIntentProviderStatus(tx, {
+    const transition = await prismaClient_1.default.$transaction((tx) => applyPaymentIntentProviderStatus(tx, {
         intentId: intent.id,
         provider: intent.provider,
         status: nextStatus,
@@ -1078,6 +1095,18 @@ async function syncPaymentIntentForActor(args) {
         responseJson: (providerStatus.rawResponse ?? null),
         actorId: args.user.id,
     }));
+    if (transition.status === client_1.PaymentIntentStatus.FAILED ||
+        transition.status === client_1.PaymentIntentStatus.CANCELED) {
+        void (0, autoTriage_1.createPaymentFailureSupportTicket)({
+            orderId: transition.orderId,
+            companyId: transition.companyId,
+            paymentIntentId: transition.id,
+            provider: transition.provider,
+            environment: transition.environment,
+            status: transition.status,
+            reason: "Manual provider status sync returned a failed payment state",
+        }).catch(() => undefined);
+    }
     const refreshed = await prismaClient_1.default.paymentIntent.findUniqueOrThrow({
         where: { id: intent.id },
     });
@@ -1308,7 +1337,8 @@ async function handleProviderWebhook(args) {
     });
     const mappedIntentStatus = canonicalToIntentStatus(verification.mappedStatus);
     const intentId = intent?.id ?? objectStringField(bodyRecord, "paymentIntentId") ?? null;
-    const webhookEvent = await prismaClient_1.default.$transaction(async (tx) => {
+    const { webhookEvent, providerTransition } = await prismaClient_1.default.$transaction(async (tx) => {
+        let transition = null;
         const event = await tx.paymentWebhookEvent.upsert({
             where: {
                 provider_environment_idempotencyKey: {
@@ -1346,7 +1376,7 @@ async function handleProviderWebhook(args) {
             },
         });
         if (verification.isValid && intentId && mappedIntentStatus) {
-            await applyPaymentIntentProviderStatus(tx, {
+            transition = await applyPaymentIntentProviderStatus(tx, {
                 intentId,
                 provider: args.provider,
                 status: mappedIntentStatus,
@@ -1355,8 +1385,31 @@ async function handleProviderWebhook(args) {
                 responseJson: verification.responsePayload,
             });
         }
-        return event;
+        return { webhookEvent: event, providerTransition: transition };
     });
+    if (!verification.isValid) {
+        void (0, autoTriage_1.createPaymentWebhookSupportTicket)({
+            companyId: intent?.companyId ?? config.companyId,
+            provider: args.provider,
+            environment,
+            idempotencyKey: verification.idempotencyKey,
+            reason: "Webhook signature validation failed",
+            paymentIntentId: intentId,
+        }).catch(() => undefined);
+    }
+    else if (providerTransition &&
+        (providerTransition.status === client_1.PaymentIntentStatus.FAILED ||
+            providerTransition.status === client_1.PaymentIntentStatus.CANCELED)) {
+        void (0, autoTriage_1.createPaymentFailureSupportTicket)({
+            orderId: providerTransition.orderId,
+            companyId: providerTransition.companyId,
+            paymentIntentId: providerTransition.id,
+            provider: providerTransition.provider,
+            environment: providerTransition.environment,
+            status: providerTransition.status,
+            reason: "Provider webhook reported failed/canceled payment state",
+        }).catch(() => undefined);
+    }
     if (verification.responsePayload) {
         return verification.responsePayload;
     }

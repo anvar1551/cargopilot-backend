@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.applyCarrierIntegrationEvent = applyCarrierIntegrationEvent;
 const client_1 = require("@prisma/client");
 const prismaClient_1 = __importDefault(require("../../config/prismaClient"));
+const autoTriage_1 = require("../support-core/application/autoTriage");
 const db = prismaClient_1.default;
 function toObject(value) {
     if (!value || typeof value !== "object" || Array.isArray(value))
@@ -187,6 +188,7 @@ async function applyCarrierIntegrationEvent(event) {
         }
         const payload = toObject(event.payloadJson);
         const errorMessage = pickString(payload, ["message", "error", "reason"]) || "Carrier booking failed";
+        let ticketInput = null;
         await db.$transaction(async (tx) => {
             const leg = await tx.orderLeg.findFirst({
                 where: {
@@ -197,6 +199,12 @@ async function applyCarrierIntegrationEvent(event) {
             });
             if (!leg)
                 throw new Error("OrderLeg not found for carrier failure event");
+            ticketInput = {
+                orderId: leg.order.id,
+                legId: leg.id,
+                providerCode: event.providerCode,
+                reason: errorMessage,
+            };
             await tx.orderLeg.update({
                 where: { id: leg.id },
                 data: {
@@ -214,6 +222,9 @@ async function applyCarrierIntegrationEvent(event) {
                 },
             });
         });
+        if (ticketInput) {
+            void (0, autoTriage_1.createCarrierFailureSupportTicket)(ticketInput).catch(() => undefined);
+        }
         return { applied: true };
     }
     if (event.eventType === "carrier.status.updated") {
@@ -226,10 +237,21 @@ async function applyCarrierIntegrationEvent(event) {
         const orderStatus = mapCarrierStatusToOrderStatus(providerStatus);
         const isFinalFailure = legStatus === client_1.OrderLegStatus.exception;
         const isCancelled = legStatus === client_1.OrderLegStatus.cancelled;
+        let ticketInput = null;
         await db.$transaction(async (tx) => {
             const leg = await findLegForCarrierEvent(tx, event);
             if (!leg)
                 throw new Error("OrderLeg not found for carrier status event");
+            if (isFinalFailure) {
+                ticketInput = {
+                    orderId: leg.order.id,
+                    legId: leg.id,
+                    providerCode: event.providerCode,
+                    status: providerStatus,
+                    reason: statusLabel,
+                    terminal: true,
+                };
+            }
             await tx.orderLeg.update({
                 where: { id: leg.id },
                 data: {
@@ -258,6 +280,9 @@ async function applyCarrierIntegrationEvent(event) {
                 },
             });
         });
+        if (ticketInput) {
+            void (0, autoTriage_1.createCarrierFailureSupportTicket)(ticketInput).catch(() => undefined);
+        }
         return { applied: true };
     }
     return {
