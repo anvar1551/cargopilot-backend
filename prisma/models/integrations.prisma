@@ -1,0 +1,335 @@
+// CargoPilot bounded-context Prisma declarations.
+// Loaded through the multi-file schema configured in prisma.config.ts.
+
+enum IntegrationDomain {
+  carrier
+  sms
+  payment
+  webhook_sink
+}
+
+enum IntegrationProviderStatus {
+  active
+  paused
+  disabled
+}
+
+enum IntegrationEnvironment {
+  sandbox
+  production
+}
+
+enum IntegrationOutboxStatus {
+  pending
+  processing
+  sent
+  failed
+  dead_letter
+}
+
+enum IntegrationAttemptOutcome {
+  success
+  retry
+  dead_letter
+  failed
+}
+
+enum IntegrationEventSource {
+  outbound_response
+  inbound_webhook
+}
+
+enum IntegrationEventProcessStatus {
+  pending
+  processing
+  processed
+  failed
+  ignored
+}
+
+model IntegrationProvider {
+  id              String                    @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  companyId       String                    @db.Uuid
+  company         Organization              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  domain          IntegrationDomain
+  providerCode    String
+  status          IntegrationProviderStatus @default(active)
+  environment     IntegrationEnvironment    @default(sandbox)
+  capabilities    String[]                  @default([])
+  rateLimitRps    Int?
+  timeoutMs       Int                       @default(10000)
+  retryPolicyId   String?
+  secretRef       String?
+  createdByUserId String?                   @db.Uuid
+  updatedByUserId String?                   @db.Uuid
+  createdAt       DateTime                  @default(now())
+  updatedAt       DateTime                  @updatedAt
+
+  secrets                     IntegrationProviderSecret[]
+  outboxRecords               IntegrationOutbox[]
+  webhookEvents               IntegrationWebhookEvent[]
+  canonicalEvents             IntegrationCanonicalEvent[]
+  carrierRoutingRules         CarrierRoutingRule[]        @relation("CarrierRoutingRuleProvider")
+  fallbackCarrierRoutingRules CarrierRoutingRule[]        @relation("CarrierRoutingRuleFallbackProvider")
+
+  @@unique([companyId, domain, providerCode, environment], map: "uniq_integration_provider_company_domain_code_env")
+  @@index([companyId, domain, status])
+  @@index([providerCode, environment, status])
+}
+
+model RouteTemplate {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+
+  companyId String       @db.Uuid
+  company   Organization @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  name                   String
+  code                   String?
+  isActive               Boolean        @default(true)
+  priority               Int            @default(0)
+  serviceType            ServiceType?
+  transportMode          TransportMode?
+  originCountryCode      String?
+  destinationCountryCode String?
+  metadata               Json?
+
+  createdByUserId String?  @db.Uuid
+  updatedByUserId String?  @db.Uuid
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  legs                RouteTemplateLeg[]
+  tariffPlans         TariffPlan[]
+  carrierRoutingRules CarrierRoutingRule[]
+  orderLegs           OrderLeg[]
+
+  @@unique([companyId, code], map: "uniq_route_template_company_code")
+  @@index([companyId, isActive, priority])
+  @@index([originCountryCode, destinationCountryCode, transportMode])
+  @@index([serviceType, transportMode, isActive])
+}
+
+model RouteTemplateLeg {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+
+  routeTemplateId String        @db.Uuid
+  routeTemplate   RouteTemplate @relation(fields: [routeTemplateId], references: [id], onDelete: Cascade)
+
+  sequence               Int
+  legCode                String
+  label                  String?
+  mode                   TransportMode @default(road)
+  originCountryCode      String?
+  destinationCountryCode String?
+  metadata               Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  carrierRoutingRules CarrierRoutingRule[]
+  orderLegs           OrderLeg[]
+
+  @@unique([routeTemplateId, sequence], map: "uniq_route_template_leg_sequence")
+  @@unique([routeTemplateId, legCode], map: "uniq_route_template_leg_code")
+  @@index([routeTemplateId, sequence])
+  @@index([originCountryCode, destinationCountryCode, mode])
+}
+
+model CarrierRoutingRule {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+
+  companyId String       @db.Uuid
+  company   Organization @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  providerId String              @db.Uuid
+  provider   IntegrationProvider @relation("CarrierRoutingRuleProvider", fields: [providerId], references: [id], onDelete: Restrict)
+
+  fallbackProviderId String?              @db.Uuid
+  fallbackProvider   IntegrationProvider? @relation("CarrierRoutingRuleFallbackProvider", fields: [fallbackProviderId], references: [id], onDelete: SetNull)
+
+  routeTemplateId String?        @db.Uuid
+  routeTemplate   RouteTemplate? @relation(fields: [routeTemplateId], references: [id], onDelete: SetNull)
+
+  routeTemplateLegId String?           @db.Uuid
+  routeTemplateLeg   RouteTemplateLeg? @relation(fields: [routeTemplateLegId], references: [id], onDelete: SetNull)
+
+  name     String
+  code     String?
+  isActive Boolean @default(true)
+  priority Int     @default(0)
+  autoBook Boolean @default(true)
+
+  serviceType            ServiceType?
+  transportMode          TransportMode?
+  originCountryCode      String?
+  destinationCountryCode String?
+  minWeightKg            Decimal?       @db.Decimal(10, 2)
+  maxWeightKg            Decimal?       @db.Decimal(10, 2)
+  legSequence            Int?
+  conditionsJson         Json?
+
+  createdByUserId String?  @db.Uuid
+  updatedByUserId String?  @db.Uuid
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([companyId, code], map: "uniq_carrier_routing_rule_company_code")
+  @@index([companyId, isActive, priority])
+  @@index([providerId, isActive])
+  @@index([routeTemplateId, isActive, priority])
+  @@index([routeTemplateLegId, isActive, priority])
+  @@index([originCountryCode, destinationCountryCode, transportMode])
+  @@index([serviceType, transportMode, isActive])
+}
+
+model IntegrationProviderSecret {
+  id                  String              @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  providerId          String              @db.Uuid
+  provider            IntegrationProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  keyVersion          Int                 @default(1)
+  encryptedSecretJson String
+  secretMasked        String?
+  rotatedAt           DateTime?
+  createdByUserId     String?             @db.Uuid
+  createdAt           DateTime            @default(now())
+
+  @@unique([providerId, keyVersion], map: "uniq_integration_provider_secret_version")
+  @@index([providerId, createdAt])
+}
+
+model IntegrationOutbox {
+  id             String                  @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  companyId      String                  @db.Uuid
+  company        Organization            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  providerId     String?                 @db.Uuid
+  provider       IntegrationProvider?    @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  domain         IntegrationDomain
+  providerCode   String
+  environment    IntegrationEnvironment  @default(sandbox)
+  aggregateType  String?
+  aggregateId    String?
+  operation      String?
+  eventType      String
+  status         IntegrationOutboxStatus @default(pending)
+  maxAttempts    Int                     @default(10)
+  attemptCount   Int                     @default(0)
+  nextAttemptAt  DateTime                @default(now())
+  lastAttemptAt  DateTime?
+  lastError      String?
+  idempotencyKey String
+  payload        Json
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+
+  attempts IntegrationDeliveryAttempt[]
+
+  @@unique([companyId, providerCode, idempotencyKey], map: "uniq_integration_outbox_company_provider_idempotency")
+  @@index([status, nextAttemptAt, createdAt])
+  @@index([companyId, domain, status, nextAttemptAt])
+  @@index([providerId, status, nextAttemptAt])
+  @@index([aggregateType, aggregateId, operation])
+}
+
+model IntegrationDeliveryAttempt {
+  id                String                    @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  outboxId          String                    @db.Uuid
+  outbox            IntegrationOutbox         @relation(fields: [outboxId], references: [id], onDelete: Cascade)
+  attemptNo         Int
+  outcome           IntegrationAttemptOutcome
+  statusCode        Int?
+  retryable         Boolean                   @default(false)
+  errorMessage      String?
+  providerRequestId String?
+  requestJson       Json?
+  responseJson      Json?
+  startedAt         DateTime
+  finishedAt        DateTime
+  createdAt         DateTime                  @default(now())
+
+  @@unique([outboxId, attemptNo], map: "uniq_integration_delivery_attempt_outbox_attempt")
+  @@index([outboxId, createdAt])
+  @@index([outcome, createdAt])
+}
+
+model IntegrationWebhookEvent {
+  id                String                 @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  companyId         String?                @db.Uuid
+  company           Organization?          @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  providerId        String?                @db.Uuid
+  provider          IntegrationProvider?   @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  domain            IntegrationDomain
+  providerCode      String
+  environment       IntegrationEnvironment @default(sandbox)
+  providerEventId   String
+  signatureVerified Boolean                @default(false)
+  rawBody           String
+  rawBodySha256     String
+  headersJson       Json?
+  ipAddress         String?
+  userAgent         String?
+  receivedAt        DateTime               @default(now())
+  processedAt       DateTime?
+
+  canonicalEvent  IntegrationWebhookCanonicalEvent?
+  canonicalEvents IntegrationCanonicalEvent[]
+
+  @@unique([providerId, providerEventId], map: "uniq_integration_webhook_provider_event")
+  @@index([companyId, receivedAt])
+  @@index([providerId, receivedAt])
+  @@index([domain, providerCode, receivedAt])
+}
+
+model IntegrationWebhookCanonicalEvent {
+  id             String                  @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  webhookEventId String                  @unique @db.Uuid
+  webhookEvent   IntegrationWebhookEvent @relation(fields: [webhookEventId], references: [id], onDelete: Cascade)
+  providerCode   String
+  domain         IntegrationDomain
+  eventType      String
+  occurredAt     DateTime
+  companyId      String?                 @db.Uuid
+  aggregateType  String?
+  aggregateId    String?
+  payloadJson    Json
+  createdAt      DateTime                @default(now())
+
+  @@index([providerCode, eventType, occurredAt])
+  @@index([companyId, occurredAt])
+  @@index([aggregateType, aggregateId, occurredAt])
+}
+
+model IntegrationCanonicalEvent {
+  id     String                        @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  source IntegrationEventSource
+  status IntegrationEventProcessStatus @default(pending)
+
+  companyId      String?                  @db.Uuid
+  providerId     String?                  @db.Uuid
+  provider       IntegrationProvider?     @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  webhookEventId String?                  @db.Uuid
+  webhookEvent   IntegrationWebhookEvent? @relation(fields: [webhookEventId], references: [id], onDelete: SetNull)
+  outboxId       String?                  @db.Uuid
+
+  domain        IntegrationDomain
+  providerCode  String
+  eventType     String
+  aggregateType String?
+  aggregateId   String?
+  payloadJson   Json
+  occurredAt    DateTime
+
+  processAttempts Int       @default(0)
+  lastError       String?
+  lockedAt        DateTime?
+  processedAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([outboxId], map: "uniq_integration_canonical_event_outbox")
+  @@unique([webhookEventId], map: "uniq_integration_canonical_event_webhook")
+  @@unique([source, providerCode, eventType, aggregateType, aggregateId, occurredAt], map: "uniq_integration_canonical_event_identity")
+  @@index([status, occurredAt, createdAt])
+  @@index([companyId, domain, status])
+  @@index([providerId, status, occurredAt])
+  @@index([aggregateType, aggregateId, eventType])
+}

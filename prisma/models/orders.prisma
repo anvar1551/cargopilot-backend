@@ -1,0 +1,355 @@
+// CargoPilot bounded-context Prisma declarations.
+// Loaded through the multi-file schema configured in prisma.config.ts.
+
+enum OrderStatus {
+  pending
+  assigned
+  pickup_in_progress
+  picked_up
+  at_warehouse
+  in_transit
+  out_for_delivery
+  delivered
+  exception
+  return_in_progress
+  returned
+  cancelled
+}
+
+enum ReasonCode {
+  // Pickup
+  BAD_SENDER_ADDRESS
+  SENDER_NOT_AVAILABLE
+  SENDER_MOBILE_OFF
+  SENDER_MOBILE_WRONG
+  SENDER_MOBILE_NO_RESPONSE
+  OUT_OF_PICKUP_AREA
+  UNABLE_TO_ACCESS_SENDER_PREMISES
+  NO_CAPACITY_PICKUP
+  PROHIBITED_ITEMS
+  INCORRECT_PACKING
+  NO_AWB_PRINTED
+  PICKUP_DELAY_LATE_BOOKING
+  BAD_WEATHER_PICKUP
+  SENDER_NAME_MISSING
+  DOCUMENTS_MISSING
+
+  // Delivery
+  BAD_RECIPIENT_ADDRESS
+  RECIPIENT_NOT_AVAILABLE
+  RECIPIENT_MOBILE_OFF
+  RECIPIENT_MOBILE_WRONG
+  RECIPIENT_MOBILE_NO_RESPONSE
+  OUT_OF_DELIVERY_AREA
+  UNABLE_TO_ACCESS_RECIPIENT_PREMISES
+  DELIVERY_DELAY_LATE_BOOKING
+  NO_TIME_FOR_DELIVERY
+  NO_CAPACITY_DELIVERY
+  COD_NOT_READY
+  RECIPIENT_REFUSED
+  RECIPIENT_WANTS_INSPECT
+  BAD_WEATHER_DELIVERY
+
+  // Routing / ops
+  WRONG_SHIPMENT
+  INCOMPLETE_PARCEL
+  MIS_ROUTED
+
+  // Returns / closing
+  TO_BE_RETURNED
+  RETURNED_TO_ORIGIN
+  CANCELLED_BY_CUSTOMER
+  DRIVER_CANCELLED
+
+  // Loss/Damage
+  LOST
+  DAMAGED
+  LOST_OR_DAMAGED
+  DESTROYED_ON_CUSTOMER_REQUEST
+
+  // Customs (optional but future-proof)
+  CLEARING_CUSTOMS
+  HOLD_AT_CUSTOMS
+  REJECTED_BY_CUSTOMS
+  RELEASED_BY_CUSTOMS
+  CUSTOMER_REFUSES_CUSTOMS_FEES
+
+  OTHER
+}
+
+enum PaymentType {
+  CASH
+  CARD
+  COD
+  TRANSFER
+  OTHER
+}
+
+enum PaidBy {
+  SENDER
+  RECIPIENT
+  COMPANY
+}
+
+enum PaidStatus {
+  NOT_PAID
+  PAID
+  PARTIAL
+}
+
+enum OrderPaymentState {
+  UNPAID
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum ServiceType {
+  DOOR_TO_DOOR
+  DOOR_TO_POINT
+  POINT_TO_DOOR
+  POINT_TO_POINT
+}
+
+enum OrderSlaSource {
+  PROMISE_DATE
+  SLA_RULE
+  NONE
+}
+
+enum RecipientUnavailableAction {
+  DO_NOT_DELIVER
+  LEAVE_AT_DOOR
+  LEAVE_WITH_CONCIERGE
+  CALL_SENDER
+  RESCHEDULE
+  RETURN_TO_SENDER
+}
+
+model Order {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+
+  // ✅ human readable number like 99000021
+  orderNumber String @unique
+
+  status OrderStatus @default(pending)
+
+  // ---------------- Sender / Receiver (basic quick fields - keep for now) ----------------
+  senderName      String?
+  senderPhone     String?
+  senderPhone2    String?
+  senderPhone3    String?
+  senderAddress   String? // keep legacy text field (optional)
+  receiverName    String?
+  receiverPhone   String?
+  receiverPhone2  String?
+  receiverPhone3  String?
+  receiverAddress String? // keep legacy text field (optional)
+
+  // ---------------- Legacy quick addresses (still used in UI today) ----------------
+  pickupAddress   String
+  dropoffAddress  String
+  destinationCity String?
+  pickupLat       Float?
+  pickupLng       Float?
+  dropoffLat      Float?
+  dropoffLng      Float?
+
+  // ---------------- Service/payment info (Stripe optional later) ----------------
+  serviceType ServiceType?
+  codAmount   Float?
+  currency    String?
+  weightKg    Float?
+
+  // ---------------- Owner/customer (auth user) ----------------
+  customerId String @db.Uuid
+  customer   User   @relation("CustomerOrders", fields: [customerId], references: [id])
+
+  // ---------------- Customer master (company/person) ----------------
+  customerEntityId String?         @db.Uuid
+  customerEntity   CustomerEntity? @relation("CustomerEntityOrders", fields: [customerEntityId], references: [id])
+
+  // ---------------- Structured addresses (competitor-like) ----------------
+  senderAddressId  String?  @db.Uuid
+  senderAddressObj Address? @relation("OrderSenderAddress", fields: [senderAddressId], references: [id])
+
+  receiverAddressId  String?  @db.Uuid
+  receiverAddressObj Address? @relation("OrderReceiverAddress", fields: [receiverAddressId], references: [id])
+
+  // ---------------- Operations ----------------
+  assignedDriverId String? @db.Uuid
+  assignedDriver   User?   @relation("DriverOrders", fields: [assignedDriverId], references: [id])
+
+  currentWarehouseId String?    @db.Uuid
+  currentWarehouse   Warehouse? @relation(fields: [currentWarehouseId], references: [id])
+
+  ownerOrgId    String?       @db.Uuid
+  ownerOrg      Organization? @relation("OrderOwnerOrganization", fields: [ownerOrgId], references: [id], onDelete: SetNull)
+  assignedOrgId String?       @db.Uuid
+  assignedOrg   Organization? @relation("OrderAssignedOrganization", fields: [assignedOrgId], references: [id], onDelete: SetNull)
+
+  labelKey String?
+
+  // ---------------- Relations ----------------
+  parcels              Parcel[]
+  trackingEvents       Tracking[]
+  labelJob             OrderLabelJob?
+  invoice              Invoice?
+  attachments          OrderAttachment[]
+  cashCollections      CashCollection[]
+  supportTickets       SupportTicket[]
+  legs                 OrderLeg[]
+  pricingComponents    PricingComponent[]
+  documents            OrderDocument[]
+  paymentIntents       PaymentIntent[]
+  paymentLedgerEntries PaymentLedgerEntry[]
+  paymentRefunds       PaymentRefund[]
+
+  // ---------------- Attempt counters ----------------
+  pickupAttemptCount   Int @default(0)
+  deliveryAttemptCount Int @default(0)
+
+  // ---------------- Exception snapshot ----------------
+  lastExceptionReason ReasonCode?
+  lastExceptionAt     DateTime?
+
+  // ---------------- Scheduling ----------------
+  plannedPickupAt    DateTime?
+  plannedDeliveryAt  DateTime?
+  expectedDeliveryAt DateTime?
+  slaSource          OrderSlaSource?
+  slaRuleId          String?          @db.Uuid
+  slaRule            DeliverySlaRule? @relation(fields: [slaRuleId], references: [id])
+  slaTargetDays      Int?
+
+  // ---------------- Payment (competitor) ----------------
+  paymentType             PaymentType?
+  paymentState            OrderPaymentState           @default(UNPAID)
+  deliveryChargePaidBy    PaidBy?
+  ifRecipientNotAvailable RecipientUnavailableAction?
+
+  codPaidStatus           PaidStatus?
+  serviceCharge           Float?
+  serviceChargePaidStatus PaidStatus?
+  itemValue               Float?
+
+  // ---------------- Additional / references (competitor-like) ----------------
+  referenceId   String?
+  shelfId       String?
+  promoCode     String?
+  numberOfCalls Int?
+  promiseDate   DateTime?
+
+  fragile           Boolean @default(false)
+  dangerousGoods    Boolean @default(false)
+  shipmentInsurance Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([customerId, createdAt])
+  @@index([createdAt])
+  @@index([assignedDriverId])
+  @@index([currentWarehouseId])
+  @@index([customerEntityId])
+  @@index([status])
+  @@index([status, createdAt])
+  @@index([status, updatedAt])
+  @@index([paymentState, createdAt])
+  @@index([status, expectedDeliveryAt])
+  @@index([expectedDeliveryAt])
+  @@index([slaRuleId])
+  @@index([currentWarehouseId, status, createdAt])
+  @@index([currentWarehouseId, status, updatedAt])
+  @@index([currentWarehouseId, updatedAt])
+  @@index([assignedDriverId, status, createdAt])
+  @@index([pickupLat, pickupLng])
+  @@index([dropoffLat, dropoffLng])
+  @@index([referenceId])
+  @@index([ownerOrgId, status, createdAt])
+  @@index([assignedOrgId, status, createdAt])
+}
+
+model Tracking {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+
+  orderId String @db.Uuid
+  order   Order  @relation(fields: [orderId], references: [id])
+
+  // ✅ status (optional if event is not a status-change)
+  status OrderStatus?
+
+  reasonCode ReasonCode?
+  note       String?
+
+  region      String?
+  warehouseId String?    @db.Uuid
+  warehouse   Warehouse? @relation(fields: [warehouseId], references: [id])
+
+  actorId   String? @db.Uuid
+  actor     User?   @relation("TrackingActor", fields: [actorId], references: [id])
+  actorRole String?
+
+  parcelId String? @db.Uuid
+  parcel   Parcel? @relation("ParcelTracking", fields: [parcelId], references: [id])
+
+  orderLegId String?   @db.Uuid
+  orderLeg   OrderLeg? @relation(fields: [orderLegId], references: [id], onDelete: SetNull)
+
+  timestamp DateTime @default(now())
+
+  @@index([orderId, timestamp])
+  @@index([actorId])
+  @@index([parcelId])
+  @@index([orderLegId, timestamp])
+  @@index([warehouseId, timestamp])
+}
+
+model OrderAttachment {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+
+  orderId String @db.Uuid
+  order   Order  @relation(fields: [orderId], references: [id])
+
+  key      String // S3 key
+  fileName String?
+  mimeType String?
+  size     Int?
+
+  createdAt DateTime @default(now())
+
+  @@index([orderId])
+}
+
+model Parcel {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+
+  orderId String @db.Uuid
+  order   Order  @relation(fields: [orderId], references: [id])
+
+  pieceNo    Int
+  pieceTotal Int
+
+  weightKg Float?
+  lengthCm Float?
+  widthCm  Float?
+  heightCm Float?
+
+  // ✅ the scanned QR/barcode value
+  parcelCode String @unique
+
+  labelKey String?
+
+  trackingEvents Tracking[] @relation("ParcelTracking")
+
+  createdAt DateTime @default(now())
+
+  @@unique([orderId, pieceNo])
+}
+
+model Counter {
+  key       String   @id
+  value     Int
+  updatedAt DateTime @updatedAt
+}

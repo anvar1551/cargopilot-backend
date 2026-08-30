@@ -441,8 +441,10 @@ export async function resolvePayableTotalFromPricing(orderId: string) {
     select: {
       amount: true,
       currency: true,
+      fxRateSnapshot: true,
       baseAmount: true,
       baseCurrency: true,
+      createdAt: true,
     },
   });
 
@@ -486,11 +488,37 @@ export async function resolvePayableTotalFromPricing(orderId: string) {
     if (amountMajor <= 0) {
       throw orderError("Calculated payable amount must be greater than zero", 400);
     }
+    const matchingSnapshots = items.filter(
+      (item) =>
+        String(item.currency).trim().toUpperCase() === currency &&
+        item.fxRateSnapshot != null,
+    );
+    const fxRates = new Set(matchingSnapshots.map((item) => item.fxRateSnapshot!.toString()));
+    const snapshotBaseCurrencies = new Set(
+      matchingSnapshots
+        .map((item) => String(item.baseCurrency ?? "").trim().toUpperCase())
+        .filter(Boolean),
+    );
+    const baseCurrency = snapshotBaseCurrencies.size === 1
+      ? Array.from(snapshotBaseCurrencies)[0]
+      : null;
+    const hasCompleteFxSnapshot = matchingSnapshots.length === items.length && fxRates.size === 1;
+    const fxRate = hasCompleteFxSnapshot
+      ? Array.from(fxRates)[0]
+      : baseCurrency === currency
+        ? "1"
+        : null;
+    const fxRateAsOf = hasCompleteFxSnapshot
+      ? new Date(Math.max(...matchingSnapshots.map((item) => item.createdAt.getTime())))
+      : null;
     return {
       amountMajor,
       currency,
       source: "original" as const,
       componentCount: items.length,
+      fxRate,
+      fxRateAsOf,
+      baseCurrency,
     };
   }
 
@@ -505,6 +533,9 @@ export async function resolvePayableTotalFromPricing(orderId: string) {
       currency,
       source: "base" as const,
       componentCount: items.length,
+      fxRate: "1",
+      fxRateAsOf: new Date(Math.max(...items.map((item) => item.createdAt.getTime()))),
+      baseCurrency: currency,
     };
   }
 

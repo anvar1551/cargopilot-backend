@@ -23,6 +23,17 @@ export function minorToMajorFloat(amountMinor: bigint, currency: string): number
   return Number(amountMinor) / divisor;
 }
 
+export function minorToMajorString(amountMinor: bigint, currency: string): string {
+  const exponent = currencyExponent(currency);
+  const negative = amountMinor < 0n;
+  const absolute = negative ? -amountMinor : amountMinor;
+  if (exponent === 0) return `${negative ? "-" : ""}${absolute}`;
+  const raw = absolute.toString().padStart(exponent + 1, "0");
+  const whole = raw.slice(0, -exponent);
+  const fraction = raw.slice(-exponent);
+  return `${negative ? "-" : ""}${whole}.${fraction}`;
+}
+
 export function formatProviderAmount(
   amountMinor: bigint,
   currency: string,

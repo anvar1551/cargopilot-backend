@@ -51,6 +51,16 @@ async function loadOrderContext(tx: Prisma.TransactionClient, orderId: string) {
       serviceChargePaidStatus: true,
       deliveryChargePaidBy: true,
       currency: true,
+      ownerOrgId: true,
+      customerEntityId: true,
+      pricingComponents: {
+        select: {
+          currency: true,
+          fxRateSnapshot: true,
+          baseCurrency: true,
+          createdAt: true,
+        },
+      },
     },
   });
 
@@ -286,6 +296,112 @@ function toAuditActorRole(actor: OrderActor) {
   return null;
 }
 
+function cashFxSnapshot(
+  order: Awaited<ReturnType<typeof loadOrderContext>>,
+  currency: string,
+) {
+  const normalizedCurrency = currency.trim().toUpperCase();
+  const snapshots = order.pricingComponents.filter(
+    (component) =>
+      component.currency.trim().toUpperCase() === normalizedCurrency &&
+      component.fxRateSnapshot != null,
+  );
+  const rates = new Set(snapshots.map((component) => component.fxRateSnapshot!.toString()));
+  const baseCurrencies = new Set(
+    snapshots
+      .map((component) => String(component.baseCurrency ?? "").trim().toUpperCase())
+      .filter(Boolean),
+  );
+  const baseCurrency = baseCurrencies.size === 1 ? Array.from(baseCurrencies)[0] : null;
+  const hasCompleteFxSnapshot =
+    snapshots.length === order.pricingComponents.length && rates.size === 1;
+  return {
+    fxRate: hasCompleteFxSnapshot ? Array.from(rates)[0] : "1",
+    fxRateAsOf: hasCompleteFxSnapshot
+      ? new Date(Math.max(...snapshots.map((component) => component.createdAt.getTime())))
+      : null,
+    baseCurrency,
+  };
+}
+
+function financeCashEvent(input: {
+  order: Awaited<ReturnType<typeof loadOrderContext>>;
+  collectionId: string;
+  cashEvent: {
+    id: string;
+    eventType: CashCollectionEventType;
+    amount: number | null;
+    fromHolderType: CashHolderType | null;
+    toHolderType: CashHolderType | null;
+    toHolderWarehouseId?: string | null;
+    createdAt: Date;
+  };
+  kind: CashCollectionKind;
+  actor: OrderActor;
+}) {
+  const companyId = input.order.ownerOrgId ?? input.actor.companyId;
+  if (!companyId) {
+    throw orderError("Company scope is required for finance cash events", 409);
+  }
+  const currency = String(input.order.currency ?? "").trim().toUpperCase();
+  if (!currency) {
+    throw orderError("Currency is required for finance cash events", 409);
+  }
+  const amount = Number(input.cashEvent.amount ?? 0);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw orderError("Positive amount is required for finance cash events", 409);
+  }
+  const eventType = input.cashEvent.eventType === CashCollectionEventType.collected
+    ? "cash.collected"
+    : input.cashEvent.eventType === CashCollectionEventType.settled
+      ? "cash.settled"
+      : "cash.handed_off";
+  const sourceEventId = `cash:${input.cashEvent.id}`;
+  const fx = cashFxSnapshot(input.order, currency);
+  return {
+    id: `finance:${sourceEventId}`,
+    type: "finance_source_event" as const,
+    tenantScope: `company:${companyId}`,
+    entityId: input.order.id,
+    occurredAt: input.cashEvent.createdAt.toISOString(),
+    payload: {
+      schemaVersion: 1,
+      sourceEventId,
+      companyId,
+      sourceType: "cash_custody",
+      eventType,
+      sourceId: input.collectionId,
+      actorUserId: input.actor.id,
+      occurredAt: input.cashEvent.createdAt.toISOString(),
+      documentDate: input.cashEvent.createdAt.toISOString(),
+      postingDate: input.cashEvent.createdAt.toISOString(),
+      currency,
+      fxRate: fx.fxRate,
+      fxRateAsOf: fx.fxRateAsOf?.toISOString() ?? null,
+      amounts: {
+        [input.kind === CashCollectionKind.cod ? "cod_amount" : "service_charge"]:
+          amount.toFixed(4),
+      },
+      dimensions: {
+        orderId: input.order.id,
+        customerEntityId: input.order.customerEntityId ?? undefined,
+        warehouseId: input.cashEvent.toHolderWarehouseId ?? undefined,
+      },
+      attributes: {
+        cashKind: input.kind,
+        fromHolderType: input.cashEvent.fromHolderType,
+        toHolderType: input.cashEvent.toHolderType,
+      },
+      description: `${input.kind} ${eventType} for order ${input.order.id}`,
+      metadata: {
+        cashCollectionId: input.collectionId,
+        cashCollectionEventId: input.cashEvent.id,
+        baseCurrency: fx.baseCurrency,
+      },
+    },
+  };
+}
+
 export async function collectOrderCash(params: {
   orderId: string;
   kind: CashCollectionKind;
@@ -397,27 +513,27 @@ export async function collectOrderCash(params: {
         currentHolderLabel: holderLabel,
         collectedAt: collection.collectedAt ?? new Date(),
         note: params.note ?? collection.note ?? null,
-        events: {
-          create: {
-            eventType: nextEventType,
-            amount: nextAmount,
-            note: params.note ?? null,
-            fromHolderType: collection.currentHolderType,
-            fromHolderId:
-              collection.currentHolderUserId ??
-              collection.currentHolderWarehouseId ??
-              null,
-            fromHolderName: eventHolderName(
-              collection.currentHolderType,
-              collection.currentHolderLabel,
-            ),
-            toHolderType: holderType,
-            toHolderId: holderUserId ?? holderWarehouseId,
-            toHolderName: holderLabel,
-            actorId: actor.id,
-            actorRole: toAuditActorRole(actor),
-          },
-        },
+      },
+    });
+
+    const cashEvent = await tx.cashCollectionEvent.create({
+      data: {
+        cashCollectionId: collection.id,
+        eventType: nextEventType,
+        amount: nextAmount,
+        note: params.note ?? null,
+        fromHolderType: collection.currentHolderType,
+        fromHolderId:
+          collection.currentHolderUserId ?? collection.currentHolderWarehouseId ?? null,
+        fromHolderName: eventHolderName(
+          collection.currentHolderType,
+          collection.currentHolderLabel,
+        ),
+        toHolderType: holderType,
+        toHolderId: holderUserId ?? holderWarehouseId,
+        toHolderName: holderLabel,
+        actorId: actor.id,
+        actorRole: toAuditActorRole(actor),
       },
     });
 
@@ -441,6 +557,16 @@ export async function collectOrderCash(params: {
           actorRole: toAuditActorRole(actor),
         },
       },
+      financeCashEvent({
+        order,
+        collectionId: collection.id,
+        cashEvent: {
+          ...cashEvent,
+          toHolderWarehouseId: holderWarehouseId,
+        },
+        kind,
+        actor,
+      }),
     ]);
   });
 
@@ -537,27 +663,27 @@ export async function handoffOrderCash(params: {
         currentHolderWarehouseId: nextHolderWarehouseId,
         currentHolderLabel: nextHolderLabel,
         note: params.note ?? collection.note ?? null,
-        events: {
-          create: {
-            eventType: CashCollectionEventType.handoff,
-            amount: collection.collectedAmount ?? collection.expectedAmount,
-            note: params.note ?? null,
-            fromHolderType: collection.currentHolderType,
-            fromHolderId:
-              collection.currentHolderUserId ??
-              collection.currentHolderWarehouseId ??
-              null,
-            fromHolderName: eventHolderName(
-              collection.currentHolderType,
-              collection.currentHolderLabel,
-            ),
-            toHolderType: nextHolderType,
-            toHolderId: nextHolderUserId ?? nextHolderWarehouseId,
-            toHolderName: nextHolderLabel,
-            actorId: actor.id,
-            actorRole: toAuditActorRole(actor),
-          },
-        },
+      },
+    });
+
+    const cashEvent = await tx.cashCollectionEvent.create({
+      data: {
+        cashCollectionId: collection.id,
+        eventType: CashCollectionEventType.handoff,
+        amount: collection.collectedAmount ?? collection.expectedAmount,
+        note: params.note ?? null,
+        fromHolderType: collection.currentHolderType,
+        fromHolderId:
+          collection.currentHolderUserId ?? collection.currentHolderWarehouseId ?? null,
+        fromHolderName: eventHolderName(
+          collection.currentHolderType,
+          collection.currentHolderLabel,
+        ),
+        toHolderType: nextHolderType,
+        toHolderId: nextHolderUserId ?? nextHolderWarehouseId,
+        toHolderName: nextHolderLabel,
+        actorId: actor.id,
+        actorRole: toAuditActorRole(actor),
       },
     });
 
@@ -574,6 +700,16 @@ export async function handoffOrderCash(params: {
           actorRole: toAuditActorRole(actor),
         },
       },
+      financeCashEvent({
+        order,
+        collectionId: collection.id,
+        cashEvent: {
+          ...cashEvent,
+          toHolderWarehouseId: nextHolderWarehouseId,
+        },
+        kind,
+        actor,
+      }),
     ]);
   });
 
@@ -613,26 +749,26 @@ export async function settleOrderCash(params: {
         currentHolderLabel: "Finance",
         settledAt: new Date(),
         note: params.note ?? collection.note ?? null,
-        events: {
-          create: {
-            eventType: CashCollectionEventType.settled,
-            amount: collection.collectedAmount ?? collection.expectedAmount,
-            note: params.note ?? null,
-            fromHolderType: collection.currentHolderType,
-            fromHolderId:
-              collection.currentHolderUserId ??
-              collection.currentHolderWarehouseId ??
-              null,
-            fromHolderName: eventHolderName(
-              collection.currentHolderType,
-              collection.currentHolderLabel,
-            ),
-            toHolderType: CashHolderType.finance,
-            toHolderName: "Finance",
-            actorId: actor.id,
-            actorRole: toAuditActorRole(actor),
-          },
-        },
+      },
+    });
+
+    const cashEvent = await tx.cashCollectionEvent.create({
+      data: {
+        cashCollectionId: collection.id,
+        eventType: CashCollectionEventType.settled,
+        amount: collection.collectedAmount ?? collection.expectedAmount,
+        note: params.note ?? null,
+        fromHolderType: collection.currentHolderType,
+        fromHolderId:
+          collection.currentHolderUserId ?? collection.currentHolderWarehouseId ?? null,
+        fromHolderName: eventHolderName(
+          collection.currentHolderType,
+          collection.currentHolderLabel,
+        ),
+        toHolderType: CashHolderType.finance,
+        toHolderName: "Finance",
+        actorId: actor.id,
+        actorRole: toAuditActorRole(actor),
       },
     });
 
@@ -648,6 +784,13 @@ export async function settleOrderCash(params: {
           actorRole: toAuditActorRole(actor),
         },
       },
+      financeCashEvent({
+        order,
+        collectionId: collection.id,
+        cashEvent,
+        kind,
+        actor,
+      }),
     ]);
   });
 

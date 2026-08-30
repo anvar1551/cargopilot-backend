@@ -46,6 +46,16 @@ const services = [
     skip: process.env.DEV_STACK_NO_INTEGRATION_OUTBOX === "true",
   },
   {
+    name: "finance-outbox",
+    script: "worker:finance-outbox",
+    skip: process.env.DEV_STACK_NO_FINANCE_OUTBOX === "true",
+  },
+  {
+    name: "finance-posting",
+    script: "worker:finance-posting",
+    skip: process.env.DEV_STACK_NO_FINANCE_POSTING === "true",
+  },
+  {
     name: "labels",
     script: "worker:labels",
     skip: process.env.DEV_STACK_NO_LABELS === "true",

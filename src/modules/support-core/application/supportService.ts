@@ -1129,7 +1129,10 @@ export async function createSupportTicket(input: CreateSupportTicketInput, actor
         events: { orderBy: { createdAt: "asc" }, take: 120 },
       },
     });
-    if (existing && !existing.archivedAt && existing.status !== SupportTicketStatus.resolved) {
+    // A source key identifies one external/system event for its entire lifetime.
+    // Returning an already resolved or archived ticket keeps automated retries
+    // idempotent and avoids violating the unique sourceKey constraint.
+    if (existing) {
       return serializeTicket(existing);
     }
   }
@@ -1225,9 +1228,11 @@ export async function createSupportTicket(input: CreateSupportTicketInput, actor
     }
   }
 
-  const created = await prisma.$transaction(async (tx) => {
-    const ticketNumber = await getNextTicketNumber(tx);
-    const ticket = await tx.supportTicket.create({
+  let created;
+  try {
+    created = await prisma.$transaction(async (tx) => {
+      const ticketNumber = await getNextTicketNumber(tx);
+      const ticket = await tx.supportTicket.create({
       data: {
         ticketNumber,
         sourceKey,
@@ -1260,39 +1265,58 @@ export async function createSupportTicket(input: CreateSupportTicketInput, actor
       },
       select: ticketListSelect,
     });
-    await tx.supportTicketEvent.create({
-      data: {
+      await tx.supportTicketEvent.create({
+        data: {
+          ticketId: ticket.id,
+          eventType: SupportTicketEventType.created,
+          actorId: actorId(actor),
+          actorName: actorName(actor),
+          body: "Ticket created",
+          metadata: {
+            source,
+            queueId: assignment.queueId,
+            assignedOrgId: assignment.assignedOrgId,
+            sourceKey,
+            routingKey,
+            assignmentSource: assignment.assignmentSource,
+            assignmentRuleId: assignment.assignmentRuleId ?? null,
+            slaPolicyId: sla.policyId,
+            slaTargetMinutes: sla.targetMinutes,
+          },
+        },
+      });
+      await enqueueSupportTicketChangedTx(tx, {
         ticketId: ticket.id,
-        eventType: SupportTicketEventType.created,
-        actorId: actorId(actor),
-        actorName: actorName(actor),
-        body: "Ticket created",
-        metadata: {
+        reason: "ticket_created",
+        actor,
+        payload: {
+          status: ticket.status,
+          priority: ticket.priority,
           source,
           queueId: assignment.queueId,
-          assignedOrgId: assignment.assignedOrgId,
-          sourceKey,
-          routingKey,
-          assignmentSource: assignment.assignmentSource,
-          assignmentRuleId: assignment.assignmentRuleId ?? null,
-          slaPolicyId: sla.policyId,
-          slaTargetMinutes: sla.targetMinutes,
         },
-      },
+      });
+      return ticket;
     });
-    await enqueueSupportTicketChangedTx(tx, {
-      ticketId: ticket.id,
-      reason: "ticket_created",
-      actor,
-      payload: {
-        status: ticket.status,
-        priority: ticket.priority,
-        source,
-        queueId: assignment.queueId,
-      },
-    });
-    return ticket;
-  });
+  } catch (err) {
+    if (
+      sourceKey &&
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === "P2002"
+    ) {
+      const existing = await prisma.supportTicket.findUnique({
+        where: { sourceKey },
+        select: {
+          ...ticketDetailSelect,
+          messages: { orderBy: { createdAt: "asc" }, take: 100 },
+          notes: { orderBy: { createdAt: "asc" }, take: 100 },
+          events: { orderBy: { createdAt: "asc" }, take: 120 },
+        },
+      });
+      if (existing) return serializeTicket(existing);
+    }
+    throw err;
+  }
 
   scheduleSupportRefresh("ticket_created", created.id);
   void notifySupportUser({

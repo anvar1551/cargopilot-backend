@@ -10,6 +10,7 @@ import {
   getPaymentIntentForActor,
   handleProviderWebhook,
   listOrderPaymentIntentsForActor,
+  listPaymentRefundsForActor,
   retryOrderPaymentForActor,
   syncPaymentIntentForActor,
   upsertCompanyPaymentPolicyForActor,
@@ -131,6 +132,23 @@ const paymentsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.code(201).send(result);
       } catch (error) {
         return sendError(reply, error, "Failed to save payment provider config");
+      }
+    },
+  );
+
+  fastify.get(
+    "/payments/intents/:id/refunds",
+    { preHandler: fastifyAuth({ permission: "payments.intents.read" }) },
+    async (request, reply) => {
+      try {
+        const params = paymentIntentIdParamsSchema.parse(request.params);
+        const result = await listPaymentRefundsForActor({
+          user: request.user!,
+          paymentIntentId: params.id,
+        });
+        return reply.send(result);
+      } catch (error) {
+        return sendError(reply, error, "Failed to load payment refunds");
       }
     },
   );

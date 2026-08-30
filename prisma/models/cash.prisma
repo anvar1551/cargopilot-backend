@@ -1,0 +1,95 @@
+// CargoPilot bounded-context Prisma declarations.
+// Loaded through the multi-file schema configured in prisma.config.ts.
+
+enum CashCollectionKind {
+  cod
+  service_charge
+}
+
+enum CashCollectionStatus {
+  expected
+  held
+  settled
+  cancelled
+}
+
+enum CashHolderType {
+  none
+  driver
+  warehouse
+  pickup_point
+  finance
+}
+
+enum CashCollectionEventType {
+  expected
+  collected
+  handoff
+  settled
+  adjusted
+  cancelled
+}
+
+model CashCollection {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+
+  orderId String @db.Uuid
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  kind   CashCollectionKind
+  status CashCollectionStatus @default(expected)
+
+  expectedAmount  Float
+  collectedAmount Float?
+  currency        String?
+
+  currentHolderType        CashHolderType @default(none)
+  currentHolderUserId      String?        @db.Uuid
+  currentHolderUser        User?          @relation("CashCollectionHolderUser", fields: [currentHolderUserId], references: [id])
+  currentHolderWarehouseId String?        @db.Uuid
+  currentHolderWarehouse   Warehouse?     @relation("CashCollectionHolderWarehouse", fields: [currentHolderWarehouseId], references: [id])
+  currentHolderLabel       String?
+
+  collectedAt DateTime?
+  settledAt   DateTime?
+  note        String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  events CashCollectionEvent[]
+
+  @@unique([orderId, kind])
+  @@index([status])
+  @@index([currentHolderType, status])
+  @@index([currentHolderUserId, status])
+  @@index([currentHolderWarehouseId, status])
+}
+
+model CashCollectionEvent {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+
+  cashCollectionId String         @db.Uuid
+  cashCollection   CashCollection @relation(fields: [cashCollectionId], references: [id], onDelete: Cascade)
+
+  eventType CashCollectionEventType
+  amount    Float?
+  note      String?
+
+  fromHolderType CashHolderType?
+  fromHolderId   String?
+  fromHolderName String?
+
+  toHolderType CashHolderType?
+  toHolderId   String?
+  toHolderName String?
+
+  actorId   String? @db.Uuid
+  actor     User?   @relation("CashCollectionEventActor", fields: [actorId], references: [id])
+  actorRole String?
+
+  createdAt DateTime @default(now())
+
+  @@index([cashCollectionId, createdAt])
+  @@index([actorId, createdAt])
+}

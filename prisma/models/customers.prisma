@@ -1,0 +1,93 @@
+// CargoPilot bounded-context Prisma declarations.
+// Loaded through the multi-file schema configured in prisma.config.ts.
+
+enum CustomerType {
+  PERSON
+  COMPANY
+}
+
+enum AddressType {
+  RESIDENTIAL
+  BUSINESS
+}
+
+model Address {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+
+  // ✅ Address book owner relation (named, to avoid conflict with defaultAddress)
+  customerEntityId String?         @db.Uuid
+  customerEntity   CustomerEntity? @relation("CustomerAddresses", fields: [customerEntityId], references: [id])
+
+  country      String?
+  city         String?
+  neighborhood String?
+  street       String?
+  latitude     Float?
+  longitude    Float?
+  addressLine1 String?
+  addressLine2 String?
+  building     String?
+  apartment    String?
+  floor        String?
+  landmark     String?
+  postalCode   String?
+  addressType  AddressType?
+
+  passportSeries String?
+  passportNumber String?
+
+  isSaved Boolean @default(false)
+
+  // ✅ Opposite side for default address relation (no fields here)
+  asDefaultFor CustomerEntity? @relation("CustomerDefaultAddress")
+
+  // ✅ Order relations
+  asSenderFor   Order[] @relation("OrderSenderAddress")
+  asReceiverFor Order[] @relation("OrderReceiverAddress")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([customerEntityId])
+  @@index([city])
+}
+
+model CustomerEntity {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+
+  type CustomerType @default(PERSON)
+
+  // for PERSON: full name, for COMPANY: company name
+  name String
+
+  email     String?
+  phone     String?
+  altPhone1 String?
+  altPhone2 String?
+
+  // company-specific
+  companyName String?
+  taxId       String?
+
+  // ✅ Default address (separate named relation)
+  defaultAddressId String?  @unique @db.Uuid
+  defaultAddress   Address? @relation("CustomerDefaultAddress", fields: [defaultAddressId], references: [id])
+
+  // ✅ Address book (separate named relation)
+  addresses Address[] @relation("CustomerAddresses")
+
+  // ✅ Orders linked to this customer master
+  orders Order[] @relation("CustomerEntityOrders")
+
+  // ✅ Users that belong to this customer entity (for companies)
+
+  users       User[]       @relation("CustomerEntityUsers")
+  tariffPlans TariffPlan[]
+  invoices    Invoice[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([type])
+  @@index([name])
+}

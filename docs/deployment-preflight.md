@@ -11,6 +11,8 @@ The backend production stack must run these processes:
 - `analytics-worker`: `node dist/src/workers/analytics.worker.js`
 - `analytics-outbox-worker`: `node dist/src/workers/analytics-outbox.worker.js`
 - `integration-outbox-worker`: `node dist/src/workers/integration-outbox.worker.js`
+- `finance-posting-worker`: `node dist/src/workers/finance-posting.worker.js`
+- `finance-outbox-worker`: `node dist/src/workers/finance-outbox.worker.js`
 - `redis`
 - `postgres` or external PostgreSQL/Neon/RDS
 
@@ -142,6 +144,7 @@ Workers:
 - create an order and confirm label worker generates label
 - create route/carrier test in staging and confirm integration outbox worker processes it
 - refresh analytics and confirm outbox/analytics workers do not log Redis timeout loops
+- confirm finance source events are posted or visible in `/api/finance/exceptions`
 
 ## Push Safety
 

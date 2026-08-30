@@ -1,0 +1,225 @@
+// CargoPilot bounded-context Prisma declarations.
+// Loaded through the multi-file schema configured in prisma.config.ts.
+
+enum SupportTicketPriority {
+  urgent
+  high
+  normal
+}
+
+enum SupportTicketStatus {
+  open
+  waiting_customer
+  waiting_driver
+  escalated
+  resolved
+}
+
+enum SupportTicketSource {
+  customer_chat
+  driver_app
+  system_alert
+  manager
+}
+
+enum SupportTicketAuthorType {
+  customer
+  driver
+  support
+  system
+}
+
+enum SupportTicketEventType {
+  created
+  status_changed
+  assigned
+  note_added
+  message_added
+  escalated
+  resolved
+  archived
+  system
+}
+
+model SupportTicket {
+  id           String  @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  ticketNumber String  @unique
+  sourceKey    String? @unique
+  orderId      String? @db.Uuid
+  order        Order?  @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  title    String
+  summary  String?
+  priority SupportTicketPriority @default(normal)
+  status   SupportTicketStatus   @default(open)
+  source   SupportTicketSource   @default(manager)
+
+  customerUserId   String? @db.Uuid
+  customerEntityId String? @db.Uuid
+  driverId         String? @db.Uuid
+  warehouseId      String? @db.Uuid
+  ownerId          String? @db.Uuid
+  ownerName        String?
+
+  ownerOrgId    String?       @db.Uuid
+  ownerOrg      Organization? @relation("SupportTicketOwnerOrganization", fields: [ownerOrgId], references: [id], onDelete: SetNull)
+  assignedOrgId String?       @db.Uuid
+  assignedOrg   Organization? @relation("SupportTicketAssignedOrganization", fields: [assignedOrgId], references: [id], onDelete: SetNull)
+  queueId       String?       @db.Uuid
+  queue         SupportQueue? @relation(fields: [queueId], references: [id], onDelete: SetNull)
+
+  customerName   String?
+  companyName    String?
+  routeSnapshot  String?
+  driverName     String?
+  driverPhone    String?
+  warehouseLabel String?
+  lastMessage    String?
+  lastReplyBy    SupportTicketAuthorType?
+
+  slaPercent     Int       @default(100)
+  slaDueAt       DateTime?
+  lastActivityAt DateTime  @default(now())
+  resolvedAt     DateTime?
+  archivedAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages SupportTicketMessage[]
+  notes    SupportTicketNote[]
+  events   SupportTicketEvent[]
+
+  @@index([status, lastActivityAt])
+  @@index([ownerId, status, lastActivityAt])
+  @@index([archivedAt, status, lastActivityAt])
+  @@index([orderId])
+  @@index([sourceKey])
+  @@index([priority, status, lastActivityAt])
+  @@index([source, status, lastActivityAt])
+  @@index([slaDueAt])
+  @@index([ownerOrgId, status, lastActivityAt])
+  @@index([assignedOrgId, status, lastActivityAt])
+  @@index([queueId, status, lastActivityAt])
+}
+
+model SupportQueue {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+
+  companyId String       @db.Uuid
+  company   Organization @relation("SupportQueueCompany", fields: [companyId], references: [id], onDelete: Cascade)
+
+  code        String
+  name        String
+  description String?
+
+  defaultOrgId   String?       @db.Uuid
+  defaultOrg     Organization? @relation("SupportQueueDefaultOrg", fields: [defaultOrgId], references: [id], onDelete: SetNull)
+  defaultOwnerId String?       @db.Uuid
+
+  isDefault Boolean @default(false)
+  isActive  Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tickets         SupportTicket[]
+  assignmentRules SupportAssignmentRule[]
+  slaPolicies     SupportSlaPolicy[]
+
+  @@unique([companyId, code])
+  @@index([companyId, isActive])
+  @@index([companyId, isDefault])
+}
+
+model SupportAssignmentRule {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+
+  companyId String       @db.Uuid
+  company   Organization @relation("SupportAssignmentRuleCompany", fields: [companyId], references: [id], onDelete: Cascade)
+
+  queueId String?       @db.Uuid
+  queue   SupportQueue? @relation(fields: [queueId], references: [id], onDelete: SetNull)
+
+  name           String
+  code           String
+  source         SupportTicketSource?
+  priority       SupportTicketPriority?
+  routeContains  String?
+  defaultOwnerId String?                @db.Uuid
+  conditionsJson Json?
+  sortOrder      Int                    @default(100)
+  isActive       Boolean                @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([companyId, code])
+  @@index([companyId, isActive, sortOrder])
+  @@index([queueId])
+}
+
+model SupportSlaPolicy {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+
+  companyId String       @db.Uuid
+  company   Organization @relation("SupportSlaPolicyCompany", fields: [companyId], references: [id], onDelete: Cascade)
+
+  queueId String?       @db.Uuid
+  queue   SupportQueue? @relation(fields: [queueId], references: [id], onDelete: Cascade)
+
+  code           String
+  name           String
+  priority       SupportTicketPriority
+  targetMinutes  Int
+  warningMinutes Int?
+  isActive       Boolean               @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([companyId, code])
+  @@index([companyId, queueId, priority, isActive])
+}
+
+model SupportTicketMessage {
+  id         String                  @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  ticketId   String                  @db.Uuid
+  ticket     SupportTicket           @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  authorType SupportTicketAuthorType
+  authorId   String?                 @db.Uuid
+  authorName String?
+  body       String
+  createdAt  DateTime                @default(now())
+
+  @@index([ticketId, createdAt])
+  @@index([authorId, createdAt])
+}
+
+model SupportTicketNote {
+  id        String        @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  ticketId  String        @db.Uuid
+  ticket    SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  actorId   String?       @db.Uuid
+  actorName String?
+  body      String
+  createdAt DateTime      @default(now())
+
+  @@index([ticketId, createdAt])
+  @@index([actorId, createdAt])
+}
+
+model SupportTicketEvent {
+  id        String                 @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  ticketId  String                 @db.Uuid
+  ticket    SupportTicket          @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  eventType SupportTicketEventType
+  actorId   String?                @db.Uuid
+  actorName String?
+  body      String?
+  metadata  Json?
+  createdAt DateTime               @default(now())
+
+  @@index([ticketId, createdAt])
+  @@index([eventType, createdAt])
+}

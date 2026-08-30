@@ -431,6 +431,14 @@ export async function createOrderForActor(args: CreateOrderForActorArgs) {
       currency: paymentCurrency,
       provider: mapped.paymentProvider ?? undefined,
       idempotencyKey: mapped.paymentIntentIdempotencyKey ?? randomUUID(),
+      metadata: {
+        source: "order_checkout",
+        pricingSource: payableFromComponents.source,
+        pricingComponentCount: payableFromComponents.componentCount,
+        fxRate: payableFromComponents.fxRate,
+        fxRateAsOf: payableFromComponents.fxRateAsOf?.toISOString() ?? null,
+        baseCurrency: payableFromComponents.baseCurrency,
+      },
     },
   });
 

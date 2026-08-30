@@ -204,3 +204,108 @@ services:
           type: web
           name: cargopilot-api
           envVarKey: ORDER_LABEL_SECOND_CODE_MODE
+
+  - type: worker
+    runtime: docker
+    name: cargopilot-analytics-worker
+    region: frankfurt
+    plan: starter
+    dockerContext: .
+    dockerfilePath: ./Dockerfile
+    dockerCommand: node dist/src/workers/analytics.worker.js
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: RUN_PRISMA_MIGRATIONS
+        value: "false"
+      - key: DATABASE_URL
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: DATABASE_URL
+      - key: REDIS_ENABLED
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: REDIS_ENABLED
+      - key: REDIS_URL
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: REDIS_URL
+      - key: REDIS_PREFIX
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: REDIS_PREFIX
+
+  - type: worker
+    runtime: docker
+    name: cargopilot-finance-outbox-worker
+    region: frankfurt
+    plan: starter
+    dockerContext: .
+    dockerfilePath: ./Dockerfile
+    dockerCommand: node dist/src/workers/finance-outbox.worker.js
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: RUN_PRISMA_MIGRATIONS
+        value: "false"
+      - key: DATABASE_URL
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: DATABASE_URL
+      - key: REDIS_ENABLED
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: REDIS_ENABLED
+      - key: REDIS_URL
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: REDIS_URL
+      - key: REDIS_PREFIX
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: REDIS_PREFIX
+
+  - type: worker
+    runtime: docker
+    name: cargopilot-finance-posting-worker
+    region: frankfurt
+    plan: starter
+    dockerContext: .
+    dockerfilePath: ./Dockerfile
+    dockerCommand: node dist/src/workers/finance-posting.worker.js
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: RUN_PRISMA_MIGRATIONS
+        value: "false"
+      - key: DATABASE_URL
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: DATABASE_URL
+      - key: REDIS_ENABLED
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: REDIS_ENABLED
+      - key: REDIS_URL
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: REDIS_URL
+      - key: REDIS_PREFIX
+        fromService:
+          type: web
+          name: cargopilot-api
+          envVarKey: REDIS_PREFIX

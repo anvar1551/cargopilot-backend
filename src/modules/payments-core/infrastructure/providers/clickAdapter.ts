@@ -162,6 +162,10 @@ export class ClickProviderAdapter implements PaymentProviderAdapter {
 
     return {
       status: mappedStatus,
+      providerRefundId:
+        valueAsString(payload, "reversal_id") ||
+        valueAsString(payload, "payment_id") ||
+        input.intent.providerPaymentId,
       rawResponse: { ok: response.ok, status: response.status, response: payload },
     };
   }

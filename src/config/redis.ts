@@ -83,6 +83,8 @@ export function createRedisClient(
     commandTimeout?: number | null;
   },
 ) {
+  if (!isRedisEnabled()) return null;
+
   const url = process.env.REDIS_URL;
   if (!url) return null;
 

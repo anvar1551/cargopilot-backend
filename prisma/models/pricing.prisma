@@ -1,0 +1,143 @@
+// CargoPilot bounded-context Prisma declarations.
+// Loaded through the multi-file schema configured in prisma.config.ts.
+
+enum PricingPlanStatus {
+  draft
+  active
+  archived
+}
+
+enum TariffPriceType {
+  bucket
+  linear
+}
+
+enum TariffPricingStrategy {
+  FIXED_LANE
+  LEG_TRANSIT
+}
+
+enum TariffCoverageType {
+  domestic
+  international
+}
+
+enum TariffTransportMode {
+  ROAD
+  AIR
+  SEA
+  RAIL
+  COURIER
+  MULTIMODAL
+}
+
+model PricingRegion {
+  id                     String            @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  code                   String            @unique
+  name                   String
+  aliases                String[]          @default([])
+  sortOrder              Int               @default(0)
+  isActive               Boolean           @default(true)
+  createdAt              DateTime          @default(now())
+  updatedAt              DateTime          @updatedAt
+  originZoneEntries      ZoneMatrixEntry[] @relation("ZoneMatrixOrigin")
+  destinationZoneEntries ZoneMatrixEntry[] @relation("ZoneMatrixDestination")
+  originSlaRules         DeliverySlaRule[] @relation("DeliverySlaOriginRegion")
+  destinationSlaRules    DeliverySlaRule[] @relation("DeliverySlaDestinationRegion")
+
+  @@index([isActive, sortOrder])
+  @@index([name])
+}
+
+model ZoneMatrixEntry {
+  id                  String        @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  originRegionId      String        @db.Uuid
+  originRegion        PricingRegion @relation("ZoneMatrixOrigin", fields: [originRegionId], references: [id])
+  destinationRegionId String        @db.Uuid
+  destinationRegion   PricingRegion @relation("ZoneMatrixDestination", fields: [destinationRegionId], references: [id])
+  zone                Int
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  @@unique([originRegionId, destinationRegionId])
+  @@index([zone])
+}
+
+model TariffPlan {
+  id                     String                @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  name                   String
+  code                   String?               @unique
+  description            String?
+  status                 PricingPlanStatus     @default(draft)
+  serviceType            ServiceType
+  priceType              TariffPriceType       @default(bucket)
+  pricingStrategy        TariffPricingStrategy @default(FIXED_LANE)
+  coverageType           TariffCoverageType    @default(domestic)
+  transportMode          TariffTransportMode   @default(ROAD)
+  originCountryCode      String?
+  destinationCountryCode String?
+  transitPricingConfig   Json?
+  routeTemplateId        String?               @db.Uuid
+  routeTemplate          RouteTemplate?        @relation(fields: [routeTemplateId], references: [id], onDelete: SetNull)
+  currency               String                @default("UZS")
+  priority               Int                   @default(0)
+  isDefault              Boolean               @default(false)
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+  customerEntityId       String?               @db.Uuid
+  customerEntity         CustomerEntity?       @relation(fields: [customerEntityId], references: [id])
+  rates                  TariffRate[]
+
+  @@index([status, serviceType, priority])
+  @@index([customerEntityId, status])
+  @@index([coverageType, transportMode, status])
+  @@index([originCountryCode, destinationCountryCode])
+  @@index([routeTemplateId, status])
+}
+
+model TariffRate {
+  id           String     @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  tariffPlanId String     @db.Uuid
+  tariffPlan   TariffPlan @relation(fields: [tariffPlanId], references: [id], onDelete: Cascade)
+  zone         Int
+  weightFromKg Decimal    @db.Decimal(10, 2)
+  weightToKg   Decimal    @db.Decimal(10, 2)
+  price        Decimal    @db.Decimal(12, 2)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@unique([tariffPlanId, zone, weightFromKg, weightToKg])
+  @@index([tariffPlanId, zone])
+}
+
+model DeliverySlaRule {
+  id                  String         @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  name                String
+  description         String?
+  serviceType         ServiceType
+  originRegionId      String?        @db.Uuid
+  originRegion        PricingRegion? @relation("DeliverySlaOriginRegion", fields: [originRegionId], references: [id])
+  destinationRegionId String?        @db.Uuid
+  destinationRegion   PricingRegion? @relation("DeliverySlaDestinationRegion", fields: [destinationRegionId], references: [id])
+  zone                Int?
+  deliveryDays        Int
+  priority            Int            @default(0)
+  isActive            Boolean        @default(true)
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+  orders              Order[]
+
+  @@index([serviceType, isActive, priority])
+  @@index([originRegionId, destinationRegionId])
+  @@index([zone])
+}
+
+model OperationalSlaPolicy {
+  id                String   @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  singletonKey      String   @unique @default("global")
+  staleHours        Int      @default(48)
+  dueSoonHours      Int      @default(24)
+  overdueGraceHours Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}

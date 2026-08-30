@@ -1,0 +1,29 @@
+// CargoPilot bounded-context Prisma declarations.
+// Loaded through the multi-file schema configured in prisma.config.ts.
+
+enum NotificationType {
+  order
+  cash
+  support
+  system
+}
+
+model UserNotification {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type    NotificationType
+  title   String
+  body    String
+  orderId String?          @db.Uuid
+  data    Json?
+
+  createdAt DateTime  @default(now())
+  readAt    DateTime?
+
+  @@index([userId, createdAt])
+  @@index([userId, readAt])
+  @@index([userId, type, createdAt])
+}

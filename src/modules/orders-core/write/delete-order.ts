@@ -119,6 +119,9 @@ export async function deleteOrderForActor(args: {
       paymentLedgerEntries: (
         await tx.paymentLedgerEntry.deleteMany({ where: { orderId } })
       ).count,
+      paymentRefunds: (
+        await tx.paymentRefund.deleteMany({ where: { orderId } })
+      ).count,
       paymentAttempts: paymentIntentIds.length
         ? (
             await tx.paymentAttempt.deleteMany({

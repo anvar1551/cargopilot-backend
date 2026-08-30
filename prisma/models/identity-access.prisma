@@ -1,0 +1,184 @@
+// CargoPilot bounded-context Prisma declarations.
+// Loaded through the multi-file schema configured in prisma.config.ts.
+
+enum MembershipStatus {
+  active
+  invited
+  suspended
+}
+
+enum MembershipScopeType {
+  company
+  branch
+  warehouse
+  agent
+  pickup_point
+  carrier
+  client
+}
+
+model Role {
+  id   String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  code String
+  name String
+
+  companyId String?       @db.Uuid
+  company   Organization? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+
+  isSystem    Boolean  @default(false)
+  isOwnerRole Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  rolePermissions RolePermission[]
+  membershipRoles MembershipRole[]
+
+  @@unique([companyId, code])
+  @@index([code])
+  @@index([companyId, isSystem])
+}
+
+model Permission {
+  id          String  @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  key         String  @unique
+  resource    String
+  action      String
+  description String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  rolePermissions RolePermission[]
+
+  @@index([resource, action])
+}
+
+model RolePermission {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+
+  roleId       String     @db.Uuid
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionId String     @db.Uuid
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([roleId, permissionId])
+  @@index([permissionId])
+}
+
+model CompanyMembership {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  companyId String       @db.Uuid
+  company   Organization @relation("CompanyMembershipCompany", fields: [companyId], references: [id], onDelete: Cascade)
+
+  branchId String?       @db.Uuid
+  branch   Organization? @relation("CompanyMembershipBranch", fields: [branchId], references: [id], onDelete: SetNull)
+
+  status MembershipStatus @default(active)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  roles  MembershipRole[]
+  scopes MembershipScope[]
+
+  @@unique([userId, companyId])
+  @@index([companyId, status])
+  @@index([branchId])
+}
+
+model MembershipRole {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+
+  membershipId String            @db.Uuid
+  membership   CompanyMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  roleId       String            @db.Uuid
+  role         Role              @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([membershipId, roleId])
+  @@index([roleId])
+}
+
+model MembershipScope {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+
+  membershipId String              @db.Uuid
+  membership   CompanyMembership   @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  scopeType    MembershipScopeType
+  scopeRefId   String              @db.Uuid
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([membershipId, scopeType, scopeRefId])
+  @@index([scopeType, scopeRefId])
+  @@index([membershipId])
+}
+
+model User {
+  id       String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  name     String
+  email    String @unique
+  password String
+
+  driverType            DriverType?
+  liveLocationEnabled   Boolean             @default(true)
+  liveLocationUpdatedAt DateTime            @default(now())
+  memberships           CompanyMembership[]
+
+  // ✅ link user -> customer entity (person/company)
+  customerEntityId String?         @db.Uuid
+  customerEntity   CustomerEntity? @relation("CustomerEntityUsers", fields: [customerEntityId], references: [id])
+
+  warehouseId       String?                 @db.Uuid
+  warehouse         Warehouse?              @relation(fields: [warehouseId], references: [id])
+  warehouseAccesses DriverWarehouseAccess[]
+
+  orders       Order[] @relation("CustomerOrders")
+  driverOrders Order[] @relation("DriverOrders")
+
+  createdAt DateTime @default(now())
+
+  invoices                  Invoice[]
+  trackingEvents            Tracking[]            @relation("TrackingActor")
+  heldCashCollections       CashCollection[]      @relation("CashCollectionHolderUser")
+  cashCollectionActorEvents CashCollectionEvent[] @relation("CashCollectionEventActor")
+  notifications             UserNotification[]
+  createdOrderDocuments     OrderDocument[]       @relation("OrderDocumentCreatedBy")
+  refreshSessions           UserRefreshSession[]
+
+  @@index([createdAt])
+  @@index([warehouseId, createdAt])
+}
+
+model UserRefreshSession {
+  id String @id @db.Uuid
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+
+  replacedBySessionId String?              @db.Uuid
+  replacedBySession   UserRefreshSession?  @relation("RefreshSessionReplacement", fields: [replacedBySessionId], references: [id])
+  replacedSessions    UserRefreshSession[] @relation("RefreshSessionReplacement")
+
+  userAgent String?
+  ipAddress String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([expiresAt])
+  @@index([userId, revokedAt, expiresAt])
+}

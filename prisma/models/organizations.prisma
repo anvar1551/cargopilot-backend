@@ -1,0 +1,100 @@
+// CargoPilot bounded-context Prisma declarations.
+// Loaded through the multi-file schema configured in prisma.config.ts.
+
+enum OrganizationType {
+  company
+  branch
+  agent
+  pickup_point
+  carrier
+  client
+}
+
+enum WarehouseType {
+  warehouse
+  pickup_point
+}
+
+enum DriverType {
+  local
+  linehaul
+}
+
+model Organization {
+  id   String           @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  name String
+  type OrganizationType
+  code String?          @unique
+
+  parentOrgId String?        @db.Uuid
+  parentOrg   Organization?  @relation("OrganizationHierarchy", fields: [parentOrgId], references: [id], onDelete: SetNull)
+  childOrgs   Organization[] @relation("OrganizationHierarchy")
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  roles                    Role[]
+  companyMemberships       CompanyMembership[]       @relation("CompanyMembershipCompany")
+  branchMemberships        CompanyMembership[]       @relation("CompanyMembershipBranch")
+  ownedOrders              Order[]                   @relation("OrderOwnerOrganization")
+  assignedOrders           Order[]                   @relation("OrderAssignedOrganization")
+  ownedSupportTickets      SupportTicket[]           @relation("SupportTicketOwnerOrganization")
+  assignedSupportTickets   SupportTicket[]           @relation("SupportTicketAssignedOrganization")
+  paymentProviderConfigs   PaymentProviderConfig[]
+  companyPaymentSetting    CompanyPaymentSetting?
+  paymentIntents           PaymentIntent[]
+  paymentWebhookEvents     PaymentWebhookEvent[]
+  paymentLedgerEntries     PaymentLedgerEntry[]
+  paymentRefunds           PaymentRefund[]
+  invoices                 Invoice[]
+  integrationProviders     IntegrationProvider[]
+  integrationOutbox        IntegrationOutbox[]
+  integrationWebhookEvents IntegrationWebhookEvent[]
+  routeTemplates           RouteTemplate[]
+  carrierRoutingRules      CarrierRoutingRule[]
+  supportQueues            SupportQueue[]            @relation("SupportQueueCompany")
+  supportQueueDefaultOrgs  SupportQueue[]            @relation("SupportQueueDefaultOrg")
+  supportAssignmentRules   SupportAssignmentRule[]   @relation("SupportAssignmentRuleCompany")
+  supportSlaPolicies       SupportSlaPolicy[]        @relation("SupportSlaPolicyCompany")
+  financeLegalEntity       FinanceLegalEntity?
+  financeSourceEvents      FinanceSourceEvent[]
+
+  @@index([type, isActive])
+  @@index([parentOrgId])
+}
+
+model Warehouse {
+  id                  String                  @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  name                String
+  type                WarehouseType           @default(warehouse)
+  location            String
+  region              String?
+  latitude            Float?
+  longitude           Float?
+  users               User[]
+  driverAccesses      DriverWarehouseAccess[]
+  orders              Order[]
+  createdAt           DateTime                @default(now())
+  tracking            Tracking[]
+  heldCashCollections CashCollection[]        @relation("CashCollectionHolderWarehouse")
+  originLegs          OrderLeg[]              @relation("OrderLegFromWarehouse")
+  destinationLegs     OrderLeg[]              @relation("OrderLegToWarehouse")
+
+  @@index([createdAt])
+  @@index([latitude, longitude])
+}
+
+model DriverWarehouseAccess {
+  id          String   @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  driverId    String   @db.Uuid
+  warehouseId String   @db.Uuid
+  createdAt   DateTime @default(now())
+
+  driver    User      @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+
+  @@unique([driverId, warehouseId])
+  @@index([driverId])
+  @@index([warehouseId])
+}

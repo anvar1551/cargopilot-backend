@@ -7,6 +7,9 @@ Deploy the backend as these Render resources:
 - `cargopilot-api` as a Docker web service
 - `cargopilot-analytics-outbox-worker` as a Docker background worker
 - `cargopilot-integration-outbox-worker` as a Docker background worker
+- `cargopilot-analytics-worker` as a Docker background worker
+- `cargopilot-finance-posting-worker` as a Docker background worker
+- `cargopilot-finance-outbox-worker` as a Docker background worker
 - `cargopilot-label-worker` as a Docker background worker
 - Postgres and Redis as managed services or external URLs
 
@@ -19,7 +22,7 @@ The repo now includes `render.yaml`, so the easiest path is a Render Blueprint d
 3. Select the backend repository.
 4. Render will detect `render.yaml` and propose:
    - one web service
-   - three workers
+   - six workers
 5. Fill the prompted secrets:
    - `DATABASE_URL`
    - `REDIS_URL`
@@ -83,7 +86,8 @@ Run these checks:
 6. Check `cargopilot-label-worker` logs for label processing errors
 7. Check `cargopilot-analytics-outbox-worker` logs for analytics projection errors
 8. Check `cargopilot-integration-outbox-worker` logs for carrier/SMS/webhook dispatch errors
-9. Open `Integrations -> Event Inbox` and verify canonical events are visible after a webhook or fake-carrier test
+9. Check `cargopilot-finance-posting-worker` for posting exceptions and `cargopilot-finance-outbox-worker` for publish failures
+10. Open `Integrations -> Event Inbox` and verify canonical events are visible after a webhook or fake-carrier test
 
 ## Auto deploys
 

@@ -9,6 +9,8 @@ CargoPilot is not a single-process ERP. In production, run these processes from 
 | API | `node dist/src/index.js` | Yes | HTTP API, auth, webhooks, SSE, synchronous requests. |
 | Analytics outbox worker | `node dist/src/workers/analytics-outbox.worker.js` | Yes | Moves domain events into analytics/realtime read models. |
 | Integration outbox worker | `node dist/src/workers/integration-outbox.worker.js` | Yes | Dispatches carrier/SMS/webhook integrations, retries, canonical result processing. |
+| Finance outbox worker | `node dist/src/workers/finance-outbox.worker.js` | Yes | Publishes committed finance events for projections, notifications, and downstream integrations. |
+| Finance posting worker | `node dist/src/workers/finance-posting.worker.js` | Yes | Ingests canonical finance facts and posts or isolates them in the exception queue. |
 | Label worker | `node dist/src/workers/order-label.worker.js` | Yes | Generates order labels asynchronously. |
 
 Development shortcut:
@@ -66,6 +68,7 @@ Explicitly secured operational endpoints:
 - Carrier booking/sync/cancel require `shipment.bookCarrier`.
 - Integration provider/routing/outbox/event monitoring routes require integration permissions.
 - Cash settlement requires `finance.settleCash`.
+- Finance legal entity, accounts, periods, journals, posting, reversals, and reports use separate `finance.*` permissions.
 
 ## Pre-publish smoke checklist
 
@@ -89,3 +92,4 @@ Run after deploying API and all workers:
 - Carrier webhook received but order leg not updated: check `Integrations -> Event Inbox`.
 - Label missing: check label worker logs and order label job state.
 - Payment paid at provider but pending in CargoPilot: check payment callback URL, provider webhook secret, and payment sync/retry button.
+- Finance projections stale but journals committed: check finance outbox worker logs and unpublished `FinanceDomainEventOutbox` rows.

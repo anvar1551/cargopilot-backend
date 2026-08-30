@@ -36,6 +36,7 @@ import warehouseFastifyRoutes from "./modules/warehouse-core/transport/fastify-r
 import labelsFastifyRoutes from "./modules/labels-core/transport/fastify-routes";
 import organizationsFastifyRoutes from "./modules/organizations-core/transport/fastify-routes";
 import integrationsFastifyRoutes from "./modules/integrations-core/transport/fastify-routes";
+import financeFastifyRoutes from "./modules/finance-core/transport/fastify-routes";
 import { integrationOutboxConfig } from "./modules/integrations-core/config/outbox.config";
 import { startIntegrationOutboxPublisher } from "./modules/integrations-core/infrastructure/integration-outbox.publisher";
 
@@ -142,6 +143,7 @@ async function start() {
   await fastify.register(labelsFastifyRoutes, { prefix: "/api/labels" });
   await fastify.register(organizationsFastifyRoutes, { prefix: "/api/organizations" });
   await fastify.register(integrationsFastifyRoutes, { prefix: "/api/integrations" });
+  await fastify.register(financeFastifyRoutes, { prefix: "/api/finance" });
 
   initRealtimeHub(fastify.server, allowedOrigins);
   startNotificationRetentionWorker();

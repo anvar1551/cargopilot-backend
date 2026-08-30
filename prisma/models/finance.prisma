@@ -1,0 +1,957 @@
+// Finance bounded context. Journal entries are immutable after posting.
+
+enum FinanceAccountType {
+  asset
+  liability
+  equity
+  revenue
+  expense
+}
+
+enum FinanceAccountStatus {
+  active
+  inactive
+}
+
+enum FinanceFiscalPeriodStatus {
+  open
+  restricted
+  closed
+}
+
+enum FinanceDocumentType {
+  manual_journal
+  customer_invoice
+  credit_note
+  carrier_bill
+  carrier_cost_accrual
+  payment
+  cash_movement
+  adjustment
+  fx_revaluation
+  opening_balance
+}
+
+enum FinanceDocumentStatus {
+  draft
+  submitted
+  approved
+  posted
+  reversed
+  cancelled
+}
+
+enum FinanceJournalStatus {
+  draft
+  posted
+  reversed
+}
+
+enum FinanceEntrySide {
+  debit
+  credit
+}
+
+enum FinancePostingRuleStatus {
+  active
+  inactive
+}
+
+enum FinanceSourceEventStatus {
+  pending
+  processing
+  posted
+  exception
+}
+
+enum FinanceOperationalDocumentStatus {
+  draft
+  submitted
+  approved
+  rejected
+  cancelled
+}
+
+enum FinanceProviderSettlementLineType {
+  payment
+  refund
+  fee
+  adjustment
+}
+
+enum FinanceReconciliationStatus {
+  unmatched
+  matched
+  mismatch
+  ignored
+}
+
+enum FinanceOpenItemStatus {
+  open
+  partial
+  settled
+}
+
+enum FinanceReceivableAllocationType {
+  payment
+  unapplied_receipt
+  refund
+}
+
+enum FinanceUnappliedCashType {
+  receipt
+  refund
+}
+
+enum FinanceUnappliedCashStatus {
+  open
+  applied
+}
+
+enum FinanceUnappliedCashApplicationType {
+  receivable
+  refund
+}
+
+enum FinancePaymentRunStatus {
+  draft
+  submitted
+  approved
+  rejected
+  executed
+  cancelled
+}
+
+enum FinancePaymentRunLineStatus {
+  pending
+  executed
+  allocated
+  cancelled
+}
+
+enum FinanceBankStatementStatus {
+  draft
+  submitted
+  approved
+  rejected
+}
+
+enum FinanceBankStatementLineDirection {
+  debit
+  credit
+}
+
+enum FinanceBankReconciliationTargetType {
+  payment_run
+  provider_settlement
+}
+
+model FinanceLegalEntity {
+  id        String       @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  companyId String       @unique @db.Uuid
+  company   Organization @relation(fields: [companyId], references: [id], onDelete: Restrict)
+
+  baseCurrency         String   @db.VarChar(3)
+  reportingCurrency    String?  @db.VarChar(3)
+  fiscalYearStartMonth Int      @default(1)
+  timezone             String   @default("Asia/Tashkent")
+  isActive             Boolean  @default(true)
+  createdByUserId      String   @db.Uuid
+  updatedByUserId      String   @db.Uuid
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  accounts                   FinanceAccount[]
+  periods                    FinanceFiscalPeriod[]
+  postingRules               FinancePostingRule[]
+  documents                  FinanceDocument[]
+  journalEntries             FinanceJournalEntry[]
+  auditEvents                FinanceAuditEvent[]
+  outboxEvents               FinanceDomainEventOutbox[]
+  numberSequences            FinanceNumberSequence[]
+  chartTemplateInstallations FinanceChartTemplateInstallation[]
+  sourceEvents               FinanceSourceEvent[]
+  providerSettlements        FinanceProviderSettlement[]
+  carrierBills               FinanceCarrierBill[]
+  receivableItems            FinanceReceivableItem[]
+  unappliedCash              FinanceUnappliedCash[]
+  payableItems               FinancePayableItem[]
+  bankAccounts               FinanceBankAccount[]
+  paymentRuns                FinancePaymentRun[]
+  bankStatements             FinanceBankStatement[]
+
+  @@index([isActive])
+}
+
+model FinanceSourceEvent {
+  id        String       @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  companyId String       @db.Uuid
+  company   Organization @relation(fields: [companyId], references: [id], onDelete: Restrict)
+
+  legalEntityId String?             @db.Uuid
+  legalEntity   FinanceLegalEntity? @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
+
+  sourceEventId String
+  sourceType    String
+  eventType     String
+  sourceId      String
+  schemaVersion Int                      @default(1)
+  status        FinanceSourceEventStatus @default(pending)
+  occurredAt    DateTime
+  postingDate   DateTime                 @db.Date
+  payloadHash   String
+  payloadJson   Json
+
+  resolvedRuleId        String?              @db.Uuid
+  resolvedRule          FinancePostingRule?  @relation(fields: [resolvedRuleId], references: [id], onDelete: Restrict)
+  financeDocumentId     String?              @db.Uuid
+  financeDocument       FinanceDocument?     @relation(fields: [financeDocumentId], references: [id], onDelete: Restrict)
+  financeJournalEntryId String?              @db.Uuid
+  financeJournalEntry   FinanceJournalEntry? @relation(fields: [financeJournalEntryId], references: [id], onDelete: Restrict)
+  attempts              Int                  @default(0)
+  claimedAt             DateTime?
+  claimedBy             String?
+  nextAttemptAt         DateTime             @default(now())
+  lastErrorCode         String?
+  lastErrorMessage      String?
+  processedAt           DateTime?
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+
+  @@unique([companyId, sourceEventId])
+  @@index([status, nextAttemptAt, claimedAt, createdAt])
+  @@index([companyId, status, createdAt])
+  @@index([legalEntityId, sourceType, eventType, occurredAt])
+  @@index([financeDocumentId])
+}
+
+model FinanceChartTemplateInstallation {
+  id                String             @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  legalEntityId     String             @db.Uuid
+  legalEntity       FinanceLegalEntity @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
+  templateCode      String
+  templateVersion   Int
+  installedByUserId String             @db.Uuid
+  accountCount      Int
+  metadataJson      Json?
+  installedAt       DateTime           @default(now())
+
+  @@unique([legalEntityId, templateCode, templateVersion])
+  @@index([legalEntityId, installedAt])
+}
+
+model FinanceAccount {
+  id            String               @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  legalEntityId String               @db.Uuid
+  legalEntity   FinanceLegalEntity   @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
+  code          String
+  name          String
+  type          FinanceAccountType
+  status        FinanceAccountStatus @default(active)
+
+  parentId String?          @db.Uuid
+  parent   FinanceAccount?  @relation("FinanceAccountHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
+  children FinanceAccount[] @relation("FinanceAccountHierarchy")
+
+  allowPosting     Boolean  @default(true)
+  isControlAccount Boolean  @default(false)
+  currency         String?  @db.VarChar(3)
+  description      String?
+  metadataJson     Json?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  postingRuleLines FinancePostingRuleLine[]
+  journalLines     FinanceJournalLine[]
+
+  @@unique([legalEntityId, code])
+  @@index([legalEntityId, type, status])
+  @@index([parentId])
+}
+
+model FinanceFiscalPeriod {
+  id               String                    @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  legalEntityId    String                    @db.Uuid
+  legalEntity      FinanceLegalEntity        @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
+  fiscalYear       Int
+  periodNumber     Int
+  name             String
+  startDate        DateTime                  @db.Date
+  endDate          DateTime                  @db.Date
+  status           FinanceFiscalPeriodStatus @default(open)
+  closedAt         DateTime?
+  closedByUserId   String?                   @db.Uuid
+  reopenedAt       DateTime?
+  reopenedByUserId String?                   @db.Uuid
+  createdAt        DateTime                  @default(now())
+  updatedAt        DateTime                  @updatedAt
+
+  @@unique([legalEntityId, fiscalYear, periodNumber])
+  @@index([legalEntityId, startDate, endDate])
+  @@index([legalEntityId, status])
+}
+
+model FinancePostingRule {
+  id             String                   @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  legalEntityId  String                   @db.Uuid
+  legalEntity    FinanceLegalEntity       @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
+  code           String
+  name           String
+  sourceType     String
+  eventType      String
+  status         FinancePostingRuleStatus @default(active)
+  version        Int                      @default(1)
+  priority       Int                      @default(100)
+  conditionsJson Json?
+  validFrom      DateTime?
+  validTo        DateTime?
+  createdAt      DateTime                 @default(now())
+  updatedAt      DateTime                 @updatedAt
+
+  lines        FinancePostingRuleLine[]
+  sourceEvents FinanceSourceEvent[]
+
+  @@unique([legalEntityId, code, version])
+  @@index([legalEntityId, sourceType, eventType, status, priority])
+}
+
+model FinancePostingRuleLine {
+  id                  String             @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  postingRuleId       String             @db.Uuid
+  postingRule         FinancePostingRule @relation(fields: [postingRuleId], references: [id], onDelete: Cascade)
+  lineNumber          Int
+  side                FinanceEntrySide
+  accountId           String             @db.Uuid
+  account             FinanceAccount     @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  amountExpression    String             @default("amount")
+  descriptionTemplate String?
+  dimensionsJson      Json?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  @@unique([postingRuleId, lineNumber])
+  @@index([accountId])
+}
+
+model FinanceDocument {
+  id             String                @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  legalEntityId  String                @db.Uuid
+  legalEntity    FinanceLegalEntity    @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
+  documentNumber String
+  type           FinanceDocumentType
+  status         FinanceDocumentStatus @default(draft)
+  documentDate   DateTime              @db.Date
+  postingDate    DateTime              @db.Date
+
+  currency    String    @db.VarChar(3)
+  totalAmount Decimal   @db.Decimal(20, 4)
+  baseAmount  Decimal   @db.Decimal(20, 4)
+  fxRate      Decimal   @db.Decimal(20, 10)
+  fxRateAsOf  DateTime?
+
+  sourceType     String?
+  sourceId       String?
+  sourceEventId  String?
+  idempotencyKey String
+  description    String?
+  metadataJson   Json?
+
+  createdByUserId   String    @db.Uuid
+  submittedByUserId String?   @db.Uuid
+  approvedByUserId  String?   @db.Uuid
+  postedByUserId    String?   @db.Uuid
+  reversedByUserId  String?   @db.Uuid
+  submittedAt       DateTime?
+  approvedAt        DateTime?
+  postedAt          DateTime?
+  reversedAt        DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  reversalOfId String?              @db.Uuid
+  reversalOf   FinanceDocument?     @relation("FinanceDocumentReversal", fields: [reversalOfId], references: [id], onDelete: Restrict)
+  reversals    FinanceDocument[]    @relation("FinanceDocumentReversal")
+  journalEntry FinanceJournalEntry?
+  auditEvents  FinanceAuditEvent[]
+  sourceEvents FinanceSourceEvent[]
+
+  @@unique([legalEntityId, documentNumber])
+  @@unique([legalEntityId, idempotencyKey])
+  @@index([legalEntityId, status, postingDate])
+  @@index([legalEntityId, sourceType, sourceId])
+  @@index([sourceEventId])
+  @@index([reversalOfId])
+}
+
+model FinanceJournalEntry {
+  id               String               @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  legalEntityId    String               @db.Uuid
+  legalEntity      FinanceLegalEntity   @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
+  documentId       String               @unique @db.Uuid
+  document         FinanceDocument      @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  journalNumber    String
+  status           FinanceJournalStatus @default(draft)
+  postingDate      DateTime             @db.Date
+  description      String?
+  totalDebitBase   Decimal              @db.Decimal(20, 4)
+  totalCreditBase  Decimal              @db.Decimal(20, 4)
+  postedAt         DateTime?
+  postedByUserId   String?              @db.Uuid
+  reversedAt       DateTime?
+  reversedByUserId String?              @db.Uuid
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+
+  reversalOfId String?               @db.Uuid
+  reversalOf   FinanceJournalEntry?  @relation("FinanceJournalReversal", fields: [reversalOfId], references: [id], onDelete: Restrict)
+  reversals    FinanceJournalEntry[] @relation("FinanceJournalReversal")
+  lines        FinanceJournalLine[]
+  auditEvents  FinanceAuditEvent[]
+  sourceEvents FinanceSourceEvent[]
+
+  @@unique([legalEntityId, journalNumber])
+  @@index([legalEntityId, status, postingDate])
+  @@index([reversalOfId])
+}
+
+model FinanceJournalLine {
+  id             String              @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  journalEntryId String              @db.Uuid
+  journalEntry   FinanceJournalEntry @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+  lineNumber     Int
+  accountId      String              @db.Uuid
+  account        FinanceAccount      @relation(fields: [accountId], references: [id], onDelete: Restrict)
+
+  debitAmount  Decimal @default(0) @db.Decimal(20, 4)
+  creditAmount Decimal @default(0) @db.Decimal(20, 4)
+  currency     String  @db.VarChar(3)
+  fxRate       Decimal @db.Decimal(20, 10)
+  debitBase    Decimal @default(0) @db.Decimal(20, 4)
+  creditBase   Decimal @default(0) @db.Decimal(20, 4)
+  description  String?
+
+  orderId           String?  @db.Uuid
+  orderLegId        String?  @db.Uuid
+  customerEntityId  String?  @db.Uuid
+  branchId          String?  @db.Uuid
+  warehouseId       String?  @db.Uuid
+  carrierProviderId String?  @db.Uuid
+  costCenterCode    String?
+  profitCenterCode  String?
+  metadataJson      Json?
+  createdAt         DateTime @default(now())
+
+  @@unique([journalEntryId, lineNumber])
+  @@index([accountId, journalEntryId])
+  @@index([orderId])
+  @@index([customerEntityId])
+  @@index([warehouseId])
+}
+
+model FinanceAuditEvent {
+  id             String               @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  legalEntityId  String               @db.Uuid
+  legalEntity    FinanceLegalEntity   @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
+  documentId     String?              @db.Uuid
+  document       FinanceDocument?     @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  journalEntryId String?              @db.Uuid
+  journalEntry   FinanceJournalEntry? @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+  action         String
+  actorUserId    String?              @db.Uuid
+  detailsJson    Json?
+  createdAt      DateTime             @default(now())
+
+  @@index([legalEntityId, createdAt])
+  @@index([documentId, createdAt])
+  @@index([journalEntryId, createdAt])
+}
+
+model FinanceDomainEventOutbox {
+  id            String             @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  legalEntityId String             @db.Uuid
+  legalEntity   FinanceLegalEntity @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
+  eventId       String             @unique @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  aggregateType String
+  aggregateId   String             @db.Uuid
+  eventType     String
+  schemaVersion Int                @default(1)
+  occurredAt    DateTime
+  payloadJson   Json
+  publishedAt   DateTime?
+  claimedAt     DateTime?
+  claimedBy     String?
+  nextAttemptAt DateTime           @default(now())
+  attempts      Int                @default(0)
+  lastError     String?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  @@index([publishedAt, nextAttemptAt, claimedAt, createdAt])
+  @@index([legalEntityId, eventType, createdAt])
+}
+
+model FinanceNumberSequence {
+  id            String             @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  legalEntityId String             @db.Uuid
+  legalEntity   FinanceLegalEntity @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
+  key           String
+  nextValue     BigInt             @default(1)
+  prefix        String
+  padding       Int                @default(8)
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  @@unique([legalEntityId, key])
+}
+
+model FinanceProviderSettlement {
+  id            String             @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  legalEntityId String             @db.Uuid
+  legalEntity   FinanceLegalEntity @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
+
+  settlementNumber        String
+  providerConfigId        String                           @db.Uuid
+  providerCode            String
+  environment             String
+  externalReference       String?
+  periodStart             DateTime                         @db.Date
+  periodEnd               DateTime                         @db.Date
+  currency                String                           @db.VarChar(3)
+  grossAmount             Decimal                          @db.Decimal(20, 4)
+  refundAmount            Decimal                          @db.Decimal(20, 4)
+  feeAmount               Decimal                          @db.Decimal(20, 4)
+  adjustmentAmount        Decimal                          @db.Decimal(20, 4)
+  netAmount               Decimal                          @db.Decimal(20, 4)
+  fxRate                  Decimal                          @db.Decimal(20, 10)
+  fxRateAsOf              DateTime?
+  status                  FinanceOperationalDocumentStatus @default(draft)
+  idempotencyKey          String
+  payloadHash             String
+  accountingSourceEventId String?                          @unique
+  metadataJson            Json?
+
+  createdByUserId   String    @db.Uuid
+  submittedByUserId String?   @db.Uuid
+  approvedByUserId  String?   @db.Uuid
+  rejectedByUserId  String?   @db.Uuid
+  submittedAt       DateTime?
+  approvedAt        DateTime?
+  rejectedAt        DateTime?
+  rejectionReason   String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  lines              FinanceProviderSettlementLine[]
+  bankStatementLines FinanceBankStatementLine[]
+
+  @@unique([legalEntityId, settlementNumber])
+  @@unique([legalEntityId, idempotencyKey])
+  @@index([legalEntityId, status, periodEnd])
+  @@index([providerConfigId, periodStart, periodEnd])
+}
+
+model FinanceProviderSettlementLine {
+  id                    String                            @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  settlementId          String                            @db.Uuid
+  settlement            FinanceProviderSettlement         @relation(fields: [settlementId], references: [id], onDelete: Cascade)
+  sequence              Int
+  type                  FinanceProviderSettlementLineType
+  reconciliationStatus  FinanceReconciliationStatus       @default(unmatched)
+  reconciliationMessage String?
+  amount                Decimal                           @db.Decimal(20, 4)
+  externalTransactionId String?
+  paymentIntentId       String?                           @db.Uuid
+  paymentRefundId       String?                           @db.Uuid
+  orderId               String?                           @db.Uuid
+  occurredAt            DateTime?
+  description           String?
+  metadataJson          Json?
+  createdAt             DateTime                          @default(now())
+
+  @@unique([settlementId, sequence])
+  @@index([paymentIntentId])
+  @@index([paymentRefundId])
+  @@index([orderId])
+  @@index([externalTransactionId])
+  @@index([settlementId, reconciliationStatus])
+}
+
+model FinanceCarrierBill {
+  id            String             @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  legalEntityId String             @db.Uuid
+  legalEntity   FinanceLegalEntity @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
+
+  billNumber              String
+  carrierProviderId       String                           @db.Uuid
+  carrierCode             String
+  supplierInvoiceNumber   String
+  invoiceDate             DateTime                         @db.Date
+  dueDate                 DateTime?                        @db.Date
+  currency                String                           @db.VarChar(3)
+  subtotalAmount          Decimal                          @db.Decimal(20, 4)
+  taxAmount               Decimal                          @db.Decimal(20, 4)
+  totalAmount             Decimal                          @db.Decimal(20, 4)
+  fxRate                  Decimal                          @db.Decimal(20, 10)
+  fxRateAsOf              DateTime?
+  status                  FinanceOperationalDocumentStatus @default(draft)
+  idempotencyKey          String
+  payloadHash             String
+  accountingSourceEventId String?                          @unique
+  metadataJson            Json?
+
+  createdByUserId   String    @db.Uuid
+  submittedByUserId String?   @db.Uuid
+  approvedByUserId  String?   @db.Uuid
+  rejectedByUserId  String?   @db.Uuid
+  submittedAt       DateTime?
+  approvedAt        DateTime?
+  rejectedAt        DateTime?
+  rejectionReason   String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  lines FinanceCarrierBillLine[]
+
+  @@unique([legalEntityId, billNumber])
+  @@unique([legalEntityId, carrierProviderId, supplierInvoiceNumber])
+  @@unique([legalEntityId, idempotencyKey])
+  @@index([legalEntityId, status, invoiceDate])
+  @@index([carrierProviderId, invoiceDate])
+}
+
+model FinanceCarrierBillLine {
+  id           String             @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  billId       String             @db.Uuid
+  bill         FinanceCarrierBill @relation(fields: [billId], references: [id], onDelete: Cascade)
+  sequence     Int
+  orderId      String             @db.Uuid
+  orderLegId   String             @db.Uuid
+  description  String
+  quantity     Decimal            @default(1) @db.Decimal(20, 4)
+  unitPrice    Decimal            @db.Decimal(20, 4)
+  amount       Decimal            @db.Decimal(20, 4)
+  taxAmount    Decimal            @default(0) @db.Decimal(20, 4)
+  metadataJson Json?
+  createdAt    DateTime           @default(now())
+
+  @@unique([billId, sequence])
+  @@index([orderId])
+  @@index([orderLegId])
+}
+
+model FinanceReceivableItem {
+  id            String             @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  legalEntityId String             @db.Uuid
+  legalEntity   FinanceLegalEntity @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
+
+  sourceEventId     String
+  sourceInvoiceId   String                @db.Uuid
+  invoiceNumber     String
+  orderId           String                @db.Uuid
+  customerEntityId  String?               @db.Uuid
+  documentDate      DateTime              @db.Date
+  dueDate           DateTime              @db.Date
+  currency          String                @db.VarChar(3)
+  originalAmount    Decimal               @db.Decimal(20, 4)
+  outstandingAmount Decimal               @db.Decimal(20, 4)
+  status            FinanceOpenItemStatus @default(open)
+  metadataJson      Json?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  allocations      FinanceReceivableAllocation[]
+  cashApplications FinanceUnappliedCashApplication[]
+
+  @@unique([legalEntityId, sourceEventId])
+  @@unique([legalEntityId, sourceInvoiceId])
+  @@index([legalEntityId, status, dueDate, id])
+  @@index([legalEntityId, customerEntityId, status, dueDate])
+  @@index([legalEntityId, orderId, currency, status])
+}
+
+model FinanceReceivableAllocation {
+  id           String                @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  receivableId String                @db.Uuid
+  receivable   FinanceReceivableItem @relation(fields: [receivableId], references: [id], onDelete: Restrict)
+
+  sourceEventId   String
+  type            FinanceReceivableAllocationType
+  amount          Decimal                         @db.Decimal(20, 4)
+  currency        String                          @db.VarChar(3)
+  paymentIntentId String?                         @db.Uuid
+  paymentRefundId String?                         @db.Uuid
+  occurredAt      DateTime
+  metadataJson    Json?
+  createdAt       DateTime                        @default(now())
+
+  @@unique([receivableId, sourceEventId])
+  @@index([sourceEventId])
+  @@index([paymentIntentId])
+  @@index([paymentRefundId])
+  @@index([receivableId, occurredAt])
+}
+
+model FinanceUnappliedCash {
+  id            String             @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  legalEntityId String             @db.Uuid
+  legalEntity   FinanceLegalEntity @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
+
+  sourceEventId    String
+  type             FinanceUnappliedCashType
+  orderId          String                     @db.Uuid
+  customerEntityId String?                    @db.Uuid
+  currency         String                     @db.VarChar(3)
+  originalAmount   Decimal                    @db.Decimal(20, 4)
+  remainingAmount  Decimal                    @db.Decimal(20, 4)
+  status           FinanceUnappliedCashStatus @default(open)
+  occurredAt       DateTime
+  metadataJson     Json?
+  createdAt        DateTime                   @default(now())
+  updatedAt        DateTime                   @updatedAt
+
+  applications FinanceUnappliedCashApplication[]
+
+  @@unique([legalEntityId, sourceEventId, type])
+  @@index([legalEntityId, status, occurredAt, id])
+  @@index([legalEntityId, orderId, currency, type, status])
+  @@index([legalEntityId, customerEntityId, status])
+}
+
+model FinanceUnappliedCashApplication {
+  id              String                 @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  unappliedCashId String                 @db.Uuid
+  unappliedCash   FinanceUnappliedCash   @relation(fields: [unappliedCashId], references: [id], onDelete: Restrict)
+  receivableId    String?                @db.Uuid
+  receivable      FinanceReceivableItem? @relation(fields: [receivableId], references: [id], onDelete: Restrict)
+
+  idempotencyKey String                              @unique
+  sourceEventId  String
+  type           FinanceUnappliedCashApplicationType
+  amount         Decimal                             @db.Decimal(20, 4)
+  currency       String                              @db.VarChar(3)
+  occurredAt     DateTime
+  metadataJson   Json?
+  createdAt      DateTime                            @default(now())
+
+  @@index([unappliedCashId, occurredAt])
+  @@index([receivableId])
+  @@index([sourceEventId])
+}
+
+model FinancePayableItem {
+  id            String             @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  legalEntityId String             @db.Uuid
+  legalEntity   FinanceLegalEntity @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
+
+  sourceEventId         String
+  sourceCarrierBillId   String                @db.Uuid
+  billNumber            String
+  supplierInvoiceNumber String
+  carrierProviderId     String                @db.Uuid
+  carrierCode           String
+  documentDate          DateTime              @db.Date
+  dueDate               DateTime              @db.Date
+  currency              String                @db.VarChar(3)
+  originalAmount        Decimal               @db.Decimal(20, 4)
+  outstandingAmount     Decimal               @db.Decimal(20, 4)
+  status                FinanceOpenItemStatus @default(open)
+  metadataJson          Json?
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+
+  paymentRunLines FinancePaymentRunLine[]
+  allocations     FinancePayableAllocation[]
+
+  @@unique([legalEntityId, sourceEventId])
+  @@unique([legalEntityId, sourceCarrierBillId])
+  @@index([legalEntityId, status, dueDate, id])
+  @@index([legalEntityId, carrierProviderId, status, dueDate])
+}
+
+model FinanceBankAccount {
+  id            String             @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  legalEntityId String             @db.Uuid
+  legalEntity   FinanceLegalEntity @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
+
+  code                    String
+  name                    String
+  bankName                String
+  accountIdentifierHash   String
+  accountIdentifierMasked String
+  currency                String   @db.VarChar(3)
+  isActive                Boolean  @default(true)
+  idempotencyKey          String
+  metadataJson            Json?
+  createdByUserId         String   @db.Uuid
+  updatedByUserId         String   @db.Uuid
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  paymentRuns    FinancePaymentRun[]
+  bankStatements FinanceBankStatement[]
+  statementLines FinanceBankStatementLine[]
+
+  @@unique([legalEntityId, code])
+  @@unique([legalEntityId, accountIdentifierHash])
+  @@unique([legalEntityId, idempotencyKey])
+  @@index([legalEntityId, isActive, currency])
+}
+
+model FinancePaymentRun {
+  id            String             @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  legalEntityId String             @db.Uuid
+  legalEntity   FinanceLegalEntity @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
+  bankAccountId String             @db.Uuid
+  bankAccount   FinanceBankAccount @relation(fields: [bankAccountId], references: [id], onDelete: Restrict)
+
+  runNumber      String
+  paymentDate    DateTime                @db.Date
+  currency       String                  @db.VarChar(3)
+  totalAmount    Decimal                 @db.Decimal(20, 4)
+  fxRate         Decimal                 @db.Decimal(20, 10)
+  fxRateAsOf     DateTime?
+  status         FinancePaymentRunStatus @default(draft)
+  idempotencyKey String
+  payloadHash    String
+  bankReference  String?
+  metadataJson   Json?
+
+  createdByUserId   String    @db.Uuid
+  submittedByUserId String?   @db.Uuid
+  approvedByUserId  String?   @db.Uuid
+  rejectedByUserId  String?   @db.Uuid
+  executedByUserId  String?   @db.Uuid
+  submittedAt       DateTime?
+  approvedAt        DateTime?
+  rejectedAt        DateTime?
+  executedAt        DateTime?
+  rejectionReason   String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  lines              FinancePaymentRunLine[]
+  bankStatementLines FinanceBankStatementLine[]
+
+  @@unique([legalEntityId, runNumber])
+  @@unique([legalEntityId, idempotencyKey])
+  @@unique([legalEntityId, bankReference])
+  @@index([legalEntityId, status, paymentDate, id])
+  @@index([bankAccountId, paymentDate])
+}
+
+model FinancePaymentRunLine {
+  id            String             @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  paymentRunId  String             @db.Uuid
+  paymentRun    FinancePaymentRun  @relation(fields: [paymentRunId], references: [id], onDelete: Cascade)
+  sequence      Int
+  payableItemId String             @db.Uuid
+  payableItem   FinancePayableItem @relation(fields: [payableItemId], references: [id], onDelete: Restrict)
+
+  carrierProviderId       String                      @db.Uuid
+  carrierCode             String
+  amount                  Decimal                     @db.Decimal(20, 4)
+  status                  FinancePaymentRunLineStatus @default(pending)
+  accountingSourceEventId String?                     @unique
+  metadataJson            Json?
+  createdAt               DateTime                    @default(now())
+  updatedAt               DateTime                    @updatedAt
+
+  allocation FinancePayableAllocation?
+
+  @@unique([paymentRunId, sequence])
+  @@unique([paymentRunId, payableItemId])
+  @@index([payableItemId, status])
+  @@index([carrierProviderId])
+}
+
+model FinancePayableAllocation {
+  id               String                @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  payableItemId    String                @db.Uuid
+  payableItem      FinancePayableItem    @relation(fields: [payableItemId], references: [id], onDelete: Restrict)
+  paymentRunLineId String                @unique @db.Uuid
+  paymentRunLine   FinancePaymentRunLine @relation(fields: [paymentRunLineId], references: [id], onDelete: Restrict)
+
+  sourceEventId String
+  amount        Decimal  @db.Decimal(20, 4)
+  currency      String   @db.VarChar(3)
+  occurredAt    DateTime
+  metadataJson  Json?
+  createdAt     DateTime @default(now())
+
+  @@unique([payableItemId, sourceEventId])
+  @@index([payableItemId, occurredAt])
+  @@index([sourceEventId])
+}
+
+model FinanceBankStatement {
+  id            String             @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  legalEntityId String             @db.Uuid
+  legalEntity   FinanceLegalEntity @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
+  bankAccountId String             @db.Uuid
+  bankAccount   FinanceBankAccount @relation(fields: [bankAccountId], references: [id], onDelete: Restrict)
+
+  statementNumber String
+  periodStart     DateTime                   @db.Date
+  periodEnd       DateTime                   @db.Date
+  currency        String                     @db.VarChar(3)
+  openingBalance  Decimal                    @db.Decimal(20, 4)
+  totalDebits     Decimal                    @db.Decimal(20, 4)
+  totalCredits    Decimal                    @db.Decimal(20, 4)
+  closingBalance  Decimal                    @db.Decimal(20, 4)
+  status          FinanceBankStatementStatus @default(draft)
+  idempotencyKey  String
+  payloadHash     String
+  metadataJson    Json?
+
+  createdByUserId   String    @db.Uuid
+  submittedByUserId String?   @db.Uuid
+  approvedByUserId  String?   @db.Uuid
+  rejectedByUserId  String?   @db.Uuid
+  submittedAt       DateTime?
+  approvedAt        DateTime?
+  rejectedAt        DateTime?
+  rejectionReason   String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  lines FinanceBankStatementLine[]
+
+  @@unique([legalEntityId, statementNumber])
+  @@unique([legalEntityId, idempotencyKey])
+  @@index([legalEntityId, status, periodEnd, id])
+  @@index([bankAccountId, periodStart, periodEnd])
+}
+
+model FinanceBankStatementLine {
+  id              String               @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  bankStatementId String               @db.Uuid
+  bankStatement   FinanceBankStatement @relation(fields: [bankStatementId], references: [id], onDelete: Cascade)
+  bankAccountId   String               @db.Uuid
+  bankAccount     FinanceBankAccount   @relation(fields: [bankAccountId], references: [id], onDelete: Restrict)
+  sequence        Int
+
+  bookingDate           DateTime                             @db.Date
+  valueDate             DateTime?                            @db.Date
+  direction             FinanceBankStatementLineDirection
+  amount                Decimal                              @db.Decimal(20, 4)
+  currency              String                               @db.VarChar(3)
+  externalTransactionId String?
+  description           String?
+  reconciliationStatus  FinanceReconciliationStatus          @default(unmatched)
+  reconciliationTarget  FinanceBankReconciliationTargetType?
+  reconciliationMessage String?
+  paymentRunId          String?                              @unique @db.Uuid
+  paymentRun            FinancePaymentRun?                   @relation(fields: [paymentRunId], references: [id], onDelete: Restrict)
+  providerSettlementId  String?                              @unique @db.Uuid
+  providerSettlement    FinanceProviderSettlement?           @relation(fields: [providerSettlementId], references: [id], onDelete: Restrict)
+  reconciledByUserId    String?                              @db.Uuid
+  reconciledAt          DateTime?
+  metadataJson          Json?
+  createdAt             DateTime                             @default(now())
+  updatedAt             DateTime                             @updatedAt
+
+  @@unique([bankStatementId, sequence])
+  @@unique([bankAccountId, externalTransactionId])
+  @@index([bankStatementId, reconciliationStatus, bookingDate])
+  @@index([externalTransactionId])
+}

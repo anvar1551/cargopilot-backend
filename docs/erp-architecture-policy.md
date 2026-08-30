@@ -178,6 +178,61 @@ For international orders (example: China -> Uzbekistan), pricing must be leg-bas
 4. Add reprice versioning (new quote version, no mutation of historical components).
 5. Expand reporting to aggregate by original and base currencies.
 
+### 7.4 Automatic accounting contract
+
+- Orders, payments, cash custody, and integrations publish canonical finance facts; they never select ledger accounts.
+- The operational mutation and its durable domain outbox record must commit in the same PostgreSQL transaction.
+- The finance posting worker persists every fact in `FinanceSourceEvent` before resolving a versioned posting rule.
+- A source event may create at most one finance document and one journal entry per company.
+- Automatic journals are balanced and posted atomically in an open fiscal period.
+- Foreign-currency facts require an immutable FX snapshot; missing or ambiguous FX data must not default silently.
+- Missing setup, closed periods, unmatched/ambiguous rules, and invalid accounts enter the finance exception queue.
+- Retrying an exception reprocesses the original immutable payload and remains idempotent.
+
+### 7.5 Authoritative finance document contract
+
+- An invoice is an immutable commercial snapshot of the server-calculated order price, currency, FX rate, company, customer, and issue date. Browser-provided totals are never accepted.
+- Refunds are durable payment records with a company-scoped idempotency key. Only provider-confirmed refunds change the payment intent, order payment state, payment ledger, and accounting source events.
+- Failed, processing, and cancelled refunds remain visible records; they must never be represented as successful accounting facts.
+- API responses must not expose encrypted credentials or raw provider refund responses.
+- Provider fees may be posted only from an authoritative provider balance transaction or settlement report.
+- Carrier payables may be accrued only from an accepted carrier invoice, contract-rated service entry, or approved carrier settlement. Carrier booking responses and analytics estimates are not accounting documents.
+
+### 7.6 Settlement and payable approval contract
+
+- Payment-provider statements are imported as immutable settlement headers and lines. Provider payment/refund lines must reconcile to company-scoped payment records before approval.
+- Settlement net is derived exactly as gross payments minus refunds minus fees plus signed adjustments. A provider-reported net mismatch blocks import.
+- Provider fees become accounting facts only when the settlement is approved.
+- Carrier bills reference the exact booked `OrderLeg` rows and carrier provider. Quantity, unit price, tax, subtotal, and total are derived server-side.
+- Carrier cost becomes an accounting fact only when a submitted supplier bill is approved.
+- Creator and approver must be different users unless the approver has the audited emergency `policy.override` permission.
+- Approval and canonical source-event creation commit atomically. Missing posting setup is handled later through the finance exception queue, never by rolling back the approved source document.
+
+### 7.7 Subsidiary ledger and aging contract
+
+- Customer receivables, receipt allocations, unapplied cash, and carrier payables are subsidiary-ledger projections of posted canonical finance events. They are not manually editable analytics records.
+- Journal creation and subsidiary-ledger projection commit in the same PostgreSQL transaction. A source event cannot be posted to the general ledger without the corresponding open-item update.
+- Invoice events create receivables. Payment events allocate FIFO by due date within the exact legal entity, order, and currency. Excess or early receipts remain visible as unapplied cash.
+- Refund events consume unapplied receipts first and then reopen settled or partially settled receivables. Unallocated refund differences remain visible and are never discarded.
+- Approved carrier bills create supplier payables; carrier booking acknowledgements and quoted costs do not.
+- Aging reports calculate balances as of the requested calendar date from immutable allocations. Current balances must not be substituted for historical balances.
+- UZS, USD, and CNY balances are grouped independently. Cross-currency totals require an explicit reporting-currency conversion and immutable FX snapshot.
+- Finance aging reads are company scoped and permission separated: customer receivables and supplier payables do not share an implicit authorization grant.
+- PostgreSQL is authoritative for financial aging. Redis may accelerate non-authoritative UI projections but must not replace ledger-consistent reporting.
+
+### 7.8 Treasury and bank reconciliation contract
+
+- Supplier payments originate from approved, open payable items. The browser may select payables and requested amounts but cannot provide ledger accounts or authoritative balances.
+- Draft payment runs reserve payable balances transactionally. Concurrent or repeated commands must not over-reserve or overpay a payable.
+- Payment-run creation, approval, and execution are separate controls. Creator, approver, and executor must be different users unless an audited emergency `policy.override` is used.
+- Executing a payment run creates immutable canonical finance events. The posting worker must create the bank/AP journal and payable allocation in one transaction; a journal without its subsidiary-ledger allocation is forbidden.
+- Bank account identifiers must never be persisted or returned in raw form. Store only a deterministic hash for uniqueness and a masked display value.
+- Bank statements are immutable imports whose opening balance plus credits minus debits must equal the reported closing balance exactly.
+- External bank transaction IDs are unique per bank account across imports. Duplicate transactions must be rejected before reconciliation.
+- Reconciliation matches an exact bank movement to an existing executed payment run or approved provider settlement. It must not create a second accounting event for the same economic transaction.
+- Every unmatched statement line must remain visible or be explicitly ignored with a reason. Only fully handled statements can enter maker-checker approval.
+- Treasury and reconciliation commands are company scoped, idempotent, audited, currency strict, and permission separated.
+
 ## 8) Performance and reliability SLO targets
 
 - Warm analytics/support reads: p95 <= 400ms

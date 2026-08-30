@@ -69,6 +69,7 @@ export interface PaymentProviderAdapter {
     idempotencyKey: string;
   }): Promise<{
     status: CanonicalPaymentStatus;
+    providerRefundId?: string;
     rawResponse?: unknown;
   }>;
 

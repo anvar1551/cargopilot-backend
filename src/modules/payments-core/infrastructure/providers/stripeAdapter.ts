@@ -206,6 +206,7 @@ export class StripeProviderAdapter implements PaymentProviderAdapter {
 
     return {
       status: mappedStatus,
+      providerRefundId: refund.id,
       rawResponse: {
         refundId: refund.id,
         status: refund.status,

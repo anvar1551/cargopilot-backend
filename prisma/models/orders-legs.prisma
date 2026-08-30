@@ -1,0 +1,190 @@
+// CargoPilot bounded-context Prisma declarations.
+// Loaded through the multi-file schema configured in prisma.config.ts.
+
+enum TransportMode {
+  road
+  air
+  rail
+  sea
+  multimodal
+}
+
+enum OrderLegStatus {
+  planned
+  booked
+  departed
+  in_transit
+  arrived
+  completed
+  cancelled
+  exception
+}
+
+enum CarrierBookingStatus {
+  not_requested
+  requested
+  booked
+  failed
+  cancelled
+}
+
+enum PricingComponentType {
+  warehouse_service
+  linehaul
+  local_delivery
+  customs
+  insurance
+  handling
+  surcharge
+  discount
+  other
+}
+
+enum PricingComponentSource {
+  manual
+  rule
+  integration
+  adjustment
+}
+
+enum OrderDocumentType {
+  label
+  manifest
+  route_sheet
+  handover_act
+  sender_data
+  receiver_data
+  customs_doc
+  invoice
+  other
+}
+
+enum OrderDocumentFormat {
+  pdf
+  png
+  zpl
+  csv
+  json
+  other
+}
+
+model OrderLeg {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+
+  orderId String @db.Uuid
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  sequence Int
+  mode     TransportMode  @default(road)
+  status   OrderLegStatus @default(planned)
+
+  fromCountry  String?
+  toCountry    String?
+  transitRoute Json?
+
+  fromWarehouseId String?    @db.Uuid
+  fromWarehouse   Warehouse? @relation("OrderLegFromWarehouse", fields: [fromWarehouseId], references: [id], onDelete: SetNull)
+  toWarehouseId   String?    @db.Uuid
+  toWarehouse     Warehouse? @relation("OrderLegToWarehouse", fields: [toWarehouseId], references: [id], onDelete: SetNull)
+
+  carrierCode           String?
+  carrierRef            String?
+  routeTemplateId       String?              @db.Uuid
+  routeTemplate         RouteTemplate?       @relation(fields: [routeTemplateId], references: [id], onDelete: SetNull)
+  routeTemplateLegId    String?              @db.Uuid
+  routeTemplateLeg      RouteTemplateLeg?    @relation(fields: [routeTemplateLegId], references: [id], onDelete: SetNull)
+  carrierProviderId     String?              @db.Uuid
+  carrierBookingStatus  CarrierBookingStatus @default(not_requested)
+  carrierTrackingNumber String?
+  carrierBookingError   String?
+  carrierBookedAt       DateTime?
+  carrierLastStatusAt   DateTime?
+  vehicleRef            String?
+
+  plannedDepartureAt DateTime?
+  plannedArrivalAt   DateTime?
+  actualDepartureAt  DateTime?
+  actualArrivalAt    DateTime?
+
+  notes    String?
+  metadata Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pricingComponents PricingComponent[]
+  documents         OrderDocument[]
+  trackingEvents    Tracking[]
+
+  @@unique([orderId, sequence])
+  @@index([orderId, status, sequence])
+  @@index([mode, status])
+  @@index([fromWarehouseId])
+  @@index([toWarehouseId])
+  @@index([routeTemplateId])
+  @@index([routeTemplateLegId])
+  @@index([carrierProviderId])
+  @@index([carrierBookingStatus, updatedAt])
+  @@index([carrierRef])
+}
+
+model PricingComponent {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+
+  orderId String @db.Uuid
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  orderLegId String?   @db.Uuid
+  orderLeg   OrderLeg? @relation(fields: [orderLegId], references: [id], onDelete: SetNull)
+
+  componentType PricingComponentType
+  source        PricingComponentSource @default(manual)
+  description   String?
+
+  amount         Decimal  @db.Decimal(14, 2)
+  currency       String
+  fxRateSnapshot Decimal? @db.Decimal(14, 6)
+  baseCurrency   String?
+  baseAmount     Decimal? @db.Decimal(14, 2)
+
+  referenceKey String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([orderId, componentType, createdAt])
+  @@index([orderLegId, componentType, createdAt])
+  @@index([currency, createdAt])
+}
+
+model OrderDocument {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+
+  orderId String @db.Uuid
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  orderLegId String?   @db.Uuid
+  orderLeg   OrderLeg? @relation(fields: [orderLegId], references: [id], onDelete: SetNull)
+
+  type   OrderDocumentType
+  format OrderDocumentFormat @default(pdf)
+  locale String?
+
+  templateCode    String?
+  templateVersion String?
+  storageKey      String
+  fileName        String?
+  mimeType        String?
+  sizeBytes       Int?
+  checksum        String?
+  metadata        Json?
+
+  createdById String? @db.Uuid
+  createdBy   User?   @relation("OrderDocumentCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([orderId, type, createdAt])
+  @@index([orderLegId, type, createdAt])
+  @@index([createdById, createdAt])
+}

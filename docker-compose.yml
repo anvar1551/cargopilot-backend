@@ -150,6 +150,48 @@ services:
       RUN_PRISMA_MIGRATIONS: "false"
     command: ["node", "dist/src/workers/integration-outbox.worker.js"]
 
+  finance-outbox-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: prod
+    container_name: cargopilot-finance-outbox-worker
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    env_file:
+      - ${DOCKER_ENV_FILE:-.env.docker}
+    environment:
+      NODE_ENV: production
+      RUN_PRISMA_MIGRATIONS: "false"
+    command: ["node", "dist/src/workers/finance-outbox.worker.js"]
+
+  finance-posting-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: prod
+    container_name: cargopilot-finance-posting-worker
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    env_file:
+      - ${DOCKER_ENV_FILE:-.env.docker}
+    environment:
+      NODE_ENV: production
+      RUN_PRISMA_MIGRATIONS: "false"
+    command: ["node", "dist/src/workers/finance-posting.worker.js"]
+
 volumes:
   redis_data:
   postgres_data:

@@ -7,6 +7,7 @@ export type CargoPilotDomainEventType =
   | "order_status_changed"
   | "cash_handoff"
   | "cash_settled"
+  | "finance_source_event"
   | "driver_location_upsert"
   | "driver_presence_update"
   | "support_ticket_changed"

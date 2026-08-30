@@ -17,6 +17,16 @@ describe("redis config", () => {
     await expect(redis.getRedisClient()).resolves.toBeNull();
   });
 
+  it("does not create dedicated clients when redis is disabled", async () => {
+    process.env.REDIS_URL = "redis://127.0.0.1:6379";
+    process.env.REDIS_ENABLED = "false";
+
+    const redis = await import("../../src/config/redis");
+
+    expect(redis.isRedisEnabled()).toBe(false);
+    expect(redis.createRedisClient()).toBeNull();
+  });
+
   it("times out operations and records timeout stats", async () => {
     process.env.REDIS_URL = "redis://127.0.0.1:6379";
     process.env.REDIS_ENABLED = "true";
