@@ -92,6 +92,7 @@ async function requestJson(args: {
   const url = new URL(args.path, args.config.baseUrl);
   const response = await integrationHttpJson({
     url: url.toString(),
+    providerCode: args.config.providerCode,
     method: args.method,
     headers: buildHeaders(args.config, args.context),
     body: args.body,

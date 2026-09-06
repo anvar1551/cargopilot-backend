@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
-import path from "path";
+import { MAX_PROOF_BYTES, processProofRaster } from "./raster-processing";
+import { requireCompanyAuthority } from "../domain/company-authority";
 import { DeleteObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 
 import prisma from "../../../config/prismaClient";
@@ -48,6 +49,7 @@ type SubmitProofInput = {
     size: number;
   };
   forcedStage?: ProofStage;
+  receivedAt?: Date;
 };
 
 type ListProofInput = {
@@ -58,95 +60,6 @@ type ListProofInput = {
 
 function normalizeSignedBy(value: unknown) {
   return String(value ?? "").trim();
-}
-
-function parseSignaturePaths(value: unknown) {
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => String(item ?? "").trim())
-      .filter(Boolean);
-  }
-
-  const raw = String(value ?? "").trim();
-  if (!raw) return [] as string[];
-
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [] as string[];
-    return parsed
-      .map((item) => String(item ?? "").trim())
-      .filter(Boolean);
-  } catch {
-    return [] as string[];
-  }
-}
-
-function parseDateOrNow(value: unknown) {
-  const raw = String(value ?? "").trim();
-  if (!raw) return new Date();
-  const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) return new Date();
-  return parsed;
-}
-
-function parsePathPoints(pathValue: string) {
-  return pathValue
-    .split(";")
-    .map((token) => token.trim())
-    .filter(Boolean)
-    .map((token) => {
-      const [xs, ys] = token.split(",");
-      const x = Number(xs);
-      const y = Number(ys);
-      if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
-      return { x, y };
-    })
-    .filter((point): point is { x: number; y: number } => Boolean(point));
-}
-
-function pathToSvgD(points: Array<{ x: number; y: number }>) {
-  if (points.length === 0) return "";
-  if (points.length === 1) {
-    const p = points[0];
-    return `M ${p.x.toFixed(1)} ${p.y.toFixed(1)} L ${(p.x + 0.01).toFixed(2)} ${(p.y + 0.01).toFixed(2)}`;
-  }
-  return points
-    .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`)
-    .join(" ");
-}
-
-function buildSignatureSvg(paths: string[]) {
-  const strokes = paths
-    .map((strokePath) => parsePathPoints(strokePath))
-    .filter((points) => points.length > 0);
-
-  let maxX = 320;
-  let maxY = 160;
-  for (const stroke of strokes) {
-    for (const point of stroke) {
-      maxX = Math.max(maxX, point.x);
-      maxY = Math.max(maxY, point.y);
-    }
-  }
-
-  const width = Math.ceil(maxX + 8);
-  const height = Math.ceil(maxY + 8);
-  const body = strokes
-    .map(
-      (stroke) =>
-        `<path d="${pathToSvgD(stroke)}" fill="none" stroke="#2E6BFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />`,
-    )
-    .join("");
-
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${body}</svg>`;
-}
-
-function inferPhotoExtension(fileName: string, mimeType: string) {
-  const fromName = path.extname(fileName || "").trim().toLowerCase();
-  if (fromName) return fromName;
-  if (mimeType.includes("png")) return ".png";
-  if (mimeType.includes("webp")) return ".webp";
-  return ".jpg";
 }
 
 function sanitizeFileName(value: string) {
@@ -197,6 +110,7 @@ function parseProofTrackingMeta(trackingEvents: any[] | null | undefined) {
 
 async function buildProofBundlesForOrder(args: {
   orderId: string;
+  companyId: string | null;
   attachments: any[] | null | undefined;
   trackingEvents: any[] | null | undefined;
   stageFilter?: ProofStage;
@@ -212,7 +126,9 @@ async function buildProofBundlesForOrder(args: {
     const key = String(attachment?.key ?? "").trim();
     if (!key) continue;
 
-    const match = /^(pickup|delivery)-proofs\/([^/]+)\/([^/]+)\/(.+)$/i.exec(key);
+    const owned = /^(pickup|delivery)-proofs\/([^/]+)\/([^/]+)\/([^/]+)\/([^/]+)$/i.exec(key);
+    if (owned && owned[2] !== args.companyId) continue;
+    const match = owned ? [owned[0], owned[1], owned[3], owned[4], owned[5]] : /^(pickup|delivery)-proofs\/([^/]+)\/([^/]+)\/([^/]+)$/i.exec(key);
     if (!match) continue;
 
     const stage = match[1].toLowerCase() as ProofStage;
@@ -293,6 +209,8 @@ async function buildProofBundlesForOrder(args: {
 
 export async function submitProofForActor(input: SubmitProofInput) {
   const { actor, orderId, body, file, forcedStage } = input;
+  const proofTimestamp = input.receivedAt ?? new Date();
+  const membership = await requireCompanyAuthority(prisma, actor, "shipment.update");
   if (!orderId) throw orderError("Missing order id", 400);
 
   const stage = parseProofStage(body.stage, forcedStage ?? "delivery");
@@ -301,39 +219,37 @@ export async function submitProofForActor(input: SubmitProofInput) {
     select: {
       id: true,
       assignedDriverId: true,
+      ownerOrgId: true,
       currentWarehouseId: true,
     },
   });
   if (!order) throw orderError("Order not found", 404);
-  if (order.assignedDriverId !== actor.id) {
+  if (order.ownerOrgId !== membership.companyId || order.assignedDriverId !== actor.id) {
     throw orderError("You are not assigned to this order", 403);
   }
 
   const signedBy = normalizeSignedBy(body.signedBy);
-  if (!signedBy) throw orderError("signedBy is required", 400);
-
-  const signaturePaths = parseSignaturePaths(body.signaturePaths);
-  if (signaturePaths.length === 0) {
-    throw orderError("signaturePaths is required", 400);
+  if (!signedBy || signedBy.length > 120 || /[\x00-\x1f\x7f]/.test(signedBy)) throw orderError("signedBy is required and must be bounded text", 400);
+  if (body.signatureSvg != null && body.signatureSvg !== "") throw orderError("SVG proof content is not accepted", 415);
+  if (!file?.buffer?.length) throw orderError("photo is required", 400);
+  if (file.buffer.length > MAX_PROOF_BYTES) throw orderError("Proof image exceeds byte limits", 413);
+  if (!['image/png', 'application/octet-stream'].includes(file.mimetype.toLowerCase()) || /\.svgz?$/i.test(file.originalname)) throw orderError("Only PNG proof images are supported", 415);
+  const captureValue = body.clientCapturedAt ?? body.savedAt;
+  let clientCapturedAt: string | null = null;
+  if (captureValue != null && captureValue !== "") {
+    if (typeof captureValue !== "string" || captureValue.length > 40 || !/^\d{4}-\d{2}-\d{2}T/.test(captureValue) || Number.isNaN(Date.parse(captureValue))) throw orderError("Invalid client capture timestamp", 400);
+    clientCapturedAt = new Date(captureValue).toISOString();
   }
-
-  if (!file?.buffer || file.size <= 0) {
-    throw orderError("photo is required", 400);
-  }
-
-  const providedSignatureSvg = String(body.signatureSvg ?? "").trim();
-  const signatureSvg =
-    providedSignatureSvg.startsWith("<svg")
-      ? providedSignatureSvg
-      : buildSignatureSvg(signaturePaths);
+  if (body.clientCapturedAt && body.savedAt && body.clientCapturedAt !== body.savedAt) throw orderError("Conflicting client capture timestamps", 400);
+  const raster = await processProofRaster(file.buffer, body.signaturePaths);
 
   const bucket = String(process.env.AWS_S3_BUCKET ?? "").trim();
   if (!bucket) throw orderError("AWS_S3_BUCKET is not configured", 500);
 
   const proofId = randomUUID();
-  const photoExt = inferPhotoExtension(file.originalname, file.mimetype);
-  const photoKey = `${stage}-proofs/${order.id}/${proofId}/photo${photoExt}`;
-  const signatureKey = `${stage}-proofs/${order.id}/${proofId}/signature.svg`;
+  const photoExt = ".png";
+  const photoKey = `${stage}-proofs/${membership.companyId}/${order.id}/${proofId}/photo${photoExt}`;
+  const signatureKey = `${stage}-proofs/${membership.companyId}/${order.id}/${proofId}/signature.png`;
   const signedBySafe = sanitizeFileName(signedBy);
 
   await Promise.all([
@@ -341,10 +257,14 @@ export async function submitProofForActor(input: SubmitProofInput) {
       new PutObjectCommand({
         Bucket: bucket,
         Key: photoKey,
-        Body: file.buffer,
-        ContentType: file.mimetype || "image/jpeg",
+        Body: raster.photo,
+        ContentType: "image/png",
+        ContentDisposition: "attachment",
         Metadata: {
           orderid: order.id,
+          companyid: membership.companyId,
+          receivedat: proofTimestamp.toISOString(),
+          ...(clientCapturedAt ? { clientcapturedat: clientCapturedAt } : {}),
           driverid: actor.id,
           signedby: signedBySafe,
           type: `${stage}-proof-photo`,
@@ -355,10 +275,14 @@ export async function submitProofForActor(input: SubmitProofInput) {
       new PutObjectCommand({
         Bucket: bucket,
         Key: signatureKey,
-        Body: Buffer.from(signatureSvg, "utf8"),
-        ContentType: "image/svg+xml",
+        Body: raster.signature,
+        ContentType: "image/png",
+        ContentDisposition: "attachment",
         Metadata: {
           orderid: order.id,
+          companyid: membership.companyId,
+          receivedat: proofTimestamp.toISOString(),
+          ...(clientCapturedAt ? { clientcapturedat: clientCapturedAt } : {}),
           driverid: actor.id,
           signedby: signedBySafe,
           type: `${stage}-proof-signature`,
@@ -367,7 +291,6 @@ export async function submitProofForActor(input: SubmitProofInput) {
     ),
   ]);
 
-  const proofTimestamp = parseDateOrNow(body.savedAt);
   const stageLabel = stage === "pickup" ? "Pickup" : "Delivery";
 
   let result: {
@@ -380,9 +303,9 @@ export async function submitProofForActor(input: SubmitProofInput) {
         data: {
           orderId: order.id,
           key: photoKey,
-          fileName: file.originalname || `${stage}-proof-photo${photoExt}`,
-          mimeType: file.mimetype || "image/jpeg",
-          size: file.size ?? null,
+          fileName: `${stage}-proof-photo${photoExt}`,
+          mimeType: "image/png",
+          size: raster.photo.length,
         },
       });
 
@@ -390,9 +313,9 @@ export async function submitProofForActor(input: SubmitProofInput) {
         data: {
           orderId: order.id,
           key: signatureKey,
-          fileName: `${stage}-signature-${proofId}.svg`,
-          mimeType: "image/svg+xml",
-          size: Buffer.byteLength(signatureSvg, "utf8"),
+          fileName: `${stage}-signature-${proofId}.png`,
+          mimeType: "image/png",
+          size: raster.signature.length,
         },
       });
 
@@ -428,6 +351,7 @@ export async function submitProofForActor(input: SubmitProofInput) {
       stage,
       signedBy,
       savedAt: proofTimestamp.toISOString(),
+      clientCapturedAt,
       photo: {
         id: result.photoAttachment.id,
         key: result.photoAttachment.key,
@@ -467,6 +391,7 @@ export async function listOrderProofLinksForActor(input: ListProofInput) {
 
   const bundles = await buildProofBundlesForOrder({
     orderId: order.id,
+    companyId: order.ownerOrgId ?? null,
     attachments: order.attachments,
     trackingEvents: order.trackingEvents,
     stageFilter,

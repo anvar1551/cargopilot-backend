@@ -230,6 +230,7 @@ const webhookSinkDispatcher: IntegrationOutboxDispatcher = {
     try {
       const response = await integrationHttpJson({
         url: target.toString(),
+        providerCode: context.provider!.providerCode,
         method,
         headers,
         body,
@@ -243,7 +244,7 @@ const webhookSinkDispatcher: IntegrationOutboxDispatcher = {
         statusCode: response.statusCode || null,
         responseJson: toObject(response.body) || { value: response.body },
         requestJson: {
-          url: target.toString(),
+          url: target.origin,
           method,
         },
         message:
@@ -258,7 +259,7 @@ const webhookSinkDispatcher: IntegrationOutboxDispatcher = {
         retryable: isIntegrationHttpRetryableError(error),
         statusCode: null,
         requestJson: {
-          url: target.toString(),
+          url: target.origin,
           method,
         },
         message,

@@ -1,5 +1,24 @@
+jest.mock("../../src/config/prismaClient", () => ({ __esModule: true, default: require("../security/fixtures").database }));
+jest.mock("../../src/modules/integrations-core/application/integration-http-client", () => ({
+  ...jest.requireActual("../../src/modules/integrations-core/application/integration-http-client"),
+  integrationHttpJson: jest.fn(),
+}));
+import { integrationHttpJson } from "../../src/modules/integrations-core/application/integration-http-client";
 import type { IntegrationOutboxRecord } from "../../src/modules/integrations-core/application/outbox.types";
 import type { IntegrationProviderRef } from "../../src/modules/integrations-core/domain/types";
+
+it.each([["ECAPACITY", true], ["EDESTINATION", false], ["ELIMIT", false], ["EREDIRECT", false]])("preserves %s retryability with the real classifier and no immediate replay", async (code, retryable) => {
+  const { resolveIntegrationOutboxDispatcher } = await import("../../src/modules/integrations-core/application/outbox-dispatcher");
+  const record = outboxRecord(); record.domain = "webhook_sink";
+  record.payload = { endpointUrl: "https://sink.example.test", body: {} } as any;
+  const configured = provider("active"); configured.domain = "webhook_sink";
+  const transport = integrationHttpJson as jest.Mock;
+  // Explicit permanent codes take precedence over legacy message-based timeout matching.
+  transport.mockReset().mockRejectedValue(Object.assign(new Error("timeout-like diagnostic"), { code }));
+  const result = await resolveIntegrationOutboxDispatcher(record, configured).dispatch({ record, provider: configured, timeoutMs: 1000 });
+  expect(result).toMatchObject({ sent: false, retryable, statusCode: null });
+  expect(transport).toHaveBeenCalledTimes(1);
+});
 
 function outboxRecord(): IntegrationOutboxRecord {
   const now = new Date().toISOString();
@@ -57,9 +76,6 @@ function provider(status: IntegrationProviderRef["status"]): IntegrationProvider
 }
 
 describe("integration outbox dispatcher guard", () => {
-  beforeAll(() => {
-    process.env.DATABASE_URL ||= "postgresql://user:pass@localhost:5432/cargopilot_test";
-  });
 
   it("refuses missing providers", async () => {
     const { resolveIntegrationOutboxDispatcher } = await import(
@@ -95,4 +111,14 @@ describe("integration outbox dispatcher guard", () => {
     expect(result.sent).toBe(false);
     expect(result.message).toMatch(/provider/i);
   });
+});
+
+it("passes webhook-sink requests through the guarded transport using the resolved provider identity", async () => {
+  const { resolveIntegrationOutboxDispatcher } = await import("../../src/modules/integrations-core/application/outbox-dispatcher");
+  const record = outboxRecord(); record.domain = "webhook_sink"; record.payload = { endpointUrl: "https://sink.example.test/path?private=value", body: {} } as any;
+  const configured = provider("active"); configured.domain = "webhook_sink";
+  (integrationHttpJson as jest.Mock).mockResolvedValue({ statusCode: 200, body: { ok: true } });
+  const result = await resolveIntegrationOutboxDispatcher(record, configured).dispatch({ record, provider: configured, timeoutMs: 1000 });
+  expect(integrationHttpJson).toHaveBeenCalledWith(expect.objectContaining({ providerCode: configured.providerCode }));
+  expect(result.sent).toBe(true); expect(result.requestJson).toEqual({ url: "https://sink.example.test", method: "POST" });
 });

@@ -1,3 +1,4 @@
+import { webhookHeadersForStorage } from "../../../utils/webhookMetadata";
 import { Prisma } from "@prisma/client";
 import type {
   EnqueueIntegrationCanonicalEventInput,
@@ -101,9 +102,9 @@ export function createWebhookGatewayService(args: {
           environment: providerVerifier.environment,
           providerEventId,
           rawBody,
-          headersJson: input.headers,
+          headersJson: webhookHeadersForStorage(input.headers),
           ipAddress: normalizeString(input.ipAddress),
-          userAgent: normalizeString(input.userAgent),
+          userAgent: null,
           receivedAt: new Date().toISOString(),
           signatureVerified: true,
         });

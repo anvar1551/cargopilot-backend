@@ -1,3 +1,4 @@
+import { csvEscape } from "../../../utils/csv";
 import { authorize, buildOrderScopeWhere } from "../../identity-access";
 import {
   countOrdersForExport,
@@ -28,16 +29,6 @@ type ListOrdersQuery = {
   warehouseId?: string;
   region?: string;
 };
-
-function csvEscape(value: unknown) {
-  const raw =
-    value == null
-      ? ""
-      : value instanceof Date
-        ? value.toISOString()
-        : String(value);
-  return `"${raw.replace(/"/g, '""')}"`;
-}
 
 function buildCsv(rows: Array<Record<string, unknown>>) {
   if (rows.length === 0) return "";

@@ -1,3 +1,4 @@
+import { paymentWebhookMetadata } from "../../../utils/webhookMetadata";
 import { createAuthorizedPayment } from "./payment-creation";
 import {
   CashCollectionEventType,
@@ -1891,7 +1892,7 @@ export async function handleProviderWebhook(args: {
         processStatus: verification.isValid
           ? PaymentWebhookProcessStatus.PROCESSED
           : PaymentWebhookProcessStatus.FAILED,
-        headersJson: args.headers as Prisma.InputJsonValue,
+        headersJson: paymentWebhookMetadata(args.headers, args.rawBody, bodyRecord, verification.isValid),
         payloadJson: bodyRecord as Prisma.InputJsonValue,
         paymentIntentId: intentId,
         processedAt: verification.isValid ? new Date() : null,
@@ -1902,7 +1903,7 @@ export async function handleProviderWebhook(args: {
         processStatus: verification.isValid
           ? PaymentWebhookProcessStatus.PROCESSED
           : PaymentWebhookProcessStatus.FAILED,
-        headersJson: args.headers as Prisma.InputJsonValue,
+        headersJson: paymentWebhookMetadata(args.headers, args.rawBody, bodyRecord, verification.isValid),
         payloadJson: bodyRecord as Prisma.InputJsonValue,
         externalEventId: verification.externalEventId,
         processedAt: verification.isValid ? new Date() : null,

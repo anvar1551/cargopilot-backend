@@ -1,3 +1,4 @@
+import { MAX_PROOF_BYTES } from "../../proofs/raster-processing";
 import { FastifyPluginAsync } from "fastify";
 import fastifyMultipart from "@fastify/multipart";
 import { fastifyAuth } from "../../../identity-access/transport/fastify-auth";
@@ -6,6 +7,7 @@ import { emitMutationInvalidation, fieldValue, parseMaxPhotoBytes, sendError } f
 import type { AppUser } from "../../../../types/app-user";
 
 async function handleProofSubmit(request: any, reply: any, forcedStage?: "delivery") {
+  const receivedAt = new Date();
   const file = await request.file();
   if (!file) return reply.code(400).send({ error: "photo is required" });
   const buffer = await file.toBuffer();
@@ -13,15 +15,17 @@ async function handleProofSubmit(request: any, reply: any, forcedStage?: "delive
   const signedBy = fieldValue((file.fields as any)?.signedBy);
   const signatureSvg = fieldValue((file.fields as any)?.signatureSvg);
   const savedAt = fieldValue((file.fields as any)?.savedAt);
+  const clientCapturedAt = fieldValue((file.fields as any)?.clientCapturedAt);
   const signaturePaths = fieldValue((file.fields as any)?.signaturePaths);
   const actor = requireOrderActor(request.user);
   try {
     const result = await submitProofForActor({
       actor,
       orderId: String(request.params?.id ?? "").trim(),
-      body: { stage, signedBy, signatureSvg, savedAt, signaturePaths },
+      body: { stage, signedBy, signatureSvg, savedAt, clientCapturedAt, signaturePaths },
       file: { buffer, originalname: file.filename, mimetype: file.mimetype, size: buffer.length },
       forcedStage,
+      receivedAt,
     });
     await emitMutationInvalidation("order_mutation");
     return reply.send(result);
@@ -31,7 +35,7 @@ async function handleProofSubmit(request: any, reply: any, forcedStage?: "delive
 }
 
 const proofsRoutes: FastifyPluginAsync = async (fastify) => {
-  await fastify.register(fastifyMultipart, { limits: { files: 1, fileSize: parseMaxPhotoBytes() } });
+  await fastify.register(fastifyMultipart, { limits: { files: 1, fields: 6, parts: 7, fieldSize: 32768, fileSize: Math.min(MAX_PROOF_BYTES, parseMaxPhotoBytes()) } });
 
   fastify.get("/:id/proofs", { preHandler: fastifyAuth({ permission: "shipment.view" }) }, async (request, reply) => {
     try {

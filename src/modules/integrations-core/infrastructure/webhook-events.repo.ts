@@ -1,3 +1,4 @@
+import { webhookHeadersForStorage } from "../../../utils/webhookMetadata";
 import { createHash } from "crypto";
 import prisma from "../../../config/prismaClient";
 import type { CanonicalWebhookEvent } from "../domain/ports";
@@ -47,9 +48,9 @@ export const webhookEventRepository: WebhookEventRepository = {
         providerEventId: String(args.providerEventId || "").trim(),
         rawBody: args.rawBody,
         rawBodySha256: sha256(args.rawBody),
-        headersJson: args.headersJson as any,
+        headersJson: webhookHeadersForStorage(args.headersJson),
         ipAddress: args.ipAddress ?? null,
-        userAgent: args.userAgent ?? null,
+        userAgent: null,
         receivedAt: toDate(args.receivedAt),
         signatureVerified: args.signatureVerified,
       },
