@@ -1,14 +1,12 @@
-import { FastifyPluginAsync } from "fastify";
+import { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
 import { fastifyAuth } from "./fastify-auth";
 import {
   changeUserPassword,
-  createUserByCompanyAdmin,
   deleteUserMembershipFromCompany,
   listUsersForCompany,
   loginUser,
   refreshUserSession,
-  registerUser,
   revokeRefreshSession,
   updateUserAccessByCompanyAdmin,
 } from "../application/auth.service";
@@ -17,16 +15,25 @@ import {
   listPermissions,
   listRolesForCompany,
 } from "../application/iam.service";
+import {
+  AbuseRateLimiter,
+  createAbuseRateLimiter,
+  createAbuseRateLimitPreHandler,
+  readPositiveIntegerEnv,
+} from "../../../shared/http/abuseRateLimit";
 
 function extractClientIp(request: any) {
-  const forwarded = request.headers?.["x-forwarded-for"];
-  if (typeof forwarded === "string" && forwarded.trim()) {
-    return forwarded.split(",")[0]?.trim() || null;
-  }
-  if (Array.isArray(forwarded) && forwarded.length > 0) {
-    return String(forwarded[0] ?? "").trim() || null;
-  }
   return typeof request.ip === "string" ? request.ip : null;
+}
+
+const PUBLIC_REGISTRATION_RESPONSE = { error: "Registration is unavailable" } as const;
+const ADMIN_CREATION_RESPONSE = { error: "User creation is unavailable" } as const;
+const INVALID_CREDENTIALS_RESPONSE = { error: "Invalid credentials" } as const;
+const INVALID_SESSION_RESPONSE = { error: "Invalid session" } as const;
+
+function readAuthLimit(name: string, fallback: number) {
+  if (process.env[name]?.trim()) return readPositiveIntegerEnv(name, fallback);
+  return readPositiveIntegerEnv("AUTH_RATE_LIMIT_MAX", fallback);
 }
 
 const refreshSchema = z.object({
@@ -52,34 +59,60 @@ const changePasswordSchema = z
     }
   });
 
-const usersFastifyRoutes: FastifyPluginAsync = async (fastify) => {
-  fastify.post("/register", async (request, reply) => {
-    try {
+export type IdentityAccessRouteOptions = {
+  rateLimiter?: AbuseRateLimiter;
+};
+
+const usersFastifyRoutes: FastifyPluginAsync<IdentityAccessRouteOptions> = async (
+  fastify,
+  options,
+) => {
+  const rateLimiter = options.rateLimiter ?? createAbuseRateLimiter();
+  const authWindowMs = readPositiveIntegerEnv("AUTH_RATE_LIMIT_WINDOW_MS", 15 * 60 * 1_000);
+  const ipLimit = (purpose: string, limit: number) => createAbuseRateLimitPreHandler({
+    purpose,
+    limit,
+    windowMs: authWindowMs,
+    limiter: rateLimiter,
+    identities: (request) => [`ip:${request.ip}`],
+  });
+  const loginLimit = readAuthLimit("AUTH_LOGIN_RATE_LIMIT_MAX", 20);
+  const refreshLimit = readAuthLimit("AUTH_REFRESH_RATE_LIMIT_MAX", 60);
+  const loginRateLimit = createAbuseRateLimitPreHandler({
+    purpose: "auth-login",
+    limit: loginLimit,
+    windowMs: authWindowMs,
+    limiter: rateLimiter,
+    identities: (request) => {
       const body = (request.body ?? {}) as Record<string, unknown>;
-      const result = await registerUser({
-        name: String(body.name ?? ""),
-        email: String(body.email ?? ""),
-        password: String(body.password ?? ""),
-        companyId: typeof body.companyId === "string" ? body.companyId : null,
-        roleCodes: Array.isArray(body.roleCodes)
-          ? body.roleCodes.map((value) => String(value))
-          : undefined,
-        companyName: body.companyName == null ? null : String(body.companyName),
-        phone: body.phone == null ? null : String(body.phone),
-        userAgent:
-          typeof request.headers["user-agent"] === "string"
-            ? request.headers["user-agent"]
-            : null,
-        ipAddress: extractClientIp(request),
-      });
-      return reply.code(201).send(result);
-    } catch (err: any) {
-      const message = err?.message ?? "Registration failed";
-      return reply.code(400).send({ error: message });
-    }
+      const email = String(body.email ?? "").trim().toLowerCase() || "missing";
+      return [`principal:${email}`];
+    },
+  });
+  const refreshRateLimit = createAbuseRateLimitPreHandler({
+    purpose: "auth-refresh",
+    limit: refreshLimit,
+    windowMs: authWindowMs,
+    limiter: rateLimiter,
+    identities: (request) => {
+      const body = (request.body ?? {}) as Record<string, unknown>;
+      const refreshToken = String(body.refreshToken ?? "").trim() || "missing";
+      return [`session:${refreshToken}`];
+    },
   });
 
-  fastify.post("/login", async (request, reply) => {
+  const rejectRegistration = async (_request: unknown, reply: FastifyReply) => {
+    reply.header("Cache-Control", "no-store");
+    return reply.code(403).send(PUBLIC_REGISTRATION_RESPONSE);
+  };
+  // Reject before parsing, validation, limiter storage or any enrollment service.
+  fastify.post("/register", { onRequest: rejectRegistration }, rejectRegistration);
+
+  fastify.post("/login", {
+    bodyLimit: 16 * 1024,
+    onRequest: ipLimit("auth-login", loginLimit),
+    preHandler: loginRateLimit,
+  }, async (request, reply) => {
     try {
       const body = (request.body ?? {}) as Record<string, unknown>;
       const result = await loginUser({
@@ -93,13 +126,19 @@ const usersFastifyRoutes: FastifyPluginAsync = async (fastify) => {
       });
       return reply.send(result);
     } catch (err: any) {
-      const message = err?.message || "Login failed";
-      const statusCode = message.includes("Invalid email or password") ? 401 : 400;
-      return reply.code(statusCode).send({ error: message });
+      const message = String(err?.message || "");
+      if (message === "Invalid email or password" || message === "No active membership found") {
+        return reply.code(401).send(INVALID_CREDENTIALS_RESPONSE);
+      }
+      return reply.code(500).send({ error: "Authentication failed" });
     }
   });
 
-  fastify.post("/refresh", async (request, reply) => {
+  fastify.post("/refresh", {
+    bodyLimit: 16 * 1024,
+    onRequest: ipLimit("auth-refresh", refreshLimit),
+    preHandler: refreshRateLimit,
+  }, async (request, reply) => {
     try {
       const dto = refreshSchema.parse(request.body ?? {});
       const result = await refreshUserSession({
@@ -112,21 +151,28 @@ const usersFastifyRoutes: FastifyPluginAsync = async (fastify) => {
       });
       return reply.send(result);
     } catch (err: any) {
-      const message = err?.message ?? "Failed to refresh session";
-      const statusCode = message.includes("token") ? 401 : 400;
-      return reply.code(statusCode).send({ error: message });
+      const message = String(err?.message || "");
+      if (err instanceof z.ZodError || [
+        "Refresh token is required", "Invalid refresh token", "Refresh token revoked",
+        "Refresh token expired", "Refresh token mismatch", "No active membership found",
+      ].includes(message)) {
+        return reply.code(401).send(INVALID_SESSION_RESPONSE);
+      }
+      return reply.code(500).send({ error: "Session refresh failed" });
     }
   });
 
-  fastify.post("/logout", async (request, reply) => {
+  fastify.post("/logout", {
+    bodyLimit: 16 * 1024,
+    onRequest: ipLimit("auth-logout", readAuthLimit("AUTH_LOGOUT_RATE_LIMIT_MAX", 60)),
+  }, async (request, reply) => {
     try {
       const dto = logoutSchema.parse(request.body ?? {});
       await revokeRefreshSession(dto.refreshToken);
       return reply.send({ ok: true });
     } catch (err: any) {
-      return reply.code(err instanceof z.ZodError ? 400 : 400).send({
-        error: err?.message ?? "Failed to logout",
-      });
+      if (err instanceof z.ZodError) return reply.code(400).send(INVALID_SESSION_RESPONSE);
+      return reply.code(500).send({ error: "Logout failed" });
     }
   });
 
@@ -134,7 +180,17 @@ const usersFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.send({ user: request.user });
   });
 
-  fastify.post("/change-password", { preHandler: fastifyAuth() }, async (request, reply) => {
+  fastify.post("/change-password", {
+    bodyLimit: 16 * 1024,
+    onRequest: ipLimit("auth-password-ip", readAuthLimit("AUTH_PASSWORD_RATE_LIMIT_MAX", 10)),
+    preHandler: [fastifyAuth(), createAbuseRateLimitPreHandler({
+      purpose: "auth-password-user",
+      limit: readAuthLimit("AUTH_PASSWORD_RATE_LIMIT_MAX", 10),
+      windowMs: authWindowMs,
+      limiter: rateLimiter,
+      identities: (request) => request.user?.id ? [`user:${request.user.id}`] : [],
+    })],
+  }, async (request, reply) => {
     try {
       if (!request.user?.id) {
         return reply.code(401).send({ error: "Unauthorized" });
@@ -147,9 +203,11 @@ const usersFastifyRoutes: FastifyPluginAsync = async (fastify) => {
       });
       return reply.send({ message: "Password updated successfully" });
     } catch (err: any) {
-      const message = err?.message ?? "Failed to update password";
-      const statusCode = message === "Unauthorized" ? 401 : 400;
-      return reply.code(statusCode).send({ error: message });
+      if (err instanceof z.ZodError) return reply.code(400).send({ error: "Invalid password change request" });
+      const message = String(err?.message ?? "");
+      if (message === "Unauthorized") return reply.code(401).send({ error: "Unauthorized" });
+      if (message === "Current password is incorrect") return reply.code(400).send({ error: message });
+      return reply.code(500).send({ error: "Failed to update password" });
     }
   });
 
@@ -219,33 +277,16 @@ const usersFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post(
     "/",
-    { preHandler: fastifyAuth({ permission: "membership.invite" }) },
-    async (request, reply) => {
-      try {
-        if (!request.user?.companyId) return reply.code(400).send({ error: "companyId missing" });
-        const body = (request.body ?? {}) as Record<string, unknown>;
-        const user = await createUserByCompanyAdmin({
-          companyId: request.user.companyId,
-          name: String(body.name ?? ""),
-          email: String(body.email ?? ""),
-          password: String(body.password ?? ""),
-          roleCodes: Array.isArray(body.roleCodes)
-            ? body.roleCodes.map((value) => String(value))
-            : [],
-          branchId: typeof body.branchId === "string" ? body.branchId : null,
-          warehouseId: typeof body.warehouseId === "string" ? body.warehouseId : null,
-          customerEntityId:
-            typeof body.customerEntityId === "string" ? body.customerEntityId : null,
-          driverType:
-            body.driverType === "local" || body.driverType === "linehaul"
-              ? body.driverType
-              : null,
-          scopes: body.scopes,
-        });
-        return reply.code(201).send({ user });
-      } catch (err: any) {
-        return reply.code(400).send({ error: err?.message ?? "Bad request" });
-      }
+    {
+      // Temporary containment applies to every caller, including membership.invite.
+      // Deny before parsing or identity lookup; no creation service is reachable.
+      onRequest: async (_request, reply) => {
+        reply.header("Cache-Control", "no-store");
+        return reply.code(403).send(ADMIN_CREATION_RESPONSE);
+      },
+    },
+    async (_request, reply) => {
+      return reply.code(403).send(ADMIN_CREATION_RESPONSE);
     },
   );
 

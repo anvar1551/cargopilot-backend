@@ -1,10 +1,13 @@
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { randomUUID, createHash } from "crypto";
-import { MembershipStatus, OrganizationType, Prisma } from "@prisma/client";
+import { MembershipStatus, Prisma } from "@prisma/client";
 import prisma from "../../../config/prismaClient";
 import { RefreshTokenPayload } from "../types";
 import { clearIdentityAccessCacheForUser, loadAccessSnapshot } from "../access-control";
+
+// Synthetic credential, never an account: missing users still incur a password check.
+const MISSING_USER_PASSWORD_HASH = bcrypt.hashSync("CargoPilot authentication timing sentinel", 10);
 
 function getJwtSecret() {
   const secret = process.env.JWT_SECRET;
@@ -206,145 +209,6 @@ async function issueAuthSession(args: {
   };
 }
 
-async function resolveDefaultCompanyForRegistration() {
-  const companyCode = String(process.env.ERP_PUBLIC_REGISTRATION_COMPANY_CODE || "")
-    .trim()
-    .toUpperCase();
-  if (companyCode) {
-    const byCode = await prisma.organization.findFirst({
-      where: { code: companyCode, type: OrganizationType.company, isActive: true },
-      select: { id: true },
-    });
-    if (byCode) return byCode.id;
-  }
-  const firstCompany = await prisma.organization.findFirst({
-    where: { type: OrganizationType.company, isActive: true },
-    orderBy: { createdAt: "asc" },
-    select: { id: true },
-  });
-  if (!firstCompany) {
-    throw new Error("No active company found for registration");
-  }
-  return firstCompany.id;
-}
-
-export async function registerUser(args: {
-  name: string;
-  email: string;
-  password: string;
-  roleCodes?: string[];
-  companyId?: string | null;
-  companyName?: string | null;
-  phone?: string | null;
-  userAgent?: string | null;
-  ipAddress?: string | null;
-}) {
-  const name = String(args.name || "").trim();
-  const email = String(args.email || "").trim().toLowerCase();
-  const password = String(args.password || "");
-  if (!name) throw new Error("Name is required");
-  if (!email) throw new Error("Email is required");
-  if (password.length < 6) throw new Error("Password must be at least 6 characters");
-
-  const existing = await prisma.user.findUnique({ where: { email }, select: { id: true } });
-  if (existing) throw new Error("Email already registered");
-
-  const roleCodes =
-    cleanRoleCodes(args.roleCodes).length > 0
-      ? cleanRoleCodes(args.roleCodes)
-      : [String(process.env.ERP_PUBLIC_REGISTRATION_ROLE_CODE || "").trim().toLowerCase()].filter(
-          Boolean,
-        );
-  if (roleCodes.length === 0) {
-    throw new Error(
-      "Public registration role is not configured. Set ERP_PUBLIC_REGISTRATION_ROLE_CODE or pass roleCodes.",
-    );
-  }
-
-  const companyId =
-    String(args.companyId || "").trim() || (await resolveDefaultCompanyForRegistration());
-  const hashedPassword = await bcrypt.hash(password, 10);
-
-  const created = await prisma.$transaction(async (tx) => {
-    const user = await tx.user.create({
-      data: {
-        name,
-        email,
-        password: hashedPassword,
-        customerEntity: {
-          create: {
-            type: "PERSON",
-            name: args.companyName?.trim() || name,
-            email,
-            phone: args.phone ?? null,
-          },
-        },
-      },
-      select: { id: true, customerEntityId: true },
-    });
-
-    const membership = await tx.companyMembership.create({
-      data: {
-        userId: user.id,
-        companyId,
-        status: MembershipStatus.active,
-      },
-      select: { id: true, companyId: true, branchId: true },
-    });
-
-    const roleIds = await resolveRoleIdsForCompany({
-      tx,
-      companyId,
-      roleCodes,
-    });
-
-    for (const roleId of roleIds) {
-      await tx.membershipRole.create({
-        data: { membershipId: membership.id, roleId },
-      });
-    }
-
-    await tx.membershipScope.upsert({
-      where: {
-        membershipId_scopeType_scopeRefId: {
-          membershipId: membership.id,
-          scopeType: "company",
-          scopeRefId: companyId,
-        },
-      },
-      create: {
-        membershipId: membership.id,
-        scopeType: "company",
-        scopeRefId: companyId,
-      },
-      update: {},
-    });
-
-    return {
-      userId: user.id,
-      membershipId: membership.id,
-      companyId: membership.companyId,
-      branchId: membership.branchId,
-    };
-  });
-
-  const session = await issueAuthSession({
-    userId: created.userId,
-    membershipId: created.membershipId,
-    companyId: created.companyId,
-    branchId: created.branchId ?? null,
-    userAgent: args.userAgent ?? null,
-    ipAddress: args.ipAddress ?? null,
-  });
-
-  clearIdentityAccessCacheForUser(created.userId);
-  const access = await loadAccessSnapshot({
-    userId: created.userId,
-    membershipId: created.membershipId,
-  });
-  return { ...session, user: access };
-}
-
 export async function loginUser(args: {
   email: string;
   password: string;
@@ -359,10 +223,8 @@ export async function loginUser(args: {
     where: { email },
     select: { id: true, password: true },
   });
-  if (!user) throw new Error("Invalid email or password");
-
-  const ok = await bcrypt.compare(password, user.password);
-  if (!ok) throw new Error("Invalid email or password");
+  const ok = await bcrypt.compare(password, user?.password ?? MISSING_USER_PASSWORD_HASH);
+  if (!user || !ok) throw new Error("Invalid email or password");
 
   const membership = await prisma.companyMembership.findFirst({
     where: { userId: user.id, status: MembershipStatus.active },

@@ -1,5 +1,6 @@
 import prisma from "../../../config/prismaClient";
 import type { WarehouseTypeValue } from "./warehouse.shared";
+import { WAREHOUSE_SELECT, WAREHOUSE_DETAIL_SELECT } from "./warehouseProjection";
 
 export const createWarehouse = async (
   name: string,
@@ -10,6 +11,7 @@ export const createWarehouse = async (
   longitude?: number | null,
 ) => {
   return prisma.warehouse.create({
+    select: WAREHOUSE_SELECT,
     data: {
       name,
       type,
@@ -33,6 +35,7 @@ export const updateWarehouse = async (
   },
 ) => {
   return prisma.warehouse.update({
+    select: WAREHOUSE_SELECT,
     where: { id },
     data: {
       name: args.name,
@@ -46,15 +49,15 @@ export const updateWarehouse = async (
 };
 
 export const listWarehouses = async () => {
-  return prisma.warehouse.findMany({ orderBy: { createdAt: "desc" } });
+  return prisma.warehouse.findMany({
+    select: WAREHOUSE_SELECT,
+    orderBy: { createdAt: "desc" },
+  });
 };
 
 export const getWarehouseById = async (id: string) => {
   return prisma.warehouse.findUnique({
     where: { id },
-    include: {
-      users: true,
-      orders: true,
-    },
+    select: WAREHOUSE_DETAIL_SELECT,
   });
 };

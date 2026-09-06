@@ -7,6 +7,7 @@ import {
   updateWarehouse,
 } from "../application/warehouseRepo";
 import { normalizeWarehouseType } from "../application/warehouse.shared";
+import { warehouseView, warehouseDetailView } from "../application/warehouseProjection";
 
 function parseCoordinate(value: unknown, axis: "lat" | "lng") {
   if (value == null || value === "") return null;
@@ -38,9 +39,9 @@ const warehouseFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           parseCoordinate(body.longitude, "lng"),
         );
 
-        return reply.code(201).send(warehouse);
+        return reply.code(201).send(warehouseView(warehouse));
       } catch (error) {
-        console.error("createWarehouse error:", error);
+        request.log.error({ requestId: request.id }, "createWarehouse failed");
         return reply.code(500).send({ error: "Failed to create warehouse" });
       }
     },
@@ -49,12 +50,12 @@ const warehouseFastifyRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get(
     "/",
     { preHandler: fastifyAuth({ permission: "shipment.view" }) },
-    async (_request, reply) => {
+    async (request, reply) => {
       try {
         const warehouses = await listWarehouses();
-        return reply.send(warehouses);
+        return reply.send(warehouses.map(warehouseView));
       } catch (error) {
-        console.error("listWarehouses error:", error);
+        request.log.error({ requestId: request.id }, "listWarehouses failed");
         return reply.code(500).send({ error: "Failed to fetch warehouses" });
       }
     },
@@ -68,9 +69,9 @@ const warehouseFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         const id = String((request.params as any)?.id || "").trim();
         const warehouse = await getWarehouseById(id);
         if (!warehouse) return reply.code(404).send({ error: "Warehouse not found" });
-        return reply.send(warehouse);
+        return reply.send(warehouseDetailView(warehouse));
       } catch (error) {
-        console.error("getWarehouse error:", error);
+        request.log.error({ requestId: request.id }, "getWarehouse failed");
         return reply.code(500).send({ error: "Failed to fetch warehouse" });
       }
     },
@@ -99,12 +100,12 @@ const warehouseFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           longitude: parseCoordinate(body.longitude, "lng"),
         });
 
-        return reply.send(warehouse);
+        return reply.send(warehouseView(warehouse));
       } catch (error: any) {
         if (error?.code === "P2025") {
           return reply.code(404).send({ error: "Warehouse not found" });
         }
-        console.error("updateWarehouse error:", error);
+        request.log.error({ requestId: request.id }, "updateWarehouse failed");
         return reply.code(500).send({ error: "Failed to update warehouse" });
       }
     },
