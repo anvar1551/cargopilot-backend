@@ -1,3 +1,5 @@
+import { assertCreationInputAuthority, authorityError } from "../domain/creation-authority";
+import { requireCompanyAuthority, hasCompanyScope } from "../domain/company-authority";
 import prisma from "../../../config/prismaClient";
 import { OrderPaymentState, OrderStatus, Prisma } from "@prisma/client";
 
@@ -44,54 +46,6 @@ function toDateOrNull(v?: Date | string | null) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-function resolveActorTenantScope(actor?: OrderActor) {
-  if (actor?.tenantScope) {
-    return actor.tenantScope;
-  }
-  if (actor?.warehouseId) {
-    return `warehouse:${actor.warehouseId}`;
-  }
-  if (actor?.id) {
-    return `user:${actor.id}`;
-  }
-  return "system";
-}
-
-async function assertFkExistsTx(
-  tx: Prisma.TransactionClient,
-  payload: CreateOrderRepoPayload,
-) {
-  if (payload.customerEntityId) {
-    const exists = await tx.customerEntity.findUnique({
-      where: { id: payload.customerEntityId },
-      select: { id: true },
-    });
-    if (!exists) {
-      throw orderError("customerEntityId not found", 400);
-    }
-  }
-
-  if (payload.senderAddressId) {
-    const exists = await tx.address.findUnique({
-      where: { id: payload.senderAddressId },
-      select: { id: true },
-    });
-    if (!exists) {
-      throw orderError("senderAddressId not found", 400);
-    }
-  }
-
-  if (payload.receiverAddressId) {
-    const exists = await tx.address.findUnique({
-      where: { id: payload.receiverAddressId },
-      select: { id: true },
-    });
-    if (!exists) {
-      throw orderError("receiverAddressId not found", 400);
-    }
-  }
-}
-
 function normalizeActorRoleForTracking(): null {
   return null;
 }
@@ -111,92 +65,30 @@ export const createOrder = async (
   payload: CreateOrderRepoPayload,
   actor?: OrderActor,
 ) => {
-  const wantsSavePickup = payload.savePickupToAddressBook === true;
-  const wantsSaveDropoff = payload.saveDropoffToAddressBook === true;
-
-  if ((wantsSavePickup || wantsSaveDropoff) && !payload.customerEntityId) {
-    throw orderError("customerEntityId is required to save addresses", 400);
-  }
-
-  if (wantsSavePickup && !payload.senderAddressId) {
-    if (!sanitizeSnapshot(payload.senderAddressSnapshot)) {
-      throw orderError(
-        "senderAddress (structured) is required to save pickup address",
-        400,
-      );
-    }
-  }
-
-  if (wantsSaveDropoff && !payload.receiverAddressId) {
-    if (!sanitizeSnapshot(payload.receiverAddressSnapshot)) {
-      throw orderError(
-        "receiverAddress (structured) is required to save dropoff address",
-        400,
-      );
-    }
-  }
-
+  assertCreationInputAuthority({
+    customerEntityId: payload.customerEntityId,
+    senderAddressId: payload.senderAddressId, receiverAddressId: payload.receiverAddressId,
+    savePickupToAddressBook: payload.savePickupToAddressBook,
+    saveDropoffToAddressBook: payload.saveDropoffToAddressBook,
+  });
+  if ((payload.codPaidStatus != null && payload.codPaidStatus !== "NOT_PAID") ||
+      (payload.serviceChargePaidStatus != null && payload.serviceChargePaidStatus !== "NOT_PAID") ||
+      payload.amount != null) throw authorityError("Client financial authority is not accepted");
+  if (actor?.id !== customerId) throw authorityError("Order creator must be the authenticated identity", 403);
   return prisma.$transaction(async (tx) => {
-    let senderAddressId = payload.senderAddressId ?? null;
-    let receiverAddressId = payload.receiverAddressId ?? null;
-
-    if (wantsSavePickup && !senderAddressId) {
-      const snap = sanitizeSnapshot(payload.senderAddressSnapshot)!;
-      const created = await tx.address.create({
-        data: {
-          customerEntity: {
-            connect: { id: payload.customerEntityId! },
-          },
-          ...snap,
-          isSaved: true,
-        },
-        select: { id: true },
-      });
-      senderAddressId = created.id;
-    }
-
-    if (wantsSaveDropoff && !receiverAddressId) {
-      const snap = sanitizeSnapshot(payload.receiverAddressSnapshot)!;
-      const created = await tx.address.create({
-        data: {
-          customerEntity: {
-            connect: { id: payload.customerEntityId! },
-          },
-          ...snap,
-          isSaved: true,
-        },
-        select: { id: true },
-      });
-      receiverAddressId = created.id;
-    }
-
-    await assertFkExistsTx(tx, { ...payload, senderAddressId, receiverAddressId });
-
-    const [senderAddressRecord, receiverAddressRecord] = await Promise.all([
-      senderAddressId
-        ? tx.address.findUnique({
-            where: { id: senderAddressId },
-            select: { city: true },
-          })
-        : Promise.resolve(null),
-      receiverAddressId
-        ? tx.address.findUnique({
-            where: { id: receiverAddressId },
-            select: { city: true },
-          })
-        : Promise.resolve(null),
-    ]);
-
+    const membership = await requireCompanyAuthority(tx, actor, "shipment.create");
+    if (!hasCompanyScope(membership)) throw authorityError("Company creation scope required", 403);
+    const senderAddressId: string | null = null;
+    const receiverAddressId: string | null = null;
     const createdAt = new Date();
     const orderNumber = await getNextOrderNumberTx(tx);
     const slaSnapshot = await resolveOrderSlaSnapshot({
       serviceType: payload.serviceType ?? null,
       originQuery:
-        payload.senderAddressSnapshot?.city ?? senderAddressRecord?.city ?? null,
+        payload.senderAddressSnapshot?.city ?? null,
       destinationQuery:
         payload.destinationCity ??
         payload.receiverAddressSnapshot?.city ??
-        receiverAddressRecord?.city ??
         null,
       promiseDate: payload.promiseDate ?? null,
       createdAt,
@@ -227,9 +119,9 @@ export const createOrder = async (
     const cashCollectionsToCreate = buildInitialOrderCashCollections(
       {
         codAmount: payload.codAmount ?? null,
-        codPaidStatus: payload.codPaidStatus ?? null,
+        codPaidStatus: "NOT_PAID",
         serviceCharge: payload.serviceCharge ?? null,
-        serviceChargePaidStatus: payload.serviceChargePaidStatus ?? null,
+        serviceChargePaidStatus: "NOT_PAID",
         deliveryChargePaidBy: payload.deliveryChargePaidBy ?? null,
         currency: payload.currency ?? null,
       },
@@ -258,7 +150,7 @@ export const createOrder = async (
         receiverPhone2: payload.receiverPhone2 ?? null,
         receiverPhone3: payload.receiverPhone3 ?? null,
         receiverAddress: payload.receiverAddress ?? null,
-        ownerOrgId: actor?.companyId ?? null,
+        ownerOrgId: membership.companyId,
         customerEntityId: payload.customerEntityId ?? null,
         senderAddressId,
         receiverAddressId,
@@ -270,9 +162,9 @@ export const createOrder = async (
         paymentState: OrderPaymentState.UNPAID,
         deliveryChargePaidBy: payload.deliveryChargePaidBy ?? null,
         ifRecipientNotAvailable: payload.ifRecipientNotAvailable ?? null,
-        codPaidStatus: payload.codPaidStatus ?? null,
+        codPaidStatus: "NOT_PAID",
         serviceCharge: payload.serviceCharge ?? null,
-        serviceChargePaidStatus: payload.serviceChargePaidStatus ?? null,
+        serviceChargePaidStatus: "NOT_PAID",
         itemValue: payload.itemValue ?? null,
         plannedPickupAt: toDateOrNull(payload.plannedPickupAt),
         plannedDeliveryAt: toDateOrNull(payload.plannedDeliveryAt),
@@ -340,7 +232,7 @@ export const createOrder = async (
     await enqueueCargoPilotDomainEventsTx(tx, [
       {
         type: "order_created",
-        tenantScope: resolveActorTenantScope(actor),
+        tenantScope: `company:${membership.companyId}`,
         entityId: created.id,
         payload: {
           source: "createOrder",

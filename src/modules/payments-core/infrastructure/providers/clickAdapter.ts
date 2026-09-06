@@ -1,7 +1,7 @@
 import { createHash } from "crypto";
 import { PaymentIntent, PaymentProvider } from "@prisma/client";
 import { ProviderWebhookInput } from "../../domain/contracts";
-import { formatProviderAmount } from "../../shared/money";
+import { minorToMajorString } from "../../shared/money";
 import {
   PaymentProviderAdapter,
   ResolvedProviderConfig,
@@ -99,11 +99,7 @@ export class ClickProviderAdapter implements PaymentProviderAdapter {
 
   async createPayment(input: { config: ResolvedProviderConfig; intent: PaymentIntent }) {
     throwIfMissingConfig(input.config);
-    const amount = formatProviderAmount(
-      input.intent.amountMinor,
-      input.intent.currency,
-      "CLICK",
-    );
+    const amount = minorToMajorString(input.intent.amountMinor, input.intent.currency);
     const merchantTransId = input.intent.id;
     const requestBody: Record<string, unknown> = {
       service_id: input.config.serviceId,
@@ -114,11 +110,14 @@ export class ClickProviderAdapter implements PaymentProviderAdapter {
     const response = await fetchJson(`${CLICK_BASE_URL}/invoice/create`, {
       method: "POST",
       headers: headersForClick(input.config),
-      body: JSON.stringify(requestBody),
+      // Preserve the exact numeric JSON lexeme required by this adapter contract.
+      body: `{"service_id":${JSON.stringify(input.config.serviceId)},"merchant_trans_id":${JSON.stringify(merchantTransId)},"amount":${amount}}`,
     });
 
+    if (!response.ok) throw new Error("Provider initiation outcome unknown");
     const payload = parseRecord(response.payload);
     const invoiceId = valueAsString(payload, "invoice_id") || undefined;
+    if (!invoiceId) throw new Error("Provider initiation outcome unknown");
     const paymentLink = valueAsString(payload, "payment_link") || undefined;
     const clickPayUrl = paymentLink
       ? paymentLink

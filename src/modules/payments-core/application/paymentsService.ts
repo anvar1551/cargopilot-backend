@@ -1,3 +1,4 @@
+import { createAuthorizedPayment } from "./payment-creation";
 import {
   CashCollectionEventType,
   CashCollectionKind,
@@ -15,7 +16,6 @@ import {
   PaymentWebhookProcessStatus,
   Prisma,
 } from "@prisma/client";
-import { randomUUID } from "crypto";
 import prisma from "../../../config/prismaClient";
 import { authorize } from "../../identity-access";
 import {
@@ -833,7 +833,7 @@ async function resolveActiveConfig(args: {
   companyId: string;
   provider?: ProviderCode;
   environment?: PaymentEnvironment;
-}) {
+}, db: Pick<Prisma.TransactionClient, "paymentProviderConfig"> = prisma) {
   const where: Prisma.PaymentProviderConfigWhereInput = {
     companyId: args.companyId,
     isEnabled: true,
@@ -841,7 +841,7 @@ async function resolveActiveConfig(args: {
     ...(args.environment ? { environment: args.environment } : null),
   };
 
-  const explicit = await prisma.paymentProviderConfig.findFirst({
+  const explicit = await db.paymentProviderConfig.findFirst({
     where,
     orderBy: [{ updatedAt: "desc" }],
     select: {
@@ -879,201 +879,11 @@ export async function createPaymentIntentForActor(args: {
   user: AuthUser;
   input: CreatePaymentIntentInput;
 }) {
-  await assertCompanyAccess({
-    user: args.user,
-    companyId: args.input.companyId,
-    permission: "payments.intents.create",
+  return createAuthorizedPayment(args, {
+    db: prisma,
+    resolveConfig: async (context, tx) => toResolvedProviderConfig(await resolveActiveConfig(context, tx)),
+    adapter: getPaymentProviderAdapter,
   });
-
-  const policy = await prisma.companyPaymentSetting.findUnique({
-    where: { companyId: args.input.companyId },
-    select: {
-      onlinePaymentsEnabled: true,
-      defaultProvider: true,
-      allowProviderOverride: true,
-    },
-  });
-  const effectiveEnabled =
-    isGlobalPaymentsEnabled() && (policy?.onlinePaymentsEnabled ?? true);
-  if (!effectiveEnabled) {
-    const err = new Error("Online payments are disabled for this company") as Error & {
-      statusCode: number;
-    };
-    err.statusCode = 409;
-    throw err;
-  }
-
-  const requestedProvider = args.input.provider;
-  const providerToUse =
-    requestedProvider && (policy?.allowProviderOverride ?? true)
-      ? requestedProvider
-      : (policy?.defaultProvider ?? requestedProvider);
-
-  const existing = await prisma.paymentIntent.findUnique({
-    where: {
-      companyId_idempotencyKey: {
-        companyId: args.input.companyId,
-        idempotencyKey: args.input.idempotencyKey,
-      },
-    },
-    select: {
-      id: true,
-      orderId: true,
-      status: true,
-      providerCheckoutUrl: true,
-      providerPaymentId: true,
-    },
-  });
-  if (existing) {
-    if (existing.orderId !== args.input.orderId) {
-      const err = new Error(
-        "Idempotency key is already used for a different order",
-      ) as Error & { statusCode: number };
-      err.statusCode = 409;
-      throw err;
-    }
-
-    await prisma.order.update({
-      where: { id: args.input.orderId },
-      data: {
-        paymentState: mapIntentStatusToOrderPaymentState(existing.status),
-      },
-    });
-
-    return {
-      paymentIntentId: existing.id,
-      status: toCanonicalStatus(existing.status),
-      checkoutUrl: existing.providerCheckoutUrl,
-      providerPaymentId: existing.providerPaymentId,
-      reused: true,
-    };
-  }
-
-  const order = await prisma.order.findUnique({
-    where: { id: args.input.orderId },
-    select: { id: true },
-  });
-  if (!order) {
-    const err = new Error("Order not found") as Error & { statusCode: number };
-    err.statusCode = 404;
-    throw err;
-  }
-
-  const config = await resolveActiveConfig({
-    companyId: args.input.companyId,
-    provider: providerToUse,
-  });
-  const resolvedConfig = toResolvedProviderConfig(config);
-  const adapter = getPaymentProviderAdapter(config.provider);
-
-  const intent = await prisma.paymentIntent.create({
-    data: {
-      companyId: args.input.companyId,
-      orderId: args.input.orderId,
-      provider: config.provider,
-      providerConfigId: config.id,
-      environment: config.environment,
-      amountMinor: args.input.amountMinor,
-      currency: args.input.currency.toUpperCase(),
-      status: PaymentIntentStatus.PENDING,
-      idempotencyKey: args.input.idempotencyKey,
-      metadataJson: (args.input.metadata ?? undefined) as Prisma.InputJsonValue | undefined,
-    },
-  });
-
-  let providerResult:
-    | {
-        providerPaymentId?: string;
-        providerInvoiceId?: string;
-        checkoutUrl?: string;
-        rawResponse?: unknown;
-      }
-    | undefined;
-
-  let attemptStatus: PaymentAttemptStatus = PaymentAttemptStatus.ERROR;
-  let nextIntentStatus: PaymentIntentStatus = PaymentIntentStatus.FAILED;
-  let errorMessage: string | undefined;
-
-  try {
-    providerResult = await adapter.createPayment({
-      config: resolvedConfig,
-      intent,
-    });
-    attemptStatus = PaymentAttemptStatus.ACCEPTED;
-    if (providerResult.checkoutUrl) nextIntentStatus = PaymentIntentStatus.REQUIRES_ACTION;
-    else nextIntentStatus = PaymentIntentStatus.PENDING;
-  } catch (error) {
-    errorMessage = error instanceof Error ? error.message : "Provider payment init failed";
-  }
-
-  await prisma.$transaction(async (tx) => {
-    await tx.paymentAttempt.create({
-      data: {
-        paymentIntentId: intent.id,
-        provider: config.provider,
-        status: attemptStatus,
-        requestJson: {
-          returnUrl: args.input.returnUrl ?? null,
-          idempotencyKey: args.input.idempotencyKey,
-        } as Prisma.InputJsonValue,
-        responseJson: (providerResult?.rawResponse ?? null) as Prisma.InputJsonValue,
-        errorMessage,
-      },
-    });
-
-    await tx.paymentIntent.update({
-      where: { id: intent.id },
-      data: {
-        status: nextIntentStatus,
-        providerPaymentId: providerResult?.providerPaymentId,
-        providerInvoiceId: providerResult?.providerInvoiceId,
-        providerCheckoutUrl: providerResult?.checkoutUrl,
-      },
-    });
-
-    await tx.order.update({
-      where: { id: args.input.orderId },
-      data: {
-        paymentState: mapIntentStatusToOrderPaymentState(nextIntentStatus),
-      },
-    });
-  });
-
-  if (nextIntentStatus === PaymentIntentStatus.FAILED) {
-    void createPaymentFailureSupportTicket({
-      orderId: args.input.orderId,
-      companyId: args.input.companyId,
-      paymentIntentId: intent.id,
-      provider: config.provider,
-      environment: config.environment,
-      status: nextIntentStatus,
-      reason: errorMessage ?? "Provider payment init failed",
-    }).catch(() => undefined);
-  }
-
-  const resolvedIntent = await prisma.paymentIntent.findUnique({
-    where: { id: intent.id },
-    select: {
-      id: true,
-      status: true,
-      providerCheckoutUrl: true,
-      providerPaymentId: true,
-    },
-  });
-
-  if (!resolvedIntent) {
-    const err = new Error("Payment intent was not persisted") as Error & { statusCode: number };
-    err.statusCode = 500;
-    throw err;
-  }
-
-  return {
-    paymentIntentId: resolvedIntent.id,
-    status: toCanonicalStatus(resolvedIntent.status),
-    checkoutUrl: resolvedIntent.providerCheckoutUrl,
-    providerPaymentId: resolvedIntent.providerPaymentId,
-    reused: false,
-  };
 }
 
 function publicPaymentIntentPayload(
@@ -1457,103 +1267,10 @@ export async function syncPaymentIntentForActor(args: { user: AuthUser; id: stri
 export async function retryOrderPaymentForActor(args: {
   user: AuthUser;
   orderId: string;
-  provider?: PaymentProvider;
-}) {
-  await authorize(args.user, "payments.intents.create");
-
-  const order = await prisma.order.findUnique({
-    where: { id: args.orderId },
-    select: {
-      id: true,
-      ownerOrgId: true,
-      paymentType: true,
-    },
-  });
-
-  if (!order) {
-    const err = new Error("Order not found") as Error & { statusCode: number };
-    err.statusCode = 404;
-    throw err;
-  }
-
-  const companyId = order.ownerOrgId;
-  if (!companyId) {
-    const err = new Error("Order does not have a company scope") as Error & {
-      statusCode: number;
-    };
-    err.statusCode = 400;
-    throw err;
-  }
-
-  await assertCompanyAccess({
-    user: args.user,
-    companyId,
-    permission: "payments.intents.create",
-  });
-
-  if (order.paymentType !== PaymentType.CARD && order.paymentType !== PaymentType.TRANSFER) {
-    const err = new Error("Payment retry is only available for online payment orders") as Error & {
-      statusCode: number;
-    };
-    err.statusCode = 409;
-    throw err;
-  }
-
-  const latestIntent = await prisma.paymentIntent.findFirst({
-    where: {
-      orderId: order.id,
-      companyId,
-    },
-    orderBy: { createdAt: "desc" },
-    select: {
-      amountMinor: true,
-      currency: true,
-      provider: true,
-      status: true,
-      metadataJson: true,
-    },
-  });
-
-  if (!latestIntent) {
-    const err = new Error("No previous online payment intent found for this order") as Error & {
-      statusCode: number;
-    };
-    err.statusCode = 404;
-    throw err;
-  }
-
-  if (
-    latestIntent.status === PaymentIntentStatus.SUCCEEDED ||
-    latestIntent.status === PaymentIntentStatus.REFUNDED ||
-    latestIntent.status === PaymentIntentStatus.PARTIALLY_REFUNDED
-  ) {
-    const err = new Error("Payment is already settled and cannot be retried") as Error & {
-      statusCode: number;
-    };
-    err.statusCode = 409;
-    throw err;
-  }
-
-  const retryIntent = await createPaymentIntentForActor({
-    user: args.user,
-    input: {
-      companyId,
-      orderId: order.id,
-      provider: args.provider ?? latestIntent.provider,
-      amountMinor: latestIntent.amountMinor,
-      currency: latestIntent.currency,
-      idempotencyKey: `payment-retry:${order.id}:${randomUUID()}`,
-      metadata: {
-        ...(latestIntent.metadataJson && typeof latestIntent.metadataJson === "object"
-          ? latestIntent.metadataJson as Record<string, unknown>
-          : {}),
-        source: "payment_retry",
-        previousStatus: latestIntent.status,
-      },
-    },
-  });
-
-  return retryIntent;
+} & Omit<CreatePaymentIntentInput, "orderId">) {
+  // Retain the original key and request fields instead of generating a fresh operation.
+  const { user, ...input } = args;
+  return createPaymentIntentForActor({ user, input });
 }
 
 export async function createRefundForActor(_args: {

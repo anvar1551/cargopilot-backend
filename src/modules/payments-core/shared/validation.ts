@@ -48,20 +48,17 @@ export const providerConfigIdParamsSchema = z.object({
   id: z.string().uuid(),
 });
 
+// Legacy amounts/company are optional assertions, never financial authority.
 export const createPaymentIntentSchema = z.object({
-  companyId: z.string().uuid(),
+  companyId: z.string().uuid().optional(),
   orderId: z.string().uuid(),
-  amountMinor: z.coerce.bigint().gt(0n),
-  currency: z
-    .string()
-    .trim()
-    .transform((value) => value.toUpperCase())
-    .pipe(supportedCurrencyEnum),
+  amountMinor: z.union([z.bigint(), z.string().regex(/^[0-9]+$/).transform((value) => BigInt(value))]).refine((value) => value > 0n).optional(),
+  currency: z.string().trim().transform((value) => value.toUpperCase()).pipe(supportedCurrencyEnum).optional(),
   provider: providerEnum.optional(),
   idempotencyKey: z.string().trim().min(8).max(128),
   returnUrl: z.string().url().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
-});
+}).strict();
 
 export const paymentIntentIdParamsSchema = z.object({
   id: z.string().uuid(),
@@ -71,9 +68,7 @@ export const paymentOrderIdParamsSchema = z.object({
   orderId: z.string().uuid(),
 });
 
-export const retryOrderPaymentSchema = z.object({
-  provider: providerEnum.optional(),
-});
+export const retryOrderPaymentSchema = createPaymentIntentSchema.omit({ orderId: true });
 
 export const refundPaymentSchema = z.object({
   companyId: z.string().uuid(),

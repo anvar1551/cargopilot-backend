@@ -1,3 +1,4 @@
+import { assertCreationInputAuthority } from "./creation-authority";
 import { z } from "zod";
 import {
   PaymentProvider,
@@ -6,7 +7,6 @@ import {
   PaidStatus,
   RecipientUnavailableAction,
 } from "@prisma/client";
-import { buildAddressText } from "./orderAddress.shared";
 import {
   DEFAULT_SERVICE_TYPE,
   SERVICE_TYPES,
@@ -16,17 +16,6 @@ import {
 import { TARIFF_TRANSPORT_MODES } from "../../pricing-core/shared/validation";
 
 const SUPPORTED_ORDER_CURRENCIES = ["UZS", "USD", "CNY"] as const;
-
-type PrismaClientInstance = typeof import("../../../config/prismaClient").default;
-
-let prismaClientPromise: Promise<PrismaClientInstance> | null = null;
-
-async function getPrismaClient() {
-  prismaClientPromise ??= import("../../../config/prismaClient").then(
-    (module) => module.default,
-  );
-  return prismaClientPromise;
-}
 
 /**
  * Helpers
@@ -387,6 +376,7 @@ export type CreateOrderRepoPayload = {
 export async function mapCreateOrderDtoToRepoPayload(
   raw: unknown,
 ): Promise<CreateOrderRepoPayload> {
+  assertCreationInputAuthority(raw);
   const dto = createOrderPayloadSchema.parse(raw);
 
   const senderAddressId = dto.addresses.senderAddressId ?? null;
@@ -396,53 +386,6 @@ export async function mapCreateOrderDtoToRepoPayload(
   let dropoffAddress = dto.addresses.dropoffAddress;
   let destinationCity =
     dto.addresses.destinationCity ?? dto.addresses.receiverAddress?.city ?? null;
-  let senderAddr: {
-    latitude?: number | null;
-    longitude?: number | null;
-    city?: string | null;
-  } | null = null;
-  let receiverAddr: {
-    latitude?: number | null;
-    longitude?: number | null;
-    city?: string | null;
-  } | null = null;
-
-  // ✅ optional resolve from address book IDs
-  if (senderAddressId || receiverAddressId) {
-    const prisma = await getPrismaClient();
-    const [resolvedSenderAddr, resolvedReceiverAddr] = await Promise.all([
-      senderAddressId
-        ? prisma.address.findFirst({
-            where: {
-              id: senderAddressId,
-              customerEntityId: dto.customerEntityId ?? undefined,
-            },
-          })
-        : Promise.resolve(null),
-      receiverAddressId
-        ? prisma.address.findUnique({ where: { id: receiverAddressId } })
-        : Promise.resolve(null),
-    ]);
-
-    if (senderAddressId && !resolvedSenderAddr) {
-      const e: any = new Error("senderAddressId not found");
-      e.statusCode = 400;
-      throw e;
-    }
-    if (receiverAddressId && !resolvedReceiverAddr) {
-      const e: any = new Error("receiverAddressId not found");
-      e.statusCode = 400;
-      throw e;
-    }
-
-    senderAddr = resolvedSenderAddr;
-    receiverAddr = resolvedReceiverAddr;
-
-    if (senderAddr) pickupAddress = buildAddressText(senderAddr);
-    if (receiverAddr) dropoffAddress = buildAddressText(receiverAddr);
-    destinationCity = receiverAddr?.city ?? destinationCity;
-  }
-
   const pickupLatFromSnapshot = normalizeLatitude(
     dto.addresses.senderAddress?.latitude,
   );
@@ -456,10 +399,10 @@ export async function mapCreateOrderDtoToRepoPayload(
     dto.addresses.receiverAddress?.longitude,
   );
 
-  const pickupLatFromAddressBook = normalizeLatitude(senderAddr?.latitude);
-  const pickupLngFromAddressBook = normalizeLongitude(senderAddr?.longitude);
-  const dropoffLatFromAddressBook = normalizeLatitude(receiverAddr?.latitude);
-  const dropoffLngFromAddressBook = normalizeLongitude(receiverAddr?.longitude);
+  const pickupLatFromAddressBook = null;
+  const pickupLngFromAddressBook = null;
+  const dropoffLatFromAddressBook = null;
+  const dropoffLngFromAddressBook = null;
 
   let pickupLat =
     senderAddressId && pickupLatFromAddressBook != null
@@ -567,10 +510,9 @@ export async function mapCreateOrderDtoToRepoPayload(
       (dto.payment?.ifRecipientNotAvailable as RecipientUnavailableAction) ??
       RecipientUnavailableAction.CALL_SENDER,
 
-    codPaidStatus: (dto.payment?.codPaidStatus as PaidStatus) ?? null,
-    serviceCharge: dto.payment?.serviceCharge ?? null,
-    serviceChargePaidStatus:
-      (dto.payment?.serviceChargePaidStatus as PaidStatus) ?? PaidStatus.NOT_PAID,
+    codPaidStatus: PaidStatus.NOT_PAID,
+    serviceCharge: null,
+    serviceChargePaidStatus: PaidStatus.NOT_PAID,
 
     plannedPickupAt: dto.schedule?.plannedPickupAt ?? null,
     plannedDeliveryAt: dto.schedule?.plannedDeliveryAt ?? null,
@@ -581,6 +523,6 @@ export async function mapCreateOrderDtoToRepoPayload(
     promoCode: dto.reference?.promoCode ?? null,
     numberOfCalls: dto.reference?.numberOfCalls ?? null,
 
-    amount: dto.amount,
+    amount: undefined,
   };
 }

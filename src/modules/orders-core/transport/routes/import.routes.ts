@@ -1,3 +1,4 @@
+import { assertCreationInputAuthority } from "../../domain/creation-authority";
 import { FastifyPluginAsync } from "fastify";
 import { fastifyAuth } from "../../../identity-access/transport/fastify-auth";
 import { getOrderImportTemplateCsv, importOrdersFromCsv, previewOrderImport } from "../..";
@@ -15,10 +16,10 @@ const importRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       if (!request.user?.id) return reply.code(401).send({ error: "Unauthorized" });
       const body = (request.body ?? {}) as Record<string, unknown>;
+      assertCreationInputAuthority(body);
       const csvText = typeof body.csvText === "string" ? body.csvText : "";
-      const customerEntityId = typeof body.customerEntityId === "string" ? body.customerEntityId : request.user.customerEntityId ?? null;
+      const customerEntityId = typeof body.customerEntityId === "string" ? body.customerEntityId : null;
       if (!csvText.trim()) return reply.code(400).send({ error: "csvText is required" });
-      if (!customerEntityId) return reply.code(400).send({ error: "customerEntityId is required for bulk import" });
       const preview = await previewOrderImport({ csvText, customerEntityId });
       return reply.send(preview);
     } catch (err: any) {
@@ -30,10 +31,10 @@ const importRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       if (!request.user?.id) return reply.code(401).send({ error: "Unauthorized" });
       const body = (request.body ?? {}) as Record<string, unknown>;
+      assertCreationInputAuthority(body);
       const csvText = typeof body.csvText === "string" ? body.csvText : "";
-      const customerEntityId = typeof body.customerEntityId === "string" ? body.customerEntityId : request.user.customerEntityId ?? null;
+      const customerEntityId = typeof body.customerEntityId === "string" ? body.customerEntityId : null;
       if (!csvText.trim()) return reply.code(400).send({ error: "csvText is required" });
-      if (!customerEntityId) return reply.code(400).send({ error: "customerEntityId is required for bulk import" });
       const result = await importOrdersFromCsv({ actor: request.user, csvText, customerEntityId });
       await emitMutationInvalidation("order_mutation");
       return reply.code(201).send({ success: true, count: result.count, orders: result.orders });

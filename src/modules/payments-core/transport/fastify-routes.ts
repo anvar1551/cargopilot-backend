@@ -258,7 +258,7 @@ const paymentsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         const result = await retryOrderPaymentForActor({
           user: request.user!,
           orderId: params.orderId,
-          provider: body.provider,
+          ...body,
         });
         return reply.code(201).send(result);
       } catch (error) {

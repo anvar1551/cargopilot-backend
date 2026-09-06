@@ -119,7 +119,7 @@ export class StripeProviderAdapter implements PaymentProviderAdapter {
       client_reference_id: input.intent.id,
       success_url: successUrl,
       cancel_url: cancelUrl,
-    });
+    }, { idempotencyKey: `cargopilot:${input.intent.companyId}:${input.intent.id}` });
 
     return {
       providerPaymentId: toStringValue(session.payment_intent) || undefined,

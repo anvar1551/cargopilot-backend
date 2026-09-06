@@ -13,11 +13,11 @@ export type CanonicalPaymentStatus =
   | "partially_refunded";
 
 export type CreatePaymentIntentInput = {
-  companyId: string;
+  companyId?: string;
   orderId: string;
   provider?: ProviderCode;
-  amountMinor: bigint;
-  currency: string;
+  amountMinor?: bigint;
+  currency?: string;
   idempotencyKey: string;
   returnUrl?: string;
   metadata?: Record<string, unknown>;

@@ -1,3 +1,4 @@
+import { assertCreationInputAuthority } from "../domain/creation-authority";
 import { DEFAULT_SERVICE_TYPE, normalizeServiceTypeInput } from "../domain/order.constants";
 
 import {
@@ -35,9 +36,6 @@ const IMPORT_TEMPLATE_COLUMNS = [
   "currency",
   "paymentType",
   "deliveryChargePaidBy",
-  "serviceCharge",
-  "serviceChargePaidStatus",
-  "codPaidStatus",
   "ifRecipientNotAvailable",
   "itemValue",
   "plannedPickupAt",
@@ -206,9 +204,6 @@ function mapCsvRowToCreateOrderDto(
     payment: {
       paymentType: v.paymentType || null,
       deliveryChargePaidBy: v.deliveryChargePaidBy || null,
-      codPaidStatus: v.codPaidStatus || null,
-      serviceCharge: v.serviceCharge || undefined,
-      serviceChargePaidStatus: v.serviceChargePaidStatus || null,
       ifRecipientNotAvailable: v.ifRecipientNotAvailable || null,
     },
     schedule: {
@@ -223,12 +218,13 @@ function mapCsvRowToCreateOrderDto(
       numberOfCalls: v.numberOfCalls || undefined,
     },
     note: v.note || null,
-    amount: undefined,
   };
 }
 
 async function buildPreviewRows(args: PreviewArgs) {
+  assertCreationInputAuthority({ customerEntityId: args.customerEntityId });
   const parsedRows = parseCsv(args.csvText);
+  for (const row of parsedRows) assertCreationInputAuthority(row.values);
 
   const previewRows = await Promise.all(
     parsedRows.map(async (row): Promise<OrderImportPreviewRow> => {
@@ -394,9 +390,6 @@ export function getOrderImportTemplateCsv() {
     "UZS",
     "CASH",
     "SENDER",
-    "28000",
-    "NOT_PAID",
-    "NOT_PAID",
     "CALL_SENDER",
     "120",
     "",

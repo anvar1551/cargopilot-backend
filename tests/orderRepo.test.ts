@@ -27,7 +27,6 @@ describe("mapCreateOrderDtoToRepoPayload", () => {
       payment: null,
       schedule: null,
       reference: null,
-      amount: 19.99,
     });
 
     expect(payload.pickupAddress).toBe("Hamburg Warehouse Street 1");
@@ -41,6 +40,9 @@ describe("mapCreateOrderDtoToRepoPayload", () => {
     expect(payload.receiverName).toBe("Bob");
     expect(payload.codAmount).toBeNull();
     expect(payload.currency).toBe("USD");
-    expect(payload.amount).toBe(19.99);
+    expect(payload.amount).toBeUndefined();
+    expect(payload.serviceCharge).toBeNull();
+    expect(payload.codPaidStatus).toBe("NOT_PAID");
+    expect(payload.serviceChargePaidStatus).toBe("NOT_PAID");
   });
 });

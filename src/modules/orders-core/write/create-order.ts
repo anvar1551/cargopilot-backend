@@ -1,15 +1,13 @@
-import { randomUUID } from "crypto";
+import prisma from "../../../config/prismaClient";
+import { requireCompanyAuthority, hasCompanyScope } from "../domain/company-authority";
+import { authorityError } from "../domain/creation-authority";
 import { PaymentType, TransportMode } from "@prisma/client";
-import { createOrder, getOrderById } from "../repo";
+import { createOrder } from "../repo";
 import {
   CreateOrderRepoPayload,
   mapCreateOrderDtoToRepoPayload,
 } from "../domain/orderCreate.mapper";
 import { requireOrderActor } from "../shared";
-import {
-  createPaymentIntentForActor,
-  isCompanyOnlinePaymentsAllowed,
-} from "../../payments-core/application/paymentsService";
 import {
   enqueueOrderLabelJob,
   generateAndAttachParcelLabelsForOrder,
@@ -20,7 +18,6 @@ import {
 } from "../label";
 import {
   autoBookCarrierForOrder,
-  resolvePayableTotalFromPricing,
   seedInitialServiceChargePricing,
 } from "../../orders-legs";
 import { quoteTariff } from "../../pricing-core";
@@ -59,9 +56,6 @@ type CreateOrderForActorArgs = {
   body: unknown;
 };
 
-function majorToMinor(amountMajor: number): bigint {
-  return BigInt(Math.round(amountMajor * 100));
-}
 
 function resolveOriginQuery(payload: CreateOrderRepoPayload): string | null {
   const fromSnapshot = payload.senderAddressSnapshot?.city;
@@ -229,7 +223,6 @@ async function computeRuleQuoteForOrder(
 
 export async function createOrderForActor(args: CreateOrderForActorArgs) {
   const { user, body } = args;
-  const paymentsEnabled = process.env.PAYMENTS_ENABLED === "true";
   const labelMode = resolveOrderLabelMode(process.env.ORDER_LABEL_MODE, "queue");
   const blockLabelWork = process.env.ORDER_LABEL_BLOCKING === "true";
   const autoLabelFallback = isOrderLabelAutoFallbackEnabled();
@@ -242,13 +235,14 @@ export async function createOrderForActor(args: CreateOrderForActorArgs) {
   const actor = requireOrderActor(user);
   const mapped = await mapCreateOrderDtoToRepoPayload(body);
 
-  mapped.customerEntityId = mapped.customerEntityId ?? user.customerEntityId ?? null;
+  const membership = await requireCompanyAuthority(prisma, actor, "shipment.create");
+  if (!hasCompanyScope(membership)) throw authorityError("Company creation scope required", 403);
   const effectivePaymentType = mapped.paymentType ?? PaymentType.CASH;
   const requiresOnlineCheckout =
     effectivePaymentType === PaymentType.CARD ||
     effectivePaymentType === PaymentType.TRANSFER;
 
-  const actorCompanyId = actor.companyId?.trim() || null;
+  const actorCompanyId = membership.companyId;
   const ruleQuoteBundle = await computeRuleQuoteForOrder(mapped, actorCompanyId);
   if (ruleQuoteBundle.main.quoteAvailable) {
     mapped.serviceCharge = ruleQuoteBundle.main.serviceCharge;
@@ -373,93 +367,17 @@ export async function createOrderForActor(args: CreateOrderForActorArgs) {
     });
   }
 
-  const companyId = actorCompanyId ?? "";
-  const companyPaymentsAllowed = companyId
-    ? await isCompanyOnlinePaymentsAllowed(companyId)
-    : false;
-
-  if (!paymentsEnabled || !requiresOnlineCheckout || !companyPaymentsAllowed) {
-    return {
-      statusCode: 201,
-      payload: {
-        order,
-        warning: labelWarning ?? pricingWarning ?? carrierRoutingWarning,
-        message:
-          blockLabelWork
-            ? labelWarning
-              ? "Order created (manual payment) + parcel labels pending retry"
-              : "Order created (manual payment) + parcel labels generated"
-            : labelMode === "async" || labelMode === "sync"
-              ? "Order created (manual payment) + parcel labels scheduled"
-              : labelMode === "queue"
-                ? "Order created (manual payment) + parcel labels queued"
-                : "Order created (manual payment)",
-      },
-    };
-  }
-
-  const payableFromComponents = await resolvePayableTotalFromPricing(order.id).catch((err) => {
-    console.error(`Pricing aggregation failed for order ${order.id}:`, err);
-    return null;
-  });
-
-  const amountMajor = payableFromComponents?.amountMajor ?? null;
-  const paymentCurrency = payableFromComponents?.currency ?? null;
-
-  if (!payableFromComponents || amountMajor == null || amountMajor <= 0 || !paymentCurrency) {
-    const err = new Error(
-      "No payable pricing components found for online payment",
-    ) as Error & { statusCode: number };
-    err.statusCode = 400;
-    throw err;
-  }
-
-  if (!companyId) {
-    const err = new Error(
-      "companyId is required for online payment flow",
-    ) as Error & { statusCode: number };
-    err.statusCode = 400;
-    throw err;
-  }
-
-  const paymentIntent = await createPaymentIntentForActor({
-    user,
-    input: {
-      companyId,
-      orderId: order.id,
-      amountMinor: majorToMinor(amountMajor),
-      currency: paymentCurrency,
-      provider: mapped.paymentProvider ?? undefined,
-      idempotencyKey: mapped.paymentIntentIdempotencyKey ?? randomUUID(),
-      metadata: {
-        source: "order_checkout",
-        pricingSource: payableFromComponents.source,
-        pricingComponentCount: payableFromComponents.componentCount,
-        fxRate: payableFromComponents.fxRate,
-        fxRateAsOf: payableFromComponents.fxRateAsOf?.toISOString() ?? null,
-        baseCurrency: payableFromComponents.baseCurrency,
-      },
-    },
-  });
-
-  const fresh = await getOrderById(order.id);
+  // A new order has no issued invoice. Do not charge a mutable/Float quote.
   return {
     statusCode: 201,
     payload: {
-      order: fresh,
-      paymentIntent,
-      paymentUrl: paymentIntent.checkoutUrl ?? null,
+      order,
+      paymentUrl: null,
+      paymentPendingInvoice: requiresOnlineCheckout,
       warning: labelWarning ?? pricingWarning ?? carrierRoutingWarning,
-      message:
-        blockLabelWork
-          ? labelWarning
-            ? "Order + payment intent created (parcel labels pending retry)"
-            : "Order + parcel labels + payment intent created successfully"
-          : labelMode === "async" || labelMode === "sync"
-            ? "Order + payment intent created (parcel labels scheduled)"
-            : labelMode === "queue"
-              ? "Order + payment intent created (parcel labels queued)"
-              : "Order + payment intent created successfully",
+      message: requiresOnlineCheckout
+        ? "Order created; issue an invoice before requesting online payment"
+        : "Order created (manual payment)",
     },
   };
 }
