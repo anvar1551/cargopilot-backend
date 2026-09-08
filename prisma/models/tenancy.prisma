@@ -1,0 +1,50 @@
+// Additive tenant foundation. Nullable ownership bridges on existing models are
+// expanded separately and do not establish tenant isolation until backfilled.
+
+enum TenantStatus {
+  active
+  suspended
+}
+
+model Tenant {
+  id     String       @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  code   String       @unique
+  name   String
+  status TenantStatus @default(active)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  memberships         TenantMembership[]
+  companyMemberships  CompanyMembership[]
+  refreshSessions     UserRefreshSession[]
+  organizations       Organization[]
+  warehouses          Warehouse[]
+  customerEntities    CustomerEntity[]
+  addresses           Address[]
+  orders              Order[]
+  financeLegalEntities FinanceLegalEntity[]
+  invoices             Invoice[]
+
+  @@index([status])
+}
+
+model TenantMembership {
+  id       String           @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  tenantId String           @db.Uuid
+  tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  userId   String           @db.Uuid
+  user     User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status   MembershipStatus @default(active)
+
+  authorizationVersion Int @default(1)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @default(now()) @updatedAt
+
+  companyMemberships CompanyMembership[] @relation("TenantMembershipCompanyMemberships")
+
+  @@unique([tenantId, userId])
+  @@unique([id, userId, tenantId], map: "TenantMembership_identity_key")
+  @@index([tenantId, status])
+  @@index([userId, status])
+}

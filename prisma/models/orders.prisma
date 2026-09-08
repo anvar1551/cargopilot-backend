@@ -130,6 +130,9 @@ enum RecipientUnavailableAction {
 model Order {
   id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
+  tenantId String? @db.Uuid
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
   // ✅ human readable number like 99000021
   orderNumber String @unique
 
@@ -249,6 +252,8 @@ model Order {
   updatedAt DateTime @updatedAt
 
   @@index([customerId, createdAt])
+  @@unique([tenantId, id], map: "Order_tenant_identity_key")
+  @@index([tenantId, createdAt])
   @@index([createdAt])
   @@index([assignedDriverId])
   @@index([currentWarehouseId])

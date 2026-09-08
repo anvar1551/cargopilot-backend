@@ -14,6 +14,9 @@ enum AddressType {
 model Address {
   id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
+  tenantId String? @db.Uuid
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
   // ✅ Address book owner relation (named, to avoid conflict with defaultAddress)
   customerEntityId String?         @db.Uuid
   customerEntity   CustomerEntity? @relation("CustomerAddresses", fields: [customerEntityId], references: [id])
@@ -49,11 +52,16 @@ model Address {
   updatedAt DateTime @updatedAt
 
   @@index([customerEntityId])
+  @@unique([tenantId, id], map: "Address_tenant_identity_key")
+  @@index([tenantId, customerEntityId])
   @@index([city])
 }
 
 model CustomerEntity {
   id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+
+  tenantId String? @db.Uuid
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: Restrict)
 
   type CustomerType @default(PERSON)
 
@@ -89,5 +97,7 @@ model CustomerEntity {
   updatedAt DateTime @updatedAt
 
   @@index([type])
+  @@unique([tenantId, id], map: "CustomerEntity_tenant_identity_key")
+  @@index([tenantId, type])
   @@index([name])
 }

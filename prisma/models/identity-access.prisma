@@ -76,6 +76,13 @@ model CompanyMembership {
   companyId String       @db.Uuid
   company   Organization @relation("CompanyMembershipCompany", fields: [companyId], references: [id], onDelete: Cascade)
 
+  // Nullable compatibility bridge during tenant expansion. The SQL migration
+  // requires tenantId and tenantMembershipId to be both null or both populated.
+  tenantId           String?           @db.Uuid
+  tenant             Tenant?           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  tenantMembershipId String?           @db.Uuid
+  tenantMembership   TenantMembership? @relation("TenantMembershipCompanyMemberships", fields: [tenantMembershipId, userId, tenantId], references: [id, userId, tenantId], onDelete: Restrict, map: "CompanyMembership_tenant_bridge_fkey")
+
   branchId String?       @db.Uuid
   branch   Organization? @relation("CompanyMembershipBranch", fields: [branchId], references: [id], onDelete: SetNull)
 
@@ -86,9 +93,13 @@ model CompanyMembership {
 
   roles  MembershipRole[]
   scopes MembershipScope[]
+  refreshSessions UserRefreshSession[] @relation("RefreshSessionCompanyMembership")
 
   @@unique([userId, companyId])
+  @@unique([id, tenantMembershipId, userId, tenantId], map: "CompanyMembership_session_bridge_key")
   @@index([companyId, status])
+  @@index([tenantId, status])
+  @@index([tenantMembershipId])
   @@index([branchId])
 }
 
@@ -132,6 +143,7 @@ model User {
   liveLocationEnabled   Boolean             @default(true)
   liveLocationUpdatedAt DateTime            @default(now())
   memberships           CompanyMembership[]
+  tenantMemberships     TenantMembership[]
 
   // ✅ link user -> customer entity (person/company)
   customerEntityId String?         @db.Uuid
@@ -164,6 +176,14 @@ model UserRefreshSession {
   userId String @db.Uuid
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  // Future session selection fields. All three remain null for legacy sessions;
+  // the migration check requires all three when any one is populated.
+  tenantId           String?            @db.Uuid
+  tenant             Tenant?            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  tenantMembershipId String?            @db.Uuid
+  companyMembershipId String?           @db.Uuid
+  companyMembership  CompanyMembership? @relation("RefreshSessionCompanyMembership", fields: [companyMembershipId, tenantMembershipId, userId, tenantId], references: [id, tenantMembershipId, userId, tenantId], onDelete: Restrict, map: "UserRefreshSession_membership_bridge_fkey")
+
   tokenHash String    @unique
   expiresAt DateTime
   revokedAt DateTime?
@@ -179,6 +199,8 @@ model UserRefreshSession {
   updatedAt DateTime @updatedAt
 
   @@index([userId, createdAt])
+  @@index([tenantId, userId, revokedAt])
+  @@index([companyMembershipId])
   @@index([expiresAt])
   @@index([userId, revokedAt, expiresAt])
 }

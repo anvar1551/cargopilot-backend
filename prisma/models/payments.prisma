@@ -218,6 +218,8 @@ model PaymentLedgerEntry {
 
 model Invoice {
   id               String        @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  tenantId         String?       @db.Uuid
+  tenant           Tenant?       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   companyId        String        @db.Uuid
   company          Organization  @relation(fields: [companyId], references: [id], onDelete: Restrict)
   orderId          String        @unique @db.Uuid
@@ -244,6 +246,9 @@ model Invoice {
   customerEntity CustomerEntity? @relation(fields: [customerEntityId], references: [id], onDelete: Restrict)
 
   @@unique([companyId, invoiceNumber])
+  @@unique([tenantId, id], map: "Invoice_tenant_identity_key")
+  @@unique([tenantId, orderId, companyId], map: "Invoice_tenant_order_company_key")
+  @@index([tenantId, status, createdAt])
   @@index([companyId, status, createdAt])
   @@index([customerEntityId, createdAt])
   @@index([status, createdAt])

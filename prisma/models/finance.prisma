@@ -148,6 +148,8 @@ enum FinanceBankReconciliationTargetType {
 
 model FinanceLegalEntity {
   id        String       @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  tenantId  String?      @db.Uuid
+  tenant    Tenant?      @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   companyId String       @unique @db.Uuid
   company   Organization @relation(fields: [companyId], references: [id], onDelete: Restrict)
 
@@ -181,6 +183,9 @@ model FinanceLegalEntity {
   bankStatements             FinanceBankStatement[]
 
   @@index([isActive])
+  @@unique([tenantId, id], map: "FinanceLegalEntity_tenant_identity_key")
+  @@unique([tenantId, companyId], map: "FinanceLegalEntity_tenant_company_key")
+  @@index([tenantId, isActive])
 }
 
 model FinanceSourceEvent {

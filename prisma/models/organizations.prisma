@@ -26,6 +26,9 @@ model Organization {
   type OrganizationType
   code String?          @unique
 
+  tenantId String? @db.Uuid
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
   parentOrgId String?        @db.Uuid
   parentOrg   Organization?  @relation("OrganizationHierarchy", fields: [parentOrgId], references: [id], onDelete: SetNull)
   childOrgs   Organization[] @relation("OrganizationHierarchy")
@@ -61,6 +64,8 @@ model Organization {
   financeSourceEvents      FinanceSourceEvent[]
 
   @@index([type, isActive])
+  @@unique([tenantId, id], map: "Organization_tenant_identity_key")
+  @@index([tenantId, type, isActive])
   @@index([parentOrgId])
 }
 
@@ -70,6 +75,8 @@ model Warehouse {
   type                WarehouseType           @default(warehouse)
   location            String
   region              String?
+  tenantId            String?                 @db.Uuid
+  tenant              Tenant?                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   latitude            Float?
   longitude           Float?
   users               User[]
@@ -82,6 +89,8 @@ model Warehouse {
   destinationLegs     OrderLeg[]              @relation("OrderLegToWarehouse")
 
   @@index([createdAt])
+  @@unique([tenantId, id], map: "Warehouse_tenant_identity_key")
+  @@index([tenantId, createdAt])
   @@index([latitude, longitude])
 }
 
