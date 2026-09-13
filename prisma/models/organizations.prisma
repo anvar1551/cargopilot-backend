@@ -32,6 +32,8 @@ model Organization {
   parentOrgId String?        @db.Uuid
   parentOrg   Organization?  @relation("OrganizationHierarchy", fields: [parentOrgId], references: [id], onDelete: SetNull)
   childOrgs   Organization[] @relation("OrganizationHierarchy")
+  tenantParentOrg Organization?  @relation("TenantOrganizationHierarchy", fields: [tenantId, parentOrgId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "Organization_tenant_parent_fkey")
+  tenantChildOrgs Organization[] @relation("TenantOrganizationHierarchy")
 
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
@@ -39,9 +41,12 @@ model Organization {
 
   roles                    Role[]
   companyMemberships       CompanyMembership[]       @relation("CompanyMembershipCompany")
+  tenantCompanyMemberships CompanyMembership[]       @relation("CompanyMembershipTenantCompany")
   branchMemberships        CompanyMembership[]       @relation("CompanyMembershipBranch")
   ownedOrders              Order[]                   @relation("OrderOwnerOrganization")
   assignedOrders           Order[]                   @relation("OrderAssignedOrganization")
+  tenantOwnedOrders        Order[]                   @relation("OrderTenantOwnerOrganization")
+  tenantAssignedOrders     Order[]                   @relation("OrderTenantAssignedOrganization")
   ownedSupportTickets      SupportTicket[]           @relation("SupportTicketOwnerOrganization")
   assignedSupportTickets   SupportTicket[]           @relation("SupportTicketAssignedOrganization")
   paymentProviderConfigs   PaymentProviderConfig[]
@@ -51,6 +56,7 @@ model Organization {
   paymentLedgerEntries     PaymentLedgerEntry[]
   paymentRefunds           PaymentRefund[]
   invoices                 Invoice[]
+  tenantInvoices           Invoice[]                 @relation("InvoiceTenantCompany")
   integrationProviders     IntegrationProvider[]
   integrationOutbox        IntegrationOutbox[]
   integrationWebhookEvents IntegrationWebhookEvent[]
@@ -61,6 +67,7 @@ model Organization {
   supportAssignmentRules   SupportAssignmentRule[]   @relation("SupportAssignmentRuleCompany")
   supportSlaPolicies       SupportSlaPolicy[]        @relation("SupportSlaPolicyCompany")
   financeLegalEntity       FinanceLegalEntity?
+  tenantFinanceLegalEntities FinanceLegalEntity[]    @relation("FinanceLegalEntityTenantCompany")
   financeSourceEvents      FinanceSourceEvent[]
 
   @@index([type, isActive])
@@ -82,6 +89,7 @@ model Warehouse {
   users               User[]
   driverAccesses      DriverWarehouseAccess[]
   orders              Order[]
+  tenantOrders        Order[] @relation("OrderTenantWarehouse")
   createdAt           DateTime                @default(now())
   tracking            Tracking[]
   heldCashCollections CashCollection[]        @relation("CashCollectionHolderWarehouse")

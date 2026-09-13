@@ -172,13 +172,16 @@ model Order {
   // ---------------- Customer master (company/person) ----------------
   customerEntityId String?         @db.Uuid
   customerEntity   CustomerEntity? @relation("CustomerEntityOrders", fields: [customerEntityId], references: [id])
+  tenantCustomerEntity CustomerEntity? @relation("OrderTenantCustomerEntity", fields: [tenantId, customerEntityId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "Order_tenant_customer_fkey")
 
   // ---------------- Structured addresses (competitor-like) ----------------
   senderAddressId  String?  @db.Uuid
   senderAddressObj Address? @relation("OrderSenderAddress", fields: [senderAddressId], references: [id])
+  tenantSenderAddress Address? @relation("OrderTenantSenderAddress", fields: [tenantId, senderAddressId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "Order_tenant_sender_address_fkey")
 
   receiverAddressId  String?  @db.Uuid
   receiverAddressObj Address? @relation("OrderReceiverAddress", fields: [receiverAddressId], references: [id])
+  tenantReceiverAddress Address? @relation("OrderTenantReceiverAddress", fields: [tenantId, receiverAddressId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "Order_tenant_receiver_address_fkey")
 
   // ---------------- Operations ----------------
   assignedDriverId String? @db.Uuid
@@ -186,11 +189,14 @@ model Order {
 
   currentWarehouseId String?    @db.Uuid
   currentWarehouse   Warehouse? @relation(fields: [currentWarehouseId], references: [id])
+  tenantWarehouse    Warehouse? @relation("OrderTenantWarehouse", fields: [tenantId, currentWarehouseId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "Order_tenant_warehouse_fkey")
 
   ownerOrgId    String?       @db.Uuid
   ownerOrg      Organization? @relation("OrderOwnerOrganization", fields: [ownerOrgId], references: [id], onDelete: SetNull)
+  tenantOwnerOrg Organization? @relation("OrderTenantOwnerOrganization", fields: [tenantId, ownerOrgId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "Order_tenant_owner_org_fkey")
   assignedOrgId String?       @db.Uuid
   assignedOrg   Organization? @relation("OrderAssignedOrganization", fields: [assignedOrgId], references: [id], onDelete: SetNull)
+  tenantAssignedOrg Organization? @relation("OrderTenantAssignedOrganization", fields: [tenantId, assignedOrgId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "Order_tenant_assigned_org_fkey")
 
   labelKey String?
 
@@ -199,6 +205,7 @@ model Order {
   trackingEvents       Tracking[]
   labelJob             OrderLabelJob?
   invoice              Invoice?
+  tenantOwnedInvoices  Invoice[] @relation("InvoiceTenantOwnedOrder")
   attachments          OrderAttachment[]
   cashCollections      CashCollection[]
   supportTickets       SupportTicket[]
@@ -253,6 +260,7 @@ model Order {
 
   @@index([customerId, createdAt])
   @@unique([tenantId, id], map: "Order_tenant_identity_key")
+  @@unique([tenantId, id, ownerOrgId], map: "Order_tenant_owner_identity_key")
   @@index([tenantId, createdAt])
   @@index([createdAt])
   @@index([assignedDriverId])

@@ -152,6 +152,7 @@ model FinanceLegalEntity {
   tenant    Tenant?      @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   companyId String       @unique @db.Uuid
   company   Organization @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  tenantCompany Organization? @relation("FinanceLegalEntityTenantCompany", fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "FinanceLegalEntity_tenant_company_fkey")
 
   baseCurrency         String   @db.VarChar(3)
   reportingCurrency    String?  @db.VarChar(3)

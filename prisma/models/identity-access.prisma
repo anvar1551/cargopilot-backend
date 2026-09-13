@@ -82,6 +82,7 @@ model CompanyMembership {
   tenant             Tenant?           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   tenantMembershipId String?           @db.Uuid
   tenantMembership   TenantMembership? @relation("TenantMembershipCompanyMemberships", fields: [tenantMembershipId, userId, tenantId], references: [id, userId, tenantId], onDelete: Restrict, map: "CompanyMembership_tenant_bridge_fkey")
+  tenantCompany      Organization?     @relation("CompanyMembershipTenantCompany", fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "CompanyMembership_tenant_company_fkey")
 
   branchId String?       @db.Uuid
   branch   Organization? @relation("CompanyMembershipBranch", fields: [branchId], references: [id], onDelete: SetNull)

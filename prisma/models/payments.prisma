@@ -222,6 +222,7 @@ model Invoice {
   tenant           Tenant?       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   companyId        String        @db.Uuid
   company          Organization  @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  tenantCompany    Organization? @relation("InvoiceTenantCompany", fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "Invoice_tenant_company_fkey")
   orderId          String        @unique @db.Uuid
   customerId       String        @db.Uuid
   customerEntityId String?       @db.Uuid
@@ -242,6 +243,7 @@ model Invoice {
 
   // Relations
   order          Order           @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  tenantOwnedOrder Order?        @relation("InvoiceTenantOwnedOrder", fields: [tenantId, orderId, companyId], references: [tenantId, id, ownerOrgId], onDelete: Restrict, onUpdate: Restrict, map: "Invoice_tenant_order_owner_fkey")
   customer       User            @relation(fields: [customerId], references: [id], onDelete: Restrict)
   customerEntity CustomerEntity? @relation(fields: [customerEntityId], references: [id], onDelete: Restrict)
 
