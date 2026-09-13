@@ -2,6 +2,13 @@ import prisma from "../../../config/prismaClient";
 import { OrderSlaSource, OrderStatus, ServiceType } from "@prisma/client";
 import { orderError } from "../../orders-core/shared";
 import { resolveOrderSlaSnapshot as resolveOrderSlaSnapshotForOrder } from "../../orders-core/sla";
+import { requireCustomerEntityReference } from "../../customers-core/application/customerEntityRepo";
+import {
+  PricingAccessContext,
+  pricingAccessError,
+  rejectPricingOwnershipInput,
+  requirePricingAccess,
+} from "./pricing-access";
 import {
   CreateDeliverySlaRuleInput,
   CreatePricingRegionInput,
@@ -193,10 +200,17 @@ function sortTariffPlans(
   });
 }
 
-async function assertRouteTemplateExists(routeTemplateId?: string | null) {
+async function assertRouteTemplateExists(
+  ownership: { tenantId: string; companyId: string },
+  routeTemplateId?: string | null,
+) {
   if (!routeTemplateId) return;
-  const routeTemplate = await db.routeTemplate.findUnique({
-    where: { id: routeTemplateId },
+  const routeTemplate = await db.routeTemplate.findFirst({
+    where: {
+      id: routeTemplateId,
+      companyId: ownership.companyId,
+      company: { tenantId: ownership.tenantId },
+    },
     select: { id: true },
   });
   if (!routeTemplate) {
@@ -397,7 +411,15 @@ function pickBestDeliverySlaRule(
   })[0] ?? null;
 }
 
+function rejectUnownedSharedPricingMutation(): void {
+  throw pricingAccessError(
+    "Shared pricing and SLA configuration changes are temporarily unavailable until ownership is defined",
+    503,
+  );
+}
+
 export async function createPricingRegion(input: CreatePricingRegionInput) {
+  rejectUnownedSharedPricingMutation();
   return db.pricingRegion.create({
     data: {
       code: input.code,
@@ -413,6 +435,7 @@ export async function updatePricingRegion(
   id: string,
   input: UpdatePricingRegionInput,
 ) {
+  rejectUnownedSharedPricingMutation();
   const existing = await db.pricingRegion.findUnique({
     where: { id },
     select: { id: true },
@@ -435,6 +458,7 @@ export async function updatePricingRegion(
 }
 
 export async function deletePricingRegion(id: string) {
+  rejectUnownedSharedPricingMutation();
   const existing = await db.pricingRegion.findUnique({
     where: { id },
     select: { id: true, name: true },
@@ -494,6 +518,7 @@ export async function deletePricingRegion(id: string) {
 }
 
 export async function createDeliverySlaRule(input: CreateDeliverySlaRuleInput) {
+  rejectUnownedSharedPricingMutation();
   await assertDeliverySlaRuleReferences(input);
 
   return db.deliverySlaRule.create({
@@ -519,6 +544,7 @@ export async function updateDeliverySlaRule(
   id: string,
   input: UpdateDeliverySlaRuleInput,
 ) {
+  rejectUnownedSharedPricingMutation();
   const existing = await db.deliverySlaRule.findUnique({
     where: { id },
     select: { id: true },
@@ -551,6 +577,7 @@ export async function updateDeliverySlaRule(
 }
 
 export async function deleteDeliverySlaRule(id: string) {
+  rejectUnownedSharedPricingMutation();
   const existing = await db.deliverySlaRule.findUnique({
     where: { id },
     select: { id: true, name: true },
@@ -639,21 +666,19 @@ export async function listDeliverySlaRules(params: {
 }
 
 export async function getOperationalSlaPolicy() {
-  return db.operationalSlaPolicy.upsert({
+  const policy = await db.operationalSlaPolicy.findUnique({
     where: { singletonKey: OPERATIONAL_SLA_POLICY_KEY },
-    update: {},
-    create: {
-      singletonKey: OPERATIONAL_SLA_POLICY_KEY,
-      staleHours: 48,
-      dueSoonHours: 24,
-      overdueGraceHours: 0,
-    },
   });
+  if (!policy) {
+    throw pricingAccessError("Shared operational SLA policy is not initialized", 503);
+  }
+  return policy;
 }
 
 export async function updateOperationalSlaPolicy(
   input: UpdateOperationalSlaPolicyInput,
 ) {
+  rejectUnownedSharedPricingMutation();
   return db.operationalSlaPolicy.upsert({
     where: { singletonKey: OPERATIONAL_SLA_POLICY_KEY },
     update: {
@@ -721,6 +746,7 @@ export async function listPricingRegions(params: {
 }
 
 export async function upsertZoneMatrix(input: UpsertZoneMatrixInput) {
+  rejectUnownedSharedPricingMutation();
   const regionIds = Array.from(
     new Set(
       input.entries.flatMap((entry) => [
@@ -794,19 +820,11 @@ export async function listZoneMatrix(params: {
   });
 }
 
-export async function createTariffPlan(input: CreateTariffPlanInput) {
-  await assertRouteTemplateExists(input.routeTemplateId ?? null);
-
-  if (input.customerEntityId) {
-    const customerEntity = await db.customerEntity.findUnique({
-      where: { id: input.customerEntityId },
-      select: { id: true },
-    });
-
-    if (!customerEntity) {
-      throw orderError("customerEntityId not found", 400);
-    }
-  }
+export async function createTariffPlan(context: PricingAccessContext, input: CreateTariffPlanInput) {
+  const access = await requirePricingAccess(context, "pricing.write");
+  rejectPricingOwnershipInput(input);
+  await assertRouteTemplateExists(access, input.routeTemplateId ?? null);
+  if (input.customerEntityId) await requireCustomerEntityReference(context, input.customerEntityId);
 
   const normalizedOriginCountryCode =
     input.coverageType === "international"
@@ -821,6 +839,8 @@ export async function createTariffPlan(input: CreateTariffPlanInput) {
     if (input.isDefault) {
       await tx.tariffPlan.updateMany({
         where: {
+          tenantId: access.tenantId,
+          companyId: access.companyId,
           serviceType: input.serviceType,
           coverageType: input.coverageType,
           transportMode: input.transportMode,
@@ -835,6 +855,8 @@ export async function createTariffPlan(input: CreateTariffPlanInput) {
 
     return tx.tariffPlan.create({
       data: {
+        tenantId: access.tenantId,
+        companyId: access.companyId,
         name: input.name,
         code: normalizeTariffCode(input.code),
         description: input.description ?? null,
@@ -879,11 +901,17 @@ export async function createTariffPlan(input: CreateTariffPlanInput) {
   });
 }
 
-export async function updateTariffPlan(id: string, input: UpdateTariffPlanInput) {
-  await assertRouteTemplateExists(input.routeTemplateId ?? null);
+export async function updateTariffPlan(
+  context: PricingAccessContext,
+  id: string,
+  input: UpdateTariffPlanInput,
+) {
+  const access = await requirePricingAccess(context, "pricing.write");
+  rejectPricingOwnershipInput(input);
+  await assertRouteTemplateExists(access, input.routeTemplateId ?? null);
 
-  const existing = await db.tariffPlan.findUnique({
-    where: { id },
+  const existing = await db.tariffPlan.findFirst({
+    where: { id, tenantId: access.tenantId, companyId: access.companyId },
     select: {
       id: true,
       isDefault: true,
@@ -894,16 +922,7 @@ export async function updateTariffPlan(id: string, input: UpdateTariffPlanInput)
     throw orderError("Tariff plan not found", 404);
   }
 
-  if (input.customerEntityId) {
-    const customerEntity = await db.customerEntity.findUnique({
-      where: { id: input.customerEntityId },
-      select: { id: true },
-    });
-
-    if (!customerEntity) {
-      throw orderError("customerEntityId not found", 400);
-    }
-  }
+  if (input.customerEntityId) await requireCustomerEntityReference(context, input.customerEntityId);
 
   const normalizedOriginCountryCode =
     input.coverageType === "international"
@@ -919,6 +938,8 @@ export async function updateTariffPlan(id: string, input: UpdateTariffPlanInput)
       await tx.tariffPlan.updateMany({
         where: {
           id: { not: id },
+          tenantId: access.tenantId,
+          companyId: access.companyId,
           serviceType: input.serviceType,
           coverageType: input.coverageType,
           transportMode: input.transportMode,
@@ -932,11 +953,11 @@ export async function updateTariffPlan(id: string, input: UpdateTariffPlanInput)
     }
 
     await tx.tariffRate.deleteMany({
-      where: { tariffPlanId: id },
+      where: { tariffPlanId: id, tariffPlan: { tenantId: access.tenantId, companyId: access.companyId } },
     });
 
-    return tx.tariffPlan.update({
-      where: { id },
+    const updated = await tx.tariffPlan.updateMany({
+      where: { id, tenantId: access.tenantId, companyId: access.companyId },
       data: {
         name: input.name,
         code: normalizeTariffCode(input.code),
@@ -958,15 +979,20 @@ export async function updateTariffPlan(id: string, input: UpdateTariffPlanInput)
         priority: input.priority,
         isDefault: input.isDefault,
         customerEntityId: input.customerEntityId ?? null,
-        rates: {
-          create: input.rates.map((rate) => ({
-            zone: rate.zone,
-            weightFromKg: rate.weightFromKg,
-            weightToKg: rate.weightToKg,
-            price: rate.price,
-          })),
-        },
       },
+    });
+    if (updated.count !== 1) throw orderError("Tariff plan not found", 404);
+    await tx.tariffRate.createMany({
+      data: input.rates.map((rate) => ({
+        tariffPlanId: id,
+        zone: rate.zone,
+        weightFromKg: rate.weightFromKg,
+        weightToKg: rate.weightToKg,
+        price: rate.price,
+      })),
+    });
+    return tx.tariffPlan.findFirst({
+      where: { id, tenantId: access.tenantId, companyId: access.companyId },
       include: {
         customerEntity: {
           select: { id: true, name: true, type: true },
@@ -982,9 +1008,10 @@ export async function updateTariffPlan(id: string, input: UpdateTariffPlanInput)
   });
 }
 
-export async function deleteTariffPlan(id: string) {
-  const existing = await db.tariffPlan.findUnique({
-    where: { id },
+export async function deleteTariffPlan(context: PricingAccessContext, id: string) {
+  const access = await requirePricingAccess(context, "pricing.write");
+  const existing = await db.tariffPlan.findFirst({
+    where: { id, tenantId: access.tenantId, companyId: access.companyId },
     select: { id: true, name: true },
   });
 
@@ -995,11 +1022,14 @@ export async function deleteTariffPlan(id: string) {
   return db.$transaction(async (tx: any) => {
     const ratesDeleted = (
       await tx.tariffRate.deleteMany({
-        where: { tariffPlanId: id },
+        where: { tariffPlanId: id, tariffPlan: { tenantId: access.tenantId, companyId: access.companyId } },
       })
     ).count;
 
-    await tx.tariffPlan.delete({ where: { id } });
+    const removed = await tx.tariffPlan.deleteMany({
+      where: { id, tenantId: access.tenantId, companyId: access.companyId },
+    });
+    if (removed.count !== 1) throw orderError("Tariff plan not found", 404);
 
     return {
       deleted: true,
@@ -1010,7 +1040,7 @@ export async function deleteTariffPlan(id: string) {
   });
 }
 
-export async function listTariffPlans(params: {
+export async function listTariffPlans(context: PricingAccessContext, params: {
   status?: "draft" | "active" | "archived";
   serviceType?: string;
   pricingStrategy?: "FIXED_LANE" | "LEG_TRANSIT";
@@ -1022,10 +1052,15 @@ export async function listTariffPlans(params: {
   cursor?: string;
   limit?: number;
 }) {
+  const access = await requirePricingAccess(context, "pricing.read");
+  if (params.customerEntityId) await requireCustomerEntityReference(context, params.customerEntityId);
+  await assertRouteTemplateExists(access, params.routeTemplateId ?? null);
   const q = params.q?.trim();
   const limit = Math.min(Math.max(Number(params.limit ?? 0), 1), 100);
   const usePagination = Boolean(params.limit);
   const where = {
+    tenantId: access.tenantId,
+    companyId: access.companyId,
     ...(params.status ? { status: params.status } : {}),
     ...(params.serviceType ? { serviceType: params.serviceType } : {}),
     ...(params.pricingStrategy
@@ -1087,9 +1122,10 @@ export async function listTariffPlans(params: {
   };
 }
 
-export async function getTariffPlanById(id: string) {
-  return db.tariffPlan.findUnique({
-    where: { id },
+export async function getTariffPlanById(context: PricingAccessContext, id: string) {
+  const access = await requirePricingAccess(context, "pricing.read");
+  return db.tariffPlan.findFirst({
+    where: { id, tenantId: access.tenantId, companyId: access.companyId },
     include: {
       customerEntity: {
         select: { id: true, name: true, type: true },
@@ -1130,6 +1166,7 @@ export async function backfillOrderSlaSnapshots(input?: {
   limit?: number;
   dryRun?: boolean;
 }) {
+  rejectUnownedSharedPricingMutation();
   const limit = Math.min(Math.max(Number(input?.limit ?? 500), 1), 5000);
   const dryRun = input?.dryRun !== false;
 
@@ -1222,7 +1259,25 @@ export async function backfillOrderSlaSnapshots(input?: {
   };
 }
 
-export async function quoteTariff(input: QuoteTariffInput) {
+async function quoteTariffAuthorized(
+  context: PricingAccessContext,
+  suppliedInput: QuoteTariffInput,
+  permission: "pricing.read" | "shipment.create",
+  useContextCustomerDefault: boolean,
+) {
+  const access = await requirePricingAccess(context, permission);
+  rejectPricingOwnershipInput(suppliedInput, { allowCompanySelector: true });
+  if (suppliedInput.companyId && suppliedInput.companyId !== access.companyId) {
+    throw pricingAccessError("Requested company does not match selected pricing context");
+  }
+  const customerEntityId = suppliedInput.customerEntityId
+    ?? (useContextCustomerDefault ? access.customerEntityId : null);
+  if (customerEntityId) await requireCustomerEntityReference(context, customerEntityId);
+  const input: QuoteTariffInput = {
+    ...suppliedInput,
+    companyId: access.companyId,
+    customerEntityId,
+  };
   const weightKg = toNumber(input.weightKg);
   const originQuery = input.originQuery?.trim() ?? "";
   const destinationQuery = input.destinationQuery?.trim() ?? "";
@@ -1287,6 +1342,8 @@ export async function quoteTariff(input: QuoteTariffInput) {
 
   const plans = await db.tariffPlan.findMany({
     where: {
+      tenantId: access.tenantId,
+      companyId: access.companyId,
       status: "active",
       serviceType: input.serviceType as ServiceType,
       coverageType: { in: coverageCandidates as any },
@@ -1294,18 +1351,6 @@ export async function quoteTariff(input: QuoteTariffInput) {
       OR: input.customerEntityId
         ? [{ customerEntityId: input.customerEntityId }, { customerEntityId: null }]
         : [{ customerEntityId: null }],
-      ...(input.companyId
-        ? {
-            AND: [
-              {
-                OR: [
-                  { routeTemplateId: null },
-                  { routeTemplate: { companyId: input.companyId } },
-                ],
-              },
-            ],
-          }
-        : {}),
     },
     include: {
       rates: {
@@ -1537,10 +1582,18 @@ export async function quoteTariff(input: QuoteTariffInput) {
   } as const;
 }
 
-export async function quoteTariffOptions(input: QuoteTariffOptionsInput) {
+export async function quoteTariff(context: PricingAccessContext, input: QuoteTariffInput) {
+  return quoteTariffAuthorized(context, input, "pricing.read", true);
+}
+
+export async function quoteTariffForOrder(context: PricingAccessContext, input: QuoteTariffInput) {
+  return quoteTariffAuthorized(context, input, "shipment.create", false);
+}
+
+export async function quoteTariffOptions(context: PricingAccessContext, input: QuoteTariffOptionsInput) {
   const results = await Promise.all(
     TARIFF_TRANSPORT_MODES.map(async (transportMode) => {
-      const quote = await quoteTariff({
+      const quote = await quoteTariff(context, {
         ...input,
         transportMode,
       });

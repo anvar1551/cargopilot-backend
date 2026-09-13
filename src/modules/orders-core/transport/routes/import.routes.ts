@@ -20,7 +20,7 @@ const importRoutes: FastifyPluginAsync = async (fastify) => {
       const csvText = typeof body.csvText === "string" ? body.csvText : "";
       const customerEntityId = typeof body.customerEntityId === "string" ? body.customerEntityId : null;
       if (!csvText.trim()) return reply.code(400).send({ error: "csvText is required" });
-      const preview = await previewOrderImport({ csvText, customerEntityId });
+      const preview = await previewOrderImport({ actor: request.user!, csvText, customerEntityId });
       return reply.send(preview);
     } catch (err: any) {
       return sendError(reply, err, "Failed to preview import");

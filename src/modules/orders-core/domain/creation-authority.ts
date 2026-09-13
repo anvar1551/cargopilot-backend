@@ -10,6 +10,7 @@ const financialFields = new Set([
   "amount", "amountminor", "servicecharge", "total", "totalamount",
 ]);
 const masterReferences = new Set(["customerentityid", "senderaddressid", "receiveraddressid", "addressid"]);
+const pricingAuthorityFields = new Set(["tariffplanid", "pricingplanid", "pricingruleid", "routetemplateid"]);
 
 export function assertCreationInputAuthority(raw: unknown) {
   const pending: Array<{ value: unknown; depth: number }> = [{ value: raw, depth: 0 }];
@@ -22,6 +23,9 @@ export function assertCreationInputAuthority(raw: unknown) {
       const normalized = key.replace(/[^a-zA-Z]/g, "").toLowerCase();
       if (financialFields.has(normalized)) {
         throw authorityError("Client financial amounts and paid/status fields are not accepted");
+      }
+      if (pricingAuthorityFields.has(normalized) && child != null && child !== "") {
+        throw authorityError("Client pricing configuration is not accepted");
       }
       if ((masterReferences.has(normalized) && child != null && child !== "") ||
           ((normalized === "savepickuptoaddressbook" || normalized === "savedropofftoaddressbook") && child !== false && child != null)) {

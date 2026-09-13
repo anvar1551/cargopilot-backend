@@ -79,7 +79,7 @@ export const tariffRateInputSchema = z
     weightFromKg: z.coerce.number().min(0),
     weightToKg: z.coerce.number().gt(0),
     price: z.coerce.number().min(0),
-  })
+  }).strict()
   .superRefine((value, ctx) => {
     if (value.weightToKg <= value.weightFromKg) {
       ctx.addIssue({
@@ -173,7 +173,7 @@ export const createTariffPlanSchema = z
     customerEntityId: z.string().uuid().optional().nullable(),
     rates: z.array(tariffRateInputSchema).min(0).max(1000),
     transitLegRates: z.array(transitLegRateInputSchema).max(50).optional().default([]),
-  })
+  }).strict()
   .superRefine((value, ctx) => {
     const seen = new Set<string>();
     for (const [index, rate] of value.rates.entries()) {
@@ -367,7 +367,7 @@ export const quoteTariffSchema = z.object({
     .pipe(z.enum(TARIFF_TRANSPORT_MODES))
     .optional()
     .nullable(),
-});
+}).strict();
 
 export const quoteTariffOptionsSchema = quoteTariffSchema.omit({
   transportMode: true,

@@ -104,6 +104,7 @@ model RouteTemplate {
   orderLegs           OrderLeg[]
 
   @@unique([companyId, code], map: "uniq_route_template_company_code")
+  @@unique([companyId, id], map: "RouteTemplate_company_identity_key")
   @@index([companyId, isActive, priority])
   @@index([originCountryCode, destinationCountryCode, transportMode])
   @@index([serviceType, transportMode, isActive])

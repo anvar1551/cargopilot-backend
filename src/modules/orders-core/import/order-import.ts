@@ -8,6 +8,9 @@ import {
 } from "../domain/orderCreate.mapper";
 import { createOrder } from "../repo";
 import { requireOrderActor } from "../shared";
+import { prepareAuthorizedOrderCreation } from "../write/create-order";
+import { seedInitialServiceChargePricing } from "../../orders-legs";
+import type { AppUser } from "../../../types/app-user";
 import {
   enqueueOrderLabelJob,
   generateAndAttachParcelLabelsForOrder,
@@ -48,18 +51,14 @@ const IMPORT_TEMPLATE_COLUMNS = [
   "fragile",
   "dangerousGoods",
   "shipmentInsurance",
+  "originCity",
+  "originCountryCode",
+  "destinationCountryCode",
+  "transportMode",
 ] as const;
 
-type ImportActor = {
-  id: string;
-  role?: string | null;
-  tenantScope?: string | null;
-  email?: string;
-  customerEntityId?: string | null;
-  warehouseId?: string | null;
-};
-
 type PreviewArgs = {
+  actor: AppUser;
   csvText: string;
   customerEntityId?: string | null;
 };
@@ -180,8 +179,14 @@ function mapCsvRowToCreateOrderDto(
     addresses: {
       senderAddressId: null,
       receiverAddressId: null,
-      senderAddress: null,
-      receiverAddress: null,
+      senderAddress:
+        v.originCity || v.originCountryCode
+          ? { city: v.originCity || null, country: v.originCountryCode || null }
+          : null,
+      receiverAddress:
+        v.destinationCity || v.destinationCountryCode
+          ? { city: v.destinationCity || null, country: v.destinationCountryCode || null }
+          : null,
       pickupAddress: v.pickupAddress || "",
       dropoffAddress: v.dropoffAddress || "",
       destinationCity: v.destinationCity || null,
@@ -200,6 +205,7 @@ function mapCsvRowToCreateOrderDto(
       dangerousGoods: parseBoolean(v.dangerousGoods),
       shipmentInsurance: parseBoolean(v.shipmentInsurance),
       itemValue: v.itemValue || undefined,
+      transportMode: v.transportMode || "ROAD",
     },
     payment: {
       paymentType: v.paymentType || null,
@@ -252,6 +258,30 @@ async function buildPreviewRows(args: PreviewArgs) {
         };
       }
 
+      try {
+        const mapped = await mapCreateOrderDtoToRepoPayload(validation.data);
+        await prepareAuthorizedOrderCreation(args.actor, mapped);
+      } catch (error) {
+        const statusCode = (error as { statusCode?: number })?.statusCode;
+        if (statusCode === 401 || statusCode === 403 || statusCode === 503) throw error;
+        return {
+          rowNumber: row.rowNumber,
+          valid: false,
+          errors: [(error as Error)?.message || "Order import authorization failed"],
+          summary: {
+            receiverName: String(validation.data.receiver?.name || ""),
+            pickupAddress: validation.data.addresses.pickupAddress,
+            dropoffAddress: validation.data.addresses.dropoffAddress,
+            serviceType: String(validation.data.shipment.serviceType || ""),
+            codAmount:
+              typeof validation.data.shipment.codAmount === "number"
+                ? validation.data.shipment.codAmount
+                : null,
+            referenceId: validation.data.reference?.referenceId ?? null,
+          },
+        };
+      }
+
       return {
         rowNumber: row.rowNumber,
         valid: true,
@@ -290,22 +320,14 @@ export async function previewOrderImport(
   };
 }
 
-async function resolveOrderOwnerCustomerId(
-  actor: ImportActor,
-  customerEntityId?: string | null,
-) {
-  void customerEntityId;
-  void actor;
-  return actor.id;
-}
-
 export async function importOrdersFromCsv(args: {
-  actor: ImportActor;
+  actor: AppUser;
   csvText: string;
   customerEntityId?: string | null;
 }) {
   const actor = requireOrderActor(args.actor);
   const preview = await previewOrderImport({
+    actor: args.actor,
     csvText: args.csvText,
     customerEntityId: args.customerEntityId,
   });
@@ -320,11 +342,6 @@ export async function importOrdersFromCsv(args: {
   }
 
   const parsedRows = parseCsv(args.csvText);
-  const orderCustomerId = await resolveOrderOwnerCustomerId(
-    args.actor,
-    args.customerEntityId,
-  );
-
   const createdOrders = [];
   const labelMode = resolveOrderLabelMode(process.env.ORDER_LABEL_MODE, "sync");
   const autoLabelFallback = isOrderLabelAutoFallbackEnabled();
@@ -334,8 +351,15 @@ export async function importOrdersFromCsv(args: {
     const repoPayload = (await mapCreateOrderDtoToRepoPayload(
       dto,
     )) as CreateOrderRepoPayload;
-    const order = await createOrder(orderCustomerId, repoPayload, actor);
+    const prepared = await prepareAuthorizedOrderCreation(args.actor, repoPayload);
+    const order = await createOrder(actor.id, prepared.payload, prepared.actor);
     createdOrders.push(order);
+
+    try {
+      await seedInitialServiceChargePricing(order.id, prepared.pricingSeed, prepared.actor);
+    } catch (pricingErr: any) {
+      console.error(`Pricing component seed failed for imported order ${order.id}:`, pricingErr);
+    }
 
     if (labelMode === "queue") {
       try {
@@ -402,6 +426,10 @@ export function getOrderImportTemplateCsv() {
     "true",
     "false",
     "false",
+    "Bremen",
+    "DE",
+    "DE",
+    "ROAD",
   ].join(",");
 
   return `${header}\n${sample}\n`;

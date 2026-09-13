@@ -11,7 +11,7 @@ jest.mock("../../src/modules/orders-core/label", () => ({
 jest.mock("../../src/modules/orders-legs", () => ({
   seedInitialServiceChargePricing: jest.fn(async () => undefined), autoBookCarrierForOrder: jest.fn(async () => []),
 }));
-jest.mock("../../src/modules/pricing-core", () => ({ quoteTariff: jest.fn() }));
+jest.mock("../../src/modules/pricing-core", () => ({ quoteTariffForOrder: jest.fn() }));
 jest.mock("../../src/modules/support-core/application/autoTriage", () => ({ createSystemSupportTicket: jest.fn(), createLabelFailureSupportTicket: jest.fn() }));
 
 import { database as db } from "./fixtures";
@@ -21,13 +21,28 @@ import { createOrderForActor } from "../../src/modules/orders-core/write/create-
 import { getOrderImportTemplateCsv, importOrdersFromCsv, previewOrderImport } from "../../src/modules/orders-core/import/order-import";
 import * as labels from "../../src/modules/orders-core/label";
 import * as legs from "../../src/modules/orders-legs";
-import { quoteTariff } from "../../src/modules/pricing-core";
+import { quoteTariffForOrder } from "../../src/modules/pricing-core";
 
 const companyA = "10000000-0000-4000-8000-000000000001";
 const companyB = "10000000-0000-4000-8000-000000000002";
 const masterA = "20000000-0000-4000-8000-000000000001";
 const masterB = "20000000-0000-4000-8000-000000000002";
-const actor: any = { id: "user-a", membershipId: "membership-a", companyId: companyA, customerEntityId: masterA };
+const actor: any = {
+  id: "user-a",
+  membershipId: "membership-a",
+  companyMembershipId: "membership-a",
+  companyId: companyA,
+  tenantId: "30000000-0000-4000-8000-000000000001",
+  tenantMembershipId: "40000000-0000-4000-8000-000000000001",
+  branchId: null,
+  email: "user@example.test",
+  name: "Synthetic User",
+  warehouseId: null,
+  customerEntityId: masterA,
+  roleCodes: [],
+  permissionCodes: ["shipment.create"],
+  scopes: [{ scopeType: "company", scopeRefId: companyA }],
+};
 const body = () => ({
   sender: { name: "Sender", phone: "+49111" }, receiver: { name: "Receiver", phone: "+49222" },
   addresses: { pickupAddress: "Pickup Street 1", dropoffAddress: "Dropoff Street 2",
@@ -45,7 +60,7 @@ beforeEach(() => {
   });
   db.counter.upsert.mockResolvedValue({ value: 1 });
   db.order.create.mockImplementation(async ({ data }: any) => ({ id: "order-a", ...data }));
-  (quoteTariff as jest.Mock).mockResolvedValue({ quoteAvailable: false, reason: "no_rule" });
+  (quoteTariffForOrder as jest.Mock).mockResolvedValue({ quoteAvailable: false, reason: "no_rule" });
 });
 
 function noBusinessEffects() {
@@ -64,7 +79,7 @@ it("preserves snapshot-only order creation and derives company from current memb
 });
 
 it("defers online checkout until invoice issuance while preserving the created order", async () => {
-  (quoteTariff as jest.Mock).mockResolvedValue({ quoteAvailable: true, serviceCharge: 1200.25, currency: "UZS" });
+  (quoteTariffForOrder as jest.Mock).mockResolvedValue({ quoteAvailable: true, serviceCharge: 1200.25, currency: "UZS" });
   const input = body(); input.payment.paymentType = "CARD";
   const result = await createOrderForActor({ user: actor, body: input });
   expect(result.payload).toMatchObject({ paymentPendingInvoice: true, paymentUrl: null });
@@ -129,11 +144,53 @@ it("contains direct repository reference/status bypasses before writes", async (
 it("ships a usable CSV template without financial-authority fields or required customer master", async () => {
   const csvText = getOrderImportTemplateCsv();
   expect(csvText.split("\n")[0]).not.toMatch(/serviceCharge|PaidStatus/);
-  await expect(previewOrderImport({ csvText })).resolves.toMatchObject({ validRows: 1, invalidRows: 0 });
+  await expect(previewOrderImport({ actor, csvText })).resolves.toMatchObject({ validRows: 1, invalidRows: 0 });
   await expect(importOrdersFromCsv({ actor, csvText })).resolves.toMatchObject({ count: 1 });
+  expect(quoteTariffForOrder).toHaveBeenCalledWith(
+    expect.objectContaining({ tenantId: actor.tenantId, companyId: actor.companyId }),
+    expect.not.objectContaining({ companyId: expect.anything(), tariffPlanId: expect.anything() }),
+  );
 });
 
-it.each(["codPaidStatus", "serviceChargePaidStatus", "paid", "payment_status", "amount", "serviceCharge", "customerEntityId", "receiverAddressId"])(
+it("uses an authoritative tenant quote for imported service charge and pricing components", async () => {
+  (quoteTariffForOrder as jest.Mock).mockResolvedValue({
+    quoteAvailable: true,
+    serviceCharge: 875.5,
+    currency: "UZS",
+    tariffPlan: { id: "tenant-plan", pricingStrategy: "FIXED_LANE", routeTemplateId: null },
+  });
+  await expect(importOrdersFromCsv({ actor, csvText: getOrderImportTemplateCsv() }))
+    .resolves.toMatchObject({ count: 1 });
+  expect(db.order.create).toHaveBeenCalledWith(expect.objectContaining({
+    data: expect.objectContaining({ serviceCharge: 875.5, currency: "UZS" }),
+  }));
+  expect(legs.seedInitialServiceChargePricing).toHaveBeenCalledWith(
+    "order-a",
+    expect.objectContaining({ serviceCharge: 875.5, currency: "UZS" }),
+    expect.objectContaining({ id: actor.id, companyId: actor.companyId }),
+  );
+});
+
+it("rejects an online-payment import without an authoritative tariff before writes", async () => {
+  const csvText = getOrderImportTemplateCsv().replace(",CASH,", ",CARD,");
+  (quoteTariffForOrder as jest.Mock).mockResolvedValue({
+    quoteAvailable: false,
+    reason: "no_matching_tariff",
+  });
+  await expect(importOrdersFromCsv({ actor, csvText })).rejects.toMatchObject({ statusCode: 400 });
+  noBusinessEffects();
+});
+
+it("fails import preview closed when current tenant pricing context is rejected", async () => {
+  (quoteTariffForOrder as jest.Mock).mockRejectedValue(
+    Object.assign(new Error("Active pricing context required"), { statusCode: 403 }),
+  );
+  await expect(previewOrderImport({ actor, csvText: getOrderImportTemplateCsv() }))
+    .rejects.toMatchObject({ statusCode: 403 });
+  noBusinessEffects();
+});
+
+it.each(["codPaidStatus", "serviceChargePaidStatus", "paid", "payment_status", "amount", "serviceCharge", "tariffPlanId", "routeTemplateId", "customerEntityId", "receiverAddressId"])(
   "rejects the entire CSV before creating earlier rows when a forbidden %s column exists", async (field) => {
     const csvText = `receiverName,pickupAddress,dropoffAddress,${field}\nReceiver,Pickup Street,Dropoff Street,${masterB}\n`;
     await expect(importOrdersFromCsv({ actor, csvText })).rejects.toBeDefined(); noBusinessEffects();

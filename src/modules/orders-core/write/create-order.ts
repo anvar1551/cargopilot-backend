@@ -20,7 +20,7 @@ import {
   autoBookCarrierForOrder,
   seedInitialServiceChargePricing,
 } from "../../orders-legs";
-import { quoteTariff } from "../../pricing-core";
+import { quoteTariffForOrder } from "../../pricing-core";
 import {
   normalizeCountryCode,
   TARIFF_TRANSPORT_MODES,
@@ -134,8 +134,8 @@ function buildLegQuoteQueries(
 }
 
 async function computeRuleQuoteForOrder(
+  context: AppUser,
   payload: CreateOrderRepoPayload,
-  companyId?: string | null,
 ): Promise<{
   main: RuleQuoteResult;
   perLegRuleAmountsMajor: number[] | null;
@@ -148,20 +148,12 @@ async function computeRuleQuoteForOrder(
   const weightKg = typeof payload.weightKg === "number" ? payload.weightKg : null;
   const serviceType = payload.serviceType ?? "DOOR_TO_DOOR";
 
-  if (!originQuery || !destinationQuery || !weightKg || weightKg <= 0) {
-    return {
-      main: { quoteAvailable: false, reason: "missing_required_fields" },
-      perLegRuleAmountsMajor: null,
-    };
-  }
-
-  const mainQuote = (await quoteTariff({
-    companyId: companyId ?? null,
+  const mainQuote = (await quoteTariffForOrder(context, {
     customerEntityId: payload.customerEntityId ?? null,
     serviceType,
-    weightKg,
-    originQuery,
-    destinationQuery,
+    weightKg: weightKg && weightKg > 0 ? weightKg : null,
+    originQuery: originQuery ?? "",
+    destinationQuery: destinationQuery ?? "",
     originCountryCode,
     destinationCountryCode,
     transportMode,
@@ -170,6 +162,12 @@ async function computeRuleQuoteForOrder(
   if (!mainQuote.quoteAvailable) {
     return {
       main: mainQuote,
+      perLegRuleAmountsMajor: null,
+    };
+  }
+  if (!originQuery || !destinationQuery || !weightKg || weightKg <= 0) {
+    return {
+      main: { quoteAvailable: false, reason: "missing_required_fields" },
       perLegRuleAmountsMajor: null,
     };
   }
@@ -189,9 +187,8 @@ async function computeRuleQuoteForOrder(
   const legQueries = buildLegQuoteQueries(serviceType, originQuery, destinationQuery);
   const legQuotes = await Promise.all(
     legQueries.map((legQuery) =>
-      quoteTariff({
+      quoteTariffForOrder(context, {
         customerEntityId: payload.customerEntityId ?? null,
-        companyId: companyId ?? null,
         serviceType,
         weightKg,
         originQuery: legQuery.originQuery,
@@ -221,29 +218,24 @@ async function computeRuleQuoteForOrder(
   };
 }
 
-export async function createOrderForActor(args: CreateOrderForActorArgs) {
-  const { user, body } = args;
-  const labelMode = resolveOrderLabelMode(process.env.ORDER_LABEL_MODE, "queue");
-  const blockLabelWork = process.env.ORDER_LABEL_BLOCKING === "true";
-  const autoLabelFallback = isOrderLabelAutoFallbackEnabled();
-
+export async function prepareAuthorizedOrderCreation(
+  user: AppUser | undefined,
+  mapped: CreateOrderRepoPayload,
+) {
   if (!user?.id) {
     const err = new Error("Unauthorized") as Error & { statusCode: number };
     err.statusCode = 401;
     throw err;
   }
   const actor = requireOrderActor(user);
-  const mapped = await mapCreateOrderDtoToRepoPayload(body);
-
   const membership = await requireCompanyAuthority(prisma, actor, "shipment.create");
   if (!hasCompanyScope(membership)) throw authorityError("Company creation scope required", 403);
+
   const effectivePaymentType = mapped.paymentType ?? PaymentType.CASH;
   const requiresOnlineCheckout =
     effectivePaymentType === PaymentType.CARD ||
     effectivePaymentType === PaymentType.TRANSFER;
-
-  const actorCompanyId = membership.companyId;
-  const ruleQuoteBundle = await computeRuleQuoteForOrder(mapped, actorCompanyId);
+  const ruleQuoteBundle = await computeRuleQuoteForOrder(user, mapped);
   if (ruleQuoteBundle.main.quoteAvailable) {
     mapped.serviceCharge = ruleQuoteBundle.main.serviceCharge;
     mapped.currency = ruleQuoteBundle.main.currency;
@@ -256,7 +248,6 @@ export async function createOrderForActor(args: CreateOrderForActorArgs) {
     throw err;
   }
 
-  const repoPayload = mapped as CreateOrderRepoPayload;
   const originCountryCode = resolveOriginCountryCode(mapped);
   const destinationCountryCode = resolveDestinationCountryCode(mapped);
   const linehaulMode = toOrderLegTransportMode(resolveTransportMode(mapped));
@@ -264,23 +255,41 @@ export async function createOrderForActor(args: CreateOrderForActorArgs) {
     ruleQuoteBundle.main.quoteAvailable
       ? ruleQuoteBundle.main.tariffPlan?.routeTemplateId ?? null
       : null;
-  const order = await createOrder(user.id, repoPayload, actor);
+
+  return {
+    actor,
+    payload: mapped,
+    requiresOnlineCheckout,
+    pricingSeed: {
+      serviceCharge: mapped.serviceCharge ?? null,
+      currency: mapped.currency ?? "UZS",
+      serviceType: mapped.serviceType ?? null,
+      perLegRuleAmountsMajor: ruleQuoteBundle.perLegRuleAmountsMajor,
+      originCountryCode,
+      destinationCountryCode,
+      linehaulMode,
+      routeTemplateId,
+    },
+  };
+}
+
+export async function createOrderForActor(args: CreateOrderForActorArgs) {
+  const { user, body } = args;
+  const labelMode = resolveOrderLabelMode(process.env.ORDER_LABEL_MODE, "queue");
+  const blockLabelWork = process.env.ORDER_LABEL_BLOCKING === "true";
+  const autoLabelFallback = isOrderLabelAutoFallbackEnabled();
+
+  const mapped = await mapCreateOrderDtoToRepoPayload(body);
+  const prepared = await prepareAuthorizedOrderCreation(user, mapped);
+  const { actor, requiresOnlineCheckout } = prepared;
+  const order = await createOrder(user!.id, prepared.payload, actor);
   let labelWarning: string | null = null;
   let pricingWarning: string | null = null;
 
   try {
     await seedInitialServiceChargePricing(
       order.id,
-      {
-        serviceCharge: mapped.serviceCharge ?? null,
-        currency: mapped.currency ?? "UZS",
-        serviceType: mapped.serviceType ?? null,
-        perLegRuleAmountsMajor: ruleQuoteBundle.perLegRuleAmountsMajor,
-        originCountryCode,
-        destinationCountryCode,
-        linehaulMode,
-        routeTemplateId,
-      },
+      prepared.pricingSeed,
       actor,
     );
   } catch (pricingErr: any) {

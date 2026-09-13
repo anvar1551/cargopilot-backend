@@ -65,6 +65,10 @@ model ZoneMatrixEntry {
 
 model TariffPlan {
   id                     String                @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  tenantId               String?               @db.Uuid
+  tenant                 Tenant?               @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  companyId              String?               @db.Uuid
+  tenantCompany          Organization?         @relation("TariffPlanTenantCompany", fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "TariffPlan_tenant_company_fkey")
   name                   String
   code                   String?               @unique
   description            String?
@@ -78,17 +82,18 @@ model TariffPlan {
   destinationCountryCode String?
   transitPricingConfig   Json?
   routeTemplateId        String?               @db.Uuid
-  routeTemplate          RouteTemplate?        @relation(fields: [routeTemplateId], references: [id], onDelete: SetNull)
+  routeTemplate          RouteTemplate?        @relation(fields: [companyId, routeTemplateId], references: [companyId, id], onDelete: Restrict, onUpdate: Restrict, map: "TariffPlan_company_route_template_fkey")
   currency               String                @default("UZS")
   priority               Int                   @default(0)
   isDefault              Boolean               @default(false)
   createdAt              DateTime              @default(now())
   updatedAt              DateTime              @updatedAt
   customerEntityId       String?               @db.Uuid
-  customerEntity         CustomerEntity?       @relation(fields: [customerEntityId], references: [id])
+  customerEntity         CustomerEntity?       @relation(fields: [tenantId, customerEntityId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "TariffPlan_tenant_customer_fkey")
   rates                  TariffRate[]
 
   @@index([status, serviceType, priority])
+  @@index([tenantId, companyId, status, serviceType, priority], map: "TariffPlan_tenant_company_status_serviceType_priority_idx")
   @@index([customerEntityId, status])
   @@index([coverageType, transportMode, status])
   @@index([originCountryCode, destinationCountryCode])

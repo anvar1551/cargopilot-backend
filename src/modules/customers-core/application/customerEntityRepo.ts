@@ -133,6 +133,18 @@ export async function getCustomerEntityById(context: CustomerAccessContext, id: 
   return findCustomerEntityById(access, id);
 }
 
+export async function requireCustomerEntityReference(context: CustomerAccessContext, id: string) {
+  const access = await requireCustomerAccess(context, "customers.read");
+  const customer = await prisma.customerEntity.findFirst({
+    where: { AND: [{ id }, access.customerWhere] },
+    select: { id: true, tenantId: true },
+  });
+  if (!customer || customer.tenantId !== access.snapshot.tenantId) {
+    throw customerAccessError("Customer not found", 404);
+  }
+  return customer;
+}
+
 export async function updateCustomerEntity(context: CustomerAccessContext, id: string, dto: UpdateCustomerDto) {
   const access = await requireCustomerAccess(context, "customers.write");
   rejectOwnershipFields(dto, ["tenantId", "tenant", "companyId", "companyMembershipId", "id",

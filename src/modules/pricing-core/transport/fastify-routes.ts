@@ -262,7 +262,7 @@ const pricingFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const query = listTariffPlansQuerySchema.parse(request.query);
-        const plans = await listTariffPlans(query);
+        const plans = await listTariffPlans(request.user!, query);
         return reply.send(plans);
       } catch (error) {
         return sendError(reply, error, "Failed to fetch tariff plans");
@@ -276,7 +276,7 @@ const pricingFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const { id } = tariffPlanIdParamSchema.parse(request.params);
-        const plan = await getTariffPlanById(id);
+        const plan = await getTariffPlanById(request.user!, id);
         if (!plan) return reply.code(404).send({ error: "Tariff plan not found" });
         return reply.send(plan);
       } catch (error) {
@@ -291,7 +291,7 @@ const pricingFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const input = createTariffPlanSchema.parse(request.body);
-        const plan = await createTariffPlan(input);
+        const plan = await createTariffPlan(request.user!, input);
         return reply.code(201).send(plan);
       } catch (error) {
         return sendError(reply, error, "Failed to create tariff plan");
@@ -306,7 +306,7 @@ const pricingFastifyRoutes: FastifyPluginAsync = async (fastify) => {
       try {
         const { id } = tariffPlanIdParamSchema.parse(request.params);
         const input = updateTariffPlanSchema.parse(request.body);
-        const plan = await updateTariffPlan(id, input);
+        const plan = await updateTariffPlan(request.user!, id, input);
         return reply.send(plan);
       } catch (error) {
         return sendError(reply, error, "Failed to update tariff plan");
@@ -320,7 +320,7 @@ const pricingFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const { id } = tariffPlanIdParamSchema.parse(request.params);
-        const result = await deleteTariffPlan(id);
+        const result = await deleteTariffPlan(request.user!, id);
         return reply.send(result);
       } catch (error) {
         return sendError(reply, error, "Failed to delete tariff plan");
@@ -334,11 +334,7 @@ const pricingFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const parsed = quoteTariffSchema.parse(request.body);
-        const input = {
-          ...parsed,
-          customerEntityId: parsed.customerEntityId ?? request.user?.customerEntityId ?? null,
-        };
-        const quote = await quoteTariff(input);
+        const quote = await quoteTariff(request.user!, parsed);
         return reply.send(quote);
       } catch (error) {
         return sendError(reply, error, "Failed to quote tariff plan");
@@ -352,11 +348,7 @@ const pricingFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const parsed = quoteTariffOptionsSchema.parse(request.body);
-        const input = {
-          ...parsed,
-          customerEntityId: parsed.customerEntityId ?? request.user?.customerEntityId ?? null,
-        };
-        const options = await quoteTariffOptions(input);
+        const options = await quoteTariffOptions(request.user!, parsed);
         return reply.send(options);
       } catch (error) {
         return sendError(reply, error, "Failed to fetch quote options");
