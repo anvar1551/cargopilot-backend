@@ -1,5 +1,5 @@
 import { assertCreationInputAuthority, authorityError } from "../domain/creation-authority";
-import { requireCompanyAuthority, hasCompanyScope } from "../domain/company-authority";
+import { requireTenantBoundOrderCompanyAuthority, hasCompanyScope } from "../domain/company-authority";
 import prisma from "../../../config/prismaClient";
 import { OrderPaymentState, OrderStatus, Prisma } from "@prisma/client";
 
@@ -76,8 +76,9 @@ export const createOrder = async (
       payload.amount != null) throw authorityError("Client financial authority is not accepted");
   if (actor?.id !== customerId) throw authorityError("Order creator must be the authenticated identity", 403);
   return prisma.$transaction(async (tx) => {
-    const membership = await requireCompanyAuthority(tx, actor, "shipment.create");
+    const membership = await requireTenantBoundOrderCompanyAuthority(tx, actor, "shipment.create");
     if (!hasCompanyScope(membership)) throw authorityError("Company creation scope required", 403);
+    if (!membership.tenantId) throw authorityError("Tenant ownership is required", 403);
     const senderAddressId: string | null = null;
     const receiverAddressId: string | null = null;
     const createdAt = new Date();
@@ -130,6 +131,7 @@ export const createOrder = async (
 
     const created = await tx.order.create({
       data: {
+        tenantId: membership.tenantId,
         customerId,
         orderNumber,
         status: OrderStatus.pending,
@@ -191,7 +193,9 @@ export const createOrder = async (
             note: "Order created",
             actorId: actor?.id ?? null,
             actorRole: normalizeActorRoleForTracking(),
-            warehouseId: actor?.warehouseId ?? null,
+            // User.warehouseId is not tenant-bound. A later warehouse slice must
+            // establish that relationship before it can be copied to new events.
+            warehouseId: null,
             region: null,
           },
         },
@@ -232,7 +236,7 @@ export const createOrder = async (
     await enqueueCargoPilotDomainEventsTx(tx, [
       {
         type: "order_created",
-        tenantScope: `company:${membership.companyId}`,
+        tenantScope: `tenant:${membership.tenantId}:company:${membership.companyId}`,
         entityId: created.id,
         payload: {
           source: "createOrder",

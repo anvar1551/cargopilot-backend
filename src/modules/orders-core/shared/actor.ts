@@ -1,7 +1,10 @@
 export type OrderActor = {
   id: string;
   membershipId?: string | null;
+  companyMembershipId?: string | null;
   companyId?: string | null;
+  tenantId?: string | null;
+  tenantMembershipId?: string | null;
   branchId?: string | null;
   roleCodes?: string[];
   permissionCodes?: string[];
@@ -37,7 +40,10 @@ type AuthLikeUser =
   | {
       id?: string | null;
       membershipId?: string | null;
+      companyMembershipId?: string | null;
       companyId?: string | null;
+      tenantId?: string | null;
+      tenantMembershipId?: string | null;
       branchId?: string | null;
       roleCodes?: string[] | null;
       permissionCodes?: string[] | null;
@@ -78,7 +84,10 @@ export function toOrderActor(user: AuthLikeUser): OrderActor | null {
   return {
     id: user.id,
     membershipId: user.membershipId ?? null,
+    companyMembershipId: user.companyMembershipId ?? null,
     companyId: user.companyId ?? null,
+    tenantId: user.tenantId ?? null,
+    tenantMembershipId: user.tenantMembershipId ?? null,
     branchId: user.branchId ?? null,
     roleCodes: Array.isArray(user.roleCodes) ? user.roleCodes : [],
     permissionCodes: Array.isArray(user.permissionCodes) ? user.permissionCodes : [],

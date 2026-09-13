@@ -55,6 +55,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   db.$transaction.mockImplementation(async (fn: any) => fn(db));
   db.companyMembership.findFirst.mockResolvedValue({ companyId: companyA,
+    tenantId: actor.tenantId, tenantMembershipId: actor.tenantMembershipId,
     scopes: [{ scopeType: "company", scopeRefId: companyA }],
     roles: [{ role: { companyId: companyA, isSystem: false, rolePermissions: [{ permission: { key: "shipment.create" } }] } }],
   });
@@ -73,7 +74,7 @@ it("preserves snapshot-only order creation and derives company from current memb
   const result = await createOrderForActor({ user: actor, body: body() });
   expect(result.statusCode).toBe(201);
   expect(db.order.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
-    ownerOrgId: companyA, customerId: "user-a", customerEntityId: null, senderAddressId: null, receiverAddressId: null,
+    tenantId: actor.tenantId, ownerOrgId: companyA, customerId: "user-a", customerEntityId: null, senderAddressId: null, receiverAddressId: null,
     paymentState: "UNPAID", codPaidStatus: "NOT_PAID", serviceChargePaidStatus: "NOT_PAID",
   }) }));
 });
@@ -121,12 +122,15 @@ it("rejects anonymous and revoked-member creation before business effects", asyn
 });
 
 it("rejects missing scope even when token claims a company permission", async () => {
-  db.companyMembership.findFirst.mockResolvedValue({ companyId: companyA, scopes: [], roles: [] });
+  db.companyMembership.findFirst.mockResolvedValue({ companyId: companyA,
+    tenantId: actor.tenantId, tenantMembershipId: actor.tenantMembershipId,
+    scopes: [], roles: [] });
   await expect(createOrderForActor({ user: { ...actor, permissionCodes: ["shipment.create"] }, body: body() })).rejects.toMatchObject({ statusCode: 403 }); noBusinessEffects();
 });
 
 it("rejects foreign role grants on a selected company", async () => {
   db.companyMembership.findFirst.mockResolvedValue({ companyId: companyA,
+    tenantId: actor.tenantId, tenantMembershipId: actor.tenantMembershipId,
     scopes: [{ scopeType: "company", scopeRefId: companyA }],
     roles: [{ role: { companyId: companyB, isSystem: false, rolePermissions: [{ permission: { key: "shipment.create" } }] } }],
   });

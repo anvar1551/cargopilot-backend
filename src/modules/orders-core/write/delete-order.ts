@@ -7,10 +7,6 @@ import { collectS3ObjectKeys, deleteS3ObjectsBestEffort } from "../../../utils/s
 
 type DeleteOrderActor = AppUser;
 
-function isEmptyWhere(value: unknown) {
-  return !value || (typeof value === "object" && Object.keys(value as object).length === 0);
-}
-
 export async function deleteOrderForActor(args: {
   actor: DeleteOrderActor;
   orderId: string;
@@ -21,15 +17,12 @@ export async function deleteOrderForActor(args: {
   }
 
   await authorize(args.actor, "shipment.delete");
-  const scopeWhere = await buildOrderScopeWhere(args.actor);
+  const scopeWhere = await buildOrderScopeWhere(args.actor, "shipment.delete");
 
   const result = await prisma.$transaction(async (tx) => {
     const order = await tx.order.findFirst({
-      where:
-        scopeWhere && !isEmptyWhere(scopeWhere)
-          ? { AND: [{ id: orderId }, scopeWhere] }
-          : { id: orderId },
-      select: { id: true, orderNumber: true, labelKey: true },
+      where: { AND: [{ id: orderId }, scopeWhere ?? { id: "__no_access__" }] },
+      select: { id: true, tenantId: true, orderNumber: true, labelKey: true },
     });
 
     if (!order) {
@@ -174,7 +167,12 @@ export async function deleteOrderForActor(args: {
       ).count,
     };
 
-    await tx.order.delete({ where: { id: orderId } });
+    const removed = await tx.order.deleteMany({
+      where: { id: orderId, tenantId: order.tenantId },
+    });
+    if (removed.count !== 1) {
+      throw orderError("Order ownership changed during deletion", 409);
+    }
 
     return {
       deleted: true,

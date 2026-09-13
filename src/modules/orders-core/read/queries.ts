@@ -86,7 +86,7 @@ function parseOrderListParams(query: ListOrdersQuery): Parameters<typeof listOrd
 
 async function resolveOrderReadScope(actor: OrdersCoreActor) {
   await authorize(actor, "shipment.view");
-  return buildOrderScopeWhere(actor);
+  return (await buildOrderScopeWhere(actor, "shipment.view")) ?? { id: "__no_access__" };
 }
 
 export async function listOrdersForActor(args: {
@@ -95,7 +95,11 @@ export async function listOrdersForActor(args: {
 }) {
   const { actor, query } = args;
   const enforcedScopeWhere = await resolveOrderReadScope(actor);
-  return listOrders(parseOrderListParams(query), enforcedScopeWhere, actor.id);
+  return listOrders(
+    parseOrderListParams(query),
+    enforcedScopeWhere,
+    `${actor.tenantId}:${actor.companyMembershipId}:${actor.id}`,
+  );
 }
 
 export async function getOrderForActor(args: { actor: OrdersCoreActor; orderId: string }) {
@@ -107,8 +111,8 @@ export async function getOrderForActor(args: { actor: OrdersCoreActor; orderId: 
 }
 
 export async function listDriverWorkloadForActor(actor: OrdersCoreActor) {
-  await authorize(actor, "shipment.view");
-  return listDriverWorkloads();
+  const enforcedScopeWhere = await resolveOrderReadScope(actor);
+  return listDriverWorkloads(enforcedScopeWhere);
 }
 
 export async function exportOrdersCsvForActor(args: {
@@ -119,7 +123,7 @@ export async function exportOrdersCsvForActor(args: {
 
   await authorize(actor, "shipment.export");
 
-  const enforcedScopeWhere = await buildOrderScopeWhere(actor);
+  const enforcedScopeWhere = await buildOrderScopeWhere(actor, "shipment.export");
   const exportParams = {
     ...parseOrderListParams(query),
     mode: "page" as const,
@@ -240,5 +244,3 @@ export async function exportOrdersCsvForActor(args: {
     filename: `orders-export-${stamp}.csv`,
   };
 }
-
-

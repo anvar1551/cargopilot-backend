@@ -80,7 +80,7 @@ export async function ensureOrderInScope(request: any, orderId: string) {
     throw err;
   }
   await authorize(user, "shipment.view");
-  const scopeWhere = (await buildOrderScopeWhere(user)) ?? { id: "__no_access__" };
+  const scopeWhere = (await buildOrderScopeWhere(user, "shipment.view")) ?? { id: "__no_access__" };
   const order = await prisma.order.findFirst({
     where: { AND: [{ id: orderId }, scopeWhere] },
     select: { id: true },

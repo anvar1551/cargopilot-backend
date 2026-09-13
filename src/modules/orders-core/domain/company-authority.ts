@@ -29,6 +29,58 @@ export async function requireCompanyAuthority(
   return membership;
 }
 
+export async function requireTenantBoundOrderCompanyAuthority(
+  db: Pick<Prisma.TransactionClient, "companyMembership">,
+  actor: {
+    id: string;
+    membershipId?: string | null;
+    companyMembershipId?: string | null;
+    companyId?: string | null;
+    tenantId?: string | null;
+    tenantMembershipId?: string | null;
+  } | undefined,
+  permission: string,
+) {
+  if (!actor?.id || !actor.membershipId || !actor.companyMembershipId ||
+      !actor.companyId || !actor.tenantId || !actor.tenantMembershipId ||
+      actor.membershipId !== actor.companyMembershipId) {
+    throw authorityError("Active tenant-bound company membership required", 403);
+  }
+  const membership = await db.companyMembership.findFirst({
+    where: {
+      id: actor.companyMembershipId,
+      userId: actor.id,
+      companyId: actor.companyId,
+      tenantId: actor.tenantId,
+      tenantMembershipId: actor.tenantMembershipId,
+      status: "active",
+      tenant: { id: actor.tenantId, status: "active" },
+      tenantMembership: {
+        id: actor.tenantMembershipId,
+        userId: actor.id,
+        tenantId: actor.tenantId,
+        status: "active",
+      },
+      company: { isActive: true, type: "company", tenantId: actor.tenantId },
+    },
+    select: {
+      companyId: true,
+      tenantId: true,
+      tenantMembershipId: true,
+      scopes: { select: { scopeType: true, scopeRefId: true } },
+      roles: { select: { role: { select: {
+        companyId: true, isSystem: true,
+        rolePermissions: { select: { permission: { select: { key: true } } } },
+      } } } },
+    },
+  });
+  if (!membership || !membership.roles.some(({ role }) =>
+    (role.companyId === membership.companyId || (role.companyId === null && role.isSystem)) &&
+    role.rolePermissions.some(({ permission: item }) => item.key === permission),
+  )) throw authorityError("Company permission required", 403);
+  return membership;
+}
+
 export function hasCompanyScope(membership: { companyId: string; scopes: Array<{ scopeType: string; scopeRefId: string }> }) {
   return membership.scopes.some((scope) => scope.scopeType === "company" && scope.scopeRefId === membership.companyId);
 }

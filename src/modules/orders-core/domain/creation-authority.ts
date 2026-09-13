@@ -11,6 +11,9 @@ const financialFields = new Set([
 ]);
 const masterReferences = new Set(["customerentityid", "senderaddressid", "receiveraddressid", "addressid"]);
 const pricingAuthorityFields = new Set(["tariffplanid", "pricingplanid", "pricingruleid", "routetemplateid"]);
+const ownershipAuthorityFields = new Set([
+  "tenantid", "ownerorgid", "assignedorgid", "currentwarehouseid", "assigneddriverid",
+]);
 
 export function assertCreationInputAuthority(raw: unknown) {
   const pending: Array<{ value: unknown; depth: number }> = [{ value: raw, depth: 0 }];
@@ -26,6 +29,9 @@ export function assertCreationInputAuthority(raw: unknown) {
       }
       if (pricingAuthorityFields.has(normalized) && child != null && child !== "") {
         throw authorityError("Client pricing configuration is not accepted");
+      }
+      if (ownershipAuthorityFields.has(normalized) && child != null && child !== "") {
+        throw authorityError("Client order ownership is not accepted", 403);
       }
       if ((masterReferences.has(normalized) && child != null && child !== "") ||
           ((normalized === "savepickuptoaddressbook" || normalized === "savedropofftoaddressbook") && child !== false && child != null)) {

@@ -129,11 +129,11 @@ async function resolveActorWarehouseType(
   if (!actor.warehouseId) {
     throw orderError("Warehouse user has no warehouse assigned", 403);
   }
-  const warehouse = await prisma.warehouse.findUnique({
-    where: { id: actor.warehouseId },
-    select: { type: true },
+  const warehouse = await prisma.warehouse.findFirst({
+    where: { id: actor.warehouseId, tenantId: actor.tenantId ?? "__no_access__" },
+    select: { type: true, tenantId: true },
   });
-  if (!warehouse) {
+  if (!warehouse || !actor.tenantId || warehouse.tenantId !== actor.tenantId) {
     throw orderError("Attached warehouse not found", 403);
   }
   return warehouse.type;
@@ -159,6 +159,9 @@ function assertWarehouseScope(
 }
 
 function scopedOrderWhere(actor: OrderActor, orderIds: string[]): Prisma.OrderWhereInput {
+  if (!actor.tenantId) {
+    return { id: "__no_access__" };
+  }
   const scopes = Array.isArray(actor.scopes) ? actor.scopes : [];
   const orgScopedIds = Array.from(
     new Set(
@@ -204,6 +207,7 @@ function scopedOrderWhere(actor: OrderActor, orderIds: string[]): Prisma.OrderWh
 
   return {
     AND: [
+      { tenantId: actor.tenantId },
       { id: { in: orderIds } },
       scopeClauses.length > 0 ? { OR: scopeClauses } : { id: "__no_access__" },
     ],
@@ -215,18 +219,36 @@ function resolveWarehouseId(actor: OrderActor, provided?: string | null) {
   return provided ?? null;
 }
 
+async function requireWarehouseReference(actor: OrderActor, warehouseId: string | null) {
+  if (!warehouseId) return;
+  if (!actor.tenantId) throw orderError("Tenant context required", 403);
+
+  const allowedWarehouseIds = new Set(
+    (actor.scopes ?? [])
+      .filter((scope) => scope.scopeType === "warehouse")
+      .map((scope) => scope.scopeRefId),
+  );
+  if (actor.warehouseId) allowedWarehouseIds.add(actor.warehouseId);
+  if (!allowedWarehouseIds.has(warehouseId)) {
+    throw orderError("Warehouse is outside the selected membership scope", 403);
+  }
+
+  const warehouse = await prisma.warehouse.findFirst({
+    where: { id: warehouseId, tenantId: actor.tenantId },
+    select: { id: true },
+  });
+  if (!warehouse) throw orderError("Warehouse is outside the selected tenant", 403);
+}
+
 function formatStatus(status: OrderStatus) {
   return status.replace(/_/g, " ");
 }
 
 function resolveActorTenantScope(actor: OrderActor) {
-  if (actor.tenantScope) {
-    return actor.tenantScope;
+  if (!actor.tenantId || !actor.companyId) {
+    throw orderError("Tenant-bound company context required", 403);
   }
-  if (actor.warehouseId) {
-    return `warehouse:${actor.warehouseId}`;
-  }
-  return `user:${actor.id}`;
+  return `tenant:${actor.tenantId}:company:${actor.companyId}`;
 }
 
 function hasPositiveAmount(value: unknown) {
@@ -303,11 +325,12 @@ function hasCashDueForStage(order: {
 
 async function loadAssignedOrdersForResponse(
   orderIds: string[],
+  actor: OrderActor,
   includeFull?: boolean,
 ) {
   if (includeFull) {
     return prisma.order.findMany({
-      where: { id: { in: orderIds } },
+      where: scopedOrderWhere(actor, orderIds),
       include: {
         customer: true,
         assignedDriver: true,
@@ -324,7 +347,7 @@ async function loadAssignedOrdersForResponse(
   }
 
   return prisma.order.findMany({
-    where: { id: { in: orderIds } },
+    where: scopedOrderWhere(actor, orderIds),
     select: {
       id: true,
       orderNumber: true,
@@ -362,6 +385,24 @@ export async function assignDriversBulk(args: {
   });
   if (!driver || !driver.driverType) {
     throw orderError("Driver not found or invalid role", 400);
+  }
+  if (!actor.tenantId || !actor.companyId) {
+    throw orderError("Tenant-bound company context required", 403);
+  }
+  const driverMembership = await prisma.companyMembership.findFirst({
+    where: {
+      userId: driverId,
+      tenantId: actor.tenantId,
+      companyId: actor.companyId,
+      status: "active",
+      tenant: { status: "active" },
+      tenantMembership: { userId: driverId, tenantId: actor.tenantId, status: "active" },
+      company: { id: actor.companyId, tenantId: actor.tenantId, isActive: true },
+    },
+    select: { id: true },
+  });
+  if (!driverMembership) {
+    throw orderError("Driver is outside the selected company context", 403);
   }
 
   const orders = await prisma.order.findMany({
@@ -405,11 +446,15 @@ export async function assignDriversBulk(args: {
   }
 
   const effectiveWarehouseId = resolveWarehouseId(actor, warehouseId);
+  await requireWarehouseReference(actor, effectiveWarehouseId);
   await prisma.$transaction(async (tx) => {
-    await tx.order.updateMany({
+    const assignment = await tx.order.updateMany({
       where: scopedOrderWhere(actor, orderIds),
       data: { assignedDriverId: driverId },
     });
+    if (assignment.count !== orderIds.length) {
+      throw orderError("Some orders are no longer in scope", 409);
+    }
 
     if (type === "pickup") {
       await tx.order.updateMany({
@@ -451,7 +496,7 @@ export async function assignDriversBulk(args: {
     );
   });
 
-  return loadAssignedOrdersForResponse(orderIds, includeFull);
+  return loadAssignedOrdersForResponse(orderIds, actor, includeFull);
 }
 
 export async function assignOrderTasksBulk(args: {
@@ -546,6 +591,7 @@ export async function updateOrdersStatusBulk(args: {
   if (requiresWarehouseContext && !effectiveWarehouseId) {
     throw orderError("warehouseId is required for this update", 400);
   }
+  await requireWarehouseReference(actor, effectiveWarehouseId);
 
   if (status === OrderStatus.picked_up || status === OrderStatus.delivered) {
     const blocked = orders.filter((order) => {
@@ -581,10 +627,13 @@ export async function updateOrdersStatusBulk(args: {
   }
 
   await prisma.$transaction(async (tx) => {
-    await tx.order.updateMany({
+    const changed = await tx.order.updateMany({
       where: scopedOrderWhere(actor, orderIds),
       data: updateData,
     });
+    if (changed.count !== orderIds.length) {
+      throw orderError("Some orders are no longer in scope", 409);
+    }
 
     await tx.tracking.createMany({
       data: orderIds.map((orderId) => ({
@@ -619,7 +668,7 @@ export async function updateOrdersStatusBulk(args: {
 
   if (includeFull) {
     return prisma.order.findMany({
-      where: { id: { in: orderIds } },
+      where: scopedOrderWhere(actor, orderIds),
       include: {
         customer: true,
         assignedDriver: true,
@@ -636,7 +685,7 @@ export async function updateOrdersStatusBulk(args: {
   }
 
   return prisma.order.findMany({
-    where: { id: { in: orderIds } },
+    where: scopedOrderWhere(actor, orderIds),
     select: {
       id: true,
       orderNumber: true,
@@ -663,8 +712,8 @@ export async function updateDriverOrderStatus(args: {
     throw orderError("orderId is required", 400);
   }
 
-  const order = await prisma.order.findUnique({
-    where: { id: orderId },
+  const order = await prisma.order.findFirst({
+    where: scopedOrderWhere(actor, [orderId]),
     select: {
       id: true,
       status: true,
@@ -736,10 +785,13 @@ export async function updateDriverOrderStatus(args: {
   }
 
   await prisma.$transaction(async (tx) => {
-    await tx.order.update({
-      where: { id: orderId },
+    const updated = await tx.order.updateMany({
+      where: scopedOrderWhere(actor, [orderId]),
       data: updateData,
     });
+    if (updated.count !== 1) {
+      throw orderError("Order is no longer in scope", 409);
+    }
 
     await tx.tracking.create({
       data: {
@@ -771,8 +823,8 @@ export async function updateDriverOrderStatus(args: {
     ]);
   });
 
-  return prisma.order.findUnique({
-    where: { id: orderId },
+  return prisma.order.findFirst({
+    where: scopedOrderWhere(actor, [orderId]),
     select: {
       id: true,
       orderNumber: true,

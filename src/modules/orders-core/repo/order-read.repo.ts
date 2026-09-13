@@ -679,10 +679,14 @@ const FINAL_STATUSES = new Set<OrderStatus>([
 ]);
 
 /** Aggregates assigned order counts by driver with status breakdown. */
-export const listDriverWorkloads = async (): Promise<DriverWorkload[]> => {
+export const listDriverWorkloads = async (
+  enforcedScopeWhere: Prisma.OrderWhereInput,
+): Promise<DriverWorkload[]> => {
   const rows = await prisma.order.groupBy({
     by: ["assignedDriverId", "status"],
-    where: { assignedDriverId: { not: null } },
+    where: {
+      AND: [{ assignedDriverId: { not: null } }, enforcedScopeWhere],
+    },
     _count: { _all: true },
   });
 

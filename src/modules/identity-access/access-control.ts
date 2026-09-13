@@ -377,6 +377,7 @@ function isCustomerWorkspaceOnly(snapshot: AccessSnapshot) {
 
 export async function buildOrderScopeWhere(
   user: AuthUser,
+  requiredPermission?: string,
 ): Promise<Prisma.OrderWhereInput | null> {
   const snapshot = await loadAccessSnapshot({
     userId: user.id,
@@ -385,13 +386,22 @@ export async function buildOrderScopeWhere(
     companyId: user.companyId,
     tenantId: user.tenantId,
     tenantMembershipId: user.tenantMembershipId,
+    requireFresh: true,
   });
   if (!snapshot) return { id: "__no_access__" };
+  if (requiredPermission && !snapshot.permissionCodes.includes(requiredPermission)) {
+    return { id: "__no_access__" };
+  }
 
   if (isCustomerWorkspaceOnly(snapshot)) {
-    return snapshot.customerEntityId
-      ? { customerEntityId: snapshot.customerEntityId }
-      : { id: "__no_access__" };
+    return {
+      AND: [
+        { tenantId: snapshot.tenantId },
+        snapshot.customerEntityId
+          ? { customerEntityId: snapshot.customerEntityId }
+          : { id: "__no_access__" },
+      ],
+    };
   }
 
   const clauses: Prisma.OrderWhereInput[] = [];
@@ -422,7 +432,12 @@ export async function buildOrderScopeWhere(
     clauses.push({ customerEntityId: snapshot.customerEntityId });
   }
 
-  return orWhere<Prisma.OrderWhereInput>(clauses) ?? { id: "__no_access__" };
+  return {
+    AND: [
+      { tenantId: snapshot.tenantId },
+      orWhere<Prisma.OrderWhereInput>(clauses) ?? { id: "__no_access__" },
+    ],
+  };
 }
 
 export async function buildSupportScopeWhere(

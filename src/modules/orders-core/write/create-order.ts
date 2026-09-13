@@ -1,5 +1,5 @@
 import prisma from "../../../config/prismaClient";
-import { requireCompanyAuthority, hasCompanyScope } from "../domain/company-authority";
+import { requireTenantBoundOrderCompanyAuthority, hasCompanyScope } from "../domain/company-authority";
 import { authorityError } from "../domain/creation-authority";
 import { PaymentType, TransportMode } from "@prisma/client";
 import { createOrder } from "../repo";
@@ -228,7 +228,7 @@ export async function prepareAuthorizedOrderCreation(
     throw err;
   }
   const actor = requireOrderActor(user);
-  const membership = await requireCompanyAuthority(prisma, actor, "shipment.create");
+  const membership = await requireTenantBoundOrderCompanyAuthority(prisma, actor, "shipment.create");
   if (!hasCompanyScope(membership)) throw authorityError("Company creation scope required", 403);
 
   const effectivePaymentType = mapped.paymentType ?? PaymentType.CASH;
