@@ -204,12 +204,12 @@ function pushDriverCashRealtime(order: any, kind: CashCollectionKind, title: str
   const status = String(order?.status ?? "").trim();
   const updatedAt = new Date().toISOString();
 
-  emitDriverOrderUpdate(assignedDriverId, {
+  void emitDriverOrderUpdate(assignedDriverId, {
     orderId,
     orderNumber: orderNumber || null,
     status,
     updatedAt,
-  });
+  }).catch(() => undefined);
 
   void emitDriverNotification(assignedDriverId, {
     type: "cash",

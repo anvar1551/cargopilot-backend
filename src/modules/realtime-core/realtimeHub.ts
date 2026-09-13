@@ -5,8 +5,9 @@ import { NotificationType } from "@prisma/client";
 import { Server, Socket } from "socket.io";
 
 import prisma from "../../config/prismaClient";
+import { loadAccessSnapshot } from "../../modules/identity-access/access-control";
+import type { AccessTokenPayload } from "../../modules/identity-access/types";
 import {
-  countUnreadUserNotifications,
   createUserNotification,
 } from "../../modules/notifications-core/application/notificationService";
 
@@ -14,13 +15,15 @@ type AuthSocket = Socket & {
   data: {
     user?: {
       id: string;
+      tenantId: string;
+      tenantMembershipId: string;
+      companyId: string;
+      companyMembershipId: string;
       audience: string;
       warehouseId?: string | null;
     };
   };
 };
-
-type JwtPayload = { id: string; tokenType?: "access" | "refresh" };
 
 export type DriverRealtimeNotification = {
   id: string;
@@ -93,8 +96,118 @@ function parseSocketToken(socket: Socket) {
   return "";
 }
 
-function userRoom(userId: string) {
-  return `user:${userId}`;
+type RealtimeRecipientContext = {
+  userId: string;
+  tenantId: string;
+  companyId: string;
+  companyMembershipId: string;
+};
+
+function recipientRoom(context: RealtimeRecipientContext) {
+  return [
+    "tenant", context.tenantId,
+    "company-membership", context.companyMembershipId,
+    "company", context.companyId,
+    "user", context.userId,
+  ].join(":");
+}
+
+const realtimeDiagnosticLastLoggedAt = new Map<string, number>();
+const REALTIME_DIAGNOSTIC_INTERVAL_MS = 60_000;
+
+function recordSuppressedDelivery(eventType: string, reason: string) {
+  const key = `${eventType}:${reason}`;
+  const now = Date.now();
+  const lastLoggedAt = realtimeDiagnosticLastLoggedAt.get(key) ?? 0;
+  if (now - lastLoggedAt < REALTIME_DIAGNOSTIC_INTERVAL_MS) return;
+  realtimeDiagnosticLastLoggedAt.set(key, now);
+  console.warn("[realtime-security] protected delivery suppressed", { eventType, reason });
+}
+
+function disconnectRecipientSockets(server: Server, expected: {
+  userId: string;
+  tenantId: string;
+  companyId: string;
+}) {
+  for (const socket of server.sockets.sockets.values()) {
+    const context = (socket as AuthSocket).data.user;
+    if (context?.id === expected.userId
+      && context.tenantId === expected.tenantId
+      && context.companyId === expected.companyId) {
+      socket.disconnect(true);
+    }
+  }
+}
+
+async function resolveOrderRecipientContext(args: {
+  eventType: string;
+  orderId: string;
+  userId: string;
+}): Promise<RealtimeRecipientContext | null> {
+  const orderId = String(args.orderId ?? "").trim();
+  const userId = String(args.userId ?? "").trim();
+  if (!orderId || !userId) {
+    recordSuppressedDelivery(args.eventType, "missing_recipient_or_order");
+    return null;
+  }
+
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: { id: true, tenantId: true, ownerOrgId: true, assignedDriverId: true },
+  });
+  if (!order?.tenantId || !order.ownerOrgId) {
+    recordSuppressedDelivery(args.eventType, "missing_authoritative_order_ownership");
+    return null;
+  }
+  if (order.assignedDriverId !== userId) {
+    recordSuppressedDelivery(args.eventType, "recipient_not_assigned_to_order");
+    return null;
+  }
+
+  const membership = await prisma.companyMembership.findUnique({
+    where: { userId_companyId: { userId, companyId: order.ownerOrgId } },
+    select: { id: true, tenantId: true, tenantMembershipId: true },
+  });
+  const server = getIo();
+  if (!membership?.id || !membership.tenantId || !membership.tenantMembershipId) {
+    recordSuppressedDelivery(args.eventType, "missing_recipient_membership_context");
+    if (server) {
+      disconnectRecipientSockets(server, {
+        userId,
+        tenantId: order.tenantId,
+        companyId: order.ownerOrgId,
+      });
+    }
+    return null;
+  }
+
+  const snapshot = await loadAccessSnapshot({
+    userId,
+    membershipId: membership.id,
+    companyMembershipId: membership.id,
+    companyId: order.ownerOrgId,
+    tenantId: order.tenantId,
+    tenantMembershipId: membership.tenantMembershipId,
+    requireFresh: true,
+  });
+  if (!snapshot || !snapshot.permissionCodes.includes("drivers.telemetry")) {
+    recordSuppressedDelivery(args.eventType, snapshot ? "recipient_permission_removed" : "recipient_context_ineligible");
+    if (server) {
+      disconnectRecipientSockets(server, {
+        userId,
+        tenantId: order.tenantId,
+        companyId: order.ownerOrgId,
+      });
+    }
+    return null;
+  }
+
+  return {
+    userId,
+    tenantId: snapshot.tenantId,
+    companyId: snapshot.companyId,
+    companyMembershipId: snapshot.companyMembershipId,
+  };
 }
 
 export function initRealtimeHub(server: HttpServer, corsOrigins: string[]) {
@@ -117,59 +230,38 @@ export function initRealtimeHub(server: HttpServer, corsOrigins: string[]) {
       const secret = process.env.JWT_SECRET;
       if (!secret) return next(new Error("JWT_SECRET not configured"));
 
-      const decoded = jwt.verify(token, secret) as JwtPayload;
-      if (decoded?.tokenType && decoded.tokenType !== "access") {
+      const decoded = jwt.verify(token, secret) as AccessTokenPayload;
+      if (!decoded?.id || !decoded.membershipId || !decoded.companyMembershipId
+        || !decoded.companyId || !decoded.tenantId || !decoded.tenantMembershipId
+        || decoded.membershipId !== decoded.companyMembershipId
+        || decoded.tokenType !== "access") {
         return next(new Error("Unauthorized"));
       }
-      const user = await prisma.user.findUnique({
-        where: { id: decoded.id },
-        select: {
-          id: true,
-          warehouseId: true,
-          customerEntityId: true,
-          memberships: {
-            where: { status: "active" },
-            select: {
-              roles: {
-                select: {
-                  role: {
-                    select: {
-                      code: true,
-                      rolePermissions: {
-                        select: {
-                          permission: {
-                            select: { key: true },
-                          },
-                        },
-                      },
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
+      const user = await loadAccessSnapshot({
+        userId: decoded.id,
+        membershipId: decoded.membershipId,
+        companyMembershipId: decoded.companyMembershipId,
+        companyId: decoded.companyId,
+        tenantId: decoded.tenantId,
+        tenantMembershipId: decoded.tenantMembershipId,
+        requireFresh: true,
       });
       if (!user) return next(new Error("Unauthorized"));
 
-      const roleCodes = user.memberships.flatMap((membership) =>
-        membership.roles.map((binding) => binding.role.code),
-      );
-      const permissionCodes = user.memberships.flatMap((membership) =>
-        membership.roles.flatMap((binding) =>
-          binding.role.rolePermissions.map((rp) => rp.permission.key),
-        ),
-      );
       const audience = deriveProfileType({
         warehouseId: user.warehouseId ?? null,
         customerEntityId: user.customerEntityId ?? null,
-        roleCodes,
-        permissionCodes,
+        roleCodes: user.roleCodes,
+        permissionCodes: user.permissionCodes,
       });
 
       const authSocket = socket as AuthSocket;
       authSocket.data.user = {
-        id: user.id,
+        id: user.userId,
+        tenantId: user.tenantId,
+        tenantMembershipId: user.tenantMembershipId,
+        companyId: user.companyId,
+        companyMembershipId: user.companyMembershipId,
         audience,
         warehouseId: user.warehouseId ?? null,
       };
@@ -187,10 +279,16 @@ export function initRealtimeHub(server: HttpServer, corsOrigins: string[]) {
       return;
     }
 
-    socket.join(userRoom(user.id));
-    socket.join(`role:${user.audience}`);
+    const selectedContextRoom = recipientRoom({
+      userId: user.id,
+      tenantId: user.tenantId,
+      companyId: user.companyId,
+      companyMembershipId: user.companyMembershipId,
+    });
+    socket.join(selectedContextRoom);
+    socket.join(`${selectedContextRoom}:role:${user.audience}`);
     if (user.warehouseId) {
-      socket.join(`warehouse:${user.warehouseId}`);
+      socket.join(`${selectedContextRoom}:warehouse:${user.warehouseId}`);
     }
 
     socket.emit("driver:realtime:ready", {
@@ -222,6 +320,13 @@ export async function emitDriverNotification(
       ? payload.type
       : "system";
 
+  const context = await resolveOrderRecipientContext({
+    eventType: "driver:notification",
+    orderId: String(payload.orderId ?? ""),
+    userId: cleanUserId,
+  });
+  if (!context) return;
+
   const created = await createUserNotification({
     userId: cleanUserId,
     type: notificationType as NotificationType,
@@ -242,27 +347,22 @@ export async function emitDriverNotification(
 
   const server = getIo();
   if (!server) return;
-  server.to(userRoom(userId)).emit("driver:notification", event);
-
-  const unreadCount = await countUnreadUserNotifications(cleanUserId);
-  server.to(userRoom(userId)).emit("driver:notifications:unread-count", {
-    unreadCount,
-    at: new Date().toISOString(),
-  });
+  server.to(recipientRoom(context)).emit("driver:notification", event);
+  recordSuppressedDelivery("driver:notifications:unread-count", "notification_rows_lack_tenant_ownership");
 }
 
-export function emitDriverOrderUpdate(userId: string, payload: DriverOrderRealtimeUpdate) {
+export async function emitDriverOrderUpdate(userId: string, payload: DriverOrderRealtimeUpdate) {
   const server = getIo();
   if (!server || !userId) return;
-  server.to(userRoom(userId)).emit("driver:order-updated", payload);
+  const context = await resolveOrderRecipientContext({
+    eventType: "driver:order-updated",
+    orderId: payload.orderId,
+    userId,
+  });
+  if (!context) return;
+  server.to(recipientRoom(context)).emit("driver:order-updated", payload);
 }
 
-export async function emitDriverUnreadCount(userId: string) {
-  const server = getIo();
-  if (!server || !userId) return;
-  const unreadCount = await countUnreadUserNotifications(userId);
-  server.to(userRoom(userId)).emit("driver:notifications:unread-count", {
-    unreadCount,
-    at: new Date().toISOString(),
-  });
+export async function emitDriverUnreadCount(_userId: string) {
+  recordSuppressedDelivery("driver:notifications:unread-count", "notification_rows_lack_tenant_ownership");
 }

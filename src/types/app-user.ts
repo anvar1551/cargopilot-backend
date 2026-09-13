@@ -10,7 +10,10 @@ export type AppScopeType =
 export type AppUser = {
   id: string;
   membershipId: string;
+  companyMembershipId: string;
   companyId: string;
+  tenantId: string;
+  tenantMembershipId: string;
   branchId: string | null;
   email: string;
   name: string;

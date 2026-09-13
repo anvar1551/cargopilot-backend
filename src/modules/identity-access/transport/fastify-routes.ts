@@ -5,7 +5,9 @@ import {
   changeUserPassword,
   deleteUserMembershipFromCompany,
   listUsersForCompany,
+  InvalidMembershipSelectionError,
   loginUser,
+  MembershipSelectionRequiredError,
   refreshUserSession,
   revokeRefreshSession,
   updateUserAccessByCompanyAdmin,
@@ -118,6 +120,8 @@ const usersFastifyRoutes: FastifyPluginAsync<IdentityAccessRouteOptions> = async
       const result = await loginUser({
         email: String(body.email ?? ""),
         password: String(body.password ?? ""),
+        companyMembershipId: body.companyMembershipId == null ? null : String(body.companyMembershipId),
+        membershipId: body.membershipId == null ? null : String(body.membershipId),
         userAgent:
           typeof request.headers["user-agent"] === "string"
             ? request.headers["user-agent"]
@@ -127,7 +131,18 @@ const usersFastifyRoutes: FastifyPluginAsync<IdentityAccessRouteOptions> = async
       return reply.send(result);
     } catch (err: any) {
       const message = String(err?.message || "");
-      if (message === "Invalid email or password" || message === "No active membership found") {
+      reply.header("Cache-Control", "no-store");
+      if (err instanceof MembershipSelectionRequiredError) {
+        return reply.code(409).send({
+          error: "Membership selection required",
+          code: err.code,
+          memberships: err.memberships,
+        });
+      }
+      if (err instanceof InvalidMembershipSelectionError) {
+        return reply.code(403).send({ error: err.message, code: err.code });
+      }
+      if (message === "Invalid email or password" || message === "No active tenant membership found") {
         return reply.code(401).send(INVALID_CREDENTIALS_RESPONSE);
       }
       return reply.code(500).send({ error: "Authentication failed" });
@@ -154,7 +169,8 @@ const usersFastifyRoutes: FastifyPluginAsync<IdentityAccessRouteOptions> = async
       const message = String(err?.message || "");
       if (err instanceof z.ZodError || [
         "Refresh token is required", "Invalid refresh token", "Refresh token revoked",
-        "Refresh token expired", "Refresh token mismatch", "No active membership found",
+        "Refresh token expired", "Refresh token mismatch", "Refresh token context mismatch",
+        "Refresh session requires fresh login", "Refresh membership is no longer eligible",
       ].includes(message)) {
         return reply.code(401).send(INVALID_SESSION_RESPONSE);
       }

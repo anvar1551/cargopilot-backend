@@ -29,20 +29,31 @@ async function resolveAuthenticatedUserFromAuthHeader(
   } catch {
     return null;
   }
-  if (!decoded?.id || !decoded?.membershipId || decoded.tokenType !== "access") {
+  if (!decoded?.id || !decoded?.membershipId || !decoded.companyMembershipId
+    || !decoded.companyId || !decoded.tenantId || !decoded.tenantMembershipId
+    || decoded.membershipId !== decoded.companyMembershipId
+    || decoded.tokenType !== "access") {
     return null;
   }
 
   const snapshot = await loadAccessSnapshot({
     userId: decoded.id,
     membershipId: decoded.membershipId,
+    companyMembershipId: decoded.companyMembershipId,
+    companyId: decoded.companyId,
+    tenantId: decoded.tenantId,
+    tenantMembershipId: decoded.tenantMembershipId,
+    requireFresh: true,
   });
   if (!snapshot) return null;
 
   return {
     id: snapshot.userId,
     membershipId: snapshot.membershipId,
+    companyMembershipId: snapshot.companyMembershipId,
     companyId: snapshot.companyId,
+    tenantId: snapshot.tenantId,
+    tenantMembershipId: snapshot.tenantMembershipId,
     branchId: snapshot.branchId,
     email: snapshot.email,
     name: snapshot.name,

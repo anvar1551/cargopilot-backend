@@ -21,7 +21,8 @@ const dirty = {
     assignedDriver: sensitiveUser, tracking: [{ actor: sensitiveUser }], senderPhone: "SENSITIVE-CANARY" }],
 };
 const snapshot = {
-  userId: "user-a", membershipId: "membership-a", companyId: "company-a", branchId: null,
+  userId: "user-a", membershipId: "membership-a", companyMembershipId: "membership-a",
+  companyId: "company-a", tenantId: "tenant-a", tenantMembershipId: "tenant-membership-a", branchId: null,
   name: "Worker", email: "worker@example.test", warehouseId: "warehouse-a", customerEntityId: null,
   roleCodes: ["worker"], permissionCodes: ["shipment.view", "shipment.update"],
   scopes: [{ scopeType: "warehouse" as const, scopeRefId: "warehouse-a" }],
@@ -46,7 +47,8 @@ describe("warehouse recursive response boundary (mocked DB, real routes/reposito
     return server;
   }
   function headers() {
-    return { authorization: `Bearer ${jwt.sign({ id: "user-a", membershipId: "membership-a", tokenType: "access" }, secret)}` };
+    return { authorization: `Bearer ${jwt.sign({ id: "user-a", membershipId: "membership-a", companyMembershipId: "membership-a",
+      companyId: "company-a", tenantId: "tenant-a", tenantMembershipId: "tenant-membership-a", tokenType: "access" }, secret)}` };
   }
 
   it.each([

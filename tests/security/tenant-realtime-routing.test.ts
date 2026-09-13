@@ -1,0 +1,309 @@
+jest.mock("../../src/config/prismaClient", () => ({
+  __esModule: true,
+  default: require("./fixtures").database,
+}));
+
+jest.mock("../../src/modules/notifications-core/application/notificationService", () => ({
+  createUserNotification: jest.fn(),
+}));
+
+jest.mock("socket.io", () => {
+  const deliveries: Array<{ room: string; event: string; payload: unknown }> = [];
+  const server = {
+    use: jest.fn(),
+    on: jest.fn(),
+    to: jest.fn((room: string) => ({
+      emit: (event: string, payload: unknown) => deliveries.push({ room, event, payload }),
+    })),
+    sockets: { sockets: new Map() },
+  };
+  return { Server: jest.fn(() => server), __mockServer: server, __deliveries: deliveries };
+});
+
+import { database } from "./fixtures";
+import { clearIdentityAccessCacheForUser } from "../../src/modules/identity-access/access-control";
+import {
+  emitDriverNotification,
+  emitDriverOrderUpdate,
+  emitDriverUnreadCount,
+  initRealtimeHub,
+} from "../../src/modules/realtime-core/realtimeHub";
+import { createUserNotification } from "../../src/modules/notifications-core/application/notificationService";
+
+const socketIoMock = jest.requireMock("socket.io") as {
+  __mockServer: {
+    use: jest.Mock;
+    on: jest.Mock;
+    to: jest.Mock;
+    sockets: { sockets: Map<string, any> };
+  };
+  __deliveries: Array<{ room: string; event: string; payload: unknown }>;
+};
+
+const ids = {
+  user: "10000000-0000-4000-8000-000000000001",
+  tenantA: "20000000-0000-4000-8000-000000000001",
+  tenantB: "20000000-0000-4000-8000-000000000002",
+  tenantMembershipA: "30000000-0000-4000-8000-000000000001",
+  tenantMembershipB: "30000000-0000-4000-8000-000000000002",
+  tenantMembershipSameTenant: "30000000-0000-4000-8000-000000000003",
+  membershipA: "40000000-0000-4000-8000-000000000001",
+  membershipB: "40000000-0000-4000-8000-000000000002",
+  membershipSameTenant: "40000000-0000-4000-8000-000000000003",
+  companyA: "50000000-0000-4000-8000-000000000001",
+  companyB: "50000000-0000-4000-8000-000000000002",
+  companySameTenant: "50000000-0000-4000-8000-000000000003",
+  orderA: "60000000-0000-4000-8000-000000000001",
+  orderB: "60000000-0000-4000-8000-000000000002",
+};
+
+function room(tenantId: string, membershipId: string, companyId: string) {
+  return `tenant:${tenantId}:company-membership:${membershipId}:company:${companyId}:user:${ids.user}`;
+}
+
+function accessRecord(args: {
+  tenantId: string;
+  tenantMembershipId: string;
+  membershipId: string;
+  companyId: string;
+  status?: string;
+  permissionCodes?: string[];
+}) {
+  const permissionCodes = args.permissionCodes ?? ["drivers.telemetry"];
+  return {
+    id: args.membershipId,
+    userId: ids.user,
+    companyId: args.companyId,
+    branchId: null,
+    status: args.status ?? "active",
+    tenantId: args.tenantId,
+    tenantMembershipId: args.tenantMembershipId,
+    tenant: { id: args.tenantId, status: "active" },
+    tenantMembership: {
+      id: args.tenantMembershipId,
+      tenantId: args.tenantId,
+      userId: ids.user,
+      status: "active",
+    },
+    company: { id: args.companyId, tenantId: args.tenantId, isActive: true },
+    branch: null,
+    user: {
+      id: ids.user,
+      name: "Synthetic Driver",
+      email: "driver@example.test",
+      warehouseId: null,
+      customerEntityId: null,
+    },
+    scopes: [{ scopeType: "company", scopeRefId: args.companyId }],
+    roles: [{
+      role: {
+        code: "driver",
+        rolePermissions: permissionCodes.map((key) => ({ permission: { key } })),
+      },
+    }],
+  };
+}
+
+function prepareOwnedOrder(args: {
+  tenantId: string;
+  tenantMembershipId: string;
+  membershipId: string;
+  companyId: string;
+  orderId: string;
+  status?: string;
+  permissionCodes?: string[];
+}) {
+  database.order.findUnique.mockResolvedValue({
+    id: args.orderId,
+    tenantId: args.tenantId,
+    ownerOrgId: args.companyId,
+    assignedDriverId: ids.user,
+  });
+  database.companyMembership.findUnique.mockResolvedValue({
+    id: args.membershipId,
+    tenantId: args.tenantId,
+    tenantMembershipId: args.tenantMembershipId,
+  });
+  database.companyMembership.findFirst.mockResolvedValue(accessRecord(args));
+}
+
+describe("tenant-bound realtime routing (mocked emitter evidence)", () => {
+  let consoleWarn: jest.SpyInstance;
+
+  beforeAll(() => {
+    consoleWarn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    initRealtimeHub({} as any, []);
+  });
+
+  afterAll(() => {
+    consoleWarn.mockRestore();
+  });
+
+  beforeEach(() => {
+    socketIoMock.__deliveries.length = 0;
+    socketIoMock.__mockServer.to.mockClear();
+    socketIoMock.__mockServer.sockets.sockets.clear();
+    database.order.findUnique.mockReset();
+    database.companyMembership.findUnique.mockReset();
+    database.companyMembership.findFirst.mockReset();
+    (createUserNotification as jest.Mock).mockReset().mockResolvedValue({
+      id: "70000000-0000-4000-8000-000000000001",
+      type: "order",
+      title: "Order updated",
+      body: "Current status: Assigned",
+      createdAt: new Date("2026-09-13T12:00:00.000Z"),
+      orderId: ids.orderA,
+    });
+    clearIdentityAccessCacheForUser(ids.user);
+  });
+
+  it("routes a Tenant A event only to the user's eligible Tenant A session", async () => {
+    prepareOwnedOrder({ tenantId: ids.tenantA, tenantMembershipId: ids.tenantMembershipA,
+      membershipId: ids.membershipA, companyId: ids.companyA, orderId: ids.orderA });
+
+    await emitDriverOrderUpdate(ids.user, {
+      orderId: ids.orderA,
+      orderNumber: "SYN-A",
+      status: "assigned",
+      updatedAt: "2026-09-13T12:00:00.000Z",
+    });
+
+    expect(socketIoMock.__deliveries).toHaveLength(1);
+    expect(socketIoMock.__deliveries[0]).toMatchObject({
+      room: room(ids.tenantA, ids.membershipA, ids.companyA),
+      event: "driver:order-updated",
+    });
+    expect(socketIoMock.__deliveries[0].room).not.toContain(ids.tenantB);
+    expect(socketIoMock.__deliveries[0].room).not.toContain(ids.membershipB);
+  });
+
+  it("keeps two company memberships in the same tenant in separate rooms", async () => {
+    prepareOwnedOrder({ tenantId: ids.tenantA, tenantMembershipId: ids.tenantMembershipSameTenant,
+      membershipId: ids.membershipSameTenant, companyId: ids.companySameTenant, orderId: ids.orderB });
+
+    await emitDriverOrderUpdate(ids.user, {
+      orderId: ids.orderB,
+      status: "in_transit",
+      updatedAt: "2026-09-13T12:00:00.000Z",
+    });
+
+    expect(socketIoMock.__deliveries[0].room)
+      .toBe(room(ids.tenantA, ids.membershipSameTenant, ids.companySameTenant));
+    expect(socketIoMock.__deliveries[0].room)
+      .not.toBe(room(ids.tenantA, ids.membershipA, ids.companyA));
+  });
+
+  it("suppresses delivery and persistence when authoritative order ownership is missing", async () => {
+    database.order.findUnique.mockResolvedValue({
+      id: ids.orderA,
+      tenantId: null,
+      ownerOrgId: null,
+      assignedDriverId: ids.user,
+    });
+
+    await emitDriverNotification(ids.user, {
+      type: "order",
+      orderId: ids.orderA,
+      title: "Order updated",
+      body: "Current status: Assigned",
+    });
+
+    expect(socketIoMock.__deliveries).toHaveLength(0);
+    expect(database.companyMembership.findUnique).not.toHaveBeenCalled();
+    expect(createUserNotification).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["suspended membership", accessRecord({ tenantId: ids.tenantA,
+      tenantMembershipId: ids.tenantMembershipA, membershipId: ids.membershipA,
+      companyId: ids.companyA, status: "suspended" })],
+    ["removed permission", accessRecord({ tenantId: ids.tenantA,
+      tenantMembershipId: ids.tenantMembershipA, membershipId: ids.membershipA,
+      companyId: ids.companyA, permissionCodes: [] })],
+  ])("denies subsequent delivery and disconnects only the affected context after %s", async (_case, deniedRecord) => {
+    prepareOwnedOrder({ tenantId: ids.tenantA, tenantMembershipId: ids.tenantMembershipA,
+      membershipId: ids.membershipA, companyId: ids.companyA, orderId: ids.orderA });
+    const disconnectA = jest.fn();
+    const disconnectB = jest.fn();
+    socketIoMock.__mockServer.sockets.sockets.set("a", { data: { user: {
+      id: ids.user, tenantId: ids.tenantA, companyId: ids.companyA,
+      companyMembershipId: ids.membershipA,
+    } }, disconnect: disconnectA });
+    socketIoMock.__mockServer.sockets.sockets.set("b", { data: { user: {
+      id: ids.user, tenantId: ids.tenantB, companyId: ids.companyB,
+      companyMembershipId: ids.membershipB,
+    } }, disconnect: disconnectB });
+    database.companyMembership.findFirst
+      .mockResolvedValueOnce(accessRecord({ tenantId: ids.tenantA,
+        tenantMembershipId: ids.tenantMembershipA, membershipId: ids.membershipA,
+        companyId: ids.companyA }))
+      .mockResolvedValueOnce(deniedRecord);
+
+    await emitDriverOrderUpdate(ids.user, {
+      orderId: ids.orderA,
+      status: "assigned",
+      updatedAt: "2026-09-13T12:00:00.000Z",
+    });
+    await emitDriverOrderUpdate(ids.user, {
+      orderId: ids.orderA,
+      status: "picked_up",
+      updatedAt: "2026-09-13T12:01:00.000Z",
+    });
+
+    expect(socketIoMock.__deliveries).toHaveLength(1);
+    expect(disconnectA).toHaveBeenCalledWith(true);
+    expect(disconnectB).not.toHaveBeenCalled();
+  });
+
+  it("denies delivery and disconnects the affected context after membership deletion", async () => {
+    prepareOwnedOrder({ tenantId: ids.tenantA, tenantMembershipId: ids.tenantMembershipA,
+      membershipId: ids.membershipA, companyId: ids.companyA, orderId: ids.orderA });
+    database.companyMembership.findUnique.mockResolvedValue(null);
+    const disconnectA = jest.fn();
+    const disconnectB = jest.fn();
+    socketIoMock.__mockServer.sockets.sockets.set("a", { data: { user: {
+      id: ids.user, tenantId: ids.tenantA, companyId: ids.companyA,
+      companyMembershipId: ids.membershipA,
+    } }, disconnect: disconnectA });
+    socketIoMock.__mockServer.sockets.sockets.set("b", { data: { user: {
+      id: ids.user, tenantId: ids.tenantB, companyId: ids.companyB,
+      companyMembershipId: ids.membershipB,
+    } }, disconnect: disconnectB });
+
+    await emitDriverOrderUpdate(ids.user, {
+      orderId: ids.orderA,
+      status: "assigned",
+      updatedAt: "2026-09-13T12:00:00.000Z",
+    });
+
+    expect(socketIoMock.__deliveries).toHaveLength(0);
+    expect(disconnectA).toHaveBeenCalledWith(true);
+    expect(disconnectB).not.toHaveBeenCalled();
+    expect(database.companyMembership.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("preserves authorized single-membership notification delivery and payload", async () => {
+    prepareOwnedOrder({ tenantId: ids.tenantA, tenantMembershipId: ids.tenantMembershipA,
+      membershipId: ids.membershipA, companyId: ids.companyA, orderId: ids.orderA });
+
+    await emitDriverNotification(ids.user, {
+      type: "order",
+      orderId: ids.orderA,
+      title: "Order updated",
+      body: "Current status: Assigned",
+    });
+
+    expect(createUserNotification).toHaveBeenCalledTimes(1);
+    expect(socketIoMock.__deliveries).toEqual([expect.objectContaining({
+      room: room(ids.tenantA, ids.membershipA, ids.companyA),
+      event: "driver:notification",
+      payload: expect.objectContaining({ orderId: ids.orderA, type: "order" }),
+    })]);
+  });
+
+  it("suppresses the unscoped unread-count emitter", async () => {
+    await emitDriverUnreadCount(ids.user);
+    expect(socketIoMock.__deliveries).toHaveLength(0);
+    expect(database.order.findUnique).not.toHaveBeenCalled();
+  });
+});

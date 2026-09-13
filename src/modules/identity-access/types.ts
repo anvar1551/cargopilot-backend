@@ -13,7 +13,10 @@ export type ScopeItem = {
 export type AccessSnapshot = {
   userId: string;
   membershipId: string;
+  companyMembershipId: string;
   companyId: string;
+  tenantId: string;
+  tenantMembershipId: string;
   branchId: string | null;
   warehouseId: string | null;
   customerEntityId: string | null;
@@ -27,7 +30,10 @@ export type AccessSnapshot = {
 export type AccessTokenPayload = {
   id: string;
   membershipId: string;
+  companyMembershipId: string;
   companyId: string;
+  tenantId: string;
+  tenantMembershipId: string;
   branchId?: string | null;
   tokenType: "access";
 };
@@ -35,5 +41,9 @@ export type AccessTokenPayload = {
 export type RefreshTokenPayload = {
   id: string;
   sid: string;
+  companyMembershipId: string;
+  companyId: string;
+  tenantId: string;
+  tenantMembershipId: string;
   tokenType: "refresh";
 };

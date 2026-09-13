@@ -19,11 +19,20 @@ jest.mock("../../src/modules/identity-access/access-control", () => ({
 
 const keySecret = "synthetic-phase-0a-key-32-characters-long";
 const snapshot = {
-  userId: "user-a", membershipId: "membership-a", companyId: "company-a", branchId: null,
+  userId: "user-a", membershipId: "membership-a", companyMembershipId: "membership-a",
+  companyId: "company-a", tenantId: "tenant-a", tenantMembershipId: "tenant-membership-a", branchId: null,
   name: "Alice", email: "alice@example.test", warehouseId: "warehouse-a", customerEntityId: null,
   roleCodes: ["worker"], permissionCodes: [], scopes: [{ scopeType: "warehouse" as const, scopeRefId: "warehouse-a" }],
 };
-const sessionToken = () => jwt.sign({ id: "user-a", membershipId: "membership-a", tokenType: "access" }, process.env.JWT_SECRET!);
+const boundMembership = {
+  id: "membership-a", userId: "user-a", companyId: "company-a", branchId: null, status: "active",
+  tenantId: "tenant-a", tenantMembershipId: "tenant-membership-a",
+  tenant: { id: "tenant-a", name: "Tenant A", status: "active" },
+  tenantMembership: { id: "tenant-membership-a", tenantId: "tenant-a", userId: "user-a", status: "active" },
+  company: { id: "company-a", name: "Company A", tenantId: "tenant-a", isActive: true }, branch: null,
+};
+const sessionToken = () => jwt.sign({ id: "user-a", membershipId: "membership-a", companyMembershipId: "membership-a",
+  companyId: "company-a", tenantId: "tenant-a", tenantMembershipId: "tenant-membership-a", tokenType: "access" }, process.env.JWT_SECRET!);
 const hash = bcrypt.hashSync("test-password", 10);
 
 describe("Phase 0A identity routes (real services, mocked database)", () => {
@@ -34,6 +43,7 @@ describe("Phase 0A identity routes (real services, mocked database)", () => {
     databaseCalls.length = 0;
     jest.mocked(loadAccessSnapshot).mockResolvedValue(snapshot);
     database.companyMembership.findFirst.mockResolvedValue(null);
+    database.companyMembership.findMany.mockResolvedValue([]);
   });
   afterEach(() => { process.env = { ...originalEnv }; jest.restoreAllMocks(); });
 
@@ -151,9 +161,11 @@ describe("Phase 0A identity routes (real services, mocked database)", () => {
 
   it("preserves successful login and refresh response contracts with actual signing/hashing", async () => {
     database.user.findUnique.mockResolvedValue({ id: "user-a", password: hash });
-    database.companyMembership.findFirst.mockResolvedValue({ id: "membership-a", companyId: "company-a", branchId: null });
+    database.companyMembership.findMany.mockResolvedValue([boundMembership]);
+    database.companyMembership.findFirst.mockResolvedValue(boundMembership);
     database.userRefreshSession.create.mockResolvedValue({});
-    database.userRefreshSession.update.mockResolvedValue({});
+    database.userRefreshSession.updateMany.mockResolvedValue({ count: 1 });
+    database.$transaction.mockImplementation(async (run: any) => run(database));
     const app = await appWith();
     try {
       const login = await app.inject({ method: "POST", url: "/api/auth/login",
@@ -172,7 +184,7 @@ describe("Phase 0A identity routes (real services, mocked database)", () => {
       expect(refreshed.statusCode).toBe(200);
       expect(refreshed.json().user).toEqual(snapshot);
       expect(refreshed.json().refreshToken).not.toBe(body.refreshToken);
-      expect(database.userRefreshSession.update).toHaveBeenCalledWith(expect.objectContaining({ data: { revokedAt: expect.any(Date) } }));
+      expect(database.userRefreshSession.updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: { revokedAt: expect.any(Date) } }));
       expect(body.user).not.toHaveProperty("password");
       expect(refreshed.json()).not.toHaveProperty("tokenHash");
     } finally { await app.close(); }
@@ -181,7 +193,7 @@ describe("Phase 0A identity routes (real services, mocked database)", () => {
   it.each(["unknown", "wrong-password", "inactive-membership"])("returns the same error for %s", async (state) => {
     const compare = jest.spyOn(bcrypt, "compare");
     database.user.findUnique.mockResolvedValue(state === "unknown" ? null : { id: "user-a", password: hash });
-    database.companyMembership.findFirst.mockResolvedValue(null);
+    database.companyMembership.findMany.mockResolvedValue([]);
     const app = await appWith();
     try {
       const result = await app.inject({ method: "POST", url: "/api/auth/login",

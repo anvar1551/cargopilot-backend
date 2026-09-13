@@ -47,7 +47,10 @@ function getTokenLifetimeSec(token: string) {
 function signAccessToken(payload: {
   id: string;
   membershipId: string;
+  companyMembershipId: string;
   companyId: string;
+  tenantId: string;
+  tenantMembershipId: string;
   branchId?: string | null;
 }) {
   return jwt.sign(
@@ -158,22 +161,147 @@ async function resolveRoleIdsForCompany(args: {
   return resolved;
 }
 
-async function createRefreshSession(args: {
+type TenantSessionContext = {
   userId: string;
+  membershipId: string;
+  companyMembershipId: string;
+  companyId: string;
+  tenantId: string;
+  tenantMembershipId: string;
+  branchId: string | null;
+};
+
+type MembershipChoice = {
+  companyMembershipId: string;
+  companyName: string;
+  tenantName: string;
+};
+
+export class MembershipSelectionRequiredError extends Error {
+  readonly code = "MEMBERSHIP_SELECTION_REQUIRED";
+  constructor(readonly memberships: MembershipChoice[]) {
+    super("Membership selection required");
+  }
+}
+
+export class InvalidMembershipSelectionError extends Error {
+  readonly code = "INVALID_MEMBERSHIP_SELECTION";
+  constructor() {
+    super("Invalid membership selection");
+  }
+}
+
+const tenantSessionMembershipSelect = {
+  id: true,
+  userId: true,
+  companyId: true,
+  branchId: true,
+  status: true,
+  tenantId: true,
+  tenantMembershipId: true,
+  tenant: { select: { id: true, name: true, status: true } },
+  tenantMembership: { select: { id: true, tenantId: true, userId: true, status: true } },
+  company: { select: { id: true, name: true, tenantId: true, isActive: true } },
+  branch: { select: { id: true, tenantId: true, isActive: true } },
+} as const;
+
+function toTenantSessionContext(record: any): TenantSessionContext | null {
+  if (!record
+    || record.status !== MembershipStatus.active
+    || !record.tenantId
+    || !record.tenantMembershipId
+    || record.tenant?.id !== record.tenantId
+    || record.tenant.status !== "active"
+    || record.tenantMembership?.id !== record.tenantMembershipId
+    || record.tenantMembership.status !== MembershipStatus.active
+    || record.tenantMembership.userId !== record.userId
+    || record.tenantMembership.tenantId !== record.tenantId
+    || record.company?.id !== record.companyId
+    || record.company.tenantId !== record.tenantId
+    || !record.company.isActive
+    || (record.branch && (record.branch.tenantId !== record.tenantId || !record.branch.isActive))) {
+    return null;
+  }
+  return {
+    userId: record.userId,
+    membershipId: record.id,
+    companyMembershipId: record.id,
+    companyId: record.companyId,
+    tenantId: record.tenantId,
+    tenantMembershipId: record.tenantMembershipId,
+    branchId: record.branchId ?? null,
+  };
+}
+
+function toMembershipChoice(record: any, context: TenantSessionContext): MembershipChoice {
+  return {
+    companyMembershipId: context.companyMembershipId,
+    companyName: record.company.name,
+    tenantName: record.tenant.name,
+  };
+}
+
+async function resolveLoginContext(userId: string, requestedMembershipId?: string | null) {
+  const selector = String(requestedMembershipId ?? "").trim();
+  if (selector) {
+    const selected = await prisma.companyMembership.findFirst({
+      where: { id: selector, userId },
+      select: tenantSessionMembershipSelect,
+    });
+    const context = toTenantSessionContext(selected);
+    if (!context) throw new InvalidMembershipSelectionError();
+    return context;
+  }
+
+  const records = await prisma.companyMembership.findMany({
+    where: { userId },
+    select: tenantSessionMembershipSelect,
+  });
+  const eligible = records
+    .map((record) => ({ record, context: toTenantSessionContext(record) }))
+    .filter((item): item is { record: any; context: TenantSessionContext } => Boolean(item.context));
+  if (eligible.length === 0) throw new Error("No active tenant membership found");
+  if (eligible.length > 1) {
+    const choices = eligible
+      .sort((a, b) => a.context.tenantId.localeCompare(b.context.tenantId)
+        || a.context.companyId.localeCompare(b.context.companyId)
+        || a.context.companyMembershipId.localeCompare(b.context.companyMembershipId))
+      .map(({ record, context }) => toMembershipChoice(record, context));
+    throw new MembershipSelectionRequiredError(choices);
+  }
+  return eligible[0].context;
+}
+
+async function resolveStoredContext(userId: string, companyMembershipId: string) {
+  const selected = await prisma.companyMembership.findFirst({
+    where: { id: companyMembershipId, userId },
+    select: tenantSessionMembershipSelect,
+  });
+  return toTenantSessionContext(selected);
+}
+
+async function createRefreshSession(args: TenantSessionContext & {
   userAgent?: string | null;
   ipAddress?: string | null;
-}) {
+}, tx: Prisma.TransactionClient | typeof prisma = prisma) {
   const sessionId = randomUUID();
   const refreshToken = signRefreshToken({
     id: args.userId,
     sid: sessionId,
+    companyMembershipId: args.companyMembershipId,
+    companyId: args.companyId,
+    tenantId: args.tenantId,
+    tenantMembershipId: args.tenantMembershipId,
     tokenType: "refresh",
   });
 
-  await prisma.userRefreshSession.create({
+  await tx.userRefreshSession.create({
     data: {
       id: sessionId,
       userId: args.userId,
+      tenantId: args.tenantId,
+      tenantMembershipId: args.tenantMembershipId,
+      companyMembershipId: args.companyMembershipId,
       tokenHash: hashToken(refreshToken),
       expiresAt: getTokenExpiryDate(refreshToken),
       userAgent: args.userAgent ?? null,
@@ -183,25 +311,24 @@ async function createRefreshSession(args: {
   return refreshToken;
 }
 
-async function issueAuthSession(args: {
-  userId: string;
-  membershipId: string;
-  companyId: string;
-  branchId?: string | null;
+async function issueAuthSession(args: TenantSessionContext & {
   userAgent?: string | null;
   ipAddress?: string | null;
-}) {
+}, tx: Prisma.TransactionClient | typeof prisma = prisma) {
   const token = signAccessToken({
     id: args.userId,
     membershipId: args.membershipId,
+    companyMembershipId: args.companyMembershipId,
     companyId: args.companyId,
+    tenantId: args.tenantId,
+    tenantMembershipId: args.tenantMembershipId,
     branchId: args.branchId ?? null,
   });
   const refreshToken = await createRefreshSession({
-    userId: args.userId,
+    ...args,
     userAgent: args.userAgent ?? null,
     ipAddress: args.ipAddress ?? null,
-  });
+  }, tx);
   return {
     token,
     refreshToken,
@@ -212,6 +339,8 @@ async function issueAuthSession(args: {
 export async function loginUser(args: {
   email: string;
   password: string;
+  companyMembershipId?: string | null;
+  membershipId?: string | null;
   userAgent?: string | null;
   ipAddress?: string | null;
 }) {
@@ -226,27 +355,28 @@ export async function loginUser(args: {
   const ok = await bcrypt.compare(password, user?.password ?? MISSING_USER_PASSWORD_HASH);
   if (!user || !ok) throw new Error("Invalid email or password");
 
-  const membership = await prisma.companyMembership.findFirst({
-    where: { userId: user.id, status: MembershipStatus.active },
-    orderBy: { createdAt: "asc" },
-    select: { id: true, companyId: true, branchId: true },
-  });
-  if (!membership) {
-    throw new Error("No active membership found");
+  const companyMembershipId = String(args.companyMembershipId ?? "").trim();
+  const compatibilityMembershipId = String(args.membershipId ?? "").trim();
+  if (companyMembershipId && compatibilityMembershipId && companyMembershipId !== compatibilityMembershipId) {
+    throw new InvalidMembershipSelectionError();
   }
+  const context = await resolveLoginContext(user.id, companyMembershipId || compatibilityMembershipId);
 
-  const session = await issueAuthSession({
-    userId: user.id,
-    membershipId: membership.id,
-    companyId: membership.companyId,
-    branchId: membership.branchId ?? null,
-    userAgent: args.userAgent ?? null,
-    ipAddress: args.ipAddress ?? null,
-  });
   clearIdentityAccessCacheForUser(user.id);
   const access = await loadAccessSnapshot({
     userId: user.id,
-    membershipId: membership.id,
+    membershipId: context.membershipId,
+    companyMembershipId: context.companyMembershipId,
+    companyId: context.companyId,
+    tenantId: context.tenantId,
+    tenantMembershipId: context.tenantMembershipId,
+    requireFresh: true,
+  });
+  if (!access) throw new InvalidMembershipSelectionError();
+  const session = await issueAuthSession({
+    ...context,
+    userAgent: args.userAgent ?? null,
+    ipAddress: args.ipAddress ?? null,
   });
   return { ...session, user: access };
 }
@@ -265,10 +395,10 @@ export async function refreshUserSession(args: {
   } catch {
     throw new Error("Invalid refresh token");
   }
-  if (!decoded?.id || !decoded?.sid || decoded.tokenType !== "refresh") {
-    throw new Error("Invalid refresh token");
+  if (!decoded?.id || !decoded?.sid || !decoded.companyMembershipId || !decoded.companyId
+    || !decoded.tenantId || !decoded.tenantMembershipId || decoded.tokenType !== "refresh") {
+    throw new Error("Refresh session requires fresh login");
   }
-
   const session = await prisma.userRefreshSession.findUnique({
     where: { id: decoded.sid },
     include: {
@@ -281,31 +411,51 @@ export async function refreshUserSession(args: {
   if (session.revokedAt) throw new Error("Refresh token revoked");
   if (session.expiresAt <= new Date()) throw new Error("Refresh token expired");
   if (session.tokenHash !== hashToken(rawToken)) throw new Error("Refresh token mismatch");
+  if (!session.tenantId || !session.tenantMembershipId || !session.companyMembershipId) {
+    throw new Error("Refresh session requires fresh login");
+  }
+  if (session.tenantId !== decoded.tenantId
+    || session.tenantMembershipId !== decoded.tenantMembershipId
+    || session.companyMembershipId !== decoded.companyMembershipId) {
+    throw new Error("Refresh token context mismatch");
+  }
 
-  const membership = await prisma.companyMembership.findFirst({
-    where: { userId: decoded.id, status: MembershipStatus.active },
-    orderBy: { createdAt: "asc" },
-    select: { id: true, companyId: true, branchId: true },
-  });
-  if (!membership) throw new Error("No active membership found");
-
-  await prisma.userRefreshSession.update({
-    where: { id: session.id },
-    data: { revokedAt: new Date() },
-  });
-
-  const next = await issueAuthSession({
-    userId: decoded.id,
-    membershipId: membership.id,
-    companyId: membership.companyId,
-    branchId: membership.branchId ?? null,
-    userAgent: args.userAgent ?? null,
-    ipAddress: args.ipAddress ?? null,
-  });
+  const context = await resolveStoredContext(decoded.id, session.companyMembershipId);
+  if (!context || context.companyId !== decoded.companyId
+    || context.tenantId !== session.tenantId
+    || context.tenantMembershipId !== session.tenantMembershipId) {
+    throw new Error("Refresh membership is no longer eligible");
+  }
   clearIdentityAccessCacheForUser(decoded.id);
   const access = await loadAccessSnapshot({
     userId: decoded.id,
-    membershipId: membership.id,
+    membershipId: context.membershipId,
+    companyMembershipId: context.companyMembershipId,
+    companyId: context.companyId,
+    tenantId: context.tenantId,
+    tenantMembershipId: context.tenantMembershipId,
+    requireFresh: true,
+  });
+  if (!access) throw new Error("Refresh membership is no longer eligible");
+  const next = await prisma.$transaction(async (tx) => {
+    const revoked = await tx.userRefreshSession.updateMany({
+      where: {
+        id: session.id,
+        userId: decoded.id,
+        tenantId: context.tenantId,
+        tenantMembershipId: context.tenantMembershipId,
+        companyMembershipId: context.companyMembershipId,
+        tokenHash: hashToken(rawToken),
+        revokedAt: null,
+      },
+      data: { revokedAt: new Date() },
+    });
+    if (revoked.count !== 1) throw new Error("Refresh token revoked");
+    return issueAuthSession({
+      ...context,
+      userAgent: args.userAgent ?? null,
+      ipAddress: args.ipAddress ?? null,
+    }, tx);
   });
   return { ...next, user: access };
 }

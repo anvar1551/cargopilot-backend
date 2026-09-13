@@ -11,10 +11,12 @@ type CacheEntry = {
 };
 
 const accessCache = new Map<string, CacheEntry>();
-const accessCacheTtlMs = Math.max(
-  15_000,
-  Number(process.env.ACCESS_SCOPE_CACHE_TTL_MS || 120_000),
-);
+const defaultAccessCacheTtlMs = 120_000;
+const accessCacheTtlMs = (() => {
+  const configured = Number(process.env.ACCESS_SCOPE_CACHE_TTL_MS ?? defaultAccessCacheTtlMs);
+  if (!Number.isFinite(configured)) return defaultAccessCacheTtlMs;
+  return Math.min(defaultAccessCacheTtlMs, Math.max(15_000, Math.trunc(configured)));
+})();
 
 const accessCacheGc = setInterval(() => {
   const now = Date.now();
@@ -30,7 +32,25 @@ function cacheKey(userId: string, membershipId: string) {
   return `${userId}:${membershipId}`;
 }
 
-function readAccessCache(userId: string, membershipId: string) {
+type ExpectedTenantContext = {
+  tenantId?: string;
+  tenantMembershipId?: string;
+  companyId?: string;
+  companyMembershipId?: string;
+  requireFresh?: boolean;
+};
+
+function matchesExpectedContext(value: AccessSnapshot, expected: ExpectedTenantContext) {
+  const supplied = [expected.tenantId, expected.tenantMembershipId, expected.companyId, expected.companyMembershipId];
+  if (supplied.some(Boolean) && supplied.some((item) => !item)) return false;
+  if (!supplied.some(Boolean)) return true;
+  return value.tenantId === expected.tenantId
+    && value.tenantMembershipId === expected.tenantMembershipId
+    && value.companyId === expected.companyId
+    && value.companyMembershipId === expected.companyMembershipId;
+}
+
+function readAccessCache(userId: string, membershipId: string, expected: ExpectedTenantContext) {
   const key = cacheKey(userId, membershipId);
   const hit = accessCache.get(key);
   if (!hit) return null;
@@ -38,7 +58,7 @@ function readAccessCache(userId: string, membershipId: string) {
     accessCache.delete(key);
     return null;
   }
-  return hit.value;
+  return matchesExpectedContext(hit.value, expected) ? hit.value : null;
 }
 
 function writeAccessCache(value: AccessSnapshot) {
@@ -78,13 +98,20 @@ function uniqueScopeRefs(scopes: ScopeItem[], scopeType: ScopeItem["scopeType"])
 export async function loadAccessSnapshot(args: {
   userId: string;
   membershipId: string;
+  tenantId?: string;
+  tenantMembershipId?: string;
+  companyId?: string;
+  companyMembershipId?: string;
+  requireFresh?: boolean;
 }): Promise<AccessSnapshot | null> {
   const userId = String(args.userId || "").trim();
   const membershipId = String(args.membershipId || "").trim();
   if (!userId || !membershipId) return null;
 
-  const cached = readAccessCache(userId, membershipId);
-  if (cached) return cached;
+  if (!args.requireFresh) {
+    const cached = readAccessCache(userId, membershipId, args);
+    if (cached) return cached;
+  }
 
   const membership = await prisma.companyMembership.findFirst({
     where: {
@@ -94,8 +121,15 @@ export async function loadAccessSnapshot(args: {
     },
     select: {
       id: true,
+      status: true,
       companyId: true,
       branchId: true,
+      tenantId: true,
+      tenantMembershipId: true,
+      tenant: { select: { id: true, status: true } },
+      tenantMembership: { select: { id: true, tenantId: true, userId: true, status: true } },
+      company: { select: { id: true, tenantId: true, isActive: true } },
+      branch: { select: { id: true, tenantId: true, isActive: true } },
       user: {
         select: {
           id: true,
@@ -130,7 +164,22 @@ export async function loadAccessSnapshot(args: {
     },
   });
 
-  if (!membership) return null;
+  if (!membership
+    || membership.status !== MembershipStatus.active
+    || !membership.tenantId
+    || !membership.tenantMembershipId
+    || membership.tenant?.id !== membership.tenantId
+    || membership.tenant.status !== "active"
+    || membership.tenantMembership?.id !== membership.tenantMembershipId
+    || membership.tenantMembership.status !== MembershipStatus.active
+    || membership.tenantMembership.userId !== userId
+    || membership.tenantMembership.tenantId !== membership.tenantId
+    || membership.company.id !== membership.companyId
+    || membership.company.tenantId !== membership.tenantId
+    || !membership.company.isActive
+    || (membership.branch && (membership.branch.tenantId !== membership.tenantId || !membership.branch.isActive))) {
+    return null;
+  }
 
   const permissionCodes = Array.from(
     new Set(
@@ -157,7 +206,10 @@ export async function loadAccessSnapshot(args: {
   const snapshot: AccessSnapshot = {
     userId: membership.user.id,
     membershipId: membership.id,
+    companyMembershipId: membership.id,
     companyId: membership.companyId,
+    tenantId: membership.tenantId,
+    tenantMembershipId: membership.tenantMembershipId,
     branchId: membership.branchId ?? null,
     warehouseId: membership.user.warehouseId ?? null,
     customerEntityId: membership.user.customerEntityId ?? null,
@@ -167,6 +219,7 @@ export async function loadAccessSnapshot(args: {
     permissionCodes,
     scopes,
   };
+  if (!matchesExpectedContext(snapshot, args)) return null;
   writeAccessCache(snapshot);
   return snapshot;
 }
@@ -178,6 +231,10 @@ export async function hasPermission(user: AuthUser, permission: string) {
   const snapshot = await loadAccessSnapshot({
     userId: user.id,
     membershipId: user.membershipId,
+    companyMembershipId: user.companyMembershipId,
+    companyId: user.companyId,
+    tenantId: user.tenantId,
+    tenantMembershipId: user.tenantMembershipId,
   });
   if (!snapshot) return false;
   return snapshot.permissionCodes.includes(permission);
@@ -324,6 +381,10 @@ export async function buildOrderScopeWhere(
   const snapshot = await loadAccessSnapshot({
     userId: user.id,
     membershipId: user.membershipId,
+    companyMembershipId: user.companyMembershipId,
+    companyId: user.companyId,
+    tenantId: user.tenantId,
+    tenantMembershipId: user.tenantMembershipId,
   });
   if (!snapshot) return { id: "__no_access__" };
 
@@ -370,6 +431,10 @@ export async function buildSupportScopeWhere(
   const snapshot = await loadAccessSnapshot({
     userId: user.id,
     membershipId: user.membershipId,
+    companyMembershipId: user.companyMembershipId,
+    companyId: user.companyId,
+    tenantId: user.tenantId,
+    tenantMembershipId: user.tenantMembershipId,
   });
   if (!snapshot) return { id: "__no_access__" };
 
@@ -414,6 +479,10 @@ export async function buildCustomerEntityScopeWhere(
   const snapshot = await loadAccessSnapshot({
     userId: user.id,
     membershipId: user.membershipId,
+    companyMembershipId: user.companyMembershipId,
+    companyId: user.companyId,
+    tenantId: user.tenantId,
+    tenantMembershipId: user.tenantMembershipId,
   });
   if (!snapshot) return { id: { in: [] } };
 
@@ -472,6 +541,10 @@ export async function buildOrganizationScopeWhere(
   const snapshot = await loadAccessSnapshot({
     userId: user.id,
     membershipId: user.membershipId,
+    companyMembershipId: user.companyMembershipId,
+    companyId: user.companyId,
+    tenantId: user.tenantId,
+    tenantMembershipId: user.tenantMembershipId,
   });
   if (!snapshot) return { id: { in: [] } };
 

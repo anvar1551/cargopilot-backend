@@ -84,12 +84,12 @@ export async function assignTasksBulkForActor(input: AssignTaskInput) {
     const orderNumber = String(order?.orderNumber ?? "").trim();
     const nextStatus = String(order?.status ?? "");
 
-    emitDriverOrderUpdate(assignedDriverId, {
+    void emitDriverOrderUpdate(assignedDriverId, {
       orderId: eventOrderId,
       orderNumber: orderNumber || null,
       status: nextStatus,
       updatedAt: new Date().toISOString(),
-    });
+    }).catch(() => undefined);
 
     void emitDriverNotification(assignedDriverId, {
       type: "order",
@@ -138,12 +138,12 @@ export async function updateStatusBulkForActor(input: UpdateStatusBulkInput) {
     const orderNumber = String(order?.orderNumber ?? "").trim();
     const nextStatus = String(order?.status ?? status);
 
-    emitDriverOrderUpdate(assignedDriverId, {
+    void emitDriverOrderUpdate(assignedDriverId, {
       orderId,
       orderNumber: orderNumber || null,
       status: nextStatus,
       updatedAt: new Date().toISOString(),
-    });
+    }).catch(() => undefined);
 
     void emitDriverNotification(assignedDriverId, {
       type: "order",
@@ -190,12 +190,12 @@ export async function updateDriverStatusForActor(input: UpdateDriverStatusInput)
   const orderNumber = String(order?.orderNumber ?? "").trim();
   const nextStatus = String(order?.status ?? status);
   if (assignedDriverId) {
-    emitDriverOrderUpdate(assignedDriverId, {
+    void emitDriverOrderUpdate(assignedDriverId, {
       orderId: eventOrderId,
       orderNumber: orderNumber || null,
       status: nextStatus,
       updatedAt: new Date().toISOString(),
-    });
+    }).catch(() => undefined);
   }
 
   return {
