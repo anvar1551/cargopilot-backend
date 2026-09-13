@@ -69,6 +69,7 @@ model Organization {
   financeLegalEntity       FinanceLegalEntity?
   tenantFinanceLegalEntities FinanceLegalEntity[]    @relation("FinanceLegalEntityTenantCompany")
   financeSourceEvents      FinanceSourceEvent[]
+  tenantNotifications      UserNotification[]          @relation("UserNotificationTenantCompany")
 
   @@index([type, isActive])
   @@unique([tenantId, id], map: "Organization_tenant_identity_key")

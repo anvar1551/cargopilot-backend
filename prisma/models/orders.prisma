@@ -215,6 +215,7 @@ model Order {
   paymentIntents       PaymentIntent[]
   paymentLedgerEntries PaymentLedgerEntry[]
   paymentRefunds       PaymentRefund[]
+  tenantNotifications  UserNotification[] @relation("UserNotificationTenantOrder")
 
   // ---------------- Attempt counters ----------------
   pickupAttemptCount   Int @default(0)

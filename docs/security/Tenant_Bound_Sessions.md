@@ -72,11 +72,10 @@ ownership suppresses both realtime notification delivery and creation of its
 user-notification row. Suppression diagnostics contain only an event category
 and fixed reason code and are rate-limited per process.
 
-Unread notification counts remain blocked from realtime delivery because
-`UserNotification` rows do not carry tenant or company-membership ownership and
-the current counting query is user-global. The HTTP notification list/read/count
-paths have the same ownership limitation and require a later schema and
-repository cutover.
+Unread notification counts are restored only for notifications matching the
+verified recipient user, tenant, company and company membership. The HTTP
+notification list/detail/read/count paths use the same context. Historical
+unowned rows remain inaccessible rather than being inferred from user identity.
 
 An already-connected socket is revalidated only when one of these protected
 order events targets its context. Membership suspension, session revocation or

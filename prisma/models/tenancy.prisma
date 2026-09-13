@@ -25,6 +25,7 @@ model Tenant {
   orders              Order[]
   financeLegalEntities FinanceLegalEntity[]
   invoices             Invoice[]
+  notifications        UserNotification[]
 
   @@index([status])
 }

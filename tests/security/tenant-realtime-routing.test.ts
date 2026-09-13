@@ -5,6 +5,7 @@ jest.mock("../../src/config/prismaClient", () => ({
 
 jest.mock("../../src/modules/notifications-core/application/notificationService", () => ({
   createUserNotification: jest.fn(),
+  countUnreadUserNotifications: jest.fn(),
 }));
 
 jest.mock("socket.io", () => {
@@ -29,6 +30,7 @@ import {
   initRealtimeHub,
 } from "../../src/modules/realtime-core/realtimeHub";
 import { createUserNotification } from "../../src/modules/notifications-core/application/notificationService";
+import { countUnreadUserNotifications } from "../../src/modules/notifications-core/application/notificationService";
 
 const socketIoMock = jest.requireMock("socket.io") as {
   __mockServer: {
@@ -154,6 +156,7 @@ describe("tenant-bound realtime routing (mocked emitter evidence)", () => {
       createdAt: new Date("2026-09-13T12:00:00.000Z"),
       orderId: ids.orderA,
     });
+    (countUnreadUserNotifications as jest.Mock).mockReset().mockResolvedValue(1);
     clearIdentityAccessCacheForUser(ids.user);
   });
 
@@ -298,12 +301,31 @@ describe("tenant-bound realtime routing (mocked emitter evidence)", () => {
       room: room(ids.tenantA, ids.membershipA, ids.companyA),
       event: "driver:notification",
       payload: expect.objectContaining({ orderId: ids.orderA, type: "order" }),
+    }), expect.objectContaining({
+      room: room(ids.tenantA, ids.membershipA, ids.companyA),
+      event: "driver:notifications:unread-count",
+      payload: expect.objectContaining({ unreadCount: 1 }),
     })]);
   });
 
-  it("suppresses the unscoped unread-count emitter", async () => {
-    await emitDriverUnreadCount(ids.user);
-    expect(socketIoMock.__deliveries).toHaveLength(0);
-    expect(database.order.findUnique).not.toHaveBeenCalled();
+  it("emits unread count only to the verified selected context room", async () => {
+    await emitDriverUnreadCount({
+      id: ids.user,
+      membershipId: ids.membershipA,
+      companyMembershipId: ids.membershipA,
+      companyId: ids.companyA,
+      tenantId: ids.tenantA,
+      tenantMembershipId: ids.tenantMembershipA,
+    });
+    expect(countUnreadUserNotifications).toHaveBeenCalledWith(expect.objectContaining({
+      id: ids.user,
+      companyMembershipId: ids.membershipA,
+      tenantId: ids.tenantA,
+    }));
+    expect(socketIoMock.__deliveries).toEqual([expect.objectContaining({
+      room: room(ids.tenantA, ids.membershipA, ids.companyA),
+      event: "driver:notifications:unread-count",
+      payload: expect.objectContaining({ unreadCount: 1 }),
+    })]);
   });
 });

@@ -1033,7 +1033,7 @@ async function notifySupportUser(input: {
     type: NotificationType.support,
     title: input.title,
     body: input.body,
-    orderId: input.orderId ?? null,
+    source: { kind: "support_ticket", ticketId: input.ticketId },
     data: {
       ticketId: input.ticketId,
       ticketNumber: input.ticketNumber ?? null,

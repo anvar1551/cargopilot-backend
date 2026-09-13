@@ -8,7 +8,9 @@ import prisma from "../../config/prismaClient";
 import { loadAccessSnapshot } from "../../modules/identity-access/access-control";
 import type { AccessTokenPayload } from "../../modules/identity-access/types";
 import {
+  countUnreadUserNotifications,
   createUserNotification,
+  type NotificationAccessContext,
 } from "../../modules/notifications-core/application/notificationService";
 
 type AuthSocket = Socket & {
@@ -99,11 +101,13 @@ function parseSocketToken(socket: Socket) {
 type RealtimeRecipientContext = {
   userId: string;
   tenantId: string;
+  tenantMembershipId: string;
   companyId: string;
   companyMembershipId: string;
 };
 
-function recipientRoom(context: RealtimeRecipientContext) {
+function recipientRoom(context: Pick<RealtimeRecipientContext,
+  "userId" | "tenantId" | "companyId" | "companyMembershipId">) {
   return [
     "tenant", context.tenantId,
     "company-membership", context.companyMembershipId,
@@ -205,6 +209,7 @@ async function resolveOrderRecipientContext(args: {
   return {
     userId,
     tenantId: snapshot.tenantId,
+    tenantMembershipId: snapshot.tenantMembershipId,
     companyId: snapshot.companyId,
     companyMembershipId: snapshot.companyMembershipId,
   };
@@ -332,9 +337,10 @@ export async function emitDriverNotification(
     type: notificationType as NotificationType,
     title: cleanTitle,
     body: cleanBody,
-    orderId: payload.orderId ?? null,
+    source: { kind: "order", orderId: String(payload.orderId ?? "") },
     data: null,
   });
+  if (!created) return;
 
   const event: DriverRealtimeNotification = {
     id: created.id || payload.id || randomUUID(),
@@ -348,7 +354,14 @@ export async function emitDriverNotification(
   const server = getIo();
   if (!server) return;
   server.to(recipientRoom(context)).emit("driver:notification", event);
-  recordSuppressedDelivery("driver:notifications:unread-count", "notification_rows_lack_tenant_ownership");
+  await emitDriverUnreadCount({
+    id: context.userId,
+    membershipId: context.companyMembershipId,
+    companyMembershipId: context.companyMembershipId,
+    companyId: context.companyId,
+    tenantId: context.tenantId,
+    tenantMembershipId: context.tenantMembershipId,
+  });
 }
 
 export async function emitDriverOrderUpdate(userId: string, payload: DriverOrderRealtimeUpdate) {
@@ -363,6 +376,26 @@ export async function emitDriverOrderUpdate(userId: string, payload: DriverOrder
   server.to(recipientRoom(context)).emit("driver:order-updated", payload);
 }
 
-export async function emitDriverUnreadCount(_userId: string) {
-  recordSuppressedDelivery("driver:notifications:unread-count", "notification_rows_lack_tenant_ownership");
+export async function emitDriverUnreadCount(context: NotificationAccessContext) {
+  const server = getIo();
+  if (!server) return;
+  try {
+    const unreadCount = await countUnreadUserNotifications(context);
+    server.to(recipientRoom({
+      userId: context.id,
+      tenantId: context.tenantId,
+      companyId: context.companyId,
+      companyMembershipId: context.companyMembershipId,
+    })).emit("driver:notifications:unread-count", {
+      unreadCount,
+      at: new Date().toISOString(),
+    });
+  } catch {
+    recordSuppressedDelivery("driver:notifications:unread-count", "recipient_context_ineligible");
+    disconnectRecipientSockets(server, {
+      userId: String(context?.id ?? ""),
+      tenantId: String(context?.tenantId ?? ""),
+      companyId: String(context?.companyId ?? ""),
+    });
+  }
 }

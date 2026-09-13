@@ -37,7 +37,7 @@ async function notifyOwner(args: {
     type: NotificationType.support,
     title: "Support SLA overdue",
     body: `${formatTicketLabel(args)} is overdue and has been escalated.`,
-    orderId: args.orderId ?? null,
+    source: { kind: "support_ticket", ticketId: args.ticketId },
     data: {
       ticketId: args.ticketId,
       ticketNumber: args.ticketNumber ?? null,

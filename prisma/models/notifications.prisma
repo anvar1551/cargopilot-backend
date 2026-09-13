@@ -14,10 +14,20 @@ model UserNotification {
   userId String @db.Uuid
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  // Nullable only for additive migration compatibility. Tenant-facing reads
+  // require all ownership fields, so historical unowned rows remain hidden.
+  tenantId           String?            @db.Uuid
+  tenant             Tenant?            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  companyId          String?            @db.Uuid
+  tenantCompany      Organization?      @relation("UserNotificationTenantCompany", fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "UserNotification_tenant_company_fkey")
+  companyMembershipId String?           @db.Uuid
+  companyMembership  CompanyMembership? @relation("UserNotificationRecipientMembership", fields: [companyMembershipId, userId, tenantId, companyId], references: [id, userId, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "UserNotification_recipient_membership_fkey")
+
   type    NotificationType
   title   String
   body    String
   orderId String?          @db.Uuid
+  tenantOrder Order?       @relation("UserNotificationTenantOrder", fields: [tenantId, orderId, companyId], references: [tenantId, id, ownerOrgId], onDelete: Restrict, onUpdate: Restrict, map: "UserNotification_tenant_order_fkey")
   data    Json?
 
   createdAt DateTime  @default(now())
@@ -26,4 +36,6 @@ model UserNotification {
   @@index([userId, createdAt])
   @@index([userId, readAt])
   @@index([userId, type, createdAt])
+  @@index([tenantId, companyId, companyMembershipId, userId, createdAt], map: "UserNotification_tenant_company_membership_user_createdAt_idx")
+  @@index([tenantId, companyId, companyMembershipId, userId, readAt], map: "UserNotification_tenant_company_membership_user_readAt_idx")
 }

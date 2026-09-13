@@ -95,9 +95,11 @@ model CompanyMembership {
   roles  MembershipRole[]
   scopes MembershipScope[]
   refreshSessions UserRefreshSession[] @relation("RefreshSessionCompanyMembership")
+  notifications UserNotification[] @relation("UserNotificationRecipientMembership")
 
   @@unique([userId, companyId])
   @@unique([id, tenantMembershipId, userId, tenantId], map: "CompanyMembership_session_bridge_key")
+  @@unique([id, userId, tenantId, companyId], map: "CompanyMembership_notification_owner_key")
   @@index([companyId, status])
   @@index([tenantId, status])
   @@index([tenantMembershipId])
