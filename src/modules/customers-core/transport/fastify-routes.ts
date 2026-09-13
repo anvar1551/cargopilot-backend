@@ -2,11 +2,12 @@ import { CustomerType } from "@prisma/client";
 import { FastifyPluginAsync } from "fastify";
 import { ZodError, z } from "zod";
 import { fastifyAuth } from "../../../modules/identity-access/transport/fastify-auth";
-import { buildCustomerEntityScopeWhere } from "../../identity-access";
 import {
   createCustomerEntity,
+  deleteCustomerEntity,
   getCustomerEntityById,
   listCustomerEntities,
+  updateCustomerEntity,
 } from "../application/customerEntityRepo";
 
 const createCustomerSchema = z
@@ -37,7 +38,11 @@ const createCustomerSchema = z
         });
       }
     }
-  });
+  }).strict();
+
+const updateCustomerSchema = createCustomerSchema.partial().extend({
+  defaultAddressId: z.string().uuid().optional().nullable(),
+}).strict();
 
 function sendError(reply: any, err: any, fallback: string) {
   if (err instanceof ZodError) {
@@ -60,14 +65,11 @@ const customersFastifyRoutes: FastifyPluginAsync = async (fastify) => {
             : undefined;
         const page = (request.query as any)?.page ? Number((request.query as any).page) : undefined;
         const limit = (request.query as any)?.limit ? Number((request.query as any).limit) : undefined;
-        const scopeWhere = await buildCustomerEntityScopeWhere(request.user!);
-
-        const result = await listCustomerEntities({
+        const result = await listCustomerEntities(request.user!, {
           q,
           type,
           page,
           limit,
-          where: scopeWhere ?? undefined,
         });
         return reply.send(result);
       } catch (err: any) {
@@ -84,26 +86,8 @@ const customersFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         const id = String((request.params as any)?.id ?? "").trim();
         if (!id) return reply.code(400).send({ error: "Customer id is required" });
 
-        const scopeWhere = await buildCustomerEntityScopeWhere(request.user!);
-        const customer = await getCustomerEntityById(id);
+        const customer = await getCustomerEntityById(request.user!, id);
         if (!customer) return reply.code(404).send({ error: "Not found" });
-
-        if (scopeWhere?.id) {
-          const scopedId = scopeWhere.id as unknown;
-          if (
-            typeof scopedId === "object" &&
-            scopedId !== null &&
-            "in" in (scopedId as Record<string, unknown>)
-          ) {
-            const scopedIds = (scopedId as { in?: unknown }).in;
-            if (Array.isArray(scopedIds) && !scopedIds.includes(customer.id)) {
-              return reply.code(403).send({ error: "Forbidden" });
-            }
-          } else if (typeof scopedId === "string" && scopedId !== customer.id) {
-            return reply.code(403).send({ error: "Forbidden" });
-          }
-        }
-
         return reply.send(customer);
       } catch (err: any) {
         return sendError(reply, err, "Failed to fetch customer");
@@ -117,13 +101,49 @@ const customersFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const dto = createCustomerSchema.parse(request.body);
-        const created = await createCustomerEntity({
+        const created = await createCustomerEntity(request.user!, {
           ...dto,
           type: dto.type as CustomerType,
         });
         return reply.code(201).send(created);
       } catch (err: any) {
         return sendError(reply, err, "Failed to create customer");
+      }
+    },
+  );
+
+  fastify.patch(
+    "/:id",
+    { preHandler: fastifyAuth({ permission: "customers.write" }) },
+    async (request, reply) => {
+      try {
+        const id = String((request.params as any)?.id ?? "").trim();
+        if (!id) return reply.code(400).send({ error: "Customer id is required" });
+        const dto = updateCustomerSchema.parse(request.body);
+        const updated = await updateCustomerEntity(request.user!, id, {
+          ...dto,
+          type: dto.type as CustomerType | undefined,
+        });
+        if (!updated) return reply.code(404).send({ error: "Not found" });
+        return reply.send(updated);
+      } catch (err: any) {
+        return sendError(reply, err, "Failed to update customer");
+      }
+    },
+  );
+
+  fastify.delete(
+    "/:id",
+    { preHandler: fastifyAuth({ permission: "customers.write" }) },
+    async (request, reply) => {
+      try {
+        const id = String((request.params as any)?.id ?? "").trim();
+        if (!id) return reply.code(400).send({ error: "Customer id is required" });
+        const deleted = await deleteCustomerEntity(request.user!, id);
+        if (!deleted) return reply.code(404).send({ error: "Not found" });
+        return reply.code(204).send();
+      } catch (err: any) {
+        return sendError(reply, err, "Failed to delete customer");
       }
     },
   );

@@ -44,7 +44,7 @@ model Address {
 
   // ✅ Opposite side for default address relation (no fields here)
   asDefaultFor CustomerEntity? @relation("CustomerDefaultAddress")
-  asTenantDefaultFor CustomerEntity[] @relation("TenantCustomerDefaultAddress")
+  asTenantDefaultFor CustomerEntity[] @relation("TenantCustomerOwnedDefaultAddress")
 
   // ✅ Order relations
   asSenderFor   Order[] @relation("OrderSenderAddress")
@@ -57,6 +57,7 @@ model Address {
 
   @@index([customerEntityId])
   @@unique([tenantId, id], map: "Address_tenant_identity_key")
+  @@unique([tenantId, id, customerEntityId], map: "Address_tenant_customer_identity_key")
   @@index([tenantId, customerEntityId])
   @@index([city])
 }
@@ -84,7 +85,7 @@ model CustomerEntity {
   // ✅ Default address (separate named relation)
   defaultAddressId String?  @unique @db.Uuid
   defaultAddress   Address? @relation("CustomerDefaultAddress", fields: [defaultAddressId], references: [id])
-  tenantDefaultAddress Address? @relation("TenantCustomerDefaultAddress", fields: [tenantId, defaultAddressId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "CustomerEntity_tenant_default_address_fkey")
+  tenantDefaultAddress Address? @relation("TenantCustomerOwnedDefaultAddress", fields: [tenantId, defaultAddressId, id], references: [tenantId, id, customerEntityId], onDelete: Restrict, onUpdate: Restrict, map: "CustomerEntity_tenant_owned_default_address_fkey")
 
   // ✅ Address book (separate named relation)
   addresses Address[] @relation("CustomerAddresses")

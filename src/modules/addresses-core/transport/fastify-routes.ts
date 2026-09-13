@@ -1,10 +1,14 @@
 import { FastifyPluginAsync } from "fastify";
 import { z, ZodError } from "zod";
 
-import prisma from "../../../config/prismaClient";
 import { fastifyAuth } from "../../../modules/identity-access/transport/fastify-auth";
-import { buildCustomerEntityScopeWhere } from "../../identity-access";
-import { listAddresses } from "../application/addressRepo";
+import {
+  createAddress,
+  deleteAddress,
+  getAddressById,
+  listAddresses,
+  updateAddress,
+} from "../application/addressRepo";
 
 const addressCreateSchema = z.object({
   customerEntityId: z.string().uuid().optional().nullable(),
@@ -23,7 +27,9 @@ const addressCreateSchema = z.object({
   postalCode: z.string().optional().nullable(),
   addressType: z.enum(["RESIDENTIAL", "BUSINESS"]).optional().nullable(),
   isSaved: z.boolean().optional().default(true),
-});
+}).strict();
+
+const addressUpdateSchema = addressCreateSchema.omit({ customerEntityId: true }).partial().strict();
 
 function sendError(reply: any, err: any, fallback: string) {
   if (err instanceof ZodError) {
@@ -45,27 +51,7 @@ const addressesFastifyRoutes: FastifyPluginAsync = async (fastify) => {
             ? (request.query as any).customerEntityId
             : undefined;
 
-        const scopeWhere = await buildCustomerEntityScopeWhere(request.user!);
-        if (scopeWhere?.id === "__no_access__") {
-          return reply.code(403).send({ error: "Forbidden" });
-        }
-
-        let customerEntityId: string | undefined;
-        if (!scopeWhere || Object.keys(scopeWhere).length === 0) {
-          customerEntityId = queryCustomerEntityId;
-        } else if (scopeWhere.id && typeof scopeWhere.id === "string") {
-          customerEntityId = scopeWhere.id;
-          if (queryCustomerEntityId && queryCustomerEntityId !== customerEntityId) {
-            return reply.code(403).send({ error: "Forbidden" });
-          }
-        } else {
-          customerEntityId = request.user?.customerEntityId ?? undefined;
-          if (queryCustomerEntityId && queryCustomerEntityId !== customerEntityId) {
-            return reply.code(403).send({ error: "Forbidden" });
-          }
-        }
-
-        const rows = await listAddresses({ customerEntityId, q, take });
+        const rows = await listAddresses(request.user!, { customerEntityId: queryCustomerEntityId, q, take });
         return reply.send(rows);
       } catch (err: any) {
         return sendError(reply, err, "Failed to fetch addresses");
@@ -79,58 +65,60 @@ const addressesFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const dto = addressCreateSchema.parse(request.body);
-        const scopeWhere = await buildCustomerEntityScopeWhere(request.user!);
-        if (scopeWhere?.id === "__no_access__") {
-          return reply.code(403).send({ error: "Forbidden" });
-        }
-
-        let ownerCustomerEntityId: string | null = null;
-        if (!scopeWhere || Object.keys(scopeWhere).length === 0) {
-          ownerCustomerEntityId = dto.customerEntityId ?? request.user?.customerEntityId ?? null;
-        } else if (scopeWhere.id && typeof scopeWhere.id === "string") {
-          ownerCustomerEntityId = scopeWhere.id;
-          if (dto.customerEntityId && dto.customerEntityId !== ownerCustomerEntityId) {
-            return reply.code(403).send({ error: "Forbidden" });
-          }
-        } else {
-          ownerCustomerEntityId = request.user?.customerEntityId ?? null;
-          if (dto.customerEntityId && dto.customerEntityId !== ownerCustomerEntityId) {
-            return reply.code(403).send({ error: "Forbidden" });
-          }
-        }
-
-        if (!ownerCustomerEntityId) {
-          return reply.code(400).send({
-            error: "customerEntityId is required to create an address",
-          });
-        }
-
-        const created = await prisma.address.create({
-          data: {
-            customerEntity: {
-              connect: { id: ownerCustomerEntityId },
-            },
-            country: dto.country ?? null,
-            city: dto.city ?? null,
-            neighborhood: dto.neighborhood ?? null,
-            street: dto.street ?? null,
-            latitude: dto.latitude ?? null,
-            longitude: dto.longitude ?? null,
-            addressLine1: dto.addressLine1 ?? null,
-            addressLine2: dto.addressLine2 ?? null,
-            building: dto.building ?? null,
-            apartment: dto.apartment ?? null,
-            floor: dto.floor ?? null,
-            landmark: dto.landmark ?? null,
-            postalCode: dto.postalCode ?? null,
-            addressType: (dto.addressType as any) ?? null,
-            isSaved: dto.isSaved ?? true,
-          },
-        });
-
+        if (!dto.customerEntityId) return reply.code(400).send({ error: "customerEntityId is required" });
+        const created = await createAddress(request.user!, { ...dto, customerEntityId: dto.customerEntityId });
         return reply.code(201).send(created);
       } catch (err: any) {
         return sendError(reply, err, "Failed to create address");
+      }
+    },
+  );
+
+  fastify.get(
+    "/:id",
+    { preHandler: fastifyAuth({ permission: "customers.read" }) },
+    async (request, reply) => {
+      try {
+        const id = String((request.params as any)?.id ?? "").trim();
+        if (!id) return reply.code(400).send({ error: "Address id is required" });
+        const address = await getAddressById(request.user!, id);
+        if (!address) return reply.code(404).send({ error: "Not found" });
+        return reply.send(address);
+      } catch (err: any) {
+        return sendError(reply, err, "Failed to fetch address");
+      }
+    },
+  );
+
+  fastify.patch(
+    "/:id",
+    { preHandler: fastifyAuth({ permission: "customers.write" }) },
+    async (request, reply) => {
+      try {
+        const id = String((request.params as any)?.id ?? "").trim();
+        if (!id) return reply.code(400).send({ error: "Address id is required" });
+        const dto = addressUpdateSchema.parse(request.body);
+        const updated = await updateAddress(request.user!, id, dto);
+        if (!updated) return reply.code(404).send({ error: "Not found" });
+        return reply.send(updated);
+      } catch (err: any) {
+        return sendError(reply, err, "Failed to update address");
+      }
+    },
+  );
+
+  fastify.delete(
+    "/:id",
+    { preHandler: fastifyAuth({ permission: "customers.write" }) },
+    async (request, reply) => {
+      try {
+        const id = String((request.params as any)?.id ?? "").trim();
+        if (!id) return reply.code(400).send({ error: "Address id is required" });
+        const deleted = await deleteAddress(request.user!, id);
+        if (!deleted) return reply.code(404).send({ error: "Not found" });
+        return reply.code(204).send();
+      } catch (err: any) {
+        return sendError(reply, err, "Failed to delete address");
       }
     },
   );
