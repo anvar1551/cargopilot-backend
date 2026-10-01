@@ -1,4 +1,4 @@
-import { requireJournalEntity, assertJournalBindings } from "./journal-integrity";
+import { requireJournalEntity, assertJournalBindings, assertReversalRetry } from "./journal-integrity";
 import { listOwnedJournals, getOwnedJournal } from "./journal-read";
 import { rejectUnacceptedInvoiceExecution } from "../domain/invoice-execution-containment";
 import { financeBadRequest } from "../domain/finance.errors";
@@ -889,7 +889,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
         },
         include: { journalEntry: { include: journalInclude } },
       });
-      if (existing?.journalEntry) { await assertJournalBindings(tx, existing.journalEntry, original.legalEntityId); return existing.journalEntry; }
+      if (existing?.journalEntry) { await assertJournalBindings(tx, existing.journalEntry, original.legalEntityId); assertReversalRetry(existing.journalEntry, original, command); return existing.journalEntry; }
       if (original.status !== "posted") {
         throw financeConflict("Only posted journals can be reversed", "FINANCE_JOURNAL_NOT_POSTED");
       }

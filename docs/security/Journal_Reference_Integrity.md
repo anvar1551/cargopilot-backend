@@ -25,3 +25,9 @@ Invoice pricing/FX/new issuance/execution and configuration/period containment r
 Offline Prisma validation initially found optional compound line-relation mismatch; separate optional ownership relations fixed it while preserving required old relations. Final validation passed using schema-only cp-cash-prisma.config.ts. Manual schema/source/SQL and selected PostgreSQL catalog checks establish targets/actions/unvalidated state, not complete semantic schema-to-SQL equivalence or historical certification.
 
 Backlog records exact focused commands, initial fixture collisions, targeted reruns, distinct cases, final type checking and ownership-verified cleanup. No existing services, dependency/client repository changes, push/deployment or complete-isolation/production-readiness claim.
+
+## Follow-on reversal retry binding
+
+Existing entity-level idempotency keys could return an unrelated same-entity journal. assertReversalRetry now compares the stored reversal with original target/document, initiating actor, requested date/reason, source markers, exact document currency/FX/amounts, reversed totals and every swapped line amount/account/currency. Conflicting reuse returns409 FINANCE_REVERSAL_IDEMPOTENCY_CONFLICT without business effects. Matching authorized retries retain the original ID. Fresh selected context and graph validation remain mandatory.
+
+10new unit cases passed. Disposable PostgreSQL full74chain:2new retry/competing-distinct-operation cases plus1affected valid concurrent-posting/same-ID-reversal case passed. Wrong target/actor/date/reason leave records/audit/outbox unchanged; competing IDs create one balanced reversal and one audit/outbox event. Broader immutable draft receipts and independent manual approval remain unresolved; no generic exactly-once, FX policy or acceptance claim. Cleanup of owned a59f34ac49c1 verified. Final type-check/checkpoint result is recorded in backlog.
