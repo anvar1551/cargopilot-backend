@@ -1,4 +1,6 @@
 import { rejectUnacceptedInvoiceExecution } from "../domain/invoice-execution-containment";
+import type { AppUser } from "../../../types/app-user";
+import { requireLegalEntityContext, rejectUnapprovedLegalEntityConfiguration } from "../application/legal-entity-access";
 import { loadAcceptedCashFinance, assertAcceptedCashSource } from "./cash-finance-authority";
 import { Prisma } from "@prisma/client";
 import prisma from "../../../config/prismaClient";
@@ -227,11 +229,19 @@ function renderPostingDescription(
 }
 
 export class PrismaFinanceRepository implements FinanceRepositoryPort {
-  async getLegalEntity(companyId: string) {
-    return prisma.financeLegalEntity.findUnique({ where: { companyId } });
+  async getLegalEntity(actor: AppUser) {
+    const context = await requireLegalEntityContext(actor, "finance.settings.read");
+    return prisma.financeLegalEntity.findFirst({ where: {
+      tenantId: context.tenantId, companyId: context.companyId, isActive: true,
+      company: { is: { tenantId: context.tenantId, isActive: true } },
+      tenant: { is: { status: "active" } },
+    }, select: { id: true, companyId: true, baseCurrency: true, reportingCurrency: true,
+      fiscalYearStartMonth: true, timezone: true, isActive: true, createdAt: true, updatedAt: true } });
   }
 
   async configureLegalEntity(command: ConfigureLegalEntityCommand) {
+    // No caller (including alternate services) can supply its own approval capability.
+    rejectUnapprovedLegalEntityConfiguration();
     return prisma.$transaction(async (tx) => {
       const existing = await tx.financeLegalEntity.findUnique({
         where: { companyId: command.companyId },

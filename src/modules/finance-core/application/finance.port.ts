@@ -2,6 +2,7 @@ import type { JournalLineInput } from "../domain/ledger";
 import type { ChartTemplateAccount } from "../domain/chart-template";
 import type { PostingRuleLineInput } from "../domain/posting-rules";
 import type { CanonicalFinanceSourceEvent } from "../domain/source-event";
+import type { AppUser } from "../../../types/app-user";
 
 export type CursorPage = { cursor?: string; limit: number };
 
@@ -103,7 +104,7 @@ export type IngestFinanceSourceEventCommand = {
 };
 
 export interface FinanceRepositoryPort {
-  getLegalEntity(companyId: string): Promise<unknown>;
+  getLegalEntity(actor: AppUser): Promise<unknown>;
   configureLegalEntity(command: ConfigureLegalEntityCommand): Promise<unknown>;
   listAccounts(companyId: string, page: CursorPage): Promise<unknown>;
   createAccount(command: CreateAccountCommand): Promise<unknown>;

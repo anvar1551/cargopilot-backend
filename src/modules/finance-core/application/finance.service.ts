@@ -18,25 +18,30 @@ import {
   normalizeFinanceSourceEvent,
   type CanonicalFinanceSourceEventInput,
 } from "../domain/source-event";
+import type { AppUser } from "../../../types/app-user";
+import { requireLegalEntityContext, rejectUnapprovedLegalEntityConfiguration } from "./legal-entity-access";
 
 export class FinanceService {
   constructor(private readonly repository: FinanceRepositoryPort) {}
 
-  getLegalEntity(companyId: string) {
-    return this.repository.getLegalEntity(companyId);
+  async getLegalEntity(actor: AppUser) {
+    await requireLegalEntityContext(actor, "finance.settings.read");
+    return this.repository.getLegalEntity(actor);
   }
 
-  configureLegalEntity(input: {
+  async configureLegalEntity(input: {
     companyId: string;
     actorUserId: string;
     baseCurrency: string;
     reportingCurrency?: string | null;
     fiscalYearStartMonth: number;
     timezone: string;
-  }) {
+  }, actor: AppUser) {
+    await requireLegalEntityContext(actor, "finance.settings.manage");
+    rejectUnapprovedLegalEntityConfiguration();
     const baseCurrency = assertFinanceCurrency(input.baseCurrency);
     const reportingCurrency = input.reportingCurrency
-      ? assertFinanceCurrency(input.reportingCurrency)
+      ? assertFinanceCurrency(input.reportingCurrency!)
       : null;
     return this.repository.configureLegalEntity({
       ...input,

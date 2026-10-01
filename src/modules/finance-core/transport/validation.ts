@@ -43,7 +43,7 @@ export const configureLegalEntitySchema = z.object({
   reportingCurrency: z.enum(FINANCE_CURRENCIES).nullable().optional(),
   fiscalYearStartMonth: z.number().int().min(1).max(12).default(1),
   timezone: z.string().trim().min(1).max(100).default("Asia/Tashkent"),
-});
+}).strict();
 
 export const createAccountSchema = z.object({
   code: z.string().trim().min(1).max(50),

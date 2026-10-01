@@ -1,3 +1,4 @@
+jest.mock("../../src/modules/finance-core/application/legal-entity-access",()=>({requireLegalEntityContext:jest.fn(async()=>({})),rejectUnapprovedLegalEntityConfiguration:()=>{throw Object.assign(new Error("Approval required"),{code:"FINANCE_CONFIGURATION_APPROVAL_REQUIRED"});}}));
 import { FinanceService } from "../../src/modules/finance-core/application/finance.service";
 import type { FinanceRepositoryPort } from "../../src/modules/finance-core/application/finance.port";
 
@@ -30,21 +31,19 @@ function repositoryMock(): jest.Mocked<FinanceRepositoryPort> {
 }
 
 describe("FinanceService", () => {
-  it("normalizes configured currencies before persistence", async () => {
+  it("contains configuration before persistence without independent approval", async () => {
     const repository = repositoryMock();
     repository.configureLegalEntity.mockResolvedValue({ id: "entity" });
     const service = new FinanceService(repository);
-    await service.configureLegalEntity({
+    await expect(service.configureLegalEntity({
       companyId: "company",
       actorUserId: "actor",
       baseCurrency: "uzs",
       reportingCurrency: "usd",
       fiscalYearStartMonth: 1,
       timezone: "Asia/Tashkent",
-    });
-    expect(repository.configureLegalEntity).toHaveBeenCalledWith(
-      expect.objectContaining({ baseCurrency: "UZS", reportingCurrency: "USD" }),
-    );
+    }, {} as any)).rejects.toMatchObject({code:"FINANCE_CONFIGURATION_APPROVAL_REQUIRED"});
+    expect(repository.configureLegalEntity).not.toHaveBeenCalled();
   });
 
   it("rejects an inverted fiscal period without calling persistence", () => {

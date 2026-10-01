@@ -695,7 +695,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     { preHandler: fastifyAuth({ permission: "finance.settings.read" }) },
     async (request, reply) => {
       try {
-        return reply.send(await financeService.getLegalEntity(request.user!.companyId));
+        return reply.send(await financeService.getLegalEntity(request.user!));
       } catch (error) {
         return sendError(reply, error, "Failed to load finance legal entity");
       }
@@ -713,7 +713,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
             ...input,
             companyId: request.user!.companyId,
             actorUserId: request.user!.id,
-          }),
+          }, request.user!),
         );
       } catch (error) {
         return sendError(reply, error, "Failed to configure finance legal entity");
