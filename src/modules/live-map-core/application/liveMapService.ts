@@ -437,14 +437,7 @@ export async function getLiveMapSnapshot(args: {
           }
         : { id: "__warehouse_scope_no_access__" }
       : {};
-  const warehouseListScope: Prisma.WarehouseWhereInput =
-    warehouseScoped
-      ? actor.warehouseId
-        ? { id: actor.warehouseId }
-        : { id: "__warehouse_scope_no_access__" }
-      : {};
   const orderViewportWhere = getOrderViewportWhere(viewport);
-  const warehouseViewportWhere = getWarehouseViewportWhere(viewport);
   const viewportDriverIds = viewport ? await readDriverIdsInViewport(viewport) : [];
   const orderSelect = {
     id: true,
@@ -485,9 +478,9 @@ export async function getLiveMapSnapshot(args: {
       take: maxOrders,
     }),
     prisma.warehouse.findMany({
-      where: {
-        AND: [warehouseListScope, warehouseViewportWhere],
-      },
+      // This legacy actor lacks selected membership/tenant context. Contain its
+      // warehouse directory rather than treating user-global assignments as scope.
+      where: { id: { in: [] } },
       select: {
         id: true,
         name: true,

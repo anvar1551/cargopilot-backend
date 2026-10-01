@@ -1,4 +1,5 @@
 import bcrypt from "bcryptjs";
+import { rejectGlobalWarehouseAssignments } from "../../warehouse-core/application/warehouseAccess";
 import jwt from "jsonwebtoken";
 import { randomUUID, createHash } from "crypto";
 import { MembershipStatus, Prisma } from "@prisma/client";
@@ -611,6 +612,7 @@ export async function updateUserAccessByCompanyAdmin(args: {
   driverType?: "local" | "linehaul" | null;
   scopes?: unknown;
 }) {
+  rejectGlobalWarehouseAssignments(args);
   const userId = String(args.userId || "").trim();
   if (!userId) throw new Error("userId is required");
 
@@ -738,6 +740,7 @@ export async function createUserByCompanyAdmin(args: {
   driverType?: "local" | "linehaul" | null;
   scopes?: unknown;
 }) {
+  rejectGlobalWarehouseAssignments(args);
   const name = String(args.name || "").trim();
   const email = String(args.email || "").trim().toLowerCase();
   const password = String(args.password || "");

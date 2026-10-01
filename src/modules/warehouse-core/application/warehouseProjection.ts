@@ -19,7 +19,6 @@ export const WAREHOUSE_SELECT = {
 
 export const WAREHOUSE_DETAIL_SELECT = {
   ...WAREHOUSE_SELECT,
-  users: { select: SAFE_WAREHOUSE_USER_SELECT },
   orders: {
     select: {
       id: true,
@@ -52,11 +51,8 @@ export function warehouseView(row: WarehouseView) {
 export function warehouseDetailView(row: WarehouseDetail) {
   return {
     ...warehouseView(row),
-    users: row.users.map((user) => ({
-      id: user.id,
-      name: user.name,
-      driverType: user.driverType,
-    })),
+    // Global user assignment has no membership binding; retain shape without exposing it.
+    users: [],
     orders: row.orders.map((order) => ({
       id: order.id,
       orderNumber: order.orderNumber,

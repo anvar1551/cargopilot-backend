@@ -8,6 +8,13 @@ import {
 } from "../application/warehouseRepo";
 import { normalizeWarehouseType } from "../application/warehouse.shared";
 import { warehouseView, warehouseDetailView } from "../application/warehouseProjection";
+import { rejectWarehouseFields } from "../application/warehouseAccess";
+
+function sendWarehouseError(reply: any, error: any, fallback: string) {
+  if (error?.code === "P2025") return reply.code(404).send({ error: "Warehouse not found" });
+  if ([400, 403, 404].includes(error?.statusCode)) return reply.code(error.statusCode).send({ error: error.message });
+  return reply.code(500).send({ error: fallback });
+}
 
 function parseCoordinate(value: unknown, axis: "lat" | "lng") {
   if (value == null || value === "") return null;
@@ -20,29 +27,27 @@ function parseCoordinate(value: unknown, axis: "lat" | "lng") {
 const warehouseFastifyRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post(
     "/",
-    { preHandler: fastifyAuth({ permission: "shipment.update" }) },
+    { preHandler: fastifyAuth({ permission: "warehouse.create" }) },
     async (request, reply) => {
       try {
         const body = (request.body ?? {}) as Record<string, unknown>;
+        rejectWarehouseFields(body);
         const name = String(body.name || "").trim();
         const location = String(body.location || "").trim();
         if (!name || !location) {
           return reply.code(400).send({ error: "Name and location are required" });
         }
 
-        const warehouse = await createWarehouse(
-          name,
-          normalizeWarehouseType(typeof body.type === "string" ? body.type : undefined),
-          location,
-          typeof body.region === "string" && body.region.trim() ? body.region.trim() : undefined,
-          parseCoordinate(body.latitude, "lat"),
-          parseCoordinate(body.longitude, "lng"),
-        );
+        const warehouse = await createWarehouse(request.user!, {
+          name, location, type: normalizeWarehouseType(typeof body.type === "string" ? body.type : undefined),
+          region: typeof body.region === "string" && body.region.trim() ? body.region.trim() : null,
+          latitude: parseCoordinate(body.latitude, "lat"), longitude: parseCoordinate(body.longitude, "lng"),
+        });
 
         return reply.code(201).send(warehouseView(warehouse));
       } catch (error) {
         request.log.error({ requestId: request.id }, "createWarehouse failed");
-        return reply.code(500).send({ error: "Failed to create warehouse" });
+        return sendWarehouseError(reply, error, "Failed to create warehouse");
       }
     },
   );
@@ -52,11 +57,13 @@ const warehouseFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     { preHandler: fastifyAuth({ permission: "shipment.view" }) },
     async (request, reply) => {
       try {
-        const warehouses = await listWarehouses();
+        const query = (request.query ?? {}) as Record<string, unknown>;
+        const warehouses = await listWarehouses(request.user!, { search: query.search as string | undefined,
+          page: query.page === undefined ? undefined : Number(query.page), limit: query.limit === undefined ? undefined : Number(query.limit) });
         return reply.send(warehouses.map(warehouseView));
       } catch (error) {
         request.log.error({ requestId: request.id }, "listWarehouses failed");
-        return reply.code(500).send({ error: "Failed to fetch warehouses" });
+        return sendWarehouseError(reply, error, "Failed to fetch warehouses");
       }
     },
   );
@@ -67,12 +74,12 @@ const warehouseFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const id = String((request.params as any)?.id || "").trim();
-        const warehouse = await getWarehouseById(id);
+        const warehouse = await getWarehouseById(request.user!, id);
         if (!warehouse) return reply.code(404).send({ error: "Warehouse not found" });
         return reply.send(warehouseDetailView(warehouse));
       } catch (error) {
         request.log.error({ requestId: request.id }, "getWarehouse failed");
-        return reply.code(500).send({ error: "Failed to fetch warehouse" });
+        return sendWarehouseError(reply, error, "Failed to fetch warehouse");
       }
     },
   );
@@ -84,6 +91,7 @@ const warehouseFastifyRoutes: FastifyPluginAsync = async (fastify) => {
       try {
         const id = String((request.params as any)?.id || "").trim();
         const body = (request.body ?? {}) as Record<string, unknown>;
+        rejectWarehouseFields(body);
         const name = String(body.name || "").trim();
         const location = String(body.location || "").trim();
         if (!id) return reply.code(400).send({ error: "Warehouse id is required" });
@@ -91,7 +99,7 @@ const warehouseFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           return reply.code(400).send({ error: "Name and location are required" });
         }
 
-        const warehouse = await updateWarehouse(id, {
+        const warehouse = await updateWarehouse(request.user!, id, {
           name,
           type: normalizeWarehouseType(typeof body.type === "string" ? body.type : undefined),
           location,
@@ -106,7 +114,7 @@ const warehouseFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           return reply.code(404).send({ error: "Warehouse not found" });
         }
         request.log.error({ requestId: request.id }, "updateWarehouse failed");
-        return reply.code(500).send({ error: "Failed to update warehouse" });
+        return sendWarehouseError(reply, error, "Failed to update warehouse");
       }
     },
   );

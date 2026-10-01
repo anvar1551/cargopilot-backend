@@ -24,8 +24,8 @@ const snapshot = {
   userId: "user-a", membershipId: "membership-a", companyMembershipId: "membership-a",
   companyId: "company-a", tenantId: "tenant-a", tenantMembershipId: "tenant-membership-a", branchId: null,
   name: "Worker", email: "worker@example.test", warehouseId: "warehouse-a", customerEntityId: null,
-  roleCodes: ["worker"], permissionCodes: ["shipment.view", "shipment.update"],
-  scopes: [{ scopeType: "warehouse" as const, scopeRefId: "warehouse-a" }],
+  roleCodes: ["worker"], permissionCodes: ["shipment.view", "shipment.update", "warehouse.create"],
+  scopes: [{ scopeType: "warehouse" as const, scopeRefId: "warehouse-a" }, { scopeType: "company" as const, scopeRefId: "company-a" }],
 };
 
 describe("warehouse recursive response boundary (mocked DB, real routes/repository)", () => {
@@ -35,7 +35,7 @@ describe("warehouse recursive response boundary (mocked DB, real routes/reposito
     jest.mocked(loadAccessSnapshot).mockResolvedValue(snapshot);
     database.companyMembership.findFirst.mockResolvedValue(null);
     database.warehouse.findMany.mockResolvedValue([dirty, { ...dirty, id: "warehouse-b" }]);
-    database.warehouse.findUnique.mockResolvedValue(dirty);
+    database.warehouse.findFirst.mockResolvedValue(dirty);
     database.warehouse.create.mockResolvedValue(dirty);
     database.warehouse.update.mockResolvedValue(dirty);
   });
@@ -53,7 +53,7 @@ describe("warehouse recursive response boundary (mocked DB, real routes/reposito
 
   it.each([
     ["GET", "/api/warehouses", "findMany", 200],
-    ["GET", "/api/warehouses/warehouse-a", "findUnique", 200],
+    ["GET", "/api/warehouses/warehouse-a", "findFirst", 200],
     ["POST", "/api/warehouses", "create", 201],
     ["PUT", "/api/warehouses/warehouse-a", "update", 200],
   ] as const)("projects %s %s including unexpected nested model fields", async (method, url, operation, status) => {
@@ -67,12 +67,9 @@ describe("warehouse recursive response boundary (mocked DB, real routes/reposito
       const call = database.warehouse[operation].mock.calls[0][0];
       expect(call).not.toHaveProperty("include");
       expect(call.select).toBeDefined();
-      if (operation === "findUnique") {
-        expect(call.select.users.select).toEqual({ id: true, name: true, driverType: true });
-        expect(result.json().users).toEqual([
-          { id: "user-a", name: sensitiveUser.name, driverType: "local" },
-          { id: "user-b", name: sensitiveUser.name, driverType: "local" },
-        ]);
+      if (operation === "findFirst") {
+        expect(call.select.users).toBeUndefined();
+        expect(result.json().users).toEqual([]);
         expect(Object.keys(result.json().orders[0]).sort()).toEqual(["createdAt", "id", "orderNumber", "serviceType", "status", "updatedAt"]);
       } else {
         const row = Array.isArray(result.json()) ? result.json()[0] : result.json();
@@ -82,13 +79,13 @@ describe("warehouse recursive response boundary (mocked DB, real routes/reposito
     } finally { await server.close(); }
   });
 
-  it.each(["findMany", "findUnique", "create", "update"])("sanitizes %s exceptions recursively", async (operation) => {
+  it.each(["findMany", "findFirst", "create", "update"])("sanitizes %s exceptions recursively", async (operation) => {
     database.warehouse[operation].mockRejectedValueOnce(Object.assign(new Error("SENSITIVE-CANARY"), sensitiveUser));
-    const methods = { findMany: "GET", findUnique: "GET", create: "POST", update: "PUT" } as const;
+    const methods = { findMany: "GET", findFirst: "GET", create: "POST", update: "PUT" } as const;
     const server = await app();
     try {
       const result = await server.inject({ method: methods[operation as keyof typeof methods],
-        url: `/api/warehouses${["findUnique", "update"].includes(operation) ? "/warehouse-a" : ""}`,
+        url: `/api/warehouses${["findFirst", "update"].includes(operation) ? "/warehouse-a" : ""}`,
         headers: headers(), ...(["create", "update"].includes(operation) ? { payload: { name: "A", location: "B" } } : {}),
       });
       expect(result.statusCode).toBe(500);
@@ -98,7 +95,7 @@ describe("warehouse recursive response boundary (mocked DB, real routes/reposito
 
   it("preserves safe validation and not-found responses", async () => {
     const server = await app();
-    database.warehouse.findUnique.mockResolvedValueOnce(null);
+    database.warehouse.findFirst.mockResolvedValueOnce(null);
     try {
       const missing = await server.inject({ url: "/api/warehouses/missing", headers: headers() });
       expect(missing.statusCode).toBe(404);
@@ -129,7 +126,22 @@ describe("warehouse recursive response boundary (mocked DB, real routes/reposito
       const result = await server.inject({ url: "/api/warehouses/warehouse-b", headers: headers() });
       expect(result.statusCode).toBe(403);
       expectNoSensitiveFields(result.json());
-      expect(database.warehouse.findUnique).not.toHaveBeenCalled();
+      expect(database.warehouse.findFirst).not.toHaveBeenCalled();
+    } finally { await server.close(); }
+  });
+  it("rejects HTTP ownership and nested assignment fields rather than silently dropping them", async () => {
+    const server = await app();
+    try {
+      for (const [method, url, extra] of [
+        ["POST", "/api/warehouses", { tenantId: "foreign" }],
+        ["PUT", "/api/warehouses/warehouse-a", { users: { connect: { id: "foreign" } } }],
+        ["POST", "/api/warehouses", { companyId: "foreign" }],
+      ] as const) {
+        const response = await server.inject({ method, url, headers: headers(), payload: { name: "Synthetic", location: "Test", ...extra } });
+        expect(response.statusCode).toBe(400);
+      }
+      expect(database.warehouse.create).not.toHaveBeenCalled();
+      expect(database.warehouse.update).not.toHaveBeenCalled();
     } finally { await server.close(); }
   });
 });

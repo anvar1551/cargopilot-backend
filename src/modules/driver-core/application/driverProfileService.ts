@@ -2,6 +2,7 @@ import { DriverType } from "@prisma/client";
 import { z } from "zod";
 import prisma from "../../../config/prismaClient";
 import { listAllDrivers } from "./driverRepo";
+import { rejectGlobalWarehouseAssignments } from "../../warehouse-core/application/warehouseAccess";
 
 const updateDriverSchema = z.object({
   primaryWarehouseId: z.string().uuid().nullable().optional(),
@@ -14,6 +15,7 @@ export async function listDriversView() {
 }
 
 export async function updateDriverProfileById(driverId: string, body: unknown) {
+  rejectGlobalWarehouseAssignments((body ?? {}) as object);
   const normalizedDriverId = String(driverId ?? "").trim();
   if (!normalizedDriverId) {
     const err = new Error("Driver id is required") as Error & { statusCode?: number };
