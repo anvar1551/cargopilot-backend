@@ -511,12 +511,31 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
     });
   }
 
-  async listPeriods(companyId: string, page: CursorPage) {
+  async listPeriods(actor: AppUser, page: CursorPage) {
+    const context = await requireLegalEntityContext(actor, "finance.periods.read");
+    if (!page || Object.keys(page).some(key => !["cursor", "limit"].includes(key)) ||
+        !Number.isInteger(page.limit) || page.limit < 1 || page.limit > 100 ||
+        (page.cursor !== undefined && (typeof page.cursor !== "string" ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(page.cursor)))) {
+      throw financeBadRequest("Invalid fiscal period page");
+    }
+    const owned: Prisma.FinanceFiscalPeriodWhereInput = { legalEntity: { is: {
+      tenantId: context.tenantId, companyId: context.companyId, isActive: true,
+      company: { is: { tenantId: context.tenantId, isActive: true } },
+      tenant: { is: { status: "active" } },
+    } } };
+    let position: { startDate: Date; id: string } | null = null;
+    if (page.cursor !== undefined) {
+      position = await prisma.financeFiscalPeriod.findFirst({ where: { AND: [owned, { id: page.cursor }] },
+        select: { startDate: true, id: true } });
+      if (!position) throw financeNotFound("Fiscal period cursor not found");
+    }
     const rows = await prisma.financeFiscalPeriod.findMany({
-      where: { legalEntity: { companyId } },
-      orderBy: [{ startDate: "desc" }, { id: "desc" }],
-      take: page.limit + 1,
-      ...(page.cursor ? { cursor: { id: page.cursor }, skip: 1 } : {}),
+      where: { AND: [owned, ...(position ? [{ OR: [{ startDate: { lt: position.startDate } },
+        { startDate: position.startDate, id: { lt: position.id } }] }] : [])] },
+      orderBy: [{ startDate: "desc" }, { id: "desc" }], take: page.limit + 1,
+      select: { id: true, legalEntityId: true, fiscalYear: true, periodNumber: true, name: true,
+        startDate: true, endDate: true, status: true, closedAt: true, createdAt: true, updatedAt: true },
     });
     return pageResult(rows, page.limit);
   }

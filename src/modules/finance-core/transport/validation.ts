@@ -13,6 +13,8 @@ export const cursorPageSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
 });
 
+export const periodPageSchema = cursorPageSchema.strict();
+
 export const sourceEventPageSchema = cursorPageSchema.extend({
   status: z.enum(["pending", "processing", "posted", "exception"]).optional(),
 });

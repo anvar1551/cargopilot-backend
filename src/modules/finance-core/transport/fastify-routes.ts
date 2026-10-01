@@ -28,6 +28,7 @@ import {
   createPeriodSchema,
   createPostingRuleSchema,
   cursorPageSchema,
+  periodPageSchema,
   financeIdParamSchema,
   reverseJournalSchema,
   sourceEventPageSchema,
@@ -878,8 +879,8 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     { preHandler: fastifyAuth({ permission: "finance.periods.read" }) },
     async (request, reply) => {
       try {
-        const page = cursorPageSchema.parse(request.query);
-        return reply.send(await financeService.listPeriods(request.user!.companyId, page));
+        const page = periodPageSchema.parse(request.query);
+        return reply.send(await financeService.listPeriods(request.user!, page));
       } catch (error) {
         return sendError(reply, error, "Failed to load fiscal periods");
       }

@@ -76,8 +76,9 @@ export class FinanceService {
     return this.repository.bootstrapChart({ ...input, accounts });
   }
 
-  listPeriods(companyId: string, page: { cursor?: string; limit: number }) {
-    return this.repository.listPeriods(companyId, page);
+  async listPeriods(actor: AppUser, page: { cursor?: string; limit: number }) {
+    await requireLegalEntityContext(actor, "finance.periods.read");
+    return this.repository.listPeriods(actor, page);
   }
 
   createPeriod(input: {

@@ -21,3 +21,5 @@ Run 35871f7787a5 reused the owned-resource runner: cached PostgreSQL 16 Alpine (
 ## Remaining gaps and next step
 
 Add a compound legalEntityId/parentId relationship constraint in a new additive migration; preserve current read containment even when legacy rows have not been certified. Existing FinanceAccount hierarchy FK permits cross-legal-entity parents. Parent equality is not tenant certification of null-owned legal entities. General chart/account mutations, journal/period/payment/source policies, maker-checker configuration acceptance, approved exact pricing/FX, nullable cutover, RLS, concurrency outside these reads and prior release blockers remain open. Rollback must retain scoping or disable reads. No complete isolation/production readiness claim.
+
+Subsequent period-read PostgreSQL validation exposed that the access snapshot synthesizes company scope when storage is empty. The finance helper is now strengthened to require the explicit stored grant; see Finance_Period_Read_Containment.md. Earlier evidence did not exercise scope removal and must not be read as proof of that missing-scope boundary.
