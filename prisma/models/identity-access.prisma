@@ -68,6 +68,8 @@ model RolePermission {
 }
 
 model CompanyMembership {
+  draftDocuments FinanceDocument[] @relation("DraftCompany")
+  bridgedDraftDocuments FinanceDocument[] @relation("DraftBridge")
   assignedSupportTickets SupportTicket[] @relation("SupportOwnerMembership")
   proofSubmissions ProofSubmission[] @relation("ProofSubmissionCompany")
   proofSubmissionBridges ProofSubmission[] @relation("ProofSubmissionBridge")

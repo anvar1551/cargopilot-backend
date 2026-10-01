@@ -1,3 +1,4 @@
+import { buildDraftIntent, assertDraftRetry, projectDraftResult } from "../domain/draft-intent";
 import { requireJournalEntity, assertJournalBindings, assertReversalRetry } from "./journal-integrity";
 import { listOwnedJournals, getOwnedJournal } from "./journal-read";
 import { rejectUnacceptedInvoiceExecution } from "../domain/invoice-execution-containment";
@@ -669,6 +670,8 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
     return prisma.$transaction(async (tx) => {
       const entity = await requireJournalEntity(tx, command.companyId);
       if (entity.tenantId !== context.tenantId) throw financeConflict("Journal tenant context rejected", "FINANCE_JOURNAL_OWNERSHIP_REJECTED");
+      const intent = buildDraftIntent(command, context, entity);
+      await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtextextended(${"finance-draft:" + entity.id + ":" + command.idempotencyKey}, 0))`;
       const duplicate = await tx.financeDocument.findUnique({
         where: {
           legalEntityId_idempotencyKey: {
@@ -678,15 +681,15 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
         },
         include: { journalEntry: { include: journalInclude } },
       });
-      if (duplicate?.journalEntry) { await assertJournalBindings(tx, duplicate.journalEntry, entity.id); return duplicate.journalEntry; }
+      if (duplicate) {
+        if (!duplicate.journalEntry) throw financeConflict("Draft key has an incomplete or legacy result", "FINANCE_DRAFT_IDEMPOTENCY_CONFLICT");
+        await assertJournalBindings(tx, duplicate.journalEntry, entity.id);
+        assertDraftRetry(duplicate.journalEntry, intent);
+        return projectDraftResult(duplicate.journalEntry);
+      }
 
       await requireOpenPeriod(tx, entity.id, command.postingDate);
-      const prepared = prepareJournal({
-        currency: command.currency,
-        baseCurrency: entity.baseCurrency,
-        fxRate: command.fxRate,
-        lines: command.lines,
-      });
+      const prepared = intent.prepared;
       const accountIds = [...new Set(prepared.lines.map((line) => line.accountId))];
       const accounts = await tx.financeAccount.findMany({
         where: { id: { in: accountIds }, legalEntityId: entity.id },
@@ -722,6 +725,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
       ]);
       const document = await tx.financeDocument.create({
         data: {
+          ...intent.binding,
           legalEntityId: entity.id,
           documentNumber,
           type: "manual_journal",
@@ -795,7 +799,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
           payload: { companyId: command.companyId, documentNumber, journalNumber },
         }),
       ]);
-      return journal;
+      return projectDraftResult(journal);
     });
   }
 

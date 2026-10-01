@@ -33,6 +33,7 @@ model Tenant {
 }
 
 model TenantMembership {
+  draftDocuments FinanceDocument[] @relation("DraftTenant")
   id       String           @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   tenantId String           @db.Uuid
   tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)

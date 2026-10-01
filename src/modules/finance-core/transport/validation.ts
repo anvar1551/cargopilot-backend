@@ -126,7 +126,7 @@ const journalLineSchema = z.object({
   costCenterCode: z.string().trim().max(100).optional(),
   profitCenterCode: z.string().trim().max(100).optional(),
   metadata: metadata.optional(),
-});
+}).strict();
 
 export const createJournalSchema = z.object({
   idempotencyKey: z.string().trim().min(8).max(200),
@@ -141,13 +141,13 @@ export const createJournalSchema = z.object({
   sourceEventId: z.string().trim().max(200).nullable().optional(),
   metadata: metadata.optional(),
   lines: z.array(journalLineSchema).min(2).max(500),
-});
+}).strict();
 
 export const reverseJournalSchema = z.object({
   postingDate: date,
   reason: z.string().trim().min(3).max(1000),
   idempotencyKey: z.string().trim().min(8).max(200),
-});
+}).strict();
 
 export const trialBalanceQuerySchema = z.object({
   from: date,

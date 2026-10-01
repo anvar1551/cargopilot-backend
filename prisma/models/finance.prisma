@@ -168,6 +168,7 @@ model FinanceLegalEntity {
   periods                    FinanceFiscalPeriod[]
   postingRules               FinancePostingRule[]
   documents                  FinanceDocument[]
+  ownedDraftDocuments FinanceDocument[] @relation("DraftEntity")
   journalEntries             FinanceJournalEntry[]
   auditEvents                FinanceAuditEvent[]
   outboxEvents               FinanceDomainEventOutbox[]
@@ -185,6 +186,7 @@ model FinanceLegalEntity {
 
   @@index([isActive])
   @@unique([tenantId, id], map: "FinanceLegalEntity_tenant_identity_key")
+  @@unique([id, tenantId, companyId], map: "FinanceLegalEntity_draft_owner_key")
   @@unique([tenantId, companyId], map: "FinanceLegalEntity_tenant_company_key")
   @@index([tenantId, isActive])
 }
@@ -344,6 +346,15 @@ model FinancePostingRuleLine {
 }
 
 model FinanceDocument {
+  draftIntentHash String? @db.VarChar(64)
+  draftTenantId String? @db.Uuid
+  draftCompanyId String? @db.Uuid
+  draftTenantMembershipId String? @db.Uuid
+  draftCompanyMembershipId String? @db.Uuid
+  draftEntity FinanceLegalEntity? @relation("DraftEntity", fields: [legalEntityId, draftTenantId, draftCompanyId], references: [id, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceDocument_draft_entity_fkey")
+  draftCompanyMembership CompanyMembership? @relation("DraftCompany", fields: [draftCompanyMembershipId, createdByUserId, draftTenantId, draftCompanyId], references: [id, userId, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceDocument_draft_company_fkey")
+  draftMembershipBridge CompanyMembership? @relation("DraftBridge", fields: [draftCompanyMembershipId, draftTenantMembershipId, createdByUserId, draftTenantId], references: [id, tenantMembershipId, userId, tenantId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceDocument_draft_bridge_fkey")
+  draftTenantMembership TenantMembership? @relation("DraftTenant", fields: [draftTenantMembershipId, createdByUserId, draftTenantId], references: [id, userId, tenantId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceDocument_draft_tenant_fkey")
   id             String                @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   legalEntityId  String                @db.Uuid
   legalEntity    FinanceLegalEntity    @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
