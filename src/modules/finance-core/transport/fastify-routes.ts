@@ -1071,7 +1071,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         const query = trialBalanceQuerySchema.parse(request.query);
         return reply.send(
           await financeService.getTrialBalance(
-            request.user!.companyId,
+            request.user!,
             toDate(query.from),
             toDate(query.to),
           ),

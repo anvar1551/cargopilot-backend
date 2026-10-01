@@ -63,16 +63,16 @@ describe("FinanceService", () => {
     expect(repository.createPeriod).not.toHaveBeenCalled();
   });
 
-  it("rejects an inverted trial-balance range", () => {
+  it("rejects an inverted trial-balance range", async () => {
     const repository = repositoryMock();
     const service = new FinanceService(repository);
-    expect(() =>
+    await expect(
       service.getTrialBalance(
-        "company",
+        {} as any,
         new Date("2026-02-01T00:00:00.000Z"),
         new Date("2026-01-01T00:00:00.000Z"),
       ),
-    ).toThrow(expect.objectContaining({ code: "FINANCE_INVALID_DATE_RANGE" }));
+    ).rejects.toMatchObject({ code: "FINANCE_INVALID_DATE_RANGE" });
     expect(repository.getTrialBalance).not.toHaveBeenCalled();
   });
 });

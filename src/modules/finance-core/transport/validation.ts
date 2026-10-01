@@ -152,7 +152,7 @@ export const reverseJournalSchema = z.object({
 export const trialBalanceQuerySchema = z.object({
   from: date,
   to: date,
-});
+}).strict();
 
 export const financeDocumentPageSchema = cursorPageSchema.extend({
   status: z.enum(["draft", "submitted", "approved", "rejected", "cancelled"]).optional(),

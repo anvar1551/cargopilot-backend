@@ -117,7 +117,7 @@ export interface FinanceRepositoryPort {
   createDraftJournal(command: CreateJournalCommand, actor: AppUser): Promise<unknown>;
   postJournal(actor: AppUser, journalId: string): Promise<unknown>;
   reverseJournal(command: ReverseJournalCommand, actor: AppUser): Promise<unknown>;
-  getTrialBalance(companyId: string, from: Date, to: Date): Promise<unknown>;
+  getTrialBalance(actor: AppUser, from: Date, to: Date): Promise<unknown>;
   listPostingRules(companyId: string, page: CursorPage): Promise<unknown>;
   getPostingRule(companyId: string, ruleId: string): Promise<unknown>;
   createPostingRule(command: CreatePostingRuleCommand): Promise<unknown>;

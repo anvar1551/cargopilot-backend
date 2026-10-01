@@ -162,11 +162,12 @@ export class FinanceService {
     return this.repository.reverseJournal(input, actor);
   }
 
-  getTrialBalance(companyId: string, from: Date, to: Date) {
-    if (from > to) {
+  async getTrialBalance(actor: AppUser, from: Date, to: Date) {
+    if (!(from instanceof Date) || !(to instanceof Date) || !Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) || from > to) {
       throw financeBadRequest("from must be on or before to", "FINANCE_INVALID_DATE_RANGE");
     }
-    return this.repository.getTrialBalance(companyId, from, to);
+    await requireLegalEntityContext(actor, "finance.reports.read");
+    return this.repository.getTrialBalance(actor, from, to);
   }
 
   listPostingRules(companyId: string, page: { cursor?: string; limit: number }) {

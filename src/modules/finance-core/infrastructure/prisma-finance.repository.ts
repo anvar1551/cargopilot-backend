@@ -1,3 +1,4 @@
+import { readOwnedTrialBalance } from "./trial-balance-read";
 import { buildDraftIntent, assertDraftRetry, projectDraftResult } from "../domain/draft-intent";
 import { requireJournalEntity, assertJournalBindings, assertReversalRetry } from "./journal-integrity";
 import { listOwnedJournals, getOwnedJournal } from "./journal-read";
@@ -1004,50 +1005,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
     });
   }
 
-  async getTrialBalance(companyId: string, from: Date, to: Date) {
-    const entity = await prisma.financeLegalEntity.findUnique({ where: { companyId } });
-    if (!entity) {
-      throw financeNotFound(
-        "Finance legal entity is not configured for this company",
-        "FINANCE_ENTITY_NOT_CONFIGURED",
-      );
-    }
-    const balances = await prisma.financeJournalLine.groupBy({
-      by: ["accountId"],
-      where: {
-        journalEntry: {
-          legalEntityId: entity.id,
-          status: { in: ["posted", "reversed"] },
-          postingDate: { gte: from, lte: to },
-        },
-      },
-      _sum: { debitBase: true, creditBase: true },
-      orderBy: { accountId: "asc" },
-    });
-    const accounts = await prisma.financeAccount.findMany({
-      where: { id: { in: balances.map((row) => row.accountId) }, legalEntityId: entity.id },
-      select: { id: true, code: true, name: true, type: true },
-    });
-    const accountById = new Map(accounts.map((account) => [account.id, account]));
-    let totalDebit = new Prisma.Decimal(0);
-    let totalCredit = new Prisma.Decimal(0);
-    const rows = balances.map((balance) => {
-      const debit = balance._sum.debitBase ?? new Prisma.Decimal(0);
-      const credit = balance._sum.creditBase ?? new Prisma.Decimal(0);
-      totalDebit = totalDebit.add(debit);
-      totalCredit = totalCredit.add(credit);
-      return { account: accountById.get(balance.accountId), debit, credit, balance: debit.sub(credit) };
-    });
-    return {
-      baseCurrency: entity.baseCurrency,
-      from,
-      to,
-      totalDebit,
-      totalCredit,
-      balanced: totalDebit.eq(totalCredit),
-      rows,
-    };
-  }
+  getTrialBalance(actor: AppUser, from: Date, to: Date) { return readOwnedTrialBalance(actor, from, to); }
 
   async listPostingRules(companyId: string, page: CursorPage) {
     const rows = await prisma.financePostingRule.findMany({
