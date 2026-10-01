@@ -14,7 +14,7 @@ const { PNG } = require("pngjs");
 const fixtureImage = () => PNG.sync.write({ width: 20, height: 10, data: Buffer.alloc(20 * 10 * 4, 255) }, { deflateLevel: 0 });
 const actor: any = { id: "driver-a", membershipId: "membership-a", companyMembershipId: "membership-a", companyId: "company-a", tenantId: "tenant-a", tenantMembershipId: "tm-a" };
 const originalBucket = process.env.AWS_S3_BUCKET;
-const input = () => ({ actor, orderId: "order-a", body: { signedBy: "Recipient", signaturePaths: ["1,2;30,40"] }, file: { buffer: fixtureImage(), size: 1, originalname: "camera.png", mimetype: "image/png" } });
+const input = () => ({ actor, orderId: "order-a", body: { submissionId: "synthetic-proof-submission", signedBy: "Recipient", signaturePaths: ["1,2;30,40"] }, file: { buffer: fixtureImage(), size: 1, originalname: "camera.png", mimetype: "image/png" } });
 beforeEach(() => {
   jest.clearAllMocks(); process.env.AWS_S3_BUCKET = "fixture-bucket-never-contacted";
   db.companyMembership.findFirst.mockResolvedValue({
@@ -26,6 +26,8 @@ beforeEach(() => {
     roles: [{ role: { code: "driver", rolePermissions: ["shipment.update", "shipment.view"].map(key => ({ permission: { key } })) } }],
   });
   db.order.findFirst.mockResolvedValue({ id: "order-a", tenantId: "tenant-a", ownerOrgId: "company-a", assignedDriverId: actor.id, currentWarehouseId: "warehouse-a" });
+  db.$queryRaw.mockImplementation(async (parts: any) => String(parts[0]).includes("SELECT") ? [] : [{ proofId: "synthetic-proof-id" }]);
+  db.$executeRaw.mockResolvedValue(1);
   db.$transaction.mockImplementation(async (work: any) => work(db));
   db.orderAttachment.create.mockImplementation(async ({ data }: any) => ({ id: "attachment-a", ...data }));
   db.tracking.create.mockResolvedValue({ id: "tracking-a" });
@@ -85,10 +87,10 @@ it("rejects truncated content before codec/storage work", () => {
   expect(() => validateProofPng(fixtureImage().subarray(0, 40))).toThrow(); noEffects();
 });
 
-it("preserves best-effort object cleanup when the database transaction fails", async () => {
+it("retains owned storage for reconciliation when the database transaction outcome is uncertain", async () => {
   db.$transaction.mockRejectedValueOnce(new Error("transaction failed"));
   await expect(submitProofForActor(input())).rejects.toThrow("transaction failed");
-  expect((s3.send as jest.Mock).mock.calls.map(([command]) => command.constructor.name)).toEqual(["PutObjectCommand", "PutObjectCommand", "DeleteObjectCommand", "DeleteObjectCommand"]);
+  expect((s3.send as jest.Mock).mock.calls.map(([command]) => command.constructor.name)).toEqual(["PutObjectCommand", "PutObjectCommand"]);
 });
 
 it("does not presign proof keys belonging to a different order/company", async () => {

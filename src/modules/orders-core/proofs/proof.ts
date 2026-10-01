@@ -1,7 +1,7 @@
-import { randomUUID } from "crypto";
-import { MAX_PROOF_BYTES, processProofRaster } from "./raster-processing";
+import { acceptProof, findProofRetry, markProofStored, confirmProof, sha256 } from "./submission";
+import { MAX_PROOF_BYTES, processProofRaster, proofSignaturePoints, validateProofPng } from "./raster-processing";
 import { requireAuthorizedOrder } from "../domain/order-access";
-import { DeleteObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { PutObjectCommand } from "@aws-sdk/client-s3";
 
 import prisma from "../../../config/prismaClient";
 import { s3 } from "../../../config/s3";
@@ -205,15 +205,20 @@ async function buildProofBundlesForOrder(args: {
   return bundles;
 }
 
+export async function requireProofSubmissionContext(actor: OrderActor, orderId: string) {
+  const order = await requireAuthorizedOrder(actor, orderId, "shipment.update");
+  if (!order.ownerOrgId || order.ownerOrgId !== actor.companyId || order.assignedDriverId !== actor.id) {
+    throw orderError("You are not assigned to this order", 403);
+  }
+  return { ...order, ownerOrgId: order.ownerOrgId };
+}
+
 export async function submitProofForActor(input: SubmitProofInput) {
   const { actor, orderId, body, file, forcedStage } = input;
   const proofTimestamp = input.receivedAt ?? new Date();
   if (!orderId) throw orderError("Missing order id", 400);
   const stage = parseProofStage(body.stage, forcedStage ?? "delivery");
-  const order = await requireAuthorizedOrder(actor, orderId, "shipment.update");
-  if (!order.ownerOrgId || order.ownerOrgId !== actor.companyId || order.assignedDriverId !== actor.id) {
-    throw orderError("You are not assigned to this order", 403);
-  }
+  const order = await requireProofSubmissionContext(actor, orderId);
   const membership = { companyId: order.ownerOrgId };
 
   const signedBy = normalizeSignedBy(body.signedBy);
@@ -229,15 +234,29 @@ export async function submitProofForActor(input: SubmitProofInput) {
     clientCapturedAt = new Date(captureValue).toISOString();
   }
   if (body.clientCapturedAt && body.savedAt && body.clientCapturedAt !== body.savedAt) throw orderError("Conflicting client capture timestamps", 400);
-  const raster = await processProofRaster(file.buffer, body.signaturePaths);
-
+  validateProofPng(file.buffer);
+  const submissionId = typeof body.submissionId === "string" ? body.submissionId : "";
+  const intent = { stage, signedBy, clientCapturedAt, photoSha256: sha256(file.buffer), strokes: proofSignaturePoints(body.signaturePaths) };
+  const fingerprint = sha256(JSON.stringify(intent));
+  const retry = await findProofRetry({ submissionId, actor, orderId: order.id, stage, fingerprint });
+  if (retry) {
+    Object.defineProperty(retry.existing, "proofReplay", { value: true, enumerable: false });
+    return retry.existing;
+  }
   const bucket = String(process.env.AWS_S3_BUCKET ?? "").trim();
   if (!bucket) throw orderError("AWS_S3_BUCKET is not configured", 500);
-
-  const proofId = randomUUID();
+  const raster = await processProofRaster(file.buffer, body.signaturePaths);
+  const acceptance = await acceptProof({ submissionId, actor, orderId: order.id, stage,
+    bucket, receivedAt: proofTimestamp, fingerprint, intent,
+    photoSha256: sha256(raster.photo), signatureSha256: sha256(raster.signature) });
+  if (acceptance.existing) {
+    Object.defineProperty(acceptance.existing, "proofReplay", { value: true, enumerable: false });
+    return acceptance.existing;
+  }
+  const proofId = acceptance.proofId;
   const photoExt = ".png";
-  const photoKey = `${stage}-proofs/${membership.companyId}/${order.id}/${proofId}/photo${photoExt}`;
-  const signatureKey = `${stage}-proofs/${membership.companyId}/${order.id}/${proofId}/signature.png`;
+  const photoKey: string = acceptance.storageManifest.photoKey;
+  const signatureKey: string = acceptance.storageManifest.signatureKey;
   const signedBySafe = sanitizeFileName(signedBy);
 
   await Promise.all([
@@ -245,10 +264,13 @@ export async function submitProofForActor(input: SubmitProofInput) {
       new PutObjectCommand({
         Bucket: bucket,
         Key: photoKey,
+        IfNoneMatch: "*",
         Body: raster.photo,
+        ChecksumSHA256: Buffer.from(sha256(raster.photo), "hex").toString("base64"),
         ContentType: "image/png",
         ContentDisposition: "attachment",
         Metadata: {
+          submissionid: submissionId,
           orderid: order.id,
           companyid: membership.companyId,
           receivedat: proofTimestamp.toISOString(),
@@ -263,7 +285,9 @@ export async function submitProofForActor(input: SubmitProofInput) {
       new PutObjectCommand({
         Bucket: bucket,
         Key: signatureKey,
+        IfNoneMatch: "*",
         Body: raster.signature,
+        ChecksumSHA256: Buffer.from(sha256(raster.signature), "hex").toString("base64"),
         ContentType: "image/png",
         ContentDisposition: "attachment",
         Metadata: {
@@ -279,14 +303,13 @@ export async function submitProofForActor(input: SubmitProofInput) {
     ),
   ]);
 
+  await markProofStored(submissionId);
   const stageLabel = stage === "pickup" ? "Pickup" : "Delivery";
 
-  let result: {
-    photoAttachment: { id: string; key: string; mimeType: string | null; size: number | null };
-    signatureAttachment: { id: string; key: string; mimeType: string | null; size: number | null };
-  };
-  try {
-    result = await prisma.$transaction(async (tx) => {
+  // Storage is not transactional with PostgreSQL. Failures retain an incomplete receipt
+  // and deterministic owned objects for reconciliation; never delete after uncertain commit.
+  await requireProofSubmissionContext(actor, orderId);
+  return prisma.$transaction(async (tx) => {
       const photoAttachment = await tx.orderAttachment.create({
         data: {
           orderId: order.id,
@@ -322,38 +345,32 @@ export async function submitProofForActor(input: SubmitProofInput) {
         },
       });
 
-      return { photoAttachment, signatureAttachment };
-    });
-  } catch (error) {
-    await Promise.allSettled([
-      s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: photoKey })),
-      s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: signatureKey })),
-    ]);
-    throw error;
-  }
-
-  return {
+      const response = {
     success: true,
     proof: {
+      submissionId,
       orderId: order.id,
       stage,
       signedBy,
       savedAt: proofTimestamp.toISOString(),
       clientCapturedAt,
       photo: {
-        id: result.photoAttachment.id,
-        key: result.photoAttachment.key,
-        mimeType: result.photoAttachment.mimeType,
-        size: result.photoAttachment.size,
+        id: photoAttachment.id,
+        key: photoAttachment.key,
+        mimeType: photoAttachment.mimeType,
+        size: photoAttachment.size,
       },
       signature: {
-        id: result.signatureAttachment.id,
-        key: result.signatureAttachment.key,
-        mimeType: result.signatureAttachment.mimeType,
-        size: result.signatureAttachment.size,
+        id: signatureAttachment.id,
+        key: signatureAttachment.key,
+        mimeType: signatureAttachment.mimeType,
+        size: signatureAttachment.size,
       },
     },
   };
+      await confirmProof(tx, submissionId, response);
+      return response;
+  });
 }
 
 export async function listOrderProofLinksForActor(input: ListProofInput) {

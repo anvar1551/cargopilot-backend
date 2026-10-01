@@ -1,0 +1,29 @@
+// New submissions only; no legacy proof/queue ownership inference.
+model ProofSubmission {
+  submissionId String @id @db.VarChar(100)
+  proofId String @unique @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  userId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  companyMembershipId String @db.Uuid
+  orderId String @db.Uuid
+  stage String
+  fingerprint String @db.Char(64)
+  storageManifest Json
+  intent Json
+  photoSha256 String @db.Char(64)
+  signatureSha256 String @db.Char(64)
+  state String @default("accepted")
+  result Json?
+  receivedAt DateTime
+  createdAt DateTime @default(now())
+  confirmedAt DateTime?
+
+  order Order @relation(fields: [tenantId, orderId, companyId], references: [tenantId, id, ownerOrgId], onDelete: Restrict, onUpdate: Restrict, map: "ProofSubmission_order_owner_fkey")
+  membership CompanyMembership @relation("ProofSubmissionCompany", fields: [companyMembershipId, userId, tenantId, companyId], references: [id, userId, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "ProofSubmission_company_context_fkey")
+  bridge CompanyMembership @relation("ProofSubmissionBridge", fields: [companyMembershipId, tenantMembershipId, userId, tenantId], references: [id, tenantMembershipId, userId, tenantId], onDelete: Restrict, onUpdate: Restrict, map: "ProofSubmission_membership_bridge_fkey")
+
+  @@index([tenantId, companyId, orderId])
+  @@index([state, createdAt])
+}

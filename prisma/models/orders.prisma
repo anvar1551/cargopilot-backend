@@ -128,6 +128,7 @@ enum RecipientUnavailableAction {
 }
 
 model Order {
+  proofSubmissions ProofSubmission[]
   id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   tenantId String? @db.Uuid

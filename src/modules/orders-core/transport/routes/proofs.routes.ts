@@ -1,3 +1,4 @@
+import { requireProofSubmissionContext } from "../../proofs/proof";
 import { requireAuthorizedOrder } from "../../domain/order-access";
 import { MAX_PROOF_BYTES } from "../../proofs/raster-processing";
 import { FastifyPluginAsync } from "fastify";
@@ -13,6 +14,7 @@ async function handleProofSubmit(request: any, reply: any, forcedStage?: "delive
   const file = await request.file();
   if (!file) return reply.code(400).send({ error: "photo is required" });
   const buffer = await file.toBuffer();
+  const submissionId = fieldValue((file.fields as any)?.submissionId);
   const stage = fieldValue((file.fields as any)?.stage);
   const signedBy = fieldValue((file.fields as any)?.signedBy);
   const signatureSvg = fieldValue((file.fields as any)?.signatureSvg);
@@ -24,20 +26,28 @@ async function handleProofSubmit(request: any, reply: any, forcedStage?: "delive
     const result = await submitProofForActor({
       actor,
       orderId: String(request.params?.id ?? "").trim(),
-      body: { stage, signedBy, signatureSvg, savedAt, clientCapturedAt, signaturePaths },
+      body: { submissionId, stage, signedBy, signatureSvg, savedAt, clientCapturedAt, signaturePaths },
       file: { buffer, originalname: file.filename, mimetype: file.mimetype, size: buffer.length },
       forcedStage,
       receivedAt,
     });
-    await emitMutationInvalidation("order_mutation");
+    if (!result.proofReplay) await emitMutationInvalidation("order_mutation");
     return reply.send(result);
   } catch (err: any) {
+    if (err?.code === "PROOF_SUBMISSION_INCOMPLETE") return reply.code(409).send({ error: "Proof submission incomplete; reconciliation required", code: err.code });
     return sendError(reply, err, "Failed");
   }
 }
 
 const proofsRoutes: FastifyPluginAsync = async (fastify) => {
-  await fastify.register(fastifyMultipart, { limits: { files: 1, fields: 6, parts: 7, fieldSize: 32768, fileSize: Math.min(MAX_PROOF_BYTES, parseMaxPhotoBytes()) } });
+  await fastify.register(fastifyMultipart, { limits: { files: 1, fields: 7, parts: 8, fieldSize: 32768, fileSize: Math.min(MAX_PROOF_BYTES, parseMaxPhotoBytes()) } });
+
+  fastify.get("/:id/proof-submission-capability", { preHandler: fastifyAuth({ permission: "shipment.update" }) }, async (request, reply) => {
+    try {
+      await requireProofSubmissionContext(requireOrderActor(request.user), String((request.params as any)?.id ?? "").trim());
+      return reply.send({ contract: "proof-submission-v1" });
+    } catch (err: any) { return sendError(reply, err, "Failed"); }
+  });
 
   fastify.get("/:id/proofs", { preHandler: fastifyAuth({ permission: "shipment.view" }) }, async (request, reply) => {
     try {

@@ -1,0 +1,65 @@
+# Bounded proof submission identity
+
+## Baselines, plan and scope
+
+Backend HEAD e6338dcbbc6726ae7210044e00d06b43fba5c3cc; frontend unchanged at 5bfae6ed9e4b9f1ec48883788bc5dee220f860c9. The reviewed seven-file native proof slice was checkpointed in driver 61391e5ae8692cf1a6c4e5b6f9283b7041820853 using unchanged recorded evidence, exact staged scope, whitespace and credential-pattern checks. Native/device limitations remain.
+
+Add one immutable durable receipt, authorize every retry, claim through PostgreSQL uniqueness before storage, confirm business records and receipt together, then permit only explicit same-ID client retry. Do not infer legacy ownership, change formats, financial state or delivery transitions. Backend and subsequent driver changes remain uncommitted. No generated client, dependencies or dist changes are required: the new table is accessed through parameterized Prisma SQL.
+
+## Current enforced behavior and API
+
+- Multipart POST /api/orders/:id/proofs and /delivery-proof require submissionId, an ASCII letter/digit/hyphen identifier of 1–100 characters. Previous clients omitting it receive 400; they cannot use an unbound legacy fallback. Existing PNG, signature bounds, assigned-driver/company requirements and parent-order permission/object scope checks remain.
+- GET /api/orders/:id/proof-submission-capability returns contract proof-submission-v1 only after fresh shipment.update, parent, owning-company and assigned-driver authorization. Driver preflight requires this exact response before POST, including retries. Deploy the additive migration and backend before enabling the new client; rolling back to a backend without this capability contains uploads.
+- Fresh server-selected user/tenant/tenant-membership/company/company-membership context and current order access are checked before receipt lookup, including confirmed retries. New submissions are checked again after storage and before business confirmation. Receipt possession never grants access. Concurrent revocation/assignment changes between checks remain a timing boundary; no claim of immediate revocation.
+- Receipt uniqueness is on submissionId globally; compound foreign keys prove order/tenant/company and both user/tenant-membership/company-membership bridges. All new receipt ownership fields are non-null. Restrict foreign keys retain accepted proof history: deleting a referenced order or company membership now fails rather than cascading away its receipt; status-based revocation still works. This does not backfill or remove nullable ownership gaps on other records.
+- Fingerprint SHA-256 covers canonical stage, trimmed signedBy, normalized optional clientCapturedAt, raw PNG byte SHA-256 and parsed numeric strokes. Equivalent numeric stroke formatting and trimmed signer names match; different PNG bytes intentionally conflict even if pixels look equivalent. Context columns are compared separately. Receipt reads are restricted to the complete selected context and project only retry fields; foreign data is never returned.
+- Early receipt lookup is an optimization only. INSERT ON CONFLICT DO NOTHING plus a durable unique primary key chooses the sole storage/confirmation executor. A read-then-create check or in-memory queue is not the concurrency guarantee. Confirmed matching retries return the original response, IDs and server receipt time, without decoding, storage writes or tracking insertion. Response adds proof.submissionId. Different content, order, stage or context conflicts with no business effects.
+- Receipt lifecycle is accepted -> stored -> confirmed. SQL checks constrain stages, hash shapes and confirmation state; an update trigger prevents immutable identity/intent/manifest/time changes, invalid transitions and rewriting confirmed receipts. Prisma models represent columns, indexes and three compound relations; SQL-only checks/trigger are intentionally additional enforcement.
+- First acceptance persists server receipt time, normalized intent, expected output checksums and a server-derived original bucket/key manifest. Photo/signature keys use the receipt's unique proof UUID. PutObject uses checksums and IfNoneMatch '*' to avoid object overwrite. Storage is outside PostgreSQL transactions. Attachment pair, tracking event and confirmed JSON result commit in one transaction. No order status, payment or financial values are changed.
+- Existing HTTP mutation invalidation runs after commit on the first confirmed call and is suppressed on receipt replay. It is best effort, not a durable exactly-once business event: a crash before invalidation can miss it. Tracking is the transactional business event demonstrated here.
+
+## Explicit storage recovery strategy and limits
+
+An accepted or stored receipt is incomplete, never successful. Authorized identical requests receive 409 PROOF_SUBMISSION_INCOMPLETE and perform no additional storage/business writes. There is no automatic expiration, reacceptance, object overwrite, deletion or network replay. An uncertain commit is never followed by storage deletion: it might already have committed. Receipt retention also prevents an ID from being reassigned to a new context.
+
+Failure boundaries:
+
+| Boundary | Durable evidence | Behavior |
+| --- | --- | --- |
+| Acceptance committed, process stops before storage | accepted receipt, original manifest/checksums | contained; no automatic new executor |
+| One/both writes complete but their outcome or stored acknowledgment is lost | accepted receipt; zero/partial/complete objects possible | contained; no overwrite or delete |
+| Both writes acknowledged, process stops or business transaction rolls back | stored receipt; objects retained; no attachments/tracking/confirmation | contained; reconciliation required |
+| Business commit succeeds but its acknowledgment/HTTP response is lost | confirmed receipt and original business records | fresh authorized matching retry returns original result |
+
+Incomplete recovery requires a separately authorized operator procedure: reload the immutable receipt and current authoritative ownership; check the original manifest's objects and checksums/metadata; compare any existing attachments/tracking and receipt result before choosing an action. Do not infer completion from filename/existence alone. If storage is complete but business rows are absent, a future narrowly scoped reconciler must atomically create the original business result using the stored server time and confirm the same receipt, with a conditional state transition. Partial/mismatched/missing storage remains quarantined pending an explicit recovery/cancellation decision. No reconciler, privileged repair endpoint, cancellation policy or deletion job is implemented or executed in this slice. This is the explicit containment/reconciliation strategy, not automated incomplete recovery or atomicity across PostgreSQL and S3.
+
+Distinct IDs represent distinct intended submissions; this is not semantic deduplication across independently generated IDs/devices. Real S3 conditional-write/checksum behavior, SDK failure behavior and retention/IAM configuration remain unverified.
+
+## Driver behavior
+
+New immutable records retain submissionId equal to their original generated/persisted photo intent ID and a native file MD5 integrity value. MD5 is a local accidental-change check only; backend SHA-256 and authorization remain authority. File/record persistence and readback precede the durable attempted marker and send. Explicit retries reload original records, verify original file integrity, verify current exact context/order/capability, and send identical fields with the same ID. No HTTP interceptor automatic replay, background proof retry or new ID on ambiguity. A confirmed response must echo the matching submissionId/order/stage and server receipt time; local confirmation must persist.
+
+Attempted v3 records from before this contract have no submissionId/file integrity field and remain quarantined, as do v2/unbound queues. They are not adopted or assigned new IDs. A preflight rejection can be explicitly rechecked using its original intent; an uncertain attempted intent remains uncertain if eligibility or integrity has since failed. UI never replaces queued content and keeps local capture time separate from server receipt time.
+
+Native image conversion, actual SecureStore/file restart and device transport remain unverified. PNG-only capture/resource limits, pending cash identity binding, payments and all earlier limitations remain.
+
+## Files
+
+Backend: prisma/models/proofs.prisma (new), prisma/models/orders.prisma, prisma/models/identity-access.prisma, prisma/migrations/20261001140000_proof_submission_identity/migration.sql (new), src/modules/orders-core/proofs/submission.ts (new), src/modules/orders-core/proofs/proof.ts, src/modules/orders-core/transport/routes/proofs.routes.ts, tests/security/proof-upload-boundary.test.ts, tests/security/proof-submission-postgres.integration.test.ts (new), this report.
+
+Driver: lib/proof-intent.ts, lib/proof-storage.ts, components/delivery/DeliveryConfirmationCard.tsx, tests/proof-intent.test.cjs, docs/Proof_Submission_Idempotency.md (new). Frontend unchanged.
+
+## Validation
+
+- Existing 20 distinct driver proof cases, four affected session cases and no-emit/lint evidence were reused only for the initial unchanged checkpoint.
+- Backend node node_modules/jest/bin/jest.js --runInBand tests/security/proof-upload-boundary.test.ts: 24 passed after receipt lookup correction. Uses mocked storage/database boundaries and actual installed PNG decode/re-encode worker; does not prove S3 transport.
+- Driver node --test tests/proof-intent.test.cjs: 24 passed after retry changes; one affected adapter case passed again after adding the missing-capability negative branch. Storage/native/network mocks; no device or real SecureStore evidence.
+- Both repositories' node node_modules/typescript/bin/tsc --noEmit passed. Focused driver ESLint passed. Offline Prisma validate used the existing temporary config containing only an absolute schema path, with an allowlisted environment and no dotenv or database URL; validation passed. No client generation. Model-to-migration columns, nullability, defaults, compound targets and relations were manually reviewed; this is not a claim of full semantic schema-to-SQL equivalence or resolution of prior drift.
+- Disposable runner outside repository reused the previous bounded harness: cached PostgreSQL image selected by local immutable image ID, --pull never, unique cp.test.run label, synthetic cp_worker_it credentials, loopback random port, 512 MiB memory, one CPU, 128 PIDs, 256 MiB exclusively owned tmpfs, bounded database pools/statements and 120-second Jest deadline. It applied all 71 migrations without db push or replacement schema and checked a run marker before fixtures/tests. Two initial attempts stopped at compilation errors (mock argument shape, then lost TypeScript ownership narrowing), with zero cases executed; both were cleaned up. Corrected runs passed 15 and then 18 cases as crash-boundary cases were added. The 18-case run was cp-proof-submission-2c40029a5000. Ownership-verified removal succeeded for every run; no volumes or bind mounts were used.
+- PostgreSQL tests execute actual authorization, submission, storage orchestration and attachment/tracking transaction against synthetic fixtures. Only S3 is mocked. They demonstrate unique concurrent receipt/business results, content/context/order conflicts, revocation, SQL bridge constraints, immutable confirmed receipt, transaction rollback, stored-ack failure and lost commit acknowledgment. They do not establish exactly-once external delivery, real storage recovery or infrastructure security.
+
+Final focused PostgreSQL rerun after restricting receipt reads to the full selected context: node "$env:TEMP/cp-proof-focused-disposable-run.cjs" (same runner with Jest --testNamePattern='identical normalized|concurrent identical|rejects photo conflict|denies foreign|different currently authorized') applied 71 migrations in cp-proof-submission-c9d21d4c6435, passed 6 affected cases and skipped 12 previously passing cases. Ownership-verified cleanup succeeded. This is 18 distinct passing cases plus a six-case final rerun, not a final full 18-case run. Earlier unaltered cases retain their passing evidence. Whitespace and credential-pattern checks covered the focused tracked/new files; nothing in the new slice was staged.
+
+## Release boundaries
+
+Incomplete storage reconciliation/cancellation, real S3 semantics, native/device acceptance, transitive codec dependency ownership, refresh-family/revocation timing, payments, broad tenant cutover/repository coverage, RLS, Redis lifecycle/backpressure, provider recovery and previous release blockers remain open. No production readiness claim. Apply migration/backend/client changes only through a separately approved deployment; recovery rollback must keep receipts and checks or disable proof submission.
