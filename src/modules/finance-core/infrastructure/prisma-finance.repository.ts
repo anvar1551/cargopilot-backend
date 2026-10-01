@@ -1,3 +1,4 @@
+import { requireJournalEntity, assertJournalBindings } from "./journal-integrity";
 import { listOwnedJournals, getOwnedJournal } from "./journal-read";
 import { rejectUnacceptedInvoiceExecution } from "../domain/invoice-execution-containment";
 import { financeBadRequest } from "../domain/finance.errors";
@@ -125,9 +126,9 @@ async function enqueueEvent(
   });
 }
 
-async function findJournal(tx: Tx, companyId: string, journalId: string) {
+async function findJournal(tx: Tx, companyId: string, journalId: string, tenantId: string) {
   const journal = await tx.financeJournalEntry.findFirst({
-    where: { id: journalId, legalEntity: { companyId } },
+    where: { id: journalId, legalEntity: { companyId, tenantId, isActive: true, tenant: { is: { status: "active" } }, company: { is: { tenantId, isActive: true } } } },
     include: {
       ...journalInclude,
       legalEntity: true,
@@ -136,6 +137,9 @@ async function findJournal(tx: Tx, companyId: string, journalId: string) {
   if (!journal) {
     throw financeNotFound("Finance journal not found", "FINANCE_JOURNAL_NOT_FOUND");
   }
+  const entity = await requireJournalEntity(tx, companyId);
+  if (entity.tenantId !== tenantId) throw financeConflict("Journal tenant context rejected", "FINANCE_JOURNAL_OWNERSHIP_REJECTED");
+  await assertJournalBindings(tx, journal, entity.id);
   return journal;
 }
 
@@ -659,9 +663,12 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
     return getOwnedJournal(actor, journalId);
   }
 
-  async createDraftJournal(command: CreateJournalCommand) {
+  async createDraftJournal(command: CreateJournalCommand, actor: AppUser) {
+    const context = await requireLegalEntityContext(actor, "finance.journals.create");
+    if (command.companyId !== context.companyId || command.actorUserId !== context.userId) throw new FinanceError("Journal actor context mismatch", 403, "FINANCE_JOURNAL_CONTEXT_REJECTED");
     return prisma.$transaction(async (tx) => {
-      const entity = await requireLegalEntity(tx, command.companyId);
+      const entity = await requireJournalEntity(tx, command.companyId);
+      if (entity.tenantId !== context.tenantId) throw financeConflict("Journal tenant context rejected", "FINANCE_JOURNAL_OWNERSHIP_REJECTED");
       const duplicate = await tx.financeDocument.findUnique({
         where: {
           legalEntityId_idempotencyKey: {
@@ -671,7 +678,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
         },
         include: { journalEntry: { include: journalInclude } },
       });
-      if (duplicate?.journalEntry) return duplicate.journalEntry;
+      if (duplicate?.journalEntry) { await assertJournalBindings(tx, duplicate.journalEntry, entity.id); return duplicate.journalEntry; }
 
       await requireOpenPeriod(tx, entity.id, command.postingDate);
       const prepared = prepareJournal({
@@ -745,6 +752,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
           totalCreditBase: prepared.totalCreditBase,
           lines: {
             create: prepared.lines.map((line) => ({
+              legalEntityId: entity.id,
               lineNumber: line.lineNumber,
               accountId: line.accountId,
               debitAmount: line.debitAmount,
@@ -791,9 +799,12 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
     });
   }
 
-  async postJournal(companyId: string, journalId: string, actorUserId: string) {
+  async postJournal(actor: AppUser, journalId: string) {
+    const context = await requireLegalEntityContext(actor, "finance.journals.post");
+    const companyId = context.companyId, actorUserId = context.userId;
     return prisma.$transaction(async (tx) => {
-      const journal = await findJournal(tx, companyId, journalId);
+      await tx.$queryRaw`SELECT j."id" FROM "FinanceJournalEntry" j JOIN "FinanceLegalEntity" e ON e."id"=j."legalEntityId" WHERE j."id"=${journalId}::uuid AND e."companyId"=${context.companyId}::uuid AND e."tenantId"=${context.tenantId}::uuid FOR UPDATE OF j`;
+      const journal = await findJournal(tx, companyId, journalId, context.tenantId);
       if (journal.status === "posted") return journal;
       if (journal.status !== "draft") {
         throw financeConflict(`Journal is ${journal.status}`, "FINANCE_JOURNAL_NOT_DRAFT");
@@ -863,9 +874,12 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
     });
   }
 
-  async reverseJournal(command: ReverseJournalCommand) {
+  async reverseJournal(command: ReverseJournalCommand, actor: AppUser) {
+    const context = await requireLegalEntityContext(actor, "finance.journals.reverse");
+    if (command.companyId !== context.companyId || command.actorUserId !== context.userId) throw new FinanceError("Journal actor context mismatch", 403, "FINANCE_JOURNAL_CONTEXT_REJECTED");
     return prisma.$transaction(async (tx) => {
-      const original = await findJournal(tx, command.companyId, command.journalId);
+      await tx.$queryRaw`SELECT j."id" FROM "FinanceJournalEntry" j JOIN "FinanceLegalEntity" e ON e."id"=j."legalEntityId" WHERE j."id"=${command.journalId}::uuid AND e."companyId"=${context.companyId}::uuid AND e."tenantId"=${context.tenantId}::uuid FOR UPDATE OF j`;
+      const original = await findJournal(tx, command.companyId, command.journalId, context.tenantId);
       const existing = await tx.financeDocument.findUnique({
         where: {
           legalEntityId_idempotencyKey: {
@@ -875,7 +889,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
         },
         include: { journalEntry: { include: journalInclude } },
       });
-      if (existing?.journalEntry) return existing.journalEntry;
+      if (existing?.journalEntry) { await assertJournalBindings(tx, existing.journalEntry, original.legalEntityId); return existing.journalEntry; }
       if (original.status !== "posted") {
         throw financeConflict("Only posted journals can be reversed", "FINANCE_JOURNAL_NOT_POSTED");
       }
@@ -929,6 +943,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
           reversalOfId: original.id,
           lines: {
             create: original.lines.map((line) => ({
+              legalEntityId: original.legalEntityId,
               lineNumber: line.lineNumber,
               accountId: line.accountId,
               debitAmount: line.creditAmount,
@@ -1253,6 +1268,9 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
           }
         }
         if (sourceRecord.status === "posted") {
+          const resultEntity = await requireJournalEntity(tx, sourceRecord.companyId);
+          const journal = await findJournal(tx, sourceRecord.companyId, sourceRecord.financeJournalEntryId ?? "00000000-0000-0000-0000-000000000000", resultEntity.tenantId!);
+          if (journal.documentId !== sourceRecord.financeDocumentId || journal.legalEntityId !== sourceRecord.legalEntityId) throw financeConflict("Source result ownership rejected", "FINANCE_JOURNAL_OWNERSHIP_REJECTED");
           return { event: sourceRecord, idempotent: true };
         }
         const event = acceptedCash?.event ?? normalizeFinanceSourceEvent(
@@ -1264,7 +1282,8 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
             "FINANCE_SOURCE_EVENT_INTEGRITY_ERROR",
           );
         }
-        const entity = await requireLegalEntity(tx, event.companyId);
+        const entity = await requireJournalEntity(tx, event.companyId);
+        if (sourceRecord.companyId !== event.companyId || sourceRecord.legalEntityId !== entity.id) throw financeConflict("Source entity ownership rejected", "FINANCE_JOURNAL_OWNERSHIP_REJECTED");
         if (event.currency !== entity.baseCurrency && !event.fxRateAsOf) {
           throw financeConflict(
             `Foreign-currency event ${event.currency} requires an immutable FX snapshot`,
@@ -1315,7 +1334,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
         const rule = highest[0];
         const invalidAccount = rule.lines.find(
           (line) =>
-            (acceptedCash && line.account.legalEntityId !== entity.id) ||
+            line.account.legalEntityId !== entity.id ||
             line.account.status !== "active" ||
             !line.account.allowPosting ||
             (line.account.currency && line.account.currency !== event.currency),
@@ -1409,6 +1428,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
             postedByUserId: actorUserId,
             lines: {
               create: prepared.lines.map((line) => ({
+                legalEntityId: entity.id,
                 lineNumber: line.lineNumber,
                 accountId: line.accountId,
                 debitAmount: line.debitAmount,

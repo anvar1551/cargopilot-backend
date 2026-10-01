@@ -122,7 +122,7 @@ export class FinanceService {
     return this.repository.getJournal(actor, journalId);
   }
 
-  createDraftJournal(input: {
+  async createDraftJournal(input: {
     companyId: string;
     actorUserId: string;
     idempotencyKey: string;
@@ -137,24 +137,27 @@ export class FinanceService {
     sourceEventId?: string | null;
     metadata?: Record<string, unknown>;
     lines: JournalLineInput[];
-  }) {
+  }, actor: AppUser) {
+    await requireLegalEntityContext(actor, "finance.journals.create");
     const currency = assertFinanceCurrency(input.currency);
-    return this.repository.createDraftJournal({ ...input, currency });
+    return this.repository.createDraftJournal({ ...input, currency }, actor);
   }
 
-  postJournal(companyId: string, journalId: string, actorUserId: string) {
-    return this.repository.postJournal(companyId, journalId, actorUserId);
+  async postJournal(actor: AppUser, journalId: string) {
+    await requireLegalEntityContext(actor, "finance.journals.post");
+    return this.repository.postJournal(actor, journalId);
   }
 
-  reverseJournal(input: {
+  async reverseJournal(input: {
     companyId: string;
     actorUserId: string;
     journalId: string;
     postingDate: Date;
     reason: string;
     idempotencyKey: string;
-  }) {
-    return this.repository.reverseJournal(input);
+  }, actor: AppUser) {
+    await requireLegalEntityContext(actor, "finance.journals.reverse");
+    return this.repository.reverseJournal(input, actor);
   }
 
   getTrialBalance(companyId: string, from: Date, to: Date) {

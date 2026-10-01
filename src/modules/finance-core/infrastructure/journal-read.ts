@@ -28,7 +28,7 @@ async function ownership(actor: AppUser) {
   if (!entity) return null;
   // Each final read repeats active ownership and checks nested document/account/reversal equality.
   return { legalEntityId: entity.id, legalEntity: { is: legalEntity }, document: { is: { legalEntityId: entity.id } },
-    lines: { every: { account: { is: { legalEntityId: entity.id,
+    lines: { every: { legalEntityId: entity.id, account: { is: { legalEntityId: entity.id,
       OR: [{ parentId: null }, { parent: { is: { legalEntityId: entity.id } } }] } } } },
     OR: [{ reversalOfId: null }, { reversalOf: { is: { legalEntityId: entity.id } } }],
   } satisfies Prisma.FinanceJournalEntryWhereInput;

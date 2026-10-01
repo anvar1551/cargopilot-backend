@@ -271,6 +271,7 @@ model FinanceAccount {
 
   postingRuleLines FinancePostingRuleLine[]
   journalLines     FinanceJournalLine[]
+  ownedJournalLines FinanceJournalLine[] @relation("JournalAccountOwnership")
 
   @@unique([legalEntityId, code])
   @@unique([legalEntityId, id], map: "FinanceAccount_entity_identity_key")
@@ -378,12 +379,13 @@ model FinanceDocument {
   updatedAt         DateTime  @updatedAt
 
   reversalOfId String?              @db.Uuid
-  reversalOf   FinanceDocument?     @relation("FinanceDocumentReversal", fields: [reversalOfId], references: [id], onDelete: Restrict)
+  reversalOf   FinanceDocument?     @relation("FinanceDocumentReversal", fields: [reversalOfId, legalEntityId], references: [id, legalEntityId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceDocument_reversal_entity_fkey")
   reversals    FinanceDocument[]    @relation("FinanceDocumentReversal")
   journalEntry FinanceJournalEntry?
   auditEvents  FinanceAuditEvent[]
   sourceEvents FinanceSourceEvent[]
 
+  @@unique([id, legalEntityId], map: "FinanceDocument_id_legalEntityId_key")
   @@unique([legalEntityId, documentNumber])
   @@unique([legalEntityId, idempotencyKey])
   @@index([legalEntityId, status, postingDate])
@@ -397,7 +399,7 @@ model FinanceJournalEntry {
   legalEntityId    String               @db.Uuid
   legalEntity      FinanceLegalEntity   @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
   documentId       String               @unique @db.Uuid
-  document         FinanceDocument      @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  document         FinanceDocument      @relation(fields: [documentId, legalEntityId], references: [id, legalEntityId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceJournalEntry_document_entity_fkey")
   journalNumber    String
   status           FinanceJournalStatus @default(draft)
   postingDate      DateTime             @db.Date
@@ -412,12 +414,15 @@ model FinanceJournalEntry {
   updatedAt        DateTime             @updatedAt
 
   reversalOfId String?               @db.Uuid
-  reversalOf   FinanceJournalEntry?  @relation("FinanceJournalReversal", fields: [reversalOfId], references: [id], onDelete: Restrict)
+  reversalOf   FinanceJournalEntry?  @relation("FinanceJournalReversal", fields: [reversalOfId, legalEntityId], references: [id, legalEntityId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceJournalEntry_reversal_entity_fkey")
   reversals    FinanceJournalEntry[] @relation("FinanceJournalReversal")
   lines        FinanceJournalLine[]
+  ownedLines FinanceJournalLine[] @relation("JournalLineOwnership")
   auditEvents  FinanceAuditEvent[]
   sourceEvents FinanceSourceEvent[]
 
+  @@unique([id, legalEntityId], map: "FinanceJournalEntry_id_legalEntityId_key")
+  @@unique([documentId, legalEntityId], map: "FinanceJournalEntry_documentId_legalEntityId_key")
   @@unique([legalEntityId, journalNumber])
   @@index([legalEntityId, status, postingDate])
   @@index([reversalOfId])
@@ -426,10 +431,13 @@ model FinanceJournalEntry {
 model FinanceJournalLine {
   id             String              @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   journalEntryId String              @db.Uuid
+  legalEntityId  String? @db.Uuid
   journalEntry   FinanceJournalEntry @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+  ownedJournalEntry FinanceJournalEntry? @relation("JournalLineOwnership", fields: [journalEntryId, legalEntityId], references: [id, legalEntityId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceJournalLine_journal_entity_fkey")
   lineNumber     Int
   accountId      String              @db.Uuid
   account        FinanceAccount      @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  ownedAccount FinanceAccount? @relation("JournalAccountOwnership", fields: [accountId, legalEntityId], references: [id, legalEntityId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceJournalLine_account_entity_fkey")
 
   debitAmount  Decimal @default(0) @db.Decimal(20, 4)
   creditAmount Decimal @default(0) @db.Decimal(20, 4)
@@ -450,6 +458,7 @@ model FinanceJournalLine {
   metadataJson      Json?
   createdAt         DateTime @default(now())
 
+  @@index([legalEntityId, journalEntryId])
   @@unique([journalEntryId, lineNumber])
   @@index([accountId, journalEntryId])
   @@index([orderId])

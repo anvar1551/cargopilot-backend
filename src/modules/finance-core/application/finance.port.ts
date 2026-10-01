@@ -114,9 +114,9 @@ export interface FinanceRepositoryPort {
   changePeriodStatus(command: ChangePeriodStatusCommand): Promise<unknown>;
   listJournals(actor: AppUser, page: CursorPage): Promise<unknown>;
   getJournal(actor: AppUser, journalId: string): Promise<unknown>;
-  createDraftJournal(command: CreateJournalCommand): Promise<unknown>;
-  postJournal(companyId: string, journalId: string, actorUserId: string): Promise<unknown>;
-  reverseJournal(command: ReverseJournalCommand): Promise<unknown>;
+  createDraftJournal(command: CreateJournalCommand, actor: AppUser): Promise<unknown>;
+  postJournal(actor: AppUser, journalId: string): Promise<unknown>;
+  reverseJournal(command: ReverseJournalCommand, actor: AppUser): Promise<unknown>;
   getTrialBalance(companyId: string, from: Date, to: Date): Promise<unknown>;
   listPostingRules(companyId: string, page: CursorPage): Promise<unknown>;
   getPostingRule(companyId: string, ruleId: string): Promise<unknown>;

@@ -967,7 +967,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           fxRateAsOf: input.fxRateAsOf ? new Date(input.fxRateAsOf) : null,
           companyId: request.user!.companyId,
           actorUserId: request.user!.id,
-        });
+        }, request.user!);
         return reply.code(201).send(journal);
       } catch (error) {
         return sendError(reply, error, "Failed to create finance journal");
@@ -982,7 +982,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
       try {
         const { id } = financeIdParamSchema.parse(request.params);
         return reply.send(
-          await financeService.postJournal(request.user!.companyId, id, request.user!.id),
+          await financeService.postJournal(request.user!, id),
         );
       } catch (error) {
         return sendError(reply, error, "Failed to post finance journal");
@@ -1005,7 +1005,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
             idempotencyKey: input.idempotencyKey,
             companyId: request.user!.companyId,
             actorUserId: request.user!.id,
-          }),
+          }, request.user!),
         );
       } catch (error) {
         return sendError(reply, error, "Failed to reverse finance journal");

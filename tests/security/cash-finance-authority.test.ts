@@ -6,7 +6,7 @@ import { prismaFinanceRepository } from "../../src/modules/finance-core/infrastr
 
 const eventId = "11111111-1111-4111-8111-111111111111", sourceId = `cash:${eventId}`;
 const time = new Date("2026-10-01T12:00:00.000Z");
-let operation: any, outbox: any, entity: any, record: any;
+let operation: any, outbox: any, entity: any, record: any, storedJournal: any, storedDocument: any;
 const mockDb: any = { $queryRaw: jest.fn(), $transaction: jest.fn(),
   cashCustodyOperation: { findUnique: jest.fn() }, analyticsDomainEventOutbox: { findUnique: jest.fn() },
   financeLegalEntity: { findUnique: jest.fn() }, warehouse: { findFirst: jest.fn() },
@@ -16,7 +16,7 @@ const mockDb: any = { $queryRaw: jest.fn(), $transaction: jest.fn(),
   financeNumberSequence: { upsert: jest.fn() }, financeAuditEvent: { create: jest.fn() }, financeDomainEventOutbox: { create: jest.fn() },
   companyMembership: { findFirst: jest.fn() } };
 beforeEach(() => {
-  jest.clearAllMocks(); record = null;
+  jest.clearAllMocks(); record = null; storedJournal = null; storedDocument = null;
   entity = { id: "legal-a", companyId: "company-a", tenantId: "tenant-a", isActive: true, baseCurrency: "UZS",
     tenant: { id: "tenant-a", status: "active" }, company: { id: "company-a", tenantId: "tenant-a", isActive: true } };
   operation = { tenantId: "tenant-a", companyId: "company-a", orderId: "order-a", collectionId: "collection-a", eventId,
@@ -43,9 +43,9 @@ beforeEach(() => {
     lines: ["debit", "credit"].map((side, i) => ({ lineNumber: i + 1, side, accountId: `account-${i}`, amountExpression: "cod_amount", descriptionTemplate: null,
       account: { legalEntityId: "legal-a", code: `SYNTHETIC-${i}`, status: "active", allowPosting: true, currency: "USD" } })) }]);
   mockDb.financeNumberSequence.upsert.mockResolvedValue({ nextValue: 2n, prefix: "SYNTHETIC-", padding: 8 });
-  mockDb.financeDocument.create.mockImplementation(async ({ data }: any) => ({ id: "document-a", ...data }));
-  mockDb.financeJournalEntry.create.mockImplementation(async ({ data }: any) => ({ id: "journal-a", ...data }));
-  mockDb.financeDocument.findFirst.mockResolvedValue({ id: "document-a" }); mockDb.financeJournalEntry.findFirst.mockResolvedValue({ id: "journal-a" });
+  mockDb.financeDocument.create.mockImplementation(async ({ data }: any) => (storedDocument = { id: "document-a", ...data }));
+  mockDb.financeJournalEntry.create.mockImplementation(async ({ data }: any) => (storedJournal = { id: "journal-a", ...data, document: storedDocument, lines: data.lines.create.map((line: any) => ({ ...line, journalEntryId: "journal-a", account: { id: line.accountId, legalEntityId: data.legalEntityId } })) }));
+  mockDb.financeDocument.findFirst.mockImplementation(async () => storedDocument ?? { id: "document-a" }); mockDb.financeJournalEntry.findFirst.mockImplementation(async () => storedJournal ?? { id: "journal-a" });
 });
 function noPosting() { expect(mockDb.financeDocument.create).not.toHaveBeenCalled(); expect(mockDb.financeJournalEntry.create).not.toHaveBeenCalled(); }
 it("queue values cannot supply finance authority; accepted receipt is reloaded", async () => {
