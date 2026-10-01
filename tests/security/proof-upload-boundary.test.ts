@@ -2,25 +2,30 @@ jest.mock("../../src/config/prismaClient", () => ({ __esModule: true, default: r
 jest.mock("../../src/config/s3", () => ({ s3: { send: jest.fn(async () => ({})) } }));
 jest.mock("../../src/modules/identity-access", () => ({ buildOrderScopeWhere: jest.fn(async () => ({ ownerOrgId: "company-a" })) }));
 jest.mock("../../src/utils/s3Presign", () => ({ presignGetObject: jest.fn(async () => "https://example.test/proof") }));
-jest.mock("../../src/modules/orders-core/repo", () => ({ getOrderById: jest.fn() }));
 
 import { EventEmitter } from "events";
 const threads: typeof import("worker_threads") = require("worker_threads");
 import { database as db } from "./fixtures";
 import { s3 } from "../../src/config/s3";
 import { presignGetObject } from "../../src/utils/s3Presign";
-import { getOrderById } from "../../src/modules/orders-core/repo";
 import { submitProofForActor, listOrderProofLinksForActor } from "../../src/modules/orders-core/proofs/proof";
 import { MAX_PROOF_BYTES, processProofRaster, validateProofPng } from "../../src/modules/orders-core/proofs/raster-processing";
 const { PNG } = require("pngjs");
 const fixtureImage = () => PNG.sync.write({ width: 20, height: 10, data: Buffer.alloc(20 * 10 * 4, 255) }, { deflateLevel: 0 });
-const actor: any = { id: "driver-a", membershipId: "membership-a", companyId: "company-a" };
+const actor: any = { id: "driver-a", membershipId: "membership-a", companyMembershipId: "membership-a", companyId: "company-a", tenantId: "tenant-a", tenantMembershipId: "tm-a" };
 const originalBucket = process.env.AWS_S3_BUCKET;
 const input = () => ({ actor, orderId: "order-a", body: { signedBy: "Recipient", signaturePaths: ["1,2;30,40"] }, file: { buffer: fixtureImage(), size: 1, originalname: "camera.png", mimetype: "image/png" } });
 beforeEach(() => {
   jest.clearAllMocks(); process.env.AWS_S3_BUCKET = "fixture-bucket-never-contacted";
-  db.companyMembership.findFirst.mockResolvedValue({ companyId: "company-a", scopes: [], roles: [{ role: { companyId: "company-a", isSystem: false, rolePermissions: [{ permission: { key: "shipment.update" } }] } }] });
-  db.order.findUnique.mockResolvedValue({ id: "order-a", ownerOrgId: "company-a", assignedDriverId: actor.id, currentWarehouseId: "warehouse-a" });
+  db.companyMembership.findFirst.mockResolvedValue({
+    id: actor.membershipId, companyId: actor.companyId, status: "active", tenantId: actor.tenantId, tenantMembershipId: actor.tenantMembershipId,
+    tenant: { id: actor.tenantId, status: "active" }, tenantMembership: { id: actor.tenantMembershipId, tenantId: actor.tenantId, userId: actor.id, status: "active" },
+    company: { id: actor.companyId, tenantId: actor.tenantId, isActive: true }, branch: null,
+    user: { id: actor.id, name: "Synthetic", email: "fixture@example.test", warehouseId: null, customerEntityId: null },
+    scopes: [{ scopeType: "company", scopeRefId: actor.companyId }],
+    roles: [{ role: { code: "driver", rolePermissions: ["shipment.update", "shipment.view"].map(key => ({ permission: { key } })) } }],
+  });
+  db.order.findFirst.mockResolvedValue({ id: "order-a", tenantId: "tenant-a", ownerOrgId: "company-a", assignedDriverId: actor.id, currentWarehouseId: "warehouse-a" });
   db.$transaction.mockImplementation(async (work: any) => work(db));
   db.orderAttachment.create.mockImplementation(async ({ data }: any) => ({ id: "attachment-a", ...data }));
   db.tracking.create.mockResolvedValue({ id: "tracking-a" });
@@ -56,7 +61,7 @@ it("uses server receipt time and company/order keys; labels client capture time 
 it.each([
   ["unassigned driver", (request: any) => { request.actor = { ...actor, id: "other-driver" }; }],
   ["missing identity", (request: any) => { request.actor = { id: "" }; }],
-  ["foreign company", () => { db.order.findUnique.mockResolvedValue({ id: "order-a", ownerOrgId: "company-b", assignedDriverId: actor.id }); }],
+  ["foreign company", () => { db.order.findFirst.mockResolvedValue({ id: "order-a", ownerOrgId: "company-b", assignedDriverId: actor.id }); }],
   ["revoked membership", () => { db.companyMembership.findFirst.mockResolvedValue(null); }],
   ["provided SVG signature", (request: any) => { request.body.signatureSvg = '<svg onload="alert(1)"/>'; }],
   ["SVG photo with spoofed MIME", (request: any) => { request.file.buffer = Buffer.from('<svg onload="alert(1)"/>'); }],
@@ -87,11 +92,11 @@ it("preserves best-effort object cleanup when the database transaction fails", a
 });
 
 it("does not presign proof keys belonging to a different order/company", async () => {
-  (getOrderById as jest.Mock).mockResolvedValue({ id: "order-a", ownerOrgId: "company-a", trackingEvents: [], attachments: [
-    { id: "ok", key: "delivery-proofs/company-a/order-a/proof-a/photo.png" },
-    { id: "legacy", key: "pickup-proofs/order-a/proof-old/photo.jpg" },
-    { id: "foreign-order", key: "delivery-proofs/company-a/order-b/proof-a/photo.png" },
-    { id: "foreign-company", key: "delivery-proofs/company-b/order-a/proof-a/photo.png" },
+  db.order.findFirst.mockResolvedValue({ id: "order-a", tenantId: "tenant-a", ownerOrgId: "company-a", trackingEvents: [], attachments: [
+    { id: "ok", orderId: "order-a", key: "delivery-proofs/company-a/order-a/proof-a/photo.png" },
+    { id: "legacy", orderId: "order-a", key: "pickup-proofs/order-a/proof-old/photo.jpg" },
+    { id: "foreign-order", orderId: "order-b", key: "delivery-proofs/company-a/order-b/proof-a/photo.png" },
+    { id: "foreign-company", orderId: "order-a", key: "delivery-proofs/company-b/order-a/proof-a/photo.png" },
   ] });
   const result = await listOrderProofLinksForActor({ user: actor, orderId: "order-a", query: {} });
   expect(result.proofs).toHaveLength(2); expect(presignGetObject).toHaveBeenCalledTimes(2);

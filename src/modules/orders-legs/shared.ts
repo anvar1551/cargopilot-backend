@@ -7,12 +7,7 @@ import {
 import prisma from "../../config/prismaClient";
 import { orderError } from "../orders-core/shared";
 
-export type Actor = {
-  id: string;
-  companyId?: string | null;
-  tenantScope?: string | null;
-  warehouseId?: string | null;
-};
+export type Actor = import("../orders-core/shared/actor").OrderActor;
 
 export type UpsertOrderLegInput = {
   legId?: string | null;
@@ -59,16 +54,8 @@ export function toDate(value?: string | Date | null) {
 }
 
 export function resolveActorTenantScope(actor?: Actor) {
-  if (actor?.tenantScope) {
-    return actor.tenantScope;
-  }
-  if (actor?.warehouseId) {
-    return `warehouse:${actor.warehouseId}`;
-  }
-  if (actor?.id) {
-    return `user:${actor.id}`;
-  }
-  return "system";
+  if (!actor?.tenantId || !actor.companyId) throw orderError("Tenant-bound company context required", 403);
+  return `tenant:${actor.tenantId}:company:${actor.companyId}`;
 }
 
 export async function ensureOrderExists(orderId: string) {

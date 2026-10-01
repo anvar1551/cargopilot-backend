@@ -1,9 +1,14 @@
+import { orderError } from "../orders-core/shared/actor";
 import { OrderLegStatus, type OrderStatus } from "@prisma/client";
 import prisma from "../../config/prismaClient";
 import type { IntegrationCanonicalEventRecord } from "../integrations-core/application/canonical-event.types";
 import { createCarrierFailureSupportTicket } from "../support-core/application/autoTriage";
 
 const db = prisma as any;
+
+function denyUnboundCarrierApplication(): void {
+  throw orderError("Carrier event application requires durable order authorization", 503);
+}
 
 type ApplyCarrierEventResult =
   | { applied: true }
@@ -140,6 +145,10 @@ export async function applyCarrierIntegrationEvent(
   if (event.domain !== "carrier") {
     return { applied: false, ignored: true, reason: "not a carrier event" };
   }
+
+  // Canonical worker events do not retain selected membership authorization.
+  // Keep them failed/recoverable rather than applying a context-free order mutation.
+  denyUnboundCarrierApplication();
 
   if (event.eventType === "carrier.shipment.created") {
     const data = findCreateShipmentPayload(event);

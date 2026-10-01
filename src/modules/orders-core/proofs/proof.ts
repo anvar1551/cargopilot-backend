@@ -1,13 +1,11 @@
 import { randomUUID } from "crypto";
 import { MAX_PROOF_BYTES, processProofRaster } from "./raster-processing";
-import { requireCompanyAuthority } from "../domain/company-authority";
+import { requireAuthorizedOrder } from "../domain/order-access";
 import { DeleteObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 
 import prisma from "../../../config/prismaClient";
 import { s3 } from "../../../config/s3";
-import { buildOrderScopeWhere } from "../../identity-access";
 import { presignGetObject } from "../../../utils/s3Presign";
-import { getOrderById } from "../repo";
 import { orderError } from "../shared";
 import type { OrderActor } from "../shared";
 import type { AppUser } from "../../../types/app-user";
@@ -124,7 +122,7 @@ async function buildProofBundlesForOrder(args: {
 
   for (const attachment of args.attachments ?? []) {
     const key = String(attachment?.key ?? "").trim();
-    if (!key) continue;
+    if (!key || attachment.orderId !== args.orderId) continue;
 
     const owned = /^(pickup|delivery)-proofs\/([^/]+)\/([^/]+)\/([^/]+)\/([^/]+)$/i.exec(key);
     if (owned && owned[2] !== args.companyId) continue;
@@ -210,23 +208,13 @@ async function buildProofBundlesForOrder(args: {
 export async function submitProofForActor(input: SubmitProofInput) {
   const { actor, orderId, body, file, forcedStage } = input;
   const proofTimestamp = input.receivedAt ?? new Date();
-  const membership = await requireCompanyAuthority(prisma, actor, "shipment.update");
   if (!orderId) throw orderError("Missing order id", 400);
-
   const stage = parseProofStage(body.stage, forcedStage ?? "delivery");
-  const order = await prisma.order.findUnique({
-    where: { id: orderId },
-    select: {
-      id: true,
-      assignedDriverId: true,
-      ownerOrgId: true,
-      currentWarehouseId: true,
-    },
-  });
-  if (!order) throw orderError("Order not found", 404);
-  if (order.ownerOrgId !== membership.companyId || order.assignedDriverId !== actor.id) {
+  const order = await requireAuthorizedOrder(actor, orderId, "shipment.update");
+  if (!order.ownerOrgId || order.ownerOrgId !== actor.companyId || order.assignedDriverId !== actor.id) {
     throw orderError("You are not assigned to this order", 403);
   }
+  const membership = { companyId: order.ownerOrgId };
 
   const signedBy = normalizeSignedBy(body.signedBy);
   if (!signedBy || signedBy.length > 120 || /[\x00-\x1f\x7f]/.test(signedBy)) throw orderError("signedBy is required and must be bounded text", 400);
@@ -372,8 +360,13 @@ export async function listOrderProofLinksForActor(input: ListProofInput) {
   const { user, orderId, query } = input;
   if (!orderId) throw orderError("Missing order id", 400);
 
-  const scopeWhere = await buildOrderScopeWhere(user);
-  const order = await getOrderById(orderId, scopeWhere);
+  const authorized = await requireAuthorizedOrder(user, orderId, "shipment.view");
+  const order = await prisma.order.findFirst({
+    where: { id: authorized.id, tenantId: authorized.tenantId },
+    select: { id: true, ownerOrgId: true, attachments: {
+      select: { id: true, orderId: true, key: true, fileName: true, mimeType: true, size: true, createdAt: true },
+    }, trackingEvents: { select: { note: true, timestamp: true } } },
+  });
   if (!order) {
     const err = new Error("Not found") as Error & { statusCode: number };
     err.statusCode = 404;

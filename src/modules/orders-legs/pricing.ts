@@ -1,3 +1,4 @@
+import { requireAuthorizedOrder } from "../orders-core/domain/order-access";
 import {
   OrderLegStatus,
   PricingComponentSource,
@@ -34,8 +35,8 @@ type SystemLegTemplate = {
   description: string;
 };
 
-export async function listPricingComponents(orderId: string) {
-  await ensureOrderExists(orderId);
+export async function listPricingComponents(orderId: string, actor?: Actor) {
+  await requireAuthorizedOrder(actor, orderId, "shipment.view");
   return prisma.pricingComponent.findMany({
     where: { orderId },
     orderBy: [{ createdAt: "desc" }],
@@ -47,7 +48,7 @@ export async function createPricingComponent(
   input: CreatePricingComponentInput,
   actor?: Actor,
 ) {
-  await ensureOrderExists(orderId);
+  await requireAuthorizedOrder(actor, orderId, "shipment.update");
   if (!Number.isFinite(input.amount)) {
     throw orderError("amount must be a finite number", 400);
   }
@@ -277,7 +278,7 @@ export async function seedInitialServiceChargePricing(
   },
   actor?: Actor,
 ) {
-  await ensureOrderExists(orderId);
+  await requireAuthorizedOrder(actor, orderId, "shipment.create");
 
   const amount = Number(input.serviceCharge ?? 0);
   if (!Number.isFinite(amount) || amount <= 0) return null;

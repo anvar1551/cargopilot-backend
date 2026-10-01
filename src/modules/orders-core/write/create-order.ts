@@ -332,24 +332,24 @@ export async function createOrderForActor(args: CreateOrderForActorArgs) {
   const runLabelWork = async () => {
     if (labelMode === "queue") {
       try {
-        await enqueueOrderLabelJob(order.id);
+        await enqueueOrderLabelJob(order.id, actor);
       } catch (queueErr) {
         if (!autoLabelFallback) throw queueErr;
         console.error(
           `Label enqueue failed for order ${order.id}, falling back to inline generation:`,
           queueErr,
         );
-        await generateAndAttachParcelLabelsForOrder(order.id);
+        await generateAndAttachParcelLabelsForOrder(order.id, actor);
         return;
       }
 
       if (blockLabelWork && autoLabelFallback) {
-        await runOrderLabelAutoFallback(order.id);
+        await runOrderLabelAutoFallback(order.id, actor);
       } else if (autoLabelFallback) {
-        scheduleOrderLabelAutoFallback(order.id);
+        await scheduleOrderLabelAutoFallback(order.id, actor);
       }
     } else {
-      await generateAndAttachParcelLabelsForOrder(order.id);
+      await generateAndAttachParcelLabelsForOrder(order.id, actor);
     }
   };
 

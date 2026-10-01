@@ -1,9 +1,9 @@
+import { requireAuthorizedOrder, requireOrderWarehouseReference } from "../orders-core/domain/order-access";
 import { OrderLegStatus, Prisma, TransportMode } from "@prisma/client";
 import prisma from "../../config/prismaClient";
 import { enqueueCargoPilotDomainEventsTx } from "../analytics-core/infrastructure/analyticsOutbox";
 import { orderError } from "../orders-core/shared";
 import {
-  ensureOrderExists,
   resolveActorTenantScope,
   toDate,
   type Actor,
@@ -11,8 +11,8 @@ import {
 } from "./shared";
 import { autoBookCarrierForOrderLeg } from "./carrier-auto-booking";
 
-export async function listOrderLegs(orderId: string) {
-  await ensureOrderExists(orderId);
+export async function listOrderLegs(orderId: string, actor?: Actor) {
+  await requireAuthorizedOrder(actor, orderId, "shipment.view");
   return prisma.orderLeg.findMany({
     where: { orderId },
     orderBy: [{ sequence: "asc" }, { createdAt: "asc" }],
@@ -24,7 +24,12 @@ export async function upsertOrderLeg(
   input: UpsertOrderLegInput,
   actor?: Actor,
 ) {
-  await ensureOrderExists(orderId);
+  await requireAuthorizedOrder(actor, orderId, "shipment.update");
+
+  for (const warehouseId of [input.fromWarehouseId, input.toWarehouseId]) {
+    if (!warehouseId) continue;
+    await requireOrderWarehouseReference(actor!, warehouseId);
+  }
 
   if (!input.legId && (input.sequence == null || input.sequence <= 0)) {
     throw orderError("sequence is required for new leg and must be > 0", 400);

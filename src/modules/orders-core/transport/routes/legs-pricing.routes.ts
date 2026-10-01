@@ -35,7 +35,7 @@ const legsPricingRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       const orderId = String((request.params as any)?.id ?? "").trim();
       await ensureOrderInScope(request, orderId);
-      const legs = await listOrderLegs(orderId);
+      const legs = await listOrderLegs(orderId, requireOrderActor(request.user));
       return reply.send({ legs });
     } catch (err: any) {
       return sendError(reply, err, "Failed");
@@ -183,7 +183,7 @@ const legsPricingRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       const orderId = String((request.params as any)?.id ?? "").trim();
       await ensureOrderInScope(request, orderId);
-      const items = await listPricingComponents(orderId);
+      const items = await listPricingComponents(orderId, requireOrderActor(request.user));
       return reply.send({ items });
     } catch (err: any) {
       return sendError(reply, err, "Failed");
@@ -222,7 +222,7 @@ const legsPricingRoutes: FastifyPluginAsync = async (fastify) => {
       const query = (request.query ?? {}) as Record<string, unknown>;
       const type = asEnumValue(query.type, Object.values(OrderDocumentType), "type") as OrderDocumentType | undefined;
       const limit = parseNumber(query.limit, "limit");
-      const items = await listOrderDocuments(orderId, { type: type ?? null, limit: limit ?? undefined });
+      const items = await listOrderDocuments(orderId, { type: type ?? null, limit: limit ?? undefined }, requireOrderActor(request.user));
       return reply.send({ items });
     } catch (err: any) {
       return sendError(reply, err, "Failed");

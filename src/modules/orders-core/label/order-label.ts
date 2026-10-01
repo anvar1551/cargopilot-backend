@@ -1,3 +1,5 @@
+import { requireAuthorizedOrder } from "../domain/order-access";
+import type { OrderActor } from "../shared/actor";
 import path from "path";
 import { OrderLabelJobStatus } from "@prisma/client";
 import prisma from "../../../config/prismaClient";
@@ -65,9 +67,10 @@ function trimError(error: unknown) {
   return message.length > 1200 ? `${message.slice(0, 1200)}...` : message;
 }
 
-async function loadOrderForLabeling(orderId: string) {
-  const order = await prisma.order.findUnique({
-    where: { id: orderId },
+async function loadOrderForLabeling(orderId: string, actor?: OrderActor) {
+  const authorized = await requireAuthorizedOrder(actor, orderId, "shipment.create");
+  const order = await prisma.order.findFirst({
+    where: { id: orderId, tenantId: authorized.tenantId },
     select: {
       id: true,
       createdAt: true,
@@ -86,6 +89,7 @@ async function loadOrderForLabeling(orderId: string) {
       parcels: {
         select: {
           id: true,
+          orderId: true,
           parcelCode: true,
           pieceNo: true,
           pieceTotal: true,
@@ -102,8 +106,11 @@ async function loadOrderForLabeling(orderId: string) {
   return order;
 }
 
-export async function generateAndAttachParcelLabelsForOrder(orderId: string) {
-  const order = await loadOrderForLabeling(orderId);
+export async function generateAndAttachParcelLabelsForOrder(orderId: string, actor?: OrderActor) {
+  const order = await loadOrderForLabeling(orderId, actor);
+  if (order.parcels.some(parcel => parcel.orderId !== order.id)) {
+    throw orderError("Parcel does not belong to authorized order", 403);
+  }
   if (!order.parcels.length) return 0;
 
   const labelUpdates: Array<{ parcelId: string; labelKey: string }> = [];
@@ -137,8 +144,8 @@ export async function generateAndAttachParcelLabelsForOrder(orderId: string) {
   if (labelUpdates.length) {
     await prisma.$transaction(
       labelUpdates.map((entry) =>
-        prisma.parcel.update({
-          where: { id: entry.parcelId },
+        prisma.parcel.updateMany({
+          where: { id: entry.parcelId, orderId },
           data: { labelKey: entry.labelKey },
         }),
       ),
@@ -148,7 +155,8 @@ export async function generateAndAttachParcelLabelsForOrder(orderId: string) {
   return labelUpdates.length;
 }
 
-export async function enqueueOrderLabelJob(orderId: string) {
+export async function enqueueOrderLabelJob(orderId: string, actor?: OrderActor) {
+  await requireAuthorizedOrder(actor, orderId, "shipment.create");
   const maxAttempts = parsePositiveInt(process.env.ORDER_LABEL_MAX_ATTEMPTS, 5);
 
   return prisma.orderLabelJob.upsert({
@@ -186,7 +194,8 @@ async function hasMissingParcelLabels(orderId: string) {
   return unlabeled > 0;
 }
 
-export async function shouldRunOrderLabelAutoFallback(orderId: string) {
+export async function shouldRunOrderLabelAutoFallback(orderId: string, actor?: OrderActor) {
+  await requireAuthorizedOrder(actor, orderId, "shipment.create");
   const missingLabels = await hasMissingParcelLabels(orderId);
   if (!missingLabels) return false;
 
@@ -210,11 +219,11 @@ export async function shouldRunOrderLabelAutoFallback(orderId: string) {
   return true;
 }
 
-export async function runOrderLabelAutoFallback(orderId: string) {
-  const shouldRun = await shouldRunOrderLabelAutoFallback(orderId);
+export async function runOrderLabelAutoFallback(orderId: string, actor?: OrderActor) {
+  const shouldRun = await shouldRunOrderLabelAutoFallback(orderId, actor);
   if (!shouldRun) return false;
 
-  await generateAndAttachParcelLabelsForOrder(orderId);
+  await generateAndAttachParcelLabelsForOrder(orderId, actor);
 
   await prisma.orderLabelJob.updateMany({
     where: {
@@ -239,12 +248,13 @@ export async function runOrderLabelAutoFallback(orderId: string) {
   return true;
 }
 
-export function scheduleOrderLabelAutoFallback(orderId: string, delayMs?: number) {
+export async function scheduleOrderLabelAutoFallback(orderId: string, actor?: OrderActor, delayMs?: number) {
+  await requireAuthorizedOrder(actor, orderId, "shipment.create");
   if (!isOrderLabelAutoFallbackEnabled()) return;
 
   const waitMs = Math.max(1000, delayMs ?? resolveFallbackDelayMs());
   const timer = setTimeout(() => {
-    void runOrderLabelAutoFallback(orderId).catch((error) => {
+    void runOrderLabelAutoFallback(orderId, actor).catch((error) => {
       console.error(
         `[order-label] auto fallback failed for order ${orderId}:`,
         error,
@@ -353,33 +363,6 @@ async function markJobFailure(job: LabelJobLike, error: unknown) {
 export async function runOrderLabelQueueTick(
   args: RunQueueTickArgs,
 ): Promise<LabelQueueTickResult> {
-  const batchSize = parsePositiveInt(
-    args.batchSize ? String(args.batchSize) : process.env.ORDER_LABEL_WORKER_BATCH_SIZE,
-    10,
-  );
-
-  const claimedJobs = await claimOrderLabelJobs(args.workerId, batchSize);
-
-  let completed = 0;
-  let retried = 0;
-  let failed = 0;
-
-  for (const job of claimedJobs) {
-    try {
-      await generateAndAttachParcelLabelsForOrder(job.orderId);
-      await markJobCompleted(job.id);
-      completed += 1;
-    } catch (error) {
-      const exhausted = await markJobFailure(job, error);
-      if (exhausted) failed += 1;
-      else retried += 1;
-    }
-  }
-
-  return {
-    claimed: claimedJobs.length,
-    completed,
-    retried,
-    failed,
-  };
+  // Existing jobs have no persisted selected membership. Do not claim or read them.
+  throw orderError("Label worker requires durable membership authorization", 503);
 }

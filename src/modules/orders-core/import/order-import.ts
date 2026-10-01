@@ -363,26 +363,26 @@ export async function importOrdersFromCsv(args: {
 
     if (labelMode === "queue") {
       try {
-        await enqueueOrderLabelJob(order.id);
+        await enqueueOrderLabelJob(order.id, actor);
       } catch (queueErr) {
         if (!autoLabelFallback) throw queueErr;
         console.error(
           `Label enqueue failed for imported order ${order.id}, falling back to inline generation:`,
           queueErr,
         );
-        await generateAndAttachParcelLabelsForOrder(order.id);
+        await generateAndAttachParcelLabelsForOrder(order.id, actor);
         continue;
       }
 
       if (autoLabelFallback) {
-        scheduleOrderLabelAutoFallback(order.id);
+        await scheduleOrderLabelAutoFallback(order.id, actor);
       }
     } else if (labelMode === "async") {
-      void generateAndAttachParcelLabelsForOrder(order.id).catch((labelErr) => {
+      void generateAndAttachParcelLabelsForOrder(order.id, actor).catch((labelErr) => {
         console.error(`Label generation failed for imported order ${order.id}:`, labelErr);
       });
     } else {
-      await generateAndAttachParcelLabelsForOrder(order.id);
+      await generateAndAttachParcelLabelsForOrder(order.id, actor);
     }
   }
 

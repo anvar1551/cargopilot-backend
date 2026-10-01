@@ -1,3 +1,4 @@
+import { requireAuthorizedOrder } from "../orders-core/domain/order-access";
 import { TransportMode } from "@prisma/client";
 import { randomUUID } from "crypto";
 import prisma from "../../config/prismaClient";
@@ -153,6 +154,7 @@ function buildCarrierCreateShipmentInput(order: any, leg: any) {
 }
 
 export async function bookCarrierForOrderLeg(input: BookCarrierForOrderLegInput) {
+  await requireAuthorizedOrder(input.actor, input.orderId, "shipment.bookCarrier");
   const companyId = firstString(input.actor.companyId);
   if (!companyId) throw orderError("Active company membership is required", 403);
 
@@ -471,6 +473,7 @@ async function enqueueCarrierLegCommand(input: {
 }
 
 export async function syncCarrierTrackingForOrderLeg(input: CarrierLegCommandInput) {
+  await requireAuthorizedOrder(input.actor, input.orderId, "shipment.bookCarrier");
   return db.$transaction(async (tx: any) => {
     const leg = await loadBookedCarrierLegOrThrow(tx, input);
     if (!leg.carrierRef && !leg.carrierTrackingNumber) {
@@ -494,6 +497,7 @@ export async function syncCarrierTrackingForOrderLeg(input: CarrierLegCommandInp
 }
 
 export async function cancelCarrierForOrderLeg(input: CancelCarrierForOrderLegInput) {
+  await requireAuthorizedOrder(input.actor, input.orderId, "shipment.bookCarrier");
   return db.$transaction(async (tx: any) => {
     const leg = await loadBookedCarrierLegOrThrow(tx, input);
     if (!leg.carrierRef) {

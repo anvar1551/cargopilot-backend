@@ -1,3 +1,4 @@
+import { requireAuthorizedOrder } from "../orders-core/domain/order-access";
 import prisma from "../../config/prismaClient";
 import { resolveCarrierRoutingRuleForOrderLeg } from "../integrations-core/application/carrier-routing.service";
 import { bookCarrierForOrderLeg } from "./carrier-booking";
@@ -39,6 +40,7 @@ export async function autoBookCarrierForOrderLeg(args: {
   legId: string;
   actor?: (Actor & { companyId?: string | null }) | null;
 }): Promise<AutoBookCarrierForOrderLegResult> {
+  await requireAuthorizedOrder(args.actor, args.orderId, "shipment.bookCarrier");
   const actor = args.actor ?? null;
   const companyId = String(args.actor?.companyId || "").trim();
   if (!actor || !companyId) {
@@ -108,6 +110,7 @@ export async function autoBookCarrierForOrder(args: {
   orderId: string;
   actor?: (Actor & { companyId?: string | null }) | null;
 }) {
+  await requireAuthorizedOrder(args.actor, args.orderId, "shipment.bookCarrier");
   const legs = await db.orderLeg.findMany({
     where: { orderId: args.orderId },
     orderBy: [{ sequence: "asc" }, { createdAt: "asc" }],
