@@ -66,4 +66,3 @@ test("HTTP catalog read preserves envelope using real token verification and fre
 test("permission seeding cannot implicitly increase any owner-role ceiling",async()=>{
  database.permission.upsert.mockResolvedValue({});await seedSystemPermissions();expect(database.permission.upsert).toHaveBeenCalled();expect(database.role.findMany).not.toHaveBeenCalled();expect(database.rolePermission.upsert).not.toHaveBeenCalled();noBusinessEffects();
 });
-
