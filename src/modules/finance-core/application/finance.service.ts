@@ -112,12 +112,14 @@ export class FinanceService {
     return this.repository.changePeriodStatus(input);
   }
 
-  listJournals(companyId: string, page: { cursor?: string; limit: number }) {
-    return this.repository.listJournals(companyId, page);
+  async listJournals(actor: AppUser, page: { cursor?: string; limit: number }) {
+    await requireLegalEntityContext(actor, "finance.journals.read");
+    return this.repository.listJournals(actor, page);
   }
 
-  getJournal(companyId: string, journalId: string) {
-    return this.repository.getJournal(companyId, journalId);
+  async getJournal(actor: AppUser, journalId: string) {
+    await requireLegalEntityContext(actor, "finance.journals.read");
+    return this.repository.getJournal(actor, journalId);
   }
 
   createDraftJournal(input: {

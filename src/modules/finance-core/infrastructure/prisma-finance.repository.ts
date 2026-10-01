@@ -1,3 +1,4 @@
+import { listOwnedJournals, getOwnedJournal } from "./journal-read";
 import { rejectUnacceptedInvoiceExecution } from "../domain/invoice-execution-containment";
 import { financeBadRequest } from "../domain/finance.errors";
 import type { AppUser } from "../../../types/app-user";
@@ -650,29 +651,12 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
     });
   }
 
-  async listJournals(companyId: string, page: CursorPage) {
-    const rows = await prisma.financeJournalEntry.findMany({
-      where: { legalEntity: { companyId } },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      take: page.limit + 1,
-      ...(page.cursor ? { cursor: { id: page.cursor }, skip: 1 } : {}),
-      include: {
-        document: true,
-        _count: { select: { lines: true } },
-      },
-    });
-    return pageResult(rows, page.limit);
+  async listJournals(actor: AppUser, page: CursorPage) {
+    return listOwnedJournals(actor, page);
   }
 
-  async getJournal(companyId: string, journalId: string) {
-    const journal = await prisma.financeJournalEntry.findFirst({
-      where: { id: journalId, legalEntity: { companyId } },
-      include: journalInclude,
-    });
-    if (!journal) {
-      throw financeNotFound("Finance journal not found", "FINANCE_JOURNAL_NOT_FOUND");
-    }
-    return journal;
+  async getJournal(actor: AppUser, journalId: string) {
+    return getOwnedJournal(actor, journalId);
   }
 
   async createDraftJournal(command: CreateJournalCommand) {

@@ -933,8 +933,8 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     { preHandler: fastifyAuth({ permission: "finance.journals.read" }) },
     async (request, reply) => {
       try {
-        const page = cursorPageSchema.parse(request.query);
-        return reply.send(await financeService.listJournals(request.user!.companyId, page));
+        const page = cursorPageSchema.strict().parse(request.query);
+        return reply.send(await financeService.listJournals(request.user!, page));
       } catch (error) {
         return sendError(reply, error, "Failed to load finance journals");
       }
@@ -947,7 +947,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const { id } = financeIdParamSchema.parse(request.params);
-        return reply.send(await financeService.getJournal(request.user!.companyId, id));
+        return reply.send(await financeService.getJournal(request.user!, id));
       } catch (error) {
         return sendError(reply, error, "Failed to load finance journal");
       }
