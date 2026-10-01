@@ -16,6 +16,7 @@ model Tenant {
   updatedAt DateTime @default(now()) @updatedAt
 
   memberships         TenantMembership[]
+  supportTickets      SupportTicket[]
   companyMemberships  CompanyMembership[]
   refreshSessions     UserRefreshSession[]
   organizations       Organization[]

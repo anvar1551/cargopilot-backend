@@ -200,6 +200,8 @@ describe("notification tenant containment (mocked repository evidence)", () => {
       ownerId: ids.user,
       ownerOrgId: ids.companyA,
       ownerOrg: { tenantId: ids.tenantA },
+      tenantId: ids.tenantA,
+      ownerCompanyMembershipId: ids.membershipA,
       queue: { defaultOwnerId: null },
     });
     database.companyMembership.findUnique.mockResolvedValue({ id: ids.membershipA,
@@ -243,6 +245,14 @@ describe("notification tenant containment (mocked repository evidence)", () => {
       source: { kind: "support_ticket", ticketId: "80000000-0000-4000-8000-000000000001" },
     })).resolves.toBeNull();
     expect(database.companyMembership.findUnique).not.toHaveBeenCalled();
+    expect(database.userNotification.create).not.toHaveBeenCalled();
+  });
+
+  it("suppresses support notification when company scope was removed", async () => {
+    database.supportTicket.findUnique.mockResolvedValue({id:"80000000-0000-4000-8000-000000000001",orderId:null,ownerId:ids.user,ownerOrgId:ids.companyA,tenantId:ids.tenantA,ownerCompanyMembershipId:ids.membershipA,ownerOrg:{tenantId:ids.tenantA}});
+    database.companyMembership.findUnique.mockResolvedValue({id:ids.membershipA,tenantMembershipId:ids.tenantMembershipA});
+    database.companyMembership.findFirst.mockResolvedValue({...accessRecord(context(),["support.update"]),scopes:[{scopeType:"warehouse",scopeRefId:"90000000-0000-4000-8000-000000000001"}]});
+    await expect(createUserNotification({userId:ids.user,type:NotificationType.support,title:"Synthetic",body:"Synthetic",source:{kind:"support_ticket",ticketId:"80000000-0000-4000-8000-000000000001"}})).resolves.toBeNull();
     expect(database.userNotification.create).not.toHaveBeenCalled();
   });
 

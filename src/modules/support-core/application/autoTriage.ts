@@ -3,16 +3,7 @@ import {
   PaymentIntentStatus,
   PaymentProvider,
   SupportTicketPriority,
-  SupportTicketSource,
 } from "@prisma/client";
-import { createSupportTicket } from "./supportService";
-
-const systemActor = {
-  id: "",
-  permissionCodes: [],
-  name: "CargoPilot Auto Triage",
-  email: "system@cargopilot.local",
-};
 
 function trim(value: unknown, max = 1000) {
   return String(value ?? "").trim().slice(0, max);
@@ -32,25 +23,9 @@ export async function createSystemSupportTicket(input: {
   companyId?: string | null;
   routingKey?: string | null;
 }) {
-  if (process.env.SUPPORT_AUTO_TRIAGE_ENABLED === "false") return null;
-
-  return createSupportTicket(
-    {
-      orderId: input.orderId ?? null,
-      orderNumber: input.orderNumber ?? null,
-      companyId: input.companyId ?? null,
-      title: trim(input.title, 240),
-      summary: input.summary ? trim(input.summary, 2000) : null,
-      priority: input.priority ?? SupportTicketPriority.high,
-      source: SupportTicketSource.system_alert,
-      sourceKey: trim(input.sourceKey, 500),
-      routingKey: input.routingKey ? trim(input.routingKey, 80) : null,
-    },
-    systemActor,
-  ).catch((err: any) => {
-    console.error(`[support-auto-triage] ticket creation failed: ${err?.message || "unknown"}`);
-    return null;
-  });
+  // No durable accepted source is supplied by this legacy producer contract.
+  // Never synthesize a human membership or trust payload ownership.
+  return null;
 }
 
 export async function createCarrierFailureSupportTicket(input: {

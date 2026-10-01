@@ -109,6 +109,7 @@ async function resolveRecipientMembership(args: {
   tenantId: string;
   companyId: string;
   permission: string;
+  requireCompanyScope?: boolean;
 }): Promise<ResolvedNotificationContext | null> {
   const membership = await prisma.companyMembership.findUnique({
     where: { userId_companyId: { userId: args.userId, companyId: args.companyId } },
@@ -125,6 +126,7 @@ async function resolveRecipientMembership(args: {
     requireFresh: true,
   });
   if (!snapshot || !snapshot.permissionCodes.includes(args.permission)) return null;
+  if (args.requireCompanyScope && !snapshot.scopes.some(scope => scope.scopeType === "company" && scope.scopeRefId === args.companyId)) return null;
   return {
     userId: snapshot.userId,
     companyMembershipId: snapshot.companyMembershipId,
@@ -161,20 +163,22 @@ async function resolveSourceOwnership(userId: string, source: NotificationSource
       orderId: true,
       ownerId: true,
       ownerOrgId: true,
+      tenantId: true,
+      ownerCompanyMembershipId: true,
       ownerOrg: { select: { tenantId: true } },
-      queue: { select: { defaultOwnerId: true } },
     },
   });
-  const tenantId = ticket?.ownerOrg?.tenantId ?? null;
-  const allowedRecipient = ticket?.ownerId === userId || ticket?.queue?.defaultOwnerId === userId;
-  if (!ticket?.ownerOrgId || !tenantId || !allowedRecipient) return null;
+  const tenantId = ticket?.tenantId ?? null;
+  const allowedRecipient = ticket?.ownerId === userId;
+  if (!ticket?.ownerOrgId || !tenantId || ticket.ownerOrg?.tenantId !== tenantId || !ticket.ownerCompanyMembershipId || !allowedRecipient) return null;
   const context = await resolveRecipientMembership({
     userId,
     tenantId,
     companyId: ticket.ownerOrgId,
     permission: "support.update",
+    requireCompanyScope: true,
   });
-  return context ? { context, orderId: ticket.orderId ?? null } : null;
+  return context?.companyMembershipId === ticket.ownerCompanyMembershipId ? { context, orderId: ticket.orderId ?? null } : null;
 }
 
 export type NotificationListParams = {

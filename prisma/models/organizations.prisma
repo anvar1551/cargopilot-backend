@@ -48,6 +48,8 @@ model Organization {
   tenantOwnedOrders        Order[]                   @relation("OrderTenantOwnerOrganization")
   tenantAssignedOrders     Order[]                   @relation("OrderTenantAssignedOrganization")
   ownedSupportTickets      SupportTicket[]           @relation("SupportTicketOwnerOrganization")
+  tenantOwnedSupportTickets SupportTicket[] @relation("SupportTenantOwner")
+  tenantAssignedSupportTickets SupportTicket[] @relation("SupportTenantAssigned")
   assignedSupportTickets   SupportTicket[]           @relation("SupportTicketAssignedOrganization")
   paymentProviderConfigs   PaymentProviderConfig[]
   companyPaymentSetting    CompanyPaymentSetting?
@@ -79,6 +81,7 @@ model Organization {
 }
 
 model Warehouse {
+  tenantSupportTickets SupportTicket[] @relation("SupportTenantWarehouse")
   id                  String                  @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   name                String
   type                WarehouseType           @default(warehouse)

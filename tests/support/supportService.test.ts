@@ -1,118 +1,32 @@
-const mockSupportTicketCount = jest.fn();
-const mockUserFindMany = jest.fn();
-
-jest.mock("../../src/config/prismaClient", () => ({
-  __esModule: true,
-  default: {
-    supportTicket: {
-      count: mockSupportTicketCount,
-    },
-    user: {
-      findMany: mockUserFindMany,
-    },
-  },
-}));
-
-jest.mock("../../src/modules/support-core/infrastructure/supportCache", () => ({
-  getOrComputeSupportCached: jest.fn(async (args: { compute: () => Promise<unknown> }) => ({
-    payload: await args.compute(),
-    cacheHit: false,
-  })),
-  invalidateSupportCache: jest.fn(async () => undefined),
-}));
-
-jest.mock("../../src/modules/support-core/realtime/supportRealtime", () => ({
-  publishSupportRefresh: jest.fn(async () => undefined),
-}));
-
-jest.mock("../../src/modules/analytics-core/infrastructure/analyticsOutbox", () => ({
-  enqueueCargoPilotDomainEventTx: jest.fn(async () => undefined),
-}));
-
-jest.mock("../../src/modules/notifications-core/application/notificationService", () => ({
-  createUserNotification: jest.fn(async () => undefined),
-}));
-
-import {
-  getSupportSummary,
-  listSupportAssignees,
-} from "../../src/modules/support-core/application/supportService";
-
-const actor = {
-  id: "0198c72f-1800-7000-8000-000000000001",
-  companyId: "0198c72f-1800-7000-8000-000000000002",
-  permissionCodes: ["support.view", "support.assign"],
-};
-
-describe("support service RBAC projections", () => {
-  beforeEach(() => {
-    mockSupportTicketCount.mockReset();
-    mockUserFindMany.mockReset();
-  });
-
-  it("applies the actor scope to every support summary counter", async () => {
-    mockSupportTicketCount
-      .mockResolvedValueOnce(4)
-      .mockResolvedValueOnce(1)
-      .mockResolvedValueOnce(2)
-      .mockResolvedValueOnce(1)
-      .mockResolvedValueOnce(3)
-      .mockResolvedValueOnce(2);
-
-    const summary = await getSupportSummary({
-      actor,
-      scopeWhere: { ownerOrgId: actor.companyId },
-    });
-
-    expect(summary).toEqual({
-      open: 4,
-      escalated: 1,
-      waitingCustomer: 2,
-      waitingDriver: 1,
-      waiting: 3,
-      resolvedToday: 3,
-      slaRisk: 2,
-    });
-    expect(mockSupportTicketCount).toHaveBeenCalledTimes(6);
-    for (const [call] of mockSupportTicketCount.mock.calls) {
-      expect(JSON.stringify(call.where)).toContain(actor.companyId);
-      expect(JSON.stringify(call.where)).toContain("ownerOrgId");
-    }
-  });
-
-  it("lists only active support operators in the actor company", async () => {
-    mockUserFindMany.mockResolvedValue([
-      { id: "operator-1", name: "Support Operator", email: "support@example.com" },
-    ]);
-
-    const result = await listSupportAssignees(actor);
-
-    expect(result).toHaveLength(1);
-    expect(mockUserFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          memberships: {
-            some: expect.objectContaining({
-              companyId: actor.companyId,
-              status: "active",
-              roles: {
-                some: {
-                  role: {
-                    rolePermissions: {
-                      some: { permission: { key: "support.update" } },
-                    },
-                  },
-                },
-              },
-            }),
-          },
-        },
-      }),
-    );
-  });
-
-  it("returns no assignees without an active company context", async () => {
-    await expect(listSupportAssignees({ id: actor.id })).resolves.toEqual([]);
-    expect(mockUserFindMany).not.toHaveBeenCalled();
-  });
+jest.mock("../../src/config/prismaClient", () => ({ __esModule: true, default: require("../security/fixtures").database }));
+jest.mock("../../src/modules/identity-access/access-control", () => ({ loadAccessSnapshot: jest.fn(), buildSupportScopeWhere: jest.fn(), buildOrderScopeWhere: jest.fn() }));
+jest.mock("../../src/modules/analytics-core/infrastructure/analyticsOutbox", () => ({ enqueueCargoPilotDomainEventTx: jest.fn(async () => undefined) }));
+import { database } from "../security/fixtures";
+import { loadAccessSnapshot, buildSupportScopeWhere, buildOrderScopeWhere } from "../../src/modules/identity-access/access-control";
+import { getSupportSummary, listSupportAssignees } from "../../src/modules/support-core/application/supportService";
+const actor: any = { id: "synthetic-user", membershipId: "cm-a", companyMembershipId: "cm-a", tenantMembershipId: "tm-a",
+ tenantId: "tenant-a", companyId: "company-a", customerEntityId: null, permissionCodes: ["support.view"], scopes: [] };
+beforeEach(() => {
+ jest.mocked(loadAccessSnapshot).mockReset().mockResolvedValue({ ...actor, userId: actor.id, scopes: [{ scopeType: "company", scopeRefId: actor.companyId }] });
+ jest.mocked(buildSupportScopeWhere).mockReset().mockResolvedValue({ ownerOrgId: actor.companyId });
+ jest.mocked(buildOrderScopeWhere).mockReset().mockResolvedValue({ customerEntityId: "scoped-customer" });
+ database.supportTicket.count.mockReset(); database.companyMembership.findMany.mockReset();
+});
+test("summary ignores caller-supplied filters and scopes every count", async () => {
+ for (const n of [4,1,2,1,3,2]) database.supportTicket.count.mockResolvedValueOnce(n);
+ expect(await getSupportSummary({ actor, scopeWhere: {} })).toEqual({ open: 4, escalated: 1, waitingCustomer: 2, waitingDriver: 1, waiting: 3, resolvedToday: 3, slaRisk: 2 });
+ for (const [query] of database.supportTicket.count.mock.calls) {
+  expect(JSON.stringify(query.where)).toContain('"tenantId":"tenant-a"'); expect(JSON.stringify(query.where)).toContain('"ownerOrgId":"company-a"');
+  expect(JSON.stringify(query.where)).toContain("scoped-customer");
+ }
+ expect(loadAccessSnapshot).toHaveBeenCalledWith(expect.objectContaining({ requireFresh: true }));
+});
+test("assignees require active selected-company/tenant bridges, permission and scope", async () => {
+ database.companyMembership.findMany.mockResolvedValue([{ user: { id: "synthetic-operator", name: "Synthetic", email: "synthetic@example.test" } }]);
+ expect(await listSupportAssignees(actor)).toEqual([{ id: "synthetic-operator", name: "Synthetic", email: "synthetic@example.test" }]);
+ expect(database.companyMembership.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ tenantId: actor.tenantId, companyId: actor.companyId, status: "active", tenantMembershipId: { not: null } }), take: 200 }));
+});
+test("missing context fails closed before assignee reads", async () => {
+ await expect(listSupportAssignees({ id: actor.id } as any)).rejects.toMatchObject({ statusCode: 403 });
+ expect(database.companyMembership.findMany).not.toHaveBeenCalled();
 });

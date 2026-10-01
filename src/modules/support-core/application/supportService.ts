@@ -1,170 +1,27 @@
 import prisma from "../../../config/prismaClient";
-import {
-  NotificationType,
-  Prisma,
-  SupportTicketAuthorType,
-  SupportTicketEventType,
-  SupportTicketPriority,
-  SupportTicketSource,
-  SupportTicketStatus,
-} from "@prisma/client";
-import { getOrComputeSupportCached, invalidateSupportCache } from "../infrastructure/supportCache";
-import { publishSupportRefresh } from "../realtime/supportRealtime";
+import { maintainOwnedSupportTickets } from "./supportMaintenance";
+import { Prisma, NotificationType, SupportTicketAuthorType, SupportTicketEventType, SupportTicketPriority, SupportTicketSource, SupportTicketStatus } from "@prisma/client";
+import { requireSupportAccess, rejectSupportOwnership, supportAssignee, lockSupportTicket, matchesProspectiveSupportScope, safeSupportOrderScope, supportError, type SupportActor as Actor } from "./supportAccess";
+import { buildOrderScopeWhere } from "../../identity-access/access-control";
+import { requireCustomerAccess } from "../../customers-core/application/customerAccess";
+import { requireWarehouseAccess } from "../../warehouse-core/application/warehouseAccess";
 import { enqueueCargoPilotDomainEventTx } from "../../analytics-core/infrastructure/analyticsOutbox";
-import { createUserNotification } from "../../notifications-core/application/notificationService";
 
-type Actor = {
-  id: string;
-  companyId?: string | null;
-  permissionCodes?: string[];
-  customerEntityId?: string | null;
-  name?: string;
-  email?: string;
-};
-
-export type ListSupportTicketsArgs = {
-  status?: string | null;
-  priority?: string | null;
-  source?: string | null;
-  owner?: "mine" | "unassigned" | "all" | null;
-  q?: string | null;
-  cursor?: string | null;
-  limit?: number | null;
-  includeArchived?: boolean;
-  actor: Actor;
-  scopeWhere?: Prisma.SupportTicketWhereInput | null;
-};
-
-export type CreateSupportTicketInput = {
-  orderId?: string | null;
-  orderNumber?: string | null;
-  title: string;
-  summary?: string | null;
-  priority?: SupportTicketPriority;
-  source?: SupportTicketSource;
-  status?: SupportTicketStatus;
-  ownerId?: string | null;
-  sourceKey?: string | null;
-  routingKey?: string | null;
-  companyId?: string | null;
-};
-
-export type SupportAssignee = {
-  id: string;
-  name: string;
-  email: string;
-};
-
-function scheduleSupportRefresh(
-  reason: Parameters<typeof publishSupportRefresh>[0],
-  ticketId?: string | null,
-) {
-  void invalidateSupportCache(ticketId).catch((err: any) => {
-    console.error(`[support] async cache invalidation failed: ${err?.message || "unknown"}`);
-  });
-  if (process.env.SUPPORT_DIRECT_REFRESH !== "true") return;
-  void publishSupportRefresh(reason, { ticketId }).catch((err: any) => {
-    console.error(`[support] async refresh publish failed: ${err?.message || "unknown"}`);
-  });
-}
-
-function supportTenantScope(actor: Actor) {
-  const companyId = actorCompanyId(actor);
-  if (companyId) return `company:${companyId}`;
-  return actor.id ? `user:${actor.id}` : "global";
-}
-
-async function enqueueSupportTicketChangedTx(
-  tx: any,
-  args: {
-    ticketId: string;
-    reason: Parameters<typeof publishSupportRefresh>[0];
-    actor: Actor;
-    payload?: Record<string, unknown>;
-  },
-) {
-  await enqueueCargoPilotDomainEventTx(tx, {
-    type: "support_ticket_changed",
-    tenantScope: supportTenantScope(args.actor),
-    entityId: args.ticketId,
-    payload: {
-      reason: args.reason,
-      actorId: actorId(args.actor),
-      actorRole: null,
-      ...(args.payload ?? {}),
-    },
-  });
-}
-
-function normalizeLimit(value?: number | null) {
-  if (!Number.isFinite(value || 0)) return 30;
-  return Math.min(80, Math.max(10, Math.floor(Number(value))));
-}
-
-function normalizeSearchQuery(value?: string | null) {
-  const raw = String(value || "").trim().slice(0, 80);
-  if (raw.length < 2) return "";
-  return raw;
-}
-
-function isEnumValue<T extends Record<string, string>>(enumObj: T, value?: string | null): value is T[keyof T] {
-  return Boolean(value && Object.values(enumObj).includes(value));
-}
-
-function encodeCursor(input: { lastActivityAt: Date; id: string }) {
-  return Buffer.from(`${input.lastActivityAt.toISOString()}|${input.id}`, "utf8").toString("base64url");
-}
-
-function decodeCursor(cursor?: string | null) {
-  if (!cursor) return null;
-  try {
-    const [dateRaw, id] = Buffer.from(cursor, "base64url").toString("utf8").split("|");
-    const date = new Date(dateRaw);
-    if (!id || Number.isNaN(date.getTime())) return null;
-    return { lastActivityAt: date, id };
-  } catch {
-    return null;
-  }
-}
-
-async function getNextTicketNumber(tx: any) {
-  const counter = await tx.counter.upsert({
-    where: { key: "supportTicketNumber" },
-    update: { value: { increment: 1 } },
-    create: { key: "supportTicketNumber", value: 1 },
-  });
-  return `ST-${String(counter.value).padStart(6, "0")}`;
-}
-
-function actorName(actor: Actor) {
-  return actor.name || actor.email || "Support";
-}
-
-function actorId(actor: Actor) {
-  const id = String(actor.id || "").trim();
-  return id || null;
-}
-
-function getAuthorType(actor: Actor): SupportTicketAuthorType {
-  if (!actorId(actor)) return SupportTicketAuthorType.system;
-  const permissions = new Set(
-    Array.isArray(actor.permissionCodes)
-      ? actor.permissionCodes.map((value) => String(value || "").trim())
-      : [],
-  );
-  if (permissions.has("drivers.telemetry")) {
-    return SupportTicketAuthorType.driver;
-  }
-  if (actor.customerEntityId) {
-    return SupportTicketAuthorType.customer;
-  }
-  return SupportTicketAuthorType.support;
-}
-
-function actorCompanyId(actor: Actor) {
-  return String(actor.companyId || "").trim() || null;
-}
-
+export type ListSupportTicketsArgs = { status?: string | null; priority?: string | null; source?: string | null;
+ owner?: "mine" | "unassigned" | "all" | null; q?: string | null; cursor?: string | null; limit?: number | null;
+ includeArchived?: boolean; actor: Actor; scopeWhere?: Prisma.SupportTicketWhereInput | null };
+export type CreateSupportTicketInput = { orderId?: string | null; orderNumber?: string | null; title: string; summary?: string | null;
+ priority?: SupportTicketPriority; ownerId?: string | null };
+export type SupportAssignee = { id: string; name: string; email: string };
+function actorCompanyId(actor: Actor) { return actor.companyId; }
+function actorId(actor: Actor) { return actor.id; }
+function actorName(actor: Actor) { return actor.name || "Support"; }
+function getAuthorType(actor: Actor) { return actor.permissionCodes.includes("drivers.telemetry") ? SupportTicketAuthorType.driver : actor.customerEntityId ? SupportTicketAuthorType.customer : SupportTicketAuthorType.support; }
+function normalizeLimit(value?: number | null) { return Number.isFinite(value) ? Math.min(80,Math.max(10,Math.floor(Number(value)))) : 30; }
+function normalizeSearchQuery(value?: string | null) { const q=String(value || "").trim().slice(0,80); return q.length<2?"":q; }
+function isEnumValue<T extends Record<string,string>>(e:T,v?: string | null): v is T[keyof T] { return !!v && Object.values(e).includes(v); }
+function encodeCursor(v:{lastActivityAt:Date;id:string}) { return Buffer.from(v.lastActivityAt.toISOString()+"|"+v.id).toString("base64url"); }
+function decodeCursor(v?:string|null) { if(!v)return null; try {const [date,id]=Buffer.from(v,"base64url").toString().split("|"); const lastActivityAt=new Date(date); return id && !Number.isNaN(lastActivityAt.getTime()) ? {lastActivityAt,id}:null;} catch{return null;} }
 function normalizeCode(value: string) {
   return String(value || "")
     .trim()
@@ -557,151 +414,6 @@ async function computeSupportSummary(args: {
   };
 }
 
-async function getSupportSummaryCached(args: {
-  includeArchived?: boolean;
-  actor: Actor;
-  scopeWhere?: Prisma.SupportTicketWhereInput | null;
-}) {
-  const key = JSON.stringify({
-    includeArchived: Boolean(args.includeArchived),
-    actorId: args.actor.id,
-    companyId: actorCompanyId(args.actor),
-    scopeWhere: args.scopeWhere ?? null,
-  });
-  const result = await getOrComputeSupportCached({
-    namespace: "summary",
-    key,
-    ttlMs: Number(process.env.SUPPORT_SUMMARY_CACHE_TTL_MS || 60_000),
-    compute: () => computeSupportSummary(args),
-  });
-  return result.payload;
-}
-
-export async function getSupportSummary(args: {
-  includeArchived?: boolean;
-  actor: Actor;
-  scopeWhere?: Prisma.SupportTicketWhereInput | null;
-}) {
-  return getSupportSummaryCached(args);
-}
-
-export async function listSupportTickets(args: ListSupportTicketsArgs) {
-  const limit = normalizeLimit(args.limit);
-  const key = JSON.stringify({
-    status: args.status || "all",
-    priority: args.priority || "all",
-    source: args.source || "all",
-    owner: args.owner || "mine",
-    q: normalizeSearchQuery(args.q),
-    cursor: args.cursor || "",
-    limit,
-    includeArchived: Boolean(args.includeArchived),
-    actorId: args.actor.id,
-    companyId: actorCompanyId(args.actor),
-    scopeWhere: args.scopeWhere ?? null,
-  });
-
-  return getOrComputeSupportCached({
-    namespace: "list",
-    key,
-    ttlMs: 20_000,
-    compute: async () => {
-      const where = buildListWhere(args);
-      const rows = await prisma.supportTicket.findMany({
-        where,
-        select: ticketListSelect,
-        orderBy: [{ lastActivityAt: "desc" }, { id: "desc" }],
-        take: limit + 1,
-      });
-      const hasMore = rows.length > limit;
-      const pageRows = rows.slice(0, limit);
-      const items = pageRows.map(serializeTicket);
-      const last = pageRows[pageRows.length - 1];
-      const summary = await getSupportSummaryCached({
-        includeArchived: Boolean(args.includeArchived),
-        actor: args.actor,
-        scopeWhere: args.scopeWhere,
-      });
-
-      return {
-        items,
-        hasMore,
-        nextCursor: hasMore && last ? encodeCursor({ lastActivityAt: last.lastActivityAt, id: last.id }) : null,
-        summary,
-      };
-    },
-  });
-}
-
-async function loadSerializedTicketFresh(
-  id: string,
-  scopeWhere?: Prisma.SupportTicketWhereInput | null,
-) {
-  const scopedWhere = scopeWhere && Object.keys(scopeWhere).length > 0
-    ? { AND: [{ id }, scopeWhere] }
-    : { id };
-
-  const ticket = await prisma.supportTicket.findFirst({
-    where: scopedWhere,
-    select: {
-      ...ticketDetailSelect,
-      messages: { orderBy: { createdAt: "asc" }, take: 100 },
-      notes: { orderBy: { createdAt: "asc" }, take: 100 },
-      events: { orderBy: { createdAt: "asc" }, take: 120 },
-    },
-  });
-  if (!ticket) return null;
-  return serializeTicket(ticket);
-}
-
-export async function getSupportTicket(id: string) {
-  return getSupportTicketScoped({ id });
-}
-
-export async function getSupportTicketScoped(args: {
-  id: string;
-  scopeWhere?: Prisma.SupportTicketWhereInput | null;
-}) {
-  return getOrComputeSupportCached({
-    namespace: "detail",
-    key: JSON.stringify({
-      id: args.id,
-      scope: args.scopeWhere || null,
-    }),
-    ttlMs: 30_000,
-    compute: () => loadSerializedTicketFresh(args.id, args.scopeWhere),
-  });
-}
-
-function normalizeOrderNumber(value?: string | null) {
-  return String(value || "").trim().replace(/^#/, "");
-}
-
-async function loadOrderSnapshot(input?: { orderId?: string | null; orderNumber?: string | null } | null) {
-  const orderId = String(input?.orderId || "").trim();
-  const orderNumber = normalizeOrderNumber(input?.orderNumber);
-  if (!orderId && !orderNumber) return null;
-  return prisma.order.findUnique({
-    where: orderId ? { id: orderId } : { orderNumber },
-    select: {
-      id: true,
-      orderNumber: true,
-      pickupAddress: true,
-      dropoffAddress: true,
-      customerId: true,
-      customerEntityId: true,
-      assignedDriverId: true,
-      currentWarehouseId: true,
-      ownerOrgId: true,
-      assignedOrgId: true,
-      customer: { select: { name: true, email: true } },
-      customerEntity: { select: { name: true, email: true } },
-      assignedDriver: { select: { name: true, email: true } },
-      currentWarehouse: { select: { name: true, location: true } },
-    },
-  });
-}
-
 function serializeSupportQueue(queue: any) {
   return {
     id: queue.id,
@@ -738,212 +450,6 @@ function serializeSupportAssignmentRule(rule: any) {
     createdAt: rule.createdAt?.toISOString?.() ?? null,
     updatedAt: rule.updatedAt?.toISOString?.() ?? null,
   };
-}
-
-export async function listSupportQueues(companyId: string) {
-  const normalizedCompanyId = String(companyId || "").trim();
-  if (!normalizedCompanyId) throw new Error("companyId is required");
-
-  const rows = await prisma.supportQueue.findMany({
-    where: { companyId: normalizedCompanyId },
-    orderBy: [{ isDefault: "desc" }, { name: "asc" }],
-    include: { defaultOrg: { select: { id: true, name: true } } },
-  });
-  return rows.map(serializeSupportQueue);
-}
-
-export async function createSupportQueue(input: {
-  companyId: string;
-  code?: string | null;
-  name: string;
-  description?: string | null;
-  defaultOrgId?: string | null;
-  defaultOwnerId?: string | null;
-  isDefault?: boolean;
-  isActive?: boolean;
-}) {
-  const companyId = String(input.companyId || "").trim();
-  const name = String(input.name || "").trim();
-  const code = normalizeCode(input.code || name);
-  if (!companyId) throw new Error("companyId is required");
-  if (!name) throw new Error("Queue name is required");
-  if (!code) throw new Error("Queue code is required");
-
-  const queue = await prisma.$transaction(async (tx) => {
-    if (input.isDefault) {
-      await tx.supportQueue.updateMany({
-        where: { companyId, isDefault: true },
-        data: { isDefault: false },
-      });
-    }
-    return tx.supportQueue.create({
-      data: {
-        companyId,
-        code,
-        name,
-        description: input.description?.trim() || null,
-        defaultOrgId: input.defaultOrgId || null,
-        defaultOwnerId: input.defaultOwnerId || null,
-        isDefault: Boolean(input.isDefault),
-        isActive: input.isActive !== false,
-      },
-      include: { defaultOrg: { select: { id: true, name: true } } },
-    });
-  });
-
-  await invalidateSupportCache();
-  return serializeSupportQueue(queue);
-}
-
-export async function updateSupportQueue(id: string, input: Partial<{
-  code: string | null;
-  name: string;
-  description: string | null;
-  defaultOrgId: string | null;
-  defaultOwnerId: string | null;
-  isDefault: boolean;
-  isActive: boolean;
-}>) {
-  const queueId = String(id || "").trim();
-  if (!queueId) throw new Error("queue id is required");
-
-  const existing = await prisma.supportQueue.findUnique({
-    where: { id: queueId },
-    select: { id: true, companyId: true },
-  });
-  if (!existing) throw new Error("Support queue not found");
-
-  const queue = await prisma.$transaction(async (tx) => {
-    if (input.isDefault) {
-      await tx.supportQueue.updateMany({
-        where: { companyId: existing.companyId, isDefault: true, id: { not: queueId } },
-        data: { isDefault: false },
-      });
-    }
-    return tx.supportQueue.update({
-      where: { id: queueId },
-      data: {
-        ...(input.code !== undefined ? { code: normalizeCode(input.code || "") } : {}),
-        ...(input.name !== undefined ? { name: String(input.name || "").trim() } : {}),
-        ...(input.description !== undefined
-          ? { description: input.description?.trim() || null }
-          : {}),
-        ...(input.defaultOrgId !== undefined ? { defaultOrgId: input.defaultOrgId || null } : {}),
-        ...(input.defaultOwnerId !== undefined ? { defaultOwnerId: input.defaultOwnerId || null } : {}),
-        ...(input.isDefault !== undefined ? { isDefault: Boolean(input.isDefault) } : {}),
-        ...(input.isActive !== undefined ? { isActive: Boolean(input.isActive) } : {}),
-      },
-      include: { defaultOrg: { select: { id: true, name: true } } },
-    });
-  });
-
-  await invalidateSupportCache();
-  return serializeSupportQueue(queue);
-}
-
-export async function deleteSupportQueue(id: string) {
-  const queueId = String(id || "").trim();
-  if (!queueId) throw new Error("queue id is required");
-  await prisma.supportQueue.delete({ where: { id: queueId } });
-  await invalidateSupportCache();
-  return { success: true };
-}
-
-export async function listSupportAssignmentRules(companyId: string) {
-  const normalizedCompanyId = String(companyId || "").trim();
-  if (!normalizedCompanyId) throw new Error("companyId is required");
-  const rows = await prisma.supportAssignmentRule.findMany({
-    where: { companyId: normalizedCompanyId },
-    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
-    include: { queue: { select: { id: true, code: true, name: true } } },
-  });
-  return rows.map(serializeSupportAssignmentRule);
-}
-
-export async function createSupportAssignmentRule(input: {
-  companyId: string;
-  queueId?: string | null;
-  name: string;
-  code?: string | null;
-  source?: SupportTicketSource | null;
-  priority?: SupportTicketPriority | null;
-  routeContains?: string | null;
-  defaultOwnerId?: string | null;
-  conditionsJson?: Prisma.InputJsonValue | null;
-  sortOrder?: number | null;
-  isActive?: boolean;
-}) {
-  const companyId = String(input.companyId || "").trim();
-  const name = String(input.name || "").trim();
-  const code = normalizeCode(input.code || name);
-  if (!companyId) throw new Error("companyId is required");
-  if (!name) throw new Error("Rule name is required");
-  if (!code) throw new Error("Rule code is required");
-
-  const rule = await prisma.supportAssignmentRule.create({
-    data: {
-      companyId,
-      queueId: input.queueId || null,
-      name,
-      code,
-      source: input.source || null,
-      priority: input.priority || null,
-      routeContains: input.routeContains?.trim() || null,
-      defaultOwnerId: input.defaultOwnerId || null,
-      conditionsJson: input.conditionsJson == null ? Prisma.JsonNull : input.conditionsJson,
-      sortOrder: Number.isFinite(Number(input.sortOrder)) ? Number(input.sortOrder) : 100,
-      isActive: input.isActive !== false,
-    },
-    include: { queue: { select: { id: true, code: true, name: true } } },
-  });
-  await invalidateSupportCache();
-  return serializeSupportAssignmentRule(rule);
-}
-
-export async function updateSupportAssignmentRule(id: string, input: Partial<{
-  queueId: string | null;
-  name: string;
-  code: string | null;
-  source: SupportTicketSource | null;
-  priority: SupportTicketPriority | null;
-  routeContains: string | null;
-  defaultOwnerId: string | null;
-  conditionsJson: Prisma.InputJsonValue | null;
-  sortOrder: number;
-  isActive: boolean;
-}>) {
-  const ruleId = String(id || "").trim();
-  if (!ruleId) throw new Error("rule id is required");
-  const rule = await prisma.supportAssignmentRule.update({
-    where: { id: ruleId },
-    data: {
-      ...(input.queueId !== undefined ? { queueId: input.queueId || null } : {}),
-      ...(input.name !== undefined ? { name: String(input.name || "").trim() } : {}),
-      ...(input.code !== undefined ? { code: normalizeCode(input.code || "") } : {}),
-      ...(input.source !== undefined ? { source: input.source || null } : {}),
-      ...(input.priority !== undefined ? { priority: input.priority || null } : {}),
-      ...(input.routeContains !== undefined
-        ? { routeContains: input.routeContains?.trim() || null }
-        : {}),
-      ...(input.defaultOwnerId !== undefined ? { defaultOwnerId: input.defaultOwnerId || null } : {}),
-      ...(input.conditionsJson !== undefined
-        ? { conditionsJson: input.conditionsJson == null ? Prisma.JsonNull : input.conditionsJson }
-        : {}),
-      ...(input.sortOrder !== undefined ? { sortOrder: Number(input.sortOrder) || 100 } : {}),
-      ...(input.isActive !== undefined ? { isActive: Boolean(input.isActive) } : {}),
-    },
-    include: { queue: { select: { id: true, code: true, name: true } } },
-  });
-  await invalidateSupportCache();
-  return serializeSupportAssignmentRule(rule);
-}
-
-export async function deleteSupportAssignmentRule(id: string) {
-  const ruleId = String(id || "").trim();
-  if (!ruleId) throw new Error("rule id is required");
-  await prisma.supportAssignmentRule.delete({ where: { id: ruleId } });
-  await invalidateSupportCache();
-  return { success: true };
 }
 
 async function resolveSupportAssignment(args: {
@@ -1017,560 +523,236 @@ async function resolveSupportAssignment(args: {
   };
 }
 
-async function notifySupportUser(input: {
-  userId?: string | null;
-  ticketId: string;
-  ticketNumber?: string | null;
-  title: string;
-  body: string;
-  orderId?: string | null;
-  reason: string;
-}) {
-  const userId = String(input.userId || "").trim();
-  if (!userId) return;
-  await createUserNotification({
-    userId,
-    type: NotificationType.support,
-    title: input.title,
-    body: input.body,
-    source: { kind: "support_ticket", ticketId: input.ticketId },
-    data: {
-      ticketId: input.ticketId,
-      ticketNumber: input.ticketNumber ?? null,
-      reason: input.reason,
-    },
-  }).catch((err: any) => {
-    console.error(`[support] notification failed: ${err?.message || "unknown"}`);
-  });
+
+async function supportEvent(tx: any, ticket: any, actor: Actor, eventType: SupportTicketEventType, body: string) {
+  await tx.supportTicketEvent.create({ data: { ticketId: ticket.id, eventType, actorId: actor.id, actorName: actorName(actor), body } });
+  await enqueueCargoPilotDomainEventTx(tx, { type: "support_ticket_changed",
+    tenantScope: `tenant:${ticket.tenantId}:company:${ticket.ownerOrgId}`, entityId: ticket.id,
+    payload: { reason: eventType === "message_added" ? "message_added" : eventType === "note_added" ? "note_added" : eventType === "created" ? "ticket_created" : "ticket_updated" } });
+  if (ticket.ownerId) {
+    const recipient = await supportAssignee(ticket.ownerId, actor, ticket, tx);
+    if (recipient.membershipId !== ticket.ownerCompanyMembershipId) throw supportError("Conflicting support recipient context");
+    await tx.userNotification.create({ data: { userId: ticket.ownerId, tenantId: ticket.tenantId, companyId: ticket.ownerOrgId,
+      companyMembershipId: recipient.membershipId, type: NotificationType.support,
+      title: `Support ticket ${ticket.ticketNumber}`, body: ticket.title, orderId: ticket.orderId,
+      data: { ticketId: ticket.id, reason: eventType } } });
+  }
 }
 
-async function findEligibleSupportAssignee(
-  userId: string,
-  companyId: string | null,
-  client: Pick<typeof prisma, "user"> = prisma,
-) {
-  if (!userId || !companyId) return null;
-  return client.user.findFirst({
-    where: {
-      id: userId,
-      memberships: {
-        some: {
-          companyId,
-          status: "active",
-          roles: {
-            some: {
-              role: {
-                rolePermissions: {
-                  some: { permission: { key: "support.update" } },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-    select: { id: true, name: true, email: true },
-  });
+export async function getSupportSummary(args: { includeArchived?: boolean; actor: Actor; scopeWhere?: Prisma.SupportTicketWhereInput | null }) {
+  const access = await requireSupportAccess(args.actor);
+  return computeSupportSummary({ ...args, scopeWhere: access.where });
+}
+export async function listSupportTickets(args: ListSupportTicketsArgs) {
+  const access = await requireSupportAccess(args.actor);
+  const scopedArgs = { ...args, actor: access.actor, scopeWhere: access.where };
+  const limit = normalizeLimit(args.limit);
+  const rows = await prisma.supportTicket.findMany({ where: buildListWhere(scopedArgs), select: ticketListSelect,
+    orderBy: [{ lastActivityAt: "desc" }, { id: "desc" }], take: limit + 1 });
+  const page = rows.slice(0, limit), last = page[page.length - 1];
+  return { cacheHit: false, payload: { items: page.map(serializeTicket), hasMore: rows.length > limit,
+    nextCursor: rows.length > limit && last ? encodeCursor(last) : null,
+    summary: await computeSupportSummary({ includeArchived: args.includeArchived, scopeWhere: access.where }) } };
+}
+export async function getSupportTicketScoped(args: { id: string; actor: Actor; scopeWhere?: Prisma.SupportTicketWhereInput | null }) {
+  const access = await requireSupportAccess(args.actor);
+  const ticket = await prisma.supportTicket.findFirst({ where: { AND: [{ id: args.id }, access.where] }, select: {
+    ...ticketDetailSelect,
+    messages: { select: { id: true, authorType: true, authorId: true, authorName: true, body: true, createdAt: true }, orderBy: { createdAt: "asc" }, take: 100 },
+    ...(access.snapshot.permissionCodes.includes("support.assign") || access.snapshot.permissionCodes.includes("support.configure") ? {
+      notes: { select: { id: true, actorId: true, actorName: true, body: true, createdAt: true }, orderBy: { createdAt: "asc" }, take: 100 },
+      events: { select: { id: true, eventType: true, actorId: true, actorName: true, body: true, createdAt: true }, orderBy: { createdAt: "asc" }, take: 120 },
+    } : {}),
+  } });
+  return { cacheHit: false, payload: ticket ? serializeTicket(ticket) : null };
+}
+export async function getSupportTicket(id: string, actor: Actor) { return getSupportTicketScoped({ id, actor }); }
+
+async function loadOwnedOrder(input: CreateSupportTicketInput, actor: Actor) {
+  const id = String(input.orderId || "").trim(), number = String(input.orderNumber || "").trim().replace(/^#/, "");
+  if (!id && !number) return null;
+  const scope = await buildOrderScopeWhere(actor, "shipment.view");
+  const order = await prisma.order.findFirst({ where: { AND: [
+    { tenantId: actor.tenantId, ownerOrgId: actor.companyId }, safeSupportOrderScope(scope),
+    ...(id ? [{ id }] : []), ...(number ? [{ orderNumber: number }] : []),
+  ] }, select: { id: true, tenantId: true, ownerOrgId: true, customerId: true, customerEntityId: true,
+    assignedOrgId: true, assignedDriverId: true, currentWarehouseId: true, pickupAddress: true, dropoffAddress: true,
+    customerEntity: { select: { name: true } }, currentWarehouse: { select: { name: true } } } });
+  if (!order) throw supportError("Order not found", 404);
+  if (order.customerEntityId) {
+    const customer = await requireCustomerAccess(actor, "customers.read");
+    if (!await prisma.customerEntity.findFirst({ where: { AND: [{ id: order.customerEntityId }, customer.customerWhere] }, select: { id: true } })) throw supportError("Customer not accessible");
+  }
+  if (order.currentWarehouseId) {
+    const warehouse = await requireWarehouseAccess(actor, "shipment.view");
+    if (!await prisma.warehouse.findFirst({ where: { AND: [{ id: order.currentWarehouseId }, warehouse.where] }, select: { id: true } })) throw supportError("Warehouse not accessible");
+  }
+  for (const userId of [...new Set([order.customerId, order.assignedDriverId].filter(Boolean))]) {
+    const membership = await prisma.companyMembership.findUnique({ where: { userId_companyId: { userId: userId!, companyId: actor.companyId } }, select: { id: true, tenantMembershipId: true } });
+    const { loadAccessSnapshot } = await import("../../identity-access/access-control");
+    if (!membership?.tenantMembershipId || !await loadAccessSnapshot({ userId: userId!, membershipId: membership.id,
+      companyMembershipId: membership.id, companyId: actor.companyId, tenantId: actor.tenantId,
+      tenantMembershipId: membership.tenantMembershipId, requireFresh: true })) throw supportError("Order recipient context not established");
+  }
+  return order;
 }
 
 export async function createSupportTicket(input: CreateSupportTicketInput, actor: Actor) {
-  const order = await loadOrderSnapshot({
-    orderId: input.orderId,
-    orderNumber: input.orderNumber,
-  });
-  const now = new Date();
+  const access = await requireSupportAccess(actor, "support.createTicket"); actor = access.actor;
+  rejectSupportOwnership(input);
+  const allowed = new Set(["orderId", "orderNumber", "title", "summary", "priority", "ownerId"]);
+  if (Object.keys(input).some(key => !allowed.has(key))) throw supportError("Unsupported support creation field", 400);
   const title = String(input.title || "").trim();
-  if (!title) throw new Error("Title is required");
-  if ((input.orderId || input.orderNumber) && !order) {
-    throw new Error("Order not found");
-  }
-  const priority = input.priority || SupportTicketPriority.normal;
-  const source = input.source || SupportTicketSource.manager;
-  const status = input.status || SupportTicketStatus.open;
-  const sourceKey = String(input.sourceKey || "").trim() || null;
-  const routingKey = String(input.routingKey || "").trim() || null;
-  const routeSnapshot = buildRoute(order);
-  const companyId = String(input.companyId || order?.ownerOrgId || actorCompanyId(actor) || "").trim() || null;
-  const assignment = await resolveSupportAssignment({
-    companyId,
-    source,
-    priority,
-    routeSnapshot,
-    sourceKey,
-    routingKey,
-    title,
-    explicitOwnerId: input.ownerId ?? null,
-    explicitOwnerProvided: input.ownerId !== undefined,
+  if (!title || title.length > 240 || (input.summary?.length ?? 0) > 4000) throw supportError("Invalid support content", 400);
+  if (input.priority && !isEnumValue(SupportTicketPriority, input.priority)) throw supportError("Invalid priority", 400);
+  if (input.ownerId !== undefined && !access.snapshot.permissionCodes.includes("support.assign")) throw supportError("Support assignment permission required");
+  const order = await loadOwnedOrder(input, actor), now = new Date();
+  const assignment = await resolveSupportAssignment({ companyId: actor.companyId, source: "manager", priority: input.priority ?? "normal",
+    routeSnapshot: buildRoute(order), title, explicitOwnerId: input.ownerId, explicitOwnerProvided: input.ownerId !== undefined });
+  if (assignment.assignedOrgId && assignment.assignedOrgId !== actor.companyId) throw supportError("Queue organization requires a reviewed company binding");
+  if (assignment.queueId && !await prisma.supportQueue.findFirst({ where: { id: assignment.queueId, companyId: actor.companyId, isActive: true }, select: { id: true } })) throw supportError("Queue ownership conflict");
+  const owner = assignment.ownerId ? await supportAssignee(assignment.ownerId, actor, { assignedOrgId: assignment.assignedOrgId }) : null;
+  const prospectiveScope = matchesProspectiveSupportScope(access.objectScope, {
+    ownerOrgId: actor.companyId, assignedOrgId: assignment.assignedOrgId,
+    ownerId: owner?.id ?? null, customerEntityId: order?.customerEntityId ?? null,
   });
-  const assignedOwner = assignment.ownerId
-    ? await findEligibleSupportAssignee(assignment.ownerId, companyId)
-    : null;
-  if (input.ownerId && !assignedOwner) {
-    const err = new Error("Selected user is not an active support operator for this company") as Error & {
-      statusCode: number;
-    };
-    err.statusCode = 400;
-    throw err;
-  }
-  const sla = await resolveSupportSla({
-    companyId,
-    queueId: assignment.queueId,
-    priority,
-    from: now,
+  if (!prospectiveScope) throw supportError("Support creation object scope required");
+  const sla = await resolveSupportSla({ companyId: actor.companyId, queueId: assignment.queueId, priority: input.priority ?? "normal", from: now });
+  const ticket = await prisma.$transaction(async tx => {
+    if (order) {
+      await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${order.id}::uuid AND "tenantId" = ${actor.tenantId}::uuid AND "ownerOrgId" = ${actor.companyId}::uuid FOR UPDATE`;
+      const current = await tx.order.findFirst({ where: { id: order.id, tenantId: actor.tenantId, ownerOrgId: actor.companyId } });
+      if (!current || current.customerId !== order.customerId || current.customerEntityId !== order.customerEntityId ||
+        current.assignedOrgId !== order.assignedOrgId || current.assignedDriverId !== order.assignedDriverId || current.currentWarehouseId !== order.currentWarehouseId) throw supportError("Order context changed", 409);
+      const existing = await tx.supportTicket.findFirst({ where: { AND: [access.where, { orderId: order.id, archivedAt: null, status: { not: "resolved" } }] }, orderBy: [{ lastActivityAt: "desc" }, { id: "desc" }] });
+      if (existing) {
+        await lockSupportTicket(tx, existing.id, access);
+        const mergedPriority = strongestPriority(existing.priority, input.priority);
+        const mergedSla = mergedPriority !== existing.priority ? await resolveSupportSla({ companyId: actor.companyId, queueId: existing.queueId, priority: mergedPriority, from: now }) : null;
+        const updated = await tx.supportTicket.update({ where: { id: existing.id, AND: [access.where] }, data: {
+          priority: mergedPriority, lastMessage: input.summary?.trim() || title,
+          lastReplyBy: getAuthorType(actor), lastActivityAt: now,
+          ...(input.ownerId !== undefined ? { ownerId: owner?.id ?? null, ownerCompanyMembershipId: owner?.membershipId ?? null, ownerName: owner?.name ?? null } : {}),
+          ...(mergedSla ? { slaDueAt: mergedSla.dueAt, slaPercent: 100 } : {}),
+        } });
+        await supportEvent(tx, updated, actor, "message_added", "Merged support request"); return updated;
+      }
+    }
+    const counter = await tx.counter.upsert({ where: { key: "supportTicketNumber" }, create: { key: "supportTicketNumber", value: 1 }, update: { value: { increment: 1 } } });
+    const created = await tx.supportTicket.create({ data: {
+      tenantId: actor.tenantId, ownerOrgId: actor.companyId, ticketNumber: `ST-${String(counter.value).padStart(6,"0")}`,
+      orderId: order?.id ?? null, title, summary: input.summary?.trim() || null, priority: input.priority ?? "normal", source: "manager", status: "open",
+      customerUserId: order?.customerId ?? null, customerEntityId: order?.customerEntityId ?? null, driverId: order?.assignedDriverId ?? null,
+      warehouseId: order?.currentWarehouseId ?? null, ownerId: owner?.id ?? null, ownerCompanyMembershipId: owner?.membershipId ?? null, ownerName: owner?.name ?? null,
+      assignedOrgId: assignment.assignedOrgId, queueId: assignment.queueId, customerName: order?.customerEntity?.name ?? null,
+      routeSnapshot: buildRoute(order), warehouseLabel: order?.currentWarehouse?.name ?? null,
+      lastMessage: input.summary?.trim() || title, lastReplyBy: getAuthorType(actor), slaDueAt: sla.dueAt, lastActivityAt: now,
+    } });
+    await supportEvent(tx, created, actor, "created", "Ticket created"); return created;
   });
-
-  if (sourceKey) {
-    const existing = await prisma.supportTicket.findUnique({
-      where: { sourceKey },
-          select: {
-            ...ticketDetailSelect,
-        messages: { orderBy: { createdAt: "asc" }, take: 100 },
-        notes: { orderBy: { createdAt: "asc" }, take: 100 },
-        events: { orderBy: { createdAt: "asc" }, take: 120 },
-      },
-    });
-    // A source key identifies one external/system event for its entire lifetime.
-    // Returning an already resolved or archived ticket keeps automated retries
-    // idempotent and avoids violating the unique sourceKey constraint.
-    if (existing) {
-      return serializeTicket(existing);
-    }
-  }
-
-  if (order?.id && !sourceKey) {
-    const existingForOrder = await prisma.supportTicket.findFirst({
-      where: {
-        orderId: order.id,
-        archivedAt: null,
-        status: { not: SupportTicketStatus.resolved },
-      },
-      select: ticketListSelect,
-      orderBy: [{ lastActivityAt: "desc" }, { id: "desc" }],
-    });
-
-    if (existingForOrder) {
-      const merged = await prisma.$transaction(async (tx) => {
-        const owner = input.ownerId ? assignedOwner : null;
-        const shouldChangeOwner = input.ownerId !== undefined;
-        const mergedSummary = input.summary?.trim() || title;
-        const mergedStatus =
-          input.status === SupportTicketStatus.escalated
-            ? SupportTicketStatus.escalated
-            : existingForOrder.status;
-        const mergedPriority = strongestPriority(existingForOrder.priority, input.priority);
-        const mergedSla =
-          mergedPriority !== existingForOrder.priority || !existingForOrder.slaDueAt
-            ? await resolveSupportSla({
-                companyId,
-                queueId: existingForOrder.queueId,
-                priority: mergedPriority,
-                from: now,
-              })
-            : null;
-
-        const ticket = await tx.supportTicket.update({
-          where: { id: existingForOrder.id },
-          data: {
-            priority: mergedPriority,
-            status: mergedStatus,
-            ownerId: shouldChangeOwner ? owner?.id ?? null : existingForOrder.ownerId,
-            ownerName: shouldChangeOwner
-              ? owner?.name || owner?.email || null
-              : existingForOrder.ownerName,
-            lastMessage: mergedSummary,
-            lastReplyBy: getAuthorType(actor),
-            lastActivityAt: now,
-            ...(mergedSla
-              ? { slaDueAt: mergedSla.dueAt, slaPercent: 100 }
-              : {}),
-          },
-          select: ticketListSelect,
-        });
-
-        await tx.supportTicketEvent.create({
-          data: {
-            ticketId: ticket.id,
-            eventType:
-              mergedStatus === SupportTicketStatus.escalated
-                ? SupportTicketEventType.escalated
-                : SupportTicketEventType.message_added,
-            actorId: actorId(actor),
-            actorName: actorName(actor),
-            body: `Merged new support request: ${title}`,
-            metadata: {
-              source,
-              sourceKey,
-              routingKey,
-              requestedPriority: priority,
-              slaPolicyId: mergedSla?.policyId ?? null,
-              slaTargetMinutes: mergedSla?.targetMinutes ?? null,
-              summary: input.summary?.trim() || null,
-            },
-          },
-        });
-        await enqueueSupportTicketChangedTx(tx, {
-          ticketId: ticket.id,
-          reason: "ticket_updated",
-          actor,
-        payload: {
-            status: mergedStatus,
-            priority: mergedPriority,
-            source,
-            slaPolicyId: mergedSla?.policyId ?? null,
-          },
-        });
-
-        return ticket;
-      });
-
-      scheduleSupportRefresh("ticket_updated", merged.id);
-      return loadSerializedTicketFresh(merged.id);
-    }
-  }
-
-  let created;
-  try {
-    created = await prisma.$transaction(async (tx) => {
-      const ticketNumber = await getNextTicketNumber(tx);
-      const ticket = await tx.supportTicket.create({
-      data: {
-        ticketNumber,
-        sourceKey,
-        orderId: order?.id ?? null,
-        title,
-        summary: input.summary?.trim() || null,
-        priority,
-        status,
-        source,
-        customerUserId: order?.customerId ?? null,
-        customerEntityId: order?.customerEntityId ?? null,
-        driverId: order?.assignedDriverId ?? null,
-        warehouseId: order?.currentWarehouseId ?? null,
-        ownerOrgId: assignment.ownerOrgId,
-        assignedOrgId: assignment.assignedOrgId,
-        queueId: assignment.queueId,
-        ownerId: assignedOwner?.id ?? null,
-        ownerName: assignedOwner?.name || assignedOwner?.email || null,
-        customerName: order?.customerEntity?.name || order?.customer?.name || null,
-        companyName: order?.customerEntity?.name || order?.customer?.email || null,
-        routeSnapshot,
-        driverName: order?.assignedDriver?.name || null,
-        driverPhone: order?.assignedDriver?.email || null,
-        warehouseLabel: order?.currentWarehouse?.name || null,
-        lastMessage: input.summary?.trim() || title,
-        lastReplyBy: getAuthorType(actor),
-        slaPercent: 100,
-        slaDueAt: sla.dueAt,
-        lastActivityAt: now,
-      },
-      select: ticketListSelect,
-    });
-      await tx.supportTicketEvent.create({
-        data: {
-          ticketId: ticket.id,
-          eventType: SupportTicketEventType.created,
-          actorId: actorId(actor),
-          actorName: actorName(actor),
-          body: "Ticket created",
-          metadata: {
-            source,
-            queueId: assignment.queueId,
-            assignedOrgId: assignment.assignedOrgId,
-            sourceKey,
-            routingKey,
-            assignmentSource: assignment.assignmentSource,
-            assignmentRuleId: assignment.assignmentRuleId ?? null,
-            slaPolicyId: sla.policyId,
-            slaTargetMinutes: sla.targetMinutes,
-          },
-        },
-      });
-      await enqueueSupportTicketChangedTx(tx, {
-        ticketId: ticket.id,
-        reason: "ticket_created",
-        actor,
-        payload: {
-          status: ticket.status,
-          priority: ticket.priority,
-          source,
-          queueId: assignment.queueId,
-        },
-      });
-      return ticket;
-    });
-  } catch (err) {
-    if (
-      sourceKey &&
-      err instanceof Prisma.PrismaClientKnownRequestError &&
-      err.code === "P2002"
-    ) {
-      const existing = await prisma.supportTicket.findUnique({
-        where: { sourceKey },
-        select: {
-          ...ticketDetailSelect,
-          messages: { orderBy: { createdAt: "asc" }, take: 100 },
-          notes: { orderBy: { createdAt: "asc" }, take: 100 },
-          events: { orderBy: { createdAt: "asc" }, take: 120 },
-        },
-      });
-      if (existing) return serializeTicket(existing);
-    }
-    throw err;
-  }
-
-  scheduleSupportRefresh("ticket_created", created.id);
-  void notifySupportUser({
-    userId: created.ownerId,
-    ticketId: created.id,
-    ticketNumber: created.ticketNumber,
-    title: `New support ticket ${created.ticketNumber}`,
-    body: created.title,
-    orderId: created.orderId,
-    reason: "ticket_created",
-  });
-  return serializeTicket(created);
+  return serializeTicket(ticket);
 }
 
 export async function listSupportAssignees(actor: Actor): Promise<SupportAssignee[]> {
-  const companyId = actorCompanyId(actor);
-  if (!companyId) return [];
-
-  const users = await prisma.user.findMany({
-    where: {
-      memberships: {
-        some: {
-          companyId,
-          status: "active",
-          roles: {
-            some: {
-              role: {
-                rolePermissions: {
-                  some: {
-                    permission: { key: "support.update" },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-    orderBy: [{ name: "asc" }, { email: "asc" }],
-    select: { id: true, name: true, email: true },
-    distinct: ["id"],
-    take: 200,
-  });
-  return users;
+  const access = await requireSupportAccess(actor);
+  const candidates = await prisma.companyMembership.findMany({ where: { companyId: access.snapshot.companyId, tenantId: access.snapshot.tenantId, status: "active",
+    tenantMembershipId: { not: null }, tenantMembership: { is: { tenantId: access.snapshot.tenantId, status: "active" } },
+    scopes: { some: { scopeType: "company", scopeRefId: access.snapshot.companyId } },
+    roles: { some: { role: { rolePermissions: { some: { permission: { key: "support.update" } } } } } },
+  }, select: { user: { select: { id: true, name: true, email: true } } }, orderBy: { id: "asc" }, take: 200 });
+  return candidates.map(row => ({ id: row.user.id, name: row.user.name, email: row.user.email }));
 }
 
-export async function updateSupportTicketStatus(ticketId: string, status: SupportTicketStatus, actor: Actor) {
-  const now = new Date();
-  const data: any = {
-    status,
-    lastActivityAt: now,
-  };
-  if (status === SupportTicketStatus.resolved) data.resolvedAt = now;
-  if (status !== SupportTicketStatus.resolved) data.resolvedAt = null;
-
-  const updated = await prisma.$transaction(async (tx) => {
-    const ticket = await tx.supportTicket.update({
-      where: { id: ticketId },
-      data,
-      select: ticketListSelect,
-    });
-    await tx.supportTicketEvent.create({
-      data: {
-        ticketId,
-        eventType:
-          status === SupportTicketStatus.escalated
-            ? SupportTicketEventType.escalated
-            : status === SupportTicketStatus.resolved
-              ? SupportTicketEventType.resolved
-              : SupportTicketEventType.status_changed,
-        actorId: actorId(actor),
-        actorName: actorName(actor),
-        body: `Status changed to ${status}`,
-      },
-    });
-    await enqueueSupportTicketChangedTx(tx, {
-      ticketId,
-      reason: "ticket_updated",
-      actor,
-      payload: { status },
-    });
-    return ticket;
+async function mutateTicket(ticketId: string, actor: Actor, permission: string, mutate: (tx: any, ticket: any, actor: Actor, scope: Prisma.SupportTicketWhereInput) => Promise<any>) {
+  const access = await requireSupportAccess(actor, permission);
+  return prisma.$transaction(async tx => {
+    const ticket = await lockSupportTicket(tx, ticketId, access);
+    if (ticket.archivedAt) throw supportError("Archived ticket is read-only", 409);
+    return mutate(tx, ticket, access.actor, access.where);
   });
-
-  scheduleSupportRefresh("ticket_updated", ticketId);
-  void notifySupportUser({
-    userId: updated.ownerId,
-    ticketId: updated.id,
-    ticketNumber: updated.ticketNumber,
-    title: `Support ticket ${updated.ticketNumber} ${status}`,
-    body: updated.title,
-    orderId: updated.orderId,
-    reason: status === SupportTicketStatus.escalated ? "ticket_escalated" : "status_changed",
-  });
-  return serializeTicket(updated);
 }
+export async function updateSupportTicketStatus(id: string, status: SupportTicketStatus, actor: Actor) {
+  if (!isEnumValue(SupportTicketStatus, status)) throw supportError("Invalid support status", 400);
+  const ticket = await mutateTicket(id, actor, "support.update", async (tx, current, verified, scope) => {
+    const extra = status === "resolved" ? "support.resolve" : status === "escalated" ? "support.escalate" : null;
+    if (extra && !verified.permissionCodes.includes(extra)) throw supportError("Support transition permission required");
+    const updated = await tx.supportTicket.update({ where: { id, AND: [scope] },
+      data: { status, resolvedAt: status === "resolved" ? new Date() : null, lastActivityAt: new Date() } });
+    await supportEvent(tx, updated, verified, status === "resolved" ? "resolved" : status === "escalated" ? "escalated" : "status_changed", "Support status changed"); return updated;
+  }); return serializeTicket(ticket);
+}
+export async function assignSupportTicket(id: string, ownerId: string | null, actor: Actor) {
+  const ticket = await mutateTicket(id, actor, "support.assign", async (tx, current, verified, scope) => {
+    const owner = ownerId ? await supportAssignee(ownerId, verified, current, tx) : null;
+    const updated = await tx.supportTicket.update({ where: { id, AND: [scope] },
+      data: { ownerId: owner?.id ?? null, ownerCompanyMembershipId: owner?.membershipId ?? null, ownerName: owner?.name ?? null, lastActivityAt: new Date() } });
+    await supportEvent(tx, updated, verified, "assigned", "Support assignment changed"); return updated;
+  }); return serializeTicket(ticket);
+}
+async function appendTicketContent(id: string, body: string, actor: Actor, note: boolean) {
+  const text = String(body || "").trim(); if (!text || text.length > 4000) throw supportError("Invalid support content", 400);
+  await mutateTicket(id, actor, "support.update", async (tx, current, verified, scope) => {
+    if (note && !verified.permissionCodes.includes("support.assign") && !verified.permissionCodes.includes("support.configure")) throw supportError("Internal support permission required");
+    if (note) await tx.supportTicketNote.create({ data: { ticketId: id, actorId: verified.id, actorName: actorName(verified), body: text } });
+    else await tx.supportTicketMessage.create({ data: { ticketId: id, authorId: verified.id, authorName: actorName(verified), authorType: getAuthorType(verified), body: text } });
+    const updated = await tx.supportTicket.update({ where: { id, AND: [scope] },
+      data: { lastActivityAt: new Date(), ...(!note ? { lastMessage: text, lastReplyBy: getAuthorType(verified) } : {}) } });
+    await supportEvent(tx, updated, verified, note ? "note_added" : "message_added", note ? "Internal note added" : "Message added");
+  }); return (await getSupportTicketScoped({ id, actor })).payload;
+}
+export async function addSupportTicketNote(id: string, body: string, actor: Actor) { return appendTicketContent(id, body, actor, true); }
+export async function addSupportTicketMessage(id: string, body: string, actor: Actor) { return appendTicketContent(id, body, actor, false); }
 
-export async function assignSupportTicket(ticketId: string, ownerId: string | null, actor: Actor) {
-  const updated = await prisma.$transaction(async (tx) => {
-    const owner = ownerId
-      ? await findEligibleSupportAssignee(ownerId, actorCompanyId(actor), tx as typeof prisma)
-      : null;
-    if (ownerId && !owner) {
-      const err = new Error("Selected user is not an active support operator for this company") as Error & {
-        statusCode: number;
-      };
-      err.statusCode = 400;
-      throw err;
+async function configure(actor: Actor, companyId?: string) {
+  const access = await requireSupportAccess(actor, "support.configure");
+  if (companyId !== undefined && companyId !== access.snapshot.companyId) throw supportError("Configuration company conflict");
+  if (!access.snapshot.scopes.some(s => s.scopeType === "company" && s.scopeRefId === access.snapshot.companyId)) throw supportError("Selected company configuration scope required");
+  return access;
+}
+async function validateConfiguration(input: any, actor: Actor) {
+  if (input.defaultOrgId && input.defaultOrgId !== actor.companyId) throw supportError("Organization needs a reviewed selected-company binding");
+  if (input.defaultOwnerId) await supportAssignee(input.defaultOwnerId, actor);
+  if (input.queueId && !await prisma.supportQueue.findFirst({ where: { id: input.queueId, companyId: actor.companyId, isActive: true }, select: { id: true } })) throw supportError("Queue not accessible", 400);
+}
+const configFields = {
+  supportQueue: ["code","name","description","defaultOrgId","defaultOwnerId","isDefault","isActive"],
+  supportAssignmentRule: ["queueId","code","name","source","priority","routeContains","defaultOwnerId","conditionsJson","sortOrder","isActive"],
+};
+async function configMutation(model: keyof typeof configFields, id: string | null, input: any, actor: Actor, remove = false) {
+  const access = await configure(actor, input.companyId); actor = access.actor;
+  if (Object.keys(input).some(key => key !== "companyId" && !configFields[model].includes(key))) throw supportError("Unsupported support configuration field", 400);
+  await validateConfiguration(input, actor);
+  return prisma.$transaction(async (tx: any) => {
+    if (id && !await tx[model].findFirst({ where: { id, companyId: actor.companyId } })) throw supportError("Support configuration not found", 404);
+    const data: any = {};
+    for (const field of configFields[model]) if (input[field] !== undefined) data[field] = input[field];
+    if (data.code !== undefined) data.code = normalizeCode(data.code || data.name || "");
+    if (!id) {
+      if (!String(data.name || "").trim()) throw supportError("Configuration name required", 400);
+      data.code = normalizeCode(data.code || data.name);
     }
-    const ticket = await tx.supportTicket.update({
-      where: { id: ticketId },
-      data: {
-        ownerId: owner?.id ?? null,
-        ownerName: owner?.name || owner?.email || null,
-        lastActivityAt: new Date(),
-      },
-      select: ticketListSelect,
-    });
-    await tx.supportTicketEvent.create({
-      data: {
-        ticketId,
-        eventType: SupportTicketEventType.assigned,
-        actorId: actorId(actor),
-        actorName: actorName(actor),
-        body: owner ? `Assigned to ${owner.name || owner.email}` : "Unassigned",
-      },
-    });
-    await enqueueSupportTicketChangedTx(tx, {
-      ticketId,
-      reason: "ticket_updated",
-      actor,
-      payload: { ownerId },
-    });
-    return ticket;
+    if (model === "supportQueue" && data.isDefault) await tx.supportQueue.updateMany({ where: { companyId: actor.companyId, isDefault: true, ...(id ? { id: { not: id } } : {}) }, data: { isDefault: false } });
+    const row = remove ? await tx[model].delete({ where: { id, companyId: actor.companyId } }) : id
+      ? await tx[model].update({ where: { id, companyId: actor.companyId }, data })
+      : await tx[model].create({ data: { ...data, companyId: actor.companyId } });
+    await enqueueCargoPilotDomainEventTx(tx, { type: "support_ticket_changed", tenantScope: `tenant:${actor.tenantId}:company:${actor.companyId}`,
+      entityId: null, payload: { reason: "configuration_changed" } });
+    return remove ? { success: true } : model === "supportQueue" ? serializeSupportQueue(row) : serializeSupportAssignmentRule(row);
   });
-
-  scheduleSupportRefresh("ticket_updated", ticketId);
-  void notifySupportUser({
-    userId: updated.ownerId,
-    ticketId: updated.id,
-    ticketNumber: updated.ticketNumber,
-    title: `Support ticket assigned`,
-    body: `${updated.ticketNumber}: ${updated.title}`,
-    orderId: updated.orderId,
-    reason: "ticket_assigned",
-  });
-  return serializeTicket(updated);
 }
-
-export async function addSupportTicketNote(ticketId: string, body: string, actor: Actor) {
-  const text = body.trim();
-  if (!text) throw new Error("Note body is required");
-
-  await prisma.$transaction(async (tx) => {
-    await tx.supportTicketNote.create({
-      data: {
-        ticketId,
-        actorId: actorId(actor),
-        actorName: actorName(actor),
-        body: text,
-      },
-    });
-    await tx.supportTicket.update({
-      where: { id: ticketId },
-      data: { lastActivityAt: new Date() },
-    });
-    await tx.supportTicketEvent.create({
-      data: {
-        ticketId,
-        eventType: SupportTicketEventType.note_added,
-        actorId: actorId(actor),
-        actorName: actorName(actor),
-        body: "Internal note added",
-      },
-    });
-    await enqueueSupportTicketChangedTx(tx, {
-      ticketId,
-      reason: "note_added",
-      actor,
-    });
-  });
-
-  scheduleSupportRefresh("note_added", ticketId);
-  return loadSerializedTicketFresh(ticketId);
+export async function listSupportQueues(companyId: string, actor: Actor) {
+  const access = await configure(actor, companyId);
+  return (await prisma.supportQueue.findMany({ where: { companyId: access.snapshot.companyId }, orderBy: [{ isDefault: "desc" }, { name: "asc" }], take: 200 })).map(serializeSupportQueue);
 }
-
-export async function addSupportTicketMessage(ticketId: string, body: string, actor: Actor) {
-  const text = body.trim();
-  if (!text) throw new Error("Message body is required");
-  const authorType = getAuthorType(actor);
-
-  await prisma.$transaction(async (tx) => {
-    await tx.supportTicketMessage.create({
-      data: {
-        ticketId,
-        authorType,
-        authorId: actorId(actor),
-        authorName: actorName(actor),
-        body: text,
-      },
-    });
-    await tx.supportTicket.update({
-      where: { id: ticketId },
-      data: {
-        lastMessage: text,
-        lastReplyBy: authorType,
-        lastActivityAt: new Date(),
-      },
-    });
-    await tx.supportTicketEvent.create({
-      data: {
-        ticketId,
-        eventType: SupportTicketEventType.message_added,
-        actorId: actorId(actor),
-        actorName: actorName(actor),
-        body: "Message added",
-      },
-    });
-    await enqueueSupportTicketChangedTx(tx, {
-      ticketId,
-      reason: "message_added",
-      actor,
-      payload: { authorType },
-    });
-  });
-
-  scheduleSupportRefresh("message_added", ticketId);
-  const ticket = await loadSerializedTicketFresh(ticketId);
-  void notifySupportUser({
-    userId: ticket?.ownerId,
-    ticketId,
-    ticketNumber: ticket?.ticketNumber,
-    title: `New support reply`,
-    body: ticket?.title || text,
-    orderId: ticket?.orderId,
-    reason: "message_added",
-  });
-  return ticket;
+export async function listSupportAssignmentRules(companyId: string, actor: Actor) {
+  const access = await configure(actor, companyId);
+  return (await prisma.supportAssignmentRule.findMany({ where: { companyId: access.snapshot.companyId, OR: [{ queueId: null }, { queue: { is: { companyId: access.snapshot.companyId } } }] }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }], take: 200 })).map(serializeSupportAssignmentRule);
 }
+export async function createSupportQueue(input: any, actor: Actor) { return configMutation("supportQueue", null, input, actor); }
+export async function updateSupportQueue(id: string, input: any, actor: Actor) { return configMutation("supportQueue", id, input, actor); }
+export async function deleteSupportQueue(id: string, actor: Actor) { return configMutation("supportQueue", id, {}, actor, true); }
+export async function createSupportAssignmentRule(input: any, actor: Actor) { return configMutation("supportAssignmentRule", null, input, actor); }
+export async function updateSupportAssignmentRule(id: string, input: any, actor: Actor) { return configMutation("supportAssignmentRule", id, input, actor); }
+export async function deleteSupportAssignmentRule(id: string, actor: Actor) { return configMutation("supportAssignmentRule", id, {}, actor, true); }
 
-export async function archiveResolvedSupportTickets(days = 30) {
-  const cutoff = new Date(Date.now() - Math.max(1, days) * 24 * 60 * 60 * 1000);
-  const result = await prisma.supportTicket.updateMany({
-    where: {
-      status: SupportTicketStatus.resolved,
-      archivedAt: null,
-      resolvedAt: { lt: cutoff },
-    },
-    data: { archivedAt: new Date() },
-  });
-  if (result.count > 0) {
-    await invalidateSupportCache();
-    await publishSupportRefresh("ticket_archived", { keys: ["list", "summary"] });
-  }
-  return result.count;
-}
-
+export async function archiveResolvedSupportTickets(days = 30) { return maintainOwnedSupportTickets("archive", days); }

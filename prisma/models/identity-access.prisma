@@ -68,6 +68,7 @@ model RolePermission {
 }
 
 model CompanyMembership {
+  assignedSupportTickets SupportTicket[] @relation("SupportOwnerMembership")
   proofSubmissions ProofSubmission[] @relation("ProofSubmissionCompany")
   proofSubmissionBridges ProofSubmission[] @relation("ProofSubmissionBridge")
   id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid

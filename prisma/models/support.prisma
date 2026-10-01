@@ -42,6 +42,16 @@ enum SupportTicketEventType {
 }
 
 model SupportTicket {
+  tenantId String? @db.Uuid
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  tenantOwnerOrg Organization? @relation("SupportTenantOwner", fields: [tenantId, ownerOrgId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "SupportTicket_tenant_owner_fkey")
+  tenantAssignedOrg Organization? @relation("SupportTenantAssigned", fields: [tenantId, assignedOrgId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "SupportTicket_tenant_assigned_fkey")
+  tenantOrder Order? @relation("SupportTenantOrder", fields: [tenantId, orderId, ownerOrgId], references: [tenantId, id, ownerOrgId], onDelete: Restrict, onUpdate: Restrict, map: "SupportTicket_order_owner_fkey")
+  tenantCustomer CustomerEntity? @relation("SupportTenantCustomer", fields: [tenantId, customerEntityId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "SupportTicket_customer_owner_fkey")
+  tenantWarehouse Warehouse? @relation("SupportTenantWarehouse", fields: [tenantId, warehouseId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "SupportTicket_warehouse_owner_fkey")
+  ownerCompanyMembershipId String? @db.Uuid
+  ownerMembership CompanyMembership? @relation("SupportOwnerMembership", fields: [ownerCompanyMembershipId, ownerId, tenantId, ownerOrgId], references: [id, userId, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "SupportTicket_assignee_context_fkey")
+  companyQueue SupportQueue? @relation("SupportCompanyQueue", fields: [ownerOrgId, queueId], references: [companyId, id], onDelete: Restrict, onUpdate: Restrict, map: "SupportTicket_company_queue_fkey")
   id           String  @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   ticketNumber String  @unique
   sourceKey    String? @unique
@@ -91,6 +101,7 @@ model SupportTicket {
   events   SupportTicketEvent[]
 
   @@index([status, lastActivityAt])
+  @@index([tenantId, ownerOrgId, status, lastActivityAt])
   @@index([ownerId, status, lastActivityAt])
   @@index([archivedAt, status, lastActivityAt])
   @@index([orderId])
@@ -104,6 +115,7 @@ model SupportTicket {
 }
 
 model SupportQueue {
+  companyTickets SupportTicket[] @relation("SupportCompanyQueue")
   id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   companyId String       @db.Uuid
@@ -128,6 +140,7 @@ model SupportQueue {
   slaPolicies     SupportSlaPolicy[]
 
   @@unique([companyId, code])
+  @@unique([companyId, id], map: "SupportQueue_company_identity_key")
   @@index([companyId, isActive])
   @@index([companyId, isDefault])
 }

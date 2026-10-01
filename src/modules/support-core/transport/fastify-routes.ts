@@ -1,3 +1,4 @@
+import { rejectSupportOwnership, supportError } from "../application/supportAccess";
 import { FastifyPluginAsync } from "fastify";
 import {
   SupportTicketPriority,
@@ -6,9 +7,7 @@ import {
 } from "@prisma/client";
 import { z } from "zod/v4";
 
-import prisma from "../../../config/prismaClient";
 import { fastifyAuth } from "../../../modules/identity-access/transport/fastify-auth";
-import { buildOrderScopeWhere, buildSupportScopeWhere } from "../../identity-access";
 import {
   addSupportTicketMessage,
   addSupportTicketNote,
@@ -28,47 +27,15 @@ import {
   updateSupportQueue,
   updateSupportTicketStatus,
 } from "../application/supportService";
-import {
-  replaySupportRefreshFromRedis,
-  replaySupportRefreshSince,
-  subscribeSupportRefresh,
-} from "../realtime/supportRealtime";
-import {
-  recordSseConnected,
-  recordSseDisconnected,
-} from "../../../modules/observability-core/application/opsMetrics";
-import { applySseHeaders } from "../../../shared/http/sseHeaders";
-
-function isWritableStream(stream: NodeJS.WritableStream & { destroyed?: boolean }) {
-  return !stream.destroyed && (stream as any).writable !== false;
-}
-
 type EnumLike = Record<string, string>;
 
-function actorFromRequest(request: any) {
-  return {
-    id: request.user?.id || "",
-    companyId: request.user?.companyId || null,
-    permissionCodes: Array.isArray(request.user?.permissionCodes) ? request.user.permissionCodes : [],
-    customerEntityId: request.user?.customerEntityId || null,
-    name: request.user?.name,
-    email: request.user?.email,
-  };
-}
+function actorFromRequest(request: any) { return request.user; }
 
 function optionalEnumValue<T extends EnumLike>(enumObj: T, value: unknown) {
   const raw = String(value || "").trim();
   return Object.values(enumObj).includes(raw) ? (raw as T[keyof T]) : null;
 }
 
-function asEnumValue<T extends EnumLike>(
-  enumObj: T,
-  value: unknown,
-  fallback: T[keyof T],
-) {
-  const raw = String(value || "").trim();
-  return Object.values(enumObj).includes(raw) ? (raw as T[keyof T]) : fallback;
-}
 
 function asOptionalString(value: unknown) {
   const raw = String(value ?? "").trim();
@@ -82,19 +49,8 @@ function asNullableString(value: unknown) {
 }
 
 function companyIdFromRequest(request: any) {
-  const requestedCompanyId = asOptionalString((request.query as any)?.companyId)
-    || asOptionalString((request.body as any)?.companyId)
-    || request.user?.companyId
-    || "";
-  const actorCompanyId = String(request.user?.companyId || "").trim();
-  const canOverride = Array.isArray(request.user?.permissionCodes)
-    && request.user.permissionCodes.includes("policy.override");
-  if (requestedCompanyId && requestedCompanyId !== actorCompanyId && !canOverride) {
-    const err = new Error("Forbidden for this company") as Error & { statusCode: number };
-    err.statusCode = 403;
-    throw err;
-  }
-  return requestedCompanyId;
+  if (Object.prototype.hasOwnProperty.call(request.body ?? {}, "companyId") || Object.prototype.hasOwnProperty.call(request.query ?? {}, "companyId")) throw supportError("Company selection is server controlled", 400);
+  return request.user?.companyId ?? "";
 }
 
 function hasRequestPermission(request: any, permission: string) {
@@ -102,89 +58,10 @@ function hasRequestPermission(request: any, permission: string) {
     && request.user.permissionCodes.includes(permission);
 }
 
-async function assertSupportTicketInScope(request: any, ticketId: string) {
-  const scopeWhere = (await buildSupportScopeWhere(request.user!)) ?? { id: "__no_access__" };
-  const ticket = await prisma.supportTicket.findFirst({
-    where: { AND: [{ id: ticketId }, scopeWhere] },
-    select: { id: true },
-  });
-  if (!ticket) {
-    const err = new Error("Support ticket not found") as Error & { statusCode: number };
-    err.statusCode = 404;
-    throw err;
-  }
-}
-
-async function assertOrderReferenceInScope(
-  request: any,
-  reference: { orderId?: string | null; orderNumber?: string | null },
-) {
-  const orderId = String(reference.orderId || "").trim();
-  const orderNumber = String(reference.orderNumber || "").trim().replace(/^#/, "");
-  if (!orderId && !orderNumber) return;
-  const scopeWhere = (await buildOrderScopeWhere(request.user!)) ?? { id: "__no_access__" };
-  const order = await prisma.order.findFirst({
-    where: {
-      AND: [orderId ? { id: orderId } : { orderNumber }, scopeWhere],
-    },
-    select: { id: true },
-  });
-  if (!order) {
-    const err = new Error("Order not found") as Error & { statusCode: number };
-    err.statusCode = 404;
-    throw err;
-  }
-}
-
-async function assertQueueInCompany(request: any, queueId: string) {
-  const canOverride = hasRequestPermission(request, "policy.override");
-  const companyId = String(request.user?.companyId || "").trim();
-  const queue = await prisma.supportQueue.findFirst({
-    where: {
-      id: queueId,
-      ...(canOverride ? {} : { companyId }),
-    },
-    select: { id: true },
-  });
-  if (!queue) {
-    const err = new Error("Support queue not found") as Error & { statusCode: number };
-    err.statusCode = 404;
-    throw err;
-  }
-}
-
-async function assertAssignmentRuleInCompany(request: any, ruleId: string) {
-  const canOverride = hasRequestPermission(request, "policy.override");
-  const companyId = String(request.user?.companyId || "").trim();
-  const rule = await prisma.supportAssignmentRule.findFirst({
-    where: {
-      id: ruleId,
-      ...(canOverride ? {} : { companyId }),
-    },
-    select: { id: true },
-  });
-  if (!rule) {
-    const err = new Error("Support assignment rule not found") as Error & { statusCode: number };
-    err.statusCode = 404;
-    throw err;
-  }
-}
-
-async function assertEligibleSupportOwner(request: any, ownerId?: string | null) {
-  if (!ownerId) return;
-  const assignees = await listSupportAssignees(actorFromRequest(request));
-  if (assignees.some((assignee) => assignee.id === ownerId)) return;
-  const err = new Error("Selected user is not an active support operator for this company") as Error & {
-    statusCode: number;
-  };
-  err.statusCode = 400;
-  throw err;
-}
-
 function sendError(reply: any, err: any, fallbackMessage: string) {
   return reply
     .code(err?.statusCode ?? 500)
-    .send({ error: err?.message ?? fallbackMessage });
+    .send({ error: [400,403,404,409].includes(err?.statusCode) ? err.message : fallbackMessage });
 }
 
 const idParamsSchema = z.object({
@@ -231,99 +108,19 @@ const supportAssignmentRulePatchBodySchema = supportAssignmentRuleCreateBodySche
   );
 
 const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
-  fastify.get(
-    "/stream",
-    { preHandler: fastifyAuth({ permission: "support.view" }) },
-    async (request, reply) => {
-      applySseHeaders(request, reply);
-      reply.raw.flushHeaders?.();
-
-      const clientKey = `${request.user?.id || "anon"}:${request.ip || "ip"}`;
-      const lastEventId = String(
-        request.headers["last-event-id"] || request.headers["Last-Event-ID"] || "",
-      ).trim();
-      let disconnected = false;
-
-      recordSseConnected({ stream: "support", clientKey });
-      let closed = false;
-
-      const send = (event: string, payload: unknown, id?: string | null) => {
-        if (closed || !isWritableStream(reply.raw)) return false;
-        try {
-          if (id) reply.raw.write(`id: ${id}\n`);
-          reply.raw.write(`event: ${event}\n`);
-          reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
-          return true;
-        } catch {
-          return false;
-        }
-      };
-
-      if (!send("ready", {
-        connectedAt: new Date().toISOString(),
-        resumedFrom: lastEventId || null,
-      })) {
-        if (!disconnected) {
-          disconnected = true;
-          recordSseDisconnected("support");
-        }
-        return reply.hijack();
+  fastify.addHook("preValidation", async (request, reply) => {
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    try {
+      const route = String(request.routeOptions.url);
+      if (route.includes("/tickets")) {
+        rejectSupportOwnership(body);
+        const allowed = route.endsWith("/messages") || route.endsWith("/notes") ? ["body"] : route.endsWith("/status") ? ["status"] : route.endsWith("/assign") ? ["ownerId"] : route.endsWith("/escalate") ? [] : ["orderId","orderNumber","title","summary","priority","ownerId"];
+        if (Object.keys(body).some(k => !allowed.includes(k))) throw supportError("Unsupported support field", 400);
       }
-
-      const redisReplayEvents = await replaySupportRefreshFromRedis({
-        lastEventId,
-        limit: Number(process.env.SUPPORT_STREAM_REPLAY_MAX_EVENTS || 200),
-      });
-      const replayEvents = redisReplayEvents.length
-        ? redisReplayEvents
-        : replaySupportRefreshSince(lastEventId);
-      const replayLimit = Math.max(
-        10,
-        Number(process.env.SUPPORT_STREAM_REPLAY_MAX_EVENTS || 200),
-      );
-      const replaySlice = replayEvents.slice(-replayLimit);
-
-      replaySlice.forEach((event) => {
-        send("support-refresh", event, event.id);
-      });
-
-      if (replayEvents.length > replaySlice.length) {
-        send("support-replay-truncated", {
-          skipped: replayEvents.length - replaySlice.length,
-          delivered: replaySlice.length,
-        });
-      }
-
-      const heartbeat = setInterval(() => {
-        if (closed || !isWritableStream(reply.raw)) return;
-        try {
-          reply.raw.write(`: ping ${Date.now()}\n\n`);
-        } catch {
-          closed = true;
-        }
-      }, Math.max(10_000, Number(process.env.SUPPORT_STREAM_HEARTBEAT_MS || 25_000)));
-
-      const unsubscribe = subscribeSupportRefresh((event) => {
-        const sent = send("support-refresh", event, event.id);
-        if (!sent) closed = true;
-      });
-
-      const onClose = () => {
-        if (disconnected) return;
-        disconnected = true;
-        closed = true;
-        recordSseDisconnected("support");
-        clearInterval(heartbeat);
-        unsubscribe();
-      };
-
-      request.raw.on("close", onClose);
-      reply.raw.on("close", onClose);
-      reply.raw.on("error", onClose);
-
-      return reply.hijack();
-    },
-  );
+      else if (["tenantId", "companyId", "ownerOrgId", "assignedOrgId", "ownerCompanyMembershipId"].some(k => Object.prototype.hasOwnProperty.call(body, k))) throw supportError("Ownership is server controlled", 400);
+    } catch(error: any) { return reply.code(error.statusCode).send({ error: error.message }); }
+  });
+  fastify.get("/stream", { preHandler: fastifyAuth({ permission: "support.view" }) }, async (_request, reply) => reply.code(503).send({ error: "Support live refresh is unavailable until tenant-scoped delivery is implemented" }));
 
   fastify.get(
     "/assignees",
@@ -343,11 +140,9 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     { preHandler: fastifyAuth({ permission: "support.view" }) },
     async (request, reply) => {
       try {
-        const scopeWhere = await buildSupportScopeWhere(request.user!);
         const summary = await getSupportSummary({
           includeArchived: (request.query as any)?.includeArchived === "true",
           actor: actorFromRequest(request),
-          scopeWhere,
         });
         return reply.send(summary);
       } catch (err: any) {
@@ -361,7 +156,7 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     { preHandler: fastifyAuth({ permission: "support.configure" }) },
     async (request, reply) => {
       try {
-        const items = await listSupportQueues(companyIdFromRequest(request));
+        const items = await listSupportQueues(companyIdFromRequest(request), actorFromRequest(request));
         return reply.send({ items });
       } catch (err: any) {
         return sendError(reply, err, "Failed to load support queues");
@@ -379,7 +174,6 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
       try {
         const body = (request.body ?? {}) as Record<string, unknown>;
         const defaultOwnerId = asNullableString(body.defaultOwnerId) ?? null;
-        await assertEligibleSupportOwner(request, defaultOwnerId);
         const queue = await createSupportQueue({
           companyId: companyIdFromRequest(request),
           code: asNullableString(body.code) ?? null,
@@ -389,7 +183,7 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           defaultOwnerId,
           isDefault: Boolean(body.isDefault),
           isActive: body.isActive !== false,
-        });
+        }, actorFromRequest(request));
         return reply.code(201).send(queue);
       } catch (err: any) {
         return sendError(reply, err, "Failed to create support queue");
@@ -406,12 +200,10 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const queueId = String((request.params as any)?.id || "");
-        await assertQueueInCompany(request, queueId);
         const body = (request.body ?? {}) as Record<string, unknown>;
         const defaultOwnerId = body.defaultOwnerId === undefined
           ? undefined
           : asNullableString(body.defaultOwnerId) ?? null;
-        await assertEligibleSupportOwner(request, defaultOwnerId);
         const queue = await updateSupportQueue(queueId, {
           code: body.code === undefined ? undefined : asNullableString(body.code) ?? null,
           name: body.name === undefined ? undefined : String(body.name || "").trim(),
@@ -422,7 +214,7 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           defaultOwnerId,
           isDefault: body.isDefault === undefined ? undefined : Boolean(body.isDefault),
           isActive: body.isActive === undefined ? undefined : Boolean(body.isActive),
-        });
+        }, actorFromRequest(request));
         return reply.send(queue);
       } catch (err: any) {
         return sendError(reply, err, "Failed to update support queue");
@@ -439,8 +231,7 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const queueId = String((request.params as any)?.id || "");
-        await assertQueueInCompany(request, queueId);
-        const result = await deleteSupportQueue(queueId);
+        const result = await deleteSupportQueue(queueId, actorFromRequest(request));
         return reply.send(result);
       } catch (err: any) {
         return sendError(reply, err, "Failed to delete support queue");
@@ -453,7 +244,7 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     { preHandler: fastifyAuth({ permission: "support.configure" }) },
     async (request, reply) => {
       try {
-        const items = await listSupportAssignmentRules(companyIdFromRequest(request));
+        const items = await listSupportAssignmentRules(companyIdFromRequest(request), actorFromRequest(request));
         return reply.send({ items });
       } catch (err: any) {
         return sendError(reply, err, "Failed to load support assignment rules");
@@ -471,9 +262,7 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
       try {
         const body = (request.body ?? {}) as Record<string, unknown>;
         const queueId = asNullableString(body.queueId) ?? null;
-        if (queueId) await assertQueueInCompany(request, queueId);
         const defaultOwnerId = asNullableString(body.defaultOwnerId) ?? null;
-        await assertEligibleSupportOwner(request, defaultOwnerId);
         const rule = await createSupportAssignmentRule({
           companyId: companyIdFromRequest(request),
           queueId,
@@ -488,7 +277,7 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
             : null,
           sortOrder: Number((body as any).sortOrder),
           isActive: body.isActive !== false,
-        });
+        }, actorFromRequest(request));
         return reply.code(201).send(rule);
       } catch (err: any) {
         return sendError(reply, err, "Failed to create support assignment rule");
@@ -508,14 +297,11 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const ruleId = String((request.params as any)?.id || "");
-        await assertAssignmentRuleInCompany(request, ruleId);
         const body = (request.body ?? {}) as Record<string, unknown>;
         const queueId = body.queueId === undefined ? undefined : asNullableString(body.queueId) ?? null;
-        if (queueId) await assertQueueInCompany(request, queueId);
         const defaultOwnerId = body.defaultOwnerId === undefined
           ? undefined
           : asNullableString(body.defaultOwnerId) ?? null;
-        await assertEligibleSupportOwner(request, defaultOwnerId);
         const rule = await updateSupportAssignmentRule(ruleId, {
           queueId,
           name: body.name === undefined ? undefined : String(body.name || "").trim(),
@@ -534,7 +320,7 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
                 : null,
           sortOrder: body.sortOrder === undefined ? undefined : Number((body as any).sortOrder),
           isActive: body.isActive === undefined ? undefined : Boolean(body.isActive),
-        });
+        }, actorFromRequest(request));
         return reply.send(rule);
       } catch (err: any) {
         return sendError(reply, err, "Failed to update support assignment rule");
@@ -551,8 +337,7 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const ruleId = String((request.params as any)?.id || "");
-        await assertAssignmentRuleInCompany(request, ruleId);
-        const result = await deleteSupportAssignmentRule(ruleId);
+        const result = await deleteSupportAssignmentRule(ruleId, actorFromRequest(request));
         return reply.send(result);
       } catch (err: any) {
         return sendError(reply, err, "Failed to delete support assignment rule");
@@ -566,7 +351,6 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       const startedAt = Date.now();
       try {
-        const scopeWhere = await buildSupportScopeWhere(request.user!);
         const limit = Number((request.query as any)?.limit);
 
         const result = await listSupportTickets({
@@ -583,7 +367,6 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           includeArchived:
             String((request.query as any)?.includeArchived || "") === "true",
           actor: actorFromRequest(request),
-          scopeWhere,
         });
 
         reply.header("X-Support-Cache", result.cacheHit ? "HIT" : "MISS");
@@ -603,38 +386,27 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         const body = (request.body ?? {}) as Record<string, unknown>;
         const orderId = asNullableString(body.orderId) ?? null;
         const orderNumber = asNullableString(body.orderNumber) ?? null;
-        await assertOrderReferenceInScope(request, { orderId, orderNumber });
         const ticket = await createSupportTicket(
           {
             orderId,
             orderNumber,
             title: String(body.title || "").trim(),
             summary: asNullableString(body.summary) ?? null,
-            priority: asEnumValue(
-              SupportTicketPriority,
-              body.priority,
-              SupportTicketPriority.normal,
-            ),
-            source: SupportTicketSource.manager,
-            status: SupportTicketStatus.open,
-            ownerId: hasRequestPermission(request, "support.assign")
-              ? body.ownerId === null
-                ? null
-                : asOptionalString(body.ownerId)
-              : undefined,
-            sourceKey: null,
-            companyId: request.user?.companyId ?? null,
+            priority: body.priority === undefined ? SupportTicketPriority.normal : (() => {
+              const value = optionalEnumValue(SupportTicketPriority, body.priority);
+              if (!value) throw supportError("Invalid support priority", 400);
+              return value;
+            })(),
+            ownerId: body.ownerId === undefined ? undefined : body.ownerId === null ? null : String(body.ownerId),
           },
           actorFromRequest(request),
         );
         return reply.code(201).send(ticket);
       } catch (err: any) {
-        const status = String(err?.message || "").includes("required")
-          ? 400
-          : err?.statusCode ?? 500;
+        const status = err?.statusCode ?? 500;
         return reply
           .code(status)
-          .send({ error: err?.message || "Failed to create support ticket" });
+          .send({ error: [400,403,404,409].includes(status) ? err.message : "Support operation failed" });
       }
     },
   );
@@ -645,9 +417,8 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       const startedAt = Date.now();
       try {
-        const scopeWhere = await buildSupportScopeWhere(request.user!);
         const id = String((request.params as any)?.id || "").trim();
-        const result = await getSupportTicketScoped({ id, scopeWhere });
+        const result = await getSupportTicketScoped({ id, actor: actorFromRequest(request) });
 
         reply.header("X-Support-Cache", result.cacheHit ? "HIT" : "MISS");
         reply.header("X-Support-Time-Ms", String(Date.now() - startedAt));
@@ -668,18 +439,14 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const ticketId = String((request.params as any)?.id || "");
-        const status = asEnumValue(
-          SupportTicketStatus,
-          (request.body as any)?.status,
-          SupportTicketStatus.open,
-        );
+        const status = optionalEnumValue(SupportTicketStatus, (request.body as any)?.status);
+        if (!status) throw supportError("Invalid support status", 400);
         if (status === SupportTicketStatus.resolved && !hasRequestPermission(request, "support.resolve")) {
           return reply.code(403).send({ error: "Missing permission: support.resolve" });
         }
         if (status === SupportTicketStatus.escalated && !hasRequestPermission(request, "support.escalate")) {
           return reply.code(403).send({ error: "Missing permission: support.escalate" });
         }
-        await assertSupportTicketInScope(request, ticketId);
         const ticket = await updateSupportTicketStatus(
           ticketId,
           status,
@@ -697,7 +464,6 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const ticketId = String((request.params as any)?.id || "");
-        await assertSupportTicketInScope(request, ticketId);
         const body = (request.body ?? {}) as Record<string, unknown>;
         const ownerId =
           body.ownerId === null
@@ -721,7 +487,6 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const ticketId = String((request.params as any)?.id || "");
-        await assertSupportTicketInScope(request, ticketId);
         const ticket = await addSupportTicketNote(
           ticketId,
           String((request.body as any)?.body || ""),
@@ -729,12 +494,10 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         );
         return reply.code(201).send(ticket);
       } catch (err: any) {
-        const status = String(err?.message || "").includes("required")
-          ? 400
-          : err?.statusCode ?? 500;
+        const status = err?.statusCode ?? 500;
         return reply
           .code(status)
-          .send({ error: err?.message || "Failed to add support note" });
+          .send({ error: [400,403,404,409].includes(status) ? err.message : "Support operation failed" });
       }
     },
   );
@@ -745,7 +508,6 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const ticketId = String((request.params as any)?.id || "");
-        await assertSupportTicketInScope(request, ticketId);
         const ticket = await addSupportTicketMessage(
           ticketId,
           String((request.body as any)?.body || ""),
@@ -753,12 +515,10 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         );
         return reply.code(201).send(ticket);
       } catch (err: any) {
-        const status = String(err?.message || "").includes("required")
-          ? 400
-          : err?.statusCode ?? 500;
+        const status = err?.statusCode ?? 500;
         return reply
           .code(status)
-          .send({ error: err?.message || "Failed to add support message" });
+          .send({ error: [400,403,404,409].includes(status) ? err.message : "Support operation failed" });
       }
     },
   );
@@ -768,7 +528,6 @@ const supportFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const ticketId = String((request.params as any)?.id || "");
-        await assertSupportTicketInScope(request, ticketId);
         const ticket = await updateSupportTicketStatus(
           ticketId,
           SupportTicketStatus.escalated,
