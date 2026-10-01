@@ -13,12 +13,12 @@ import fs from "fs";
 import path from "path";
 import { s3 } from "../config/s3";
 
-export async function uploadLabel(fileName: string) {
+export async function uploadLabel(fileName: string, ownedKey: string) {
   const safeFileName = path.basename(fileName);
   const filePath = path.join("labels", safeFileName);
   const fileContent = await fs.promises.readFile(filePath);
 
-  const key = `labels/${safeFileName}`;
+  const key = ownedKey;
 
   await s3.send(
     new PutObjectCommand({

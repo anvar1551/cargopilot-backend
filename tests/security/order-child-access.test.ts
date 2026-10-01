@@ -24,11 +24,13 @@ function matches(row: any, where: any): boolean {
 }
 beforeEach(() => {
  jest.clearAllMocks();
+ db.$queryRaw.mockResolvedValue([]);
  parent = { id: "order-a", tenantId: "tenant-a", ownerOrgId: "company-a", assignedOrgId: null, assignedDriverId: "user-a" };
  db.companyMembership.findFirst.mockResolvedValue({ id: "cm-a", status: "active", companyId: "company-a", tenantId: "tenant-a", tenantMembershipId: "tm-a", tenant: { id: "tenant-a", status: "active" }, tenantMembership: { id: "tm-a", userId: "user-a", tenantId: "tenant-a", status: "active" }, company: { id: "company-a", tenantId: "tenant-a", isActive: true }, user: { id: "user-a", name: "Synthetic", email: "synthetic@example.test" }, scopes: [{ scopeType: "company", scopeRefId: "company-a" }], roles: [{ role: { code: "operator", rolePermissions: permissions.map(key => ({ permission: { key } })) } }] });
  db.order.findFirst.mockImplementation(async ({ where, select }: any) => matches(parent, where) ? (select.parcels ? { ...parent, parcels: [{ id: "parcel-a", orderId: "order-a", parcelCode: "demo", pieceNo: 1, pieceTotal: 1 }], pickupAddress: "Demo pickup", dropoffAddress: "Demo destination", createdAt: new Date() } : parent) : null);
- db.order.findUnique.mockResolvedValue({ ...parent, parcels: [{ id: "parcel-a", parcelCode: "demo", pieceNo: 1, pieceTotal: 1 }], pickupAddress: "Demo pickup", dropoffAddress: "Demo destination", createdAt: new Date() });
+ db.order.findUnique.mockResolvedValue({ ...parent, tenant: { id: actor.tenantId, status: "active" }, ownerOrg: { id: actor.companyId, tenantId: actor.tenantId, type: "company", isActive: true }, parcels: [{ id: "parcel-a", parcelCode: "demo", pieceNo: 1, pieceTotal: 1 }], pickupAddress: "Demo pickup", dropoffAddress: "Demo destination", createdAt: new Date() });
  db.orderLeg.findMany.mockResolvedValue([{ id: "leg-a", orderId: "order-a" }]);
+ db.integrationOutbox.findUnique.mockResolvedValue(null);
  db.orderLabelJob.upsert.mockResolvedValue({ id: "job-a", orderId: "order-a" });
  db.parcel.updateMany.mockResolvedValue({ count: 1 });
  db.$transaction.mockImplementation(async (work: any) => Array.isArray(work) ? Promise.all(work) : work(db));
@@ -51,7 +53,7 @@ it.each(["foreign-tenant", "foreign-company", "tenant-null", "missing-context", 
  expect(db.orderLeg.findMany).not.toHaveBeenCalled(); expect(db.order.findUnique).not.toHaveBeenCalled(); noEffects();
 });
 it("rejects a child from another order before mutation", async () => { db.orderLeg.findFirst.mockResolvedValue(null); await expect(upsertOrderLeg("order-a", { legId: "foreign-leg" }, actor)).rejects.toMatchObject({ statusCode: 404 }); expect(db.orderLeg.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { id: "foreign-leg", orderId: "order-a" } })); noEffects(); });
-it("blocks the legacy context-free worker before claiming any jobs", async () => { await expect(runOrderLabelQueueTick({ workerId: "test-worker" })).rejects.toMatchObject({ statusCode: 503 }); expect(db.orderLabelJob.findMany).not.toHaveBeenCalled(); noEffects(); });
+it("does not claim legacy unaccepted jobs", async () => { db.orderLabelJob.findMany.mockResolvedValue([]); await expect(runOrderLabelQueueTick({ workerId: "test-worker" })).resolves.toMatchObject({ claimed: 0 }); expect(db.orderLabelJob.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ capability: "label.generate", acceptedAt: { not: null } }) })); noEffects(); });
 
 it("blocks context-free canonical carrier application without business writes", async () => { await expect(applyCarrierIntegrationEvent({ domain: "carrier", eventType: "carrier.shipment.created", aggregateId: "leg-a" } as any)).rejects.toMatchObject({ statusCode: 503 }); expect(db.orderLeg.findFirst).not.toHaveBeenCalled(); noEffects(); });
 

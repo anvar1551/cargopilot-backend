@@ -27,6 +27,8 @@ export type IntegrationOutboxRecord = {
 };
 
 export type OutboxDispatchResult = {
+  /** Authority denial or an admitted mutation whose outcome must be reconciled. */
+  requiresRecovery?: boolean;
   sent: boolean;
   retryable: boolean;
   providerRequestId?: string | null;

@@ -77,7 +77,7 @@ function provider(status: IntegrationProviderRef["status"]): IntegrationProvider
 
 describe("integration outbox dispatcher guard", () => {
 
-  it("refuses missing providers", async () => {
+  it("holds unaccepted carrier work when the supplied provider is missing", async () => {
     const { resolveIntegrationOutboxDispatcher } = await import(
       "../../src/modules/integrations-core/application/outbox-dispatcher"
     );
@@ -91,10 +91,10 @@ describe("integration outbox dispatcher guard", () => {
     });
 
     expect(result.sent).toBe(false);
-    expect(result.message).toMatch(/provider/i);
+    expect(result).toMatchObject({ requiresRecovery: true, retryable: false });
   });
 
-  it("refuses inactive providers without provider HTTP calls", async () => {
+  it("holds unaccepted carrier work without provider HTTP calls", async () => {
     const { resolveIntegrationOutboxDispatcher } = await import(
       "../../src/modules/integrations-core/application/outbox-dispatcher"
     );
@@ -109,7 +109,7 @@ describe("integration outbox dispatcher guard", () => {
     });
 
     expect(result.sent).toBe(false);
-    expect(result.message).toMatch(/provider/i);
+    expect(result).toMatchObject({ requiresRecovery: true, retryable: false });
   });
 });
 

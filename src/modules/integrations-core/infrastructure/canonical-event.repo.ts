@@ -172,9 +172,9 @@ export const integrationCanonicalEventRepository: IntegrationCanonicalEventRepos
     });
   },
 
-  async markFailed(id, message) {
-    await db.integrationCanonicalEvent.update({
-      where: { id },
+  async markFailed(id, message, processAttempts) {
+    await db.integrationCanonicalEvent.updateMany({
+      where: { id, status: "processing", ...(processAttempts == null ? {} : { processAttempts }) },
       data: {
         status: "failed",
         lockedAt: null,

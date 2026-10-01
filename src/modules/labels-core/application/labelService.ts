@@ -8,6 +8,7 @@ const bwipjs = require("bwip-js");
 type SecondCodeMode = "barcode" | "qr";
 
 type OrderLabelInput = {
+  outputFileName?: string;
   parcelCode: string;
   pickupAddress: string;
   dropoffAddress: string;
@@ -138,7 +139,7 @@ export async function generateLabelPDF(order: OrderLabelInput) {
   ensureDir(outputDir);
 
   const safeParcelCode = order.parcelCode.replace(/[\\/]/g, "-");
-  const filePath = path.join(outputDir, `${safeParcelCode}.pdf`);
+  const filePath = path.join(outputDir, order.outputFileName ? path.basename(order.outputFileName) : `${safeParcelCode}.pdf`);
 
   const doc = new PDFDocument({ size: "A6", margin: 12, layout: "portrait" });
   const stream = fs.createWriteStream(filePath);

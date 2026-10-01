@@ -256,6 +256,12 @@ async function processOne(record: Awaited<ReturnType<typeof integrationOutboxRep
   }
 
   const finishedAt = Date.now();
+  if (dispatchResult.requiresRecovery) {
+    // Do not invent a provider failure or enqueue a business event for denied/uncertain work.
+    integrationOutboxLogger.throttledWarn(`carrier-held-${record.id}`,
+      "carrier operation held for authority/recovery review", 120_000, { outboxId: record.id });
+    return;
+  }
   const message = dispatchResult.message ? dispatchResult.message.slice(0, 1000) : null;
 
   const attempt = buildAttempt({

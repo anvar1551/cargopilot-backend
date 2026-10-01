@@ -219,6 +219,11 @@ model IntegrationOutbox {
   lastError      String?
   idempotencyKey String
   payload        Json
+  ownershipTenantId String? @db.Uuid
+  ownershipOrderId  String? @db.Uuid
+  acceptedAt        DateTime?
+  executionStartedAt DateTime?
+  ownedOrder Order? @relation("AcceptedCarrierOrder", fields: [ownershipTenantId, ownershipOrderId, companyId], references: [tenantId, id, ownerOrgId], onDelete: Restrict, onUpdate: Restrict, map: "IntegrationOutbox_accepted_order_fkey")
   createdAt      DateTime                @default(now())
   updatedAt      DateTime                @updatedAt
 
@@ -229,6 +234,7 @@ model IntegrationOutbox {
   @@index([companyId, domain, status, nextAttemptAt])
   @@index([providerId, status, nextAttemptAt])
   @@index([aggregateType, aggregateId, operation])
+  @@index([ownershipTenantId, companyId, status])
 }
 
 model IntegrationDeliveryAttempt {

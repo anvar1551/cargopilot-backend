@@ -1,5 +1,6 @@
 import { URL } from "url";
 import prisma from "../../../config/prismaClient";
+import { loadAcceptedCarrierOperation } from "../../orders-legs/carrier-worker-authority";
 import type { IntegrationProviderRef } from "../domain/types";
 import {
   integrationHttpJson,
@@ -296,6 +297,27 @@ type IntegrationResultLike = {
 
 const carrierDispatcher: IntegrationOutboxDispatcher = {
   async dispatch(context) {
+    try {
+      const { row, provider } = await loadAcceptedCarrierOperation(prisma, context.record.id);
+      if (row.status !== "processing" || row.attemptCount >= row.maxAttempts) {
+        throw new Error("Carrier operation is not leased or is exhausted");
+      }
+      if (row.operation !== "track") {
+        // Persist admission BEFORE network work. Never replay a possibly sent mutation.
+        // Pre-network failures conservatively remain held for explicit recovery too.
+        if (row.executionStartedAt || row.attemptCount !== 0) throw new Error("Carrier outcome requires recovery");
+        const started = await (prisma as any).integrationOutbox.updateMany({
+          where: { id: row.id, status: "processing", executionStartedAt: null, attemptCount: 0 },
+          data: { executionStartedAt: new Date() },
+        });
+        if (started.count !== 1) throw new Error("Carrier dispatch admission already consumed");
+      }
+      // All provider configuration, payload and operation fields are reloaded, never queue authority.
+      context = { ...context, record: row, provider };
+    } catch {
+      return { sent: false, retryable: false, requiresRecovery: true, statusCode: null,
+        message: "Carrier durable authority denied or outcome requires recovery" };
+    }
     if (!context.provider) {
       return {
         sent: false,
@@ -368,10 +390,10 @@ const carrierDispatcher: IntegrationOutboxDispatcher = {
         };
       }
       const result = await adapter.createShipment(input, integrationContext);
-      return dispatchResultFromIntegrationResult(result, {
+      return { ...dispatchResultFromIntegrationResult(result, {
         action,
         input,
-      });
+      }), ...(!result.ok ? { requiresRecovery: true } : {}) };
     }
 
     if (action === "cancel_shipment") {
@@ -385,10 +407,10 @@ const carrierDispatcher: IntegrationOutboxDispatcher = {
         };
       }
       const result = await adapter.cancelShipment(input, integrationContext);
-      return dispatchResultFromIntegrationResult(result, {
+      return { ...dispatchResultFromIntegrationResult(result, {
         action,
         input,
-      });
+      }), ...(!result.ok ? { requiresRecovery: true } : {}) };
     }
 
     if (action === "track") {
@@ -512,6 +534,8 @@ export function resolveIntegrationOutboxDispatcher(
   record: IntegrationOutboxRecord,
   provider: IntegrationProviderRef | null,
 ): IntegrationOutboxDispatcher {
+  // Carrier admission reloads provider status and ownership itself, before any effect.
+  if (record.domain === "carrier") return carrierDispatcher;
   if (!provider || provider.status !== "active") {
     return {
       async dispatch() {
@@ -526,7 +550,6 @@ export function resolveIntegrationOutboxDispatcher(
   }
 
   if (record.domain === "webhook_sink") return webhookSinkDispatcher;
-  if (record.domain === "carrier") return carrierDispatcher;
   if (record.domain === "sms") return smsDispatcher;
 
   return unsupportedDispatcher;

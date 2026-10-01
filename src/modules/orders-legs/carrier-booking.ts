@@ -1,4 +1,5 @@
 import { requireAuthorizedOrder } from "../orders-core/domain/order-access";
+import { requireActiveOrderOwnership } from "../orders-core/domain/worker-ownership";
 import { TransportMode } from "@prisma/client";
 import { randomUUID } from "crypto";
 import prisma from "../../config/prismaClient";
@@ -178,6 +179,7 @@ export async function bookCarrierForOrderLeg(input: BookCarrierForOrderLegInput)
       throw orderError("Active carrier provider not found for this company", 403);
     }
 
+    await tx.$queryRaw`SELECT "id" FROM "OrderLeg" WHERE "id" = ${input.legId}::uuid AND "orderId" = ${input.orderId}::uuid FOR UPDATE`;
     const leg = await tx.orderLeg.findFirst({
       where: { id: input.legId, orderId: input.orderId },
       include: {
@@ -192,6 +194,7 @@ export async function bookCarrierForOrderLeg(input: BookCarrierForOrderLegInput)
     if (!leg) throw orderError("Order leg not found for this order", 404);
 
     const order = leg.order;
+    await requireActiveOrderOwnership(tx, order.id, input.actor.tenantId!, provider.companyId);
     const [ownerAllowed, assignedAllowed] = await Promise.all([
       isOrgInsideCompany(tx, order.ownerOrgId, provider.companyId),
       isOrgInsideCompany(tx, order.assignedOrgId, provider.companyId),
@@ -203,6 +206,18 @@ export async function bookCarrierForOrderLeg(input: BookCarrierForOrderLegInput)
     const shipmentInput = buildCarrierCreateShipmentInput(order, leg);
     const now = new Date();
     const idempotencyKey = `carrier:create-shipment:${leg.id}:${provider.id}`;
+    const existing = await tx.integrationOutbox.findUnique({ where: {
+      companyId_providerCode_idempotencyKey: { companyId: provider.companyId, providerCode: provider.providerCode, idempotencyKey },
+    } });
+    if (existing) {
+      if (!existing.acceptedAt || existing.ownershipTenantId !== input.actor.tenantId ||
+          existing.ownershipOrderId !== order.id || existing.providerId !== provider.id ||
+          existing.operation !== "create_shipment" || existing.aggregateId !== leg.id) {
+        throw orderError("Carrier idempotency record conflicts or is unaccepted", 409);
+      }
+      return { leg, outbox: { id: existing.id, status: existing.status, idempotencyKey,
+        providerId: existing.providerId, providerCode: existing.providerCode } };
+    }
     const envelope = {
       eventId: idempotencyKey,
       eventType: "shipment.assigned",
@@ -237,6 +252,9 @@ export async function bookCarrierForOrderLeg(input: BookCarrierForOrderLegInput)
         },
       },
       create: {
+        ownershipTenantId: input.actor.tenantId,
+        ownershipOrderId: order.id,
+        acceptedAt: now,
         companyId: provider.companyId,
         providerId: provider.id,
         domain: "carrier",
@@ -254,20 +272,7 @@ export async function bookCarrierForOrderLeg(input: BookCarrierForOrderLegInput)
         idempotencyKey,
         payload: envelope,
       },
-      update: {
-        providerId: provider.id,
-        environment: provider.environment,
-        aggregateType: "shipment",
-        aggregateId: leg.id,
-        operation: "create_shipment",
-        ...(leg.carrierBookingStatus === "failed"
-          ? {
-              status: "pending",
-              nextAttemptAt: now,
-              lastError: null,
-            }
-          : {}),
-      },
+      update: {},
     });
 
     await enqueueCargoPilotDomainEventsTx(tx, [
@@ -304,6 +309,7 @@ async function loadBookedCarrierLegOrThrow(tx: any, input: CarrierLegCommandInpu
   const companyId = firstString(input.actor.companyId);
   if (!companyId) throw orderError("Active company membership is required", 403);
 
+  await tx.$queryRaw`SELECT "id" FROM "OrderLeg" WHERE "id" = ${input.legId}::uuid AND "orderId" = ${input.orderId}::uuid FOR UPDATE`;
   const leg = await tx.orderLeg.findFirst({
     where: { id: input.legId, orderId: input.orderId },
     include: {
@@ -383,6 +389,7 @@ async function enqueueCarrierLegCommand(input: {
   requeueExisting?: boolean;
 }) {
   const provider = input.leg.carrierProvider;
+  await requireActiveOrderOwnership(input.tx, input.leg.orderId, input.actor.tenantId!, provider.companyId);
   const now = new Date();
   const envelope = buildCarrierCommandEnvelope({
     action: input.operation,
@@ -406,16 +413,31 @@ async function enqueueCarrierLegCommand(input: {
         id: true,
         status: true,
         idempotencyKey: true,
+        acceptedAt: true,
+        ownershipTenantId: true,
+        ownershipOrderId: true,
+        operation: true,
+        aggregateId: true,
         providerId: true,
         providerCode: true,
       },
     });
-    if (existing) return existing;
+    if (existing) {
+      if (!existing.acceptedAt || existing.ownershipTenantId !== input.actor.tenantId ||
+          existing.ownershipOrderId !== input.leg.orderId || existing.providerId !== provider.id ||
+          existing.operation !== input.operation || existing.aggregateId !== input.leg.id) {
+        throw orderError("Carrier idempotency record conflicts or is unaccepted", 409);
+      }
+      return existing;
+    }
   }
 
   const outbox = await input.tx.integrationOutbox.upsert({
     where: uniqueWhere,
     create: {
+      ownershipTenantId: input.actor.tenantId,
+      ownershipOrderId: input.leg.orderId,
+      acceptedAt: now,
       companyId: provider.companyId,
       providerId: provider.id,
       domain: "carrier",
@@ -433,17 +455,7 @@ async function enqueueCarrierLegCommand(input: {
       idempotencyKey: input.idempotencyKey,
       payload: envelope,
     },
-    update: {
-      providerId: provider.id,
-      environment: provider.environment,
-      aggregateType: "shipment",
-      aggregateId: input.leg.id,
-      operation: input.operation,
-      status: "pending",
-      nextAttemptAt: now,
-      lastError: null,
-      payload: envelope,
-    },
+    update: {},
   });
 
   await enqueueCargoPilotDomainEventsTx(input.tx, [

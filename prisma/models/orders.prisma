@@ -204,6 +204,8 @@ model Order {
   parcels              Parcel[]
   trackingEvents       Tracking[]
   labelJob             OrderLabelJob?
+  acceptedLabelJobs     OrderLabelJob[] @relation("AcceptedLabelOrder")
+  acceptedCarrierOperations IntegrationOutbox[] @relation("AcceptedCarrierOrder")
   invoice              Invoice?
   tenantOwnedInvoices  Invoice[] @relation("InvoiceTenantOwnedOrder")
   attachments          OrderAttachment[]

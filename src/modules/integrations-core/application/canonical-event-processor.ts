@@ -17,7 +17,7 @@ async function processOne(event: Awaited<ReturnType<typeof integrationCanonicalE
   if (event.domain === "carrier") {
     const result = await applyCarrierIntegrationEvent(event);
     if (result.applied) {
-      await integrationCanonicalEventRepository.markProcessed(event.id);
+      // Carrier application commits its processed receipt with the business mutation.
       return "processed" as const;
     }
     const reason = "reason" in result ? result.reason : "carrier event was not applied";
@@ -56,7 +56,7 @@ export async function processIntegrationCanonicalEventsOnce(args?: {
       result[outcome] += 1;
     } catch (error) {
       result.failed += 1;
-      await integrationCanonicalEventRepository.markFailed(event.id, errorMessage(error));
+      await integrationCanonicalEventRepository.markFailed(event.id, errorMessage(error), event.processAttempts);
     }
   }
 

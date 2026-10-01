@@ -1,4 +1,5 @@
 import { requireAuthorizedOrder } from "../domain/order-access";
+import { requireActiveOrderOwnership } from "../domain/worker-ownership";
 import type { OrderActor } from "../shared/actor";
 import path from "path";
 import { OrderLabelJobStatus } from "@prisma/client";
@@ -67,12 +68,13 @@ function trimError(error: unknown) {
   return message.length > 1200 ? `${message.slice(0, 1200)}...` : message;
 }
 
-async function loadOrderForLabeling(orderId: string, actor?: OrderActor) {
-  const authorized = await requireAuthorizedOrder(actor, orderId, "shipment.create");
+async function loadLabelContent(orderId: string, tenantId: string) {
   const order = await prisma.order.findFirst({
-    where: { id: orderId, tenantId: authorized.tenantId },
+    where: { id: orderId, tenantId },
     select: {
       id: true,
+      tenantId: true,
+      ownerOrgId: true,
       createdAt: true,
       pickupAddress: true,
       dropoffAddress: true,
@@ -90,6 +92,7 @@ async function loadOrderForLabeling(orderId: string, actor?: OrderActor) {
         select: {
           id: true,
           orderId: true,
+          labelKey: true,
           parcelCode: true,
           pieceNo: true,
           pieceTotal: true,
@@ -107,7 +110,13 @@ async function loadOrderForLabeling(orderId: string, actor?: OrderActor) {
 }
 
 export async function generateAndAttachParcelLabelsForOrder(orderId: string, actor?: OrderActor) {
-  const order = await loadOrderForLabeling(orderId, actor);
+  const authorized = await requireAuthorizedOrder(actor, orderId, "shipment.create");
+  const order = await loadLabelContent(orderId, authorized.tenantId!);
+  return attachLabels(order);
+}
+
+async function attachLabels(order: Awaited<ReturnType<typeof loadLabelContent>>) {
+  if (!order.tenantId || !order.ownerOrgId) throw orderError("Label ownership required", 403);
   if (order.parcels.some(parcel => parcel.orderId !== order.id)) {
     throw orderError("Parcel does not belong to authorized order", 403);
   }
@@ -116,7 +125,9 @@ export async function generateAndAttachParcelLabelsForOrder(orderId: string, act
   const labelUpdates: Array<{ parcelId: string; labelKey: string }> = [];
 
   for (const parcel of order.parcels) {
+    if (parcel.labelKey) continue;
     const labelPath = await generateLabelPDF({
+      outputFileName: `${parcel.id}.pdf`,
       parcelCode: parcel.parcelCode,
       pieceNo: parcel.pieceNo,
       pieceTotal: parcel.pieceTotal,
@@ -136,7 +147,8 @@ export async function generateAndAttachParcelLabelsForOrder(orderId: string, act
     });
 
     const labelFileName = path.basename(labelPath);
-    const { key: labelKey } = await uploadLabel(labelFileName);
+    const { key: labelKey } = await uploadLabel(labelFileName,
+      `labels/${order.tenantId}/${order.ownerOrgId}/${order.id}/${parcel.id}.pdf`);
 
     labelUpdates.push({ parcelId: parcel.id, labelKey });
   }
@@ -145,7 +157,7 @@ export async function generateAndAttachParcelLabelsForOrder(orderId: string, act
     await prisma.$transaction(
       labelUpdates.map((entry) =>
         prisma.parcel.updateMany({
-          where: { id: entry.parcelId, orderId },
+          where: { id: entry.parcelId, orderId: order.id },
           data: { labelKey: entry.labelKey },
         }),
       ),
@@ -156,13 +168,18 @@ export async function generateAndAttachParcelLabelsForOrder(orderId: string, act
 }
 
 export async function enqueueOrderLabelJob(orderId: string, actor?: OrderActor) {
-  await requireAuthorizedOrder(actor, orderId, "shipment.create");
+  const order = await requireAuthorizedOrder(actor, orderId, "shipment.create");
+  await requireActiveOrderOwnership(prisma, orderId, order.tenantId!, order.ownerOrgId!);
   const maxAttempts = parsePositiveInt(process.env.ORDER_LABEL_MAX_ATTEMPTS, 5);
 
   return prisma.orderLabelJob.upsert({
     where: { orderId },
     create: {
       orderId,
+      ownershipTenantId: order.tenantId,
+      ownershipCompanyId: order.ownerOrgId,
+      acceptedAt: new Date(),
+      capability: "label.generate",
       status: OrderLabelJobStatus.pending,
       attempts: 0,
       maxAttempts,
@@ -171,15 +188,8 @@ export async function enqueueOrderLabelJob(orderId: string, actor?: OrderActor) 
       lockedAt: null,
       lockedBy: null,
     },
-    update: {
-      status: OrderLabelJobStatus.pending,
-      attempts: 0,
-      maxAttempts,
-      availableAt: new Date(),
-      error: null,
-      lockedAt: null,
-      lockedBy: null,
-    },
+    // An accepted/completed operation is immutable. Never reactivate legacy grants.
+    update: {},
   });
 }
 
@@ -269,6 +279,8 @@ async function claimOrderLabelJobs(workerId: string, batchSize: number): Promise
 
   const candidates = await prisma.orderLabelJob.findMany({
     where: {
+      capability: "label.generate",
+      acceptedAt: { not: null },
       status: { in: [OrderLabelJobStatus.pending, OrderLabelJobStatus.failed] },
       availableAt: { lte: now },
     },
@@ -318,9 +330,9 @@ async function claimOrderLabelJobs(workerId: string, batchSize: number): Promise
   return claimed;
 }
 
-async function markJobCompleted(jobId: string) {
-  await prisma.orderLabelJob.update({
-    where: { id: jobId },
+async function markJobCompleted(job: LabelJobLike, workerId: string) {
+  const completed = await prisma.orderLabelJob.updateMany({
+    where: { id: job.id, status: "processing", lockedBy: workerId, attempts: job.attempts },
     data: {
       status: OrderLabelJobStatus.completed,
       error: null,
@@ -329,16 +341,18 @@ async function markJobCompleted(jobId: string) {
       availableAt: new Date(),
     },
   });
+  if (completed.count !== 1) throw orderError("Label lease changed during execution", 403);
 }
 
-async function markJobFailure(job: LabelJobLike, error: unknown) {
+async function markJobFailure(job: LabelJobLike, workerId: string, error: unknown, authorizedOrderId?: string) {
   const exhausted = job.attempts >= job.maxAttempts;
   const nextStatus = exhausted ? OrderLabelJobStatus.failed : OrderLabelJobStatus.pending;
   const retryAt = new Date(Date.now() + buildRetryDelayMs(job.attempts));
-  const errorMessage = trimError(error);
+  const denied = (error as { statusCode?: number })?.statusCode === 403;
+  const errorMessage = denied ? "Durable label authority denied" : "Label execution failed";
 
-  await prisma.orderLabelJob.update({
-    where: { id: job.id },
+  const updated = await prisma.orderLabelJob.updateMany({
+    where: { id: job.id, status: "processing", lockedBy: workerId, attempts: job.attempts },
     data: {
       status: nextStatus,
       error: errorMessage,
@@ -348,9 +362,9 @@ async function markJobFailure(job: LabelJobLike, error: unknown) {
     },
   });
 
-  if (exhausted) {
+  if (updated.count === 1 && exhausted && !denied && authorizedOrderId) {
     void createLabelFailureSupportTicket({
-      orderId: job.orderId,
+      orderId: authorizedOrderId,
       jobId: job.id,
       reason: errorMessage,
       exhausted: true,
@@ -363,6 +377,32 @@ async function markJobFailure(job: LabelJobLike, error: unknown) {
 export async function runOrderLabelQueueTick(
   args: RunQueueTickArgs,
 ): Promise<LabelQueueTickResult> {
-  // Existing jobs have no persisted selected membership. Do not claim or read them.
-  throw orderError("Label worker requires durable membership authorization", 503);
+  if (!args.workerId) throw orderError("Worker lease identity required", 403);
+  const batchSize = Math.min(50, parsePositiveInt(
+    args.batchSize ? String(args.batchSize) : process.env.ORDER_LABEL_WORKER_BATCH_SIZE, 10));
+  const jobs = await claimOrderLabelJobs(args.workerId, batchSize);
+  const result = { claimed: jobs.length, completed: 0, retried: 0, failed: 0 };
+  for (const claim of jobs) {
+    let authorizedOrderId: string | undefined;
+    try {
+      // Only the row ID and lease attempt locate work; candidate/queue ownership is ignored.
+      const job = await prisma.orderLabelJob.findUnique({ where: { id: claim.id } });
+      if (!job || job.status !== "processing" || job.lockedBy !== args.workerId ||
+          job.attempts !== claim.attempts || job.capability !== "label.generate" ||
+          !job.acceptedAt || !job.ownershipTenantId || !job.ownershipCompanyId) {
+        throw orderError("Accepted label grant and current lease required", 403);
+      }
+      await requireActiveOrderOwnership(prisma, job.orderId, job.ownershipTenantId, job.ownershipCompanyId);
+      authorizedOrderId = job.orderId;
+      const order = await loadLabelContent(job.orderId, job.ownershipTenantId);
+      if (order.ownerOrgId !== job.ownershipCompanyId) throw orderError("Label owner changed", 403);
+      await attachLabels(order);
+      await markJobCompleted(claim, args.workerId);
+      result.completed++;
+    } catch (error) {
+      const exhausted = await markJobFailure(claim, args.workerId, error, authorizedOrderId);
+      if (exhausted) result.failed++; else result.retried++;
+    }
+  }
+  return result;
 }

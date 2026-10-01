@@ -3,12 +3,9 @@ import { OrderLegStatus, type OrderStatus } from "@prisma/client";
 import prisma from "../../config/prismaClient";
 import type { IntegrationCanonicalEventRecord } from "../integrations-core/application/canonical-event.types";
 import { createCarrierFailureSupportTicket } from "../support-core/application/autoTriage";
+import { loadAcceptedCarrierOperation } from "./carrier-worker-authority";
 
 const db = prisma as any;
-
-function denyUnboundCarrierApplication(): void {
-  throw orderError("Carrier event application requires durable order authorization", 503);
-}
 
 type ApplyCarrierEventResult =
   | { applied: true }
@@ -98,57 +95,73 @@ function findCreateShipmentPayload(event: IntegrationCanonicalEventRecord) {
 }
 
 async function findLegForCarrierEvent(tx: any, event: IntegrationCanonicalEventRecord) {
-  const payload = toObject(event.payloadJson);
-  const directLegId =
-    event.aggregateType === "shipment" && event.aggregateId ? event.aggregateId : null;
-  const metadata = toObject(payload.metadata) || toObject(toObject(payload.input).metadata);
-  const payloadLegId =
-    pickString(payload, ["orderLegId", "legId"]) ||
-    pickString(metadata, ["orderLegId", "legId"]);
-  const partnerShipmentId = pickString(payload, [
-    "partnerShipmentId",
-    "shipmentId",
-    "carrierRef",
-  ]);
-  const trackingNumber = pickString(payload, ["trackingNumber", "awb", "trackingNo"]);
-
-  if (directLegId || payloadLegId) {
-    const leg = await tx.orderLeg.findFirst({
-      where: {
-        id: directLegId || payloadLegId!,
-        ...(event.providerId ? { carrierProviderId: event.providerId } : {}),
-      },
-      include: { order: { select: { id: true, status: true } } },
+  // Reached only after durable outbox, order and provider binding is verified.
+  return tx.orderLeg.findFirst({
+    where: { id: event.aggregateId, carrierProviderId: event.providerId },
+    include: { order: { select: { id: true, status: true } } },
+  });
+}
+export async function applyCarrierIntegrationEvent(
+  signal: IntegrationCanonicalEventRecord,
+): Promise<ApplyCarrierEventResult> {
+  if (!signal.id) throw orderError("Durable carrier event ID required", 503);
+  const afterCommit: Array<() => Promise<unknown>> = [];
+  const outcome: ApplyCarrierEventResult = await db.$transaction(async (tx: any) => {
+    // Serialize application and its processed receipt; never trust queue payload fields.
+    await tx.$queryRaw`SELECT "id" FROM "IntegrationCanonicalEvent" WHERE "id" = ${signal.id}::uuid FOR UPDATE`;
+    const event = await tx.integrationCanonicalEvent.findUnique({ where: { id: signal.id } });
+    if (!event) throw orderError("Durable carrier event missing", 403);
+    if (event.domain !== "carrier") return { applied: false, ignored: true, reason: "not a carrier event" };
+    if (event.status === "processed") return { applied: true };
+    if (event.status !== "processing") throw orderError("Carrier event lease required", 403);
+    // Webhook aggregate/metadata IDs do not yet prove a unique accepted operation.
+    if (event.source !== "outbound_response" || !event.outboxId) {
+      throw orderError("Carrier webhook requires durable accepted-operation binding", 503);
+    }
+    await tx.$queryRaw`SELECT o."id" FROM "IntegrationOutbox" b
+      JOIN "Order" o ON o."id" = b."ownershipOrderId"
+      JOIN "Tenant" t ON t."id" = o."tenantId"
+      JOIN "Organization" c ON c."id" = o."ownerOrgId"
+      WHERE b."id" = ${event.outboxId}::uuid FOR SHARE OF b, o, t, c`;
+    await tx.$queryRaw`SELECT l."id" FROM "OrderLeg" l
+      JOIN "IntegrationOutbox" b ON b."aggregateId" = l."id"::text
+      WHERE b."id" = ${event.outboxId}::uuid FOR UPDATE OF l`;
+    const { row, leg } = await loadAcceptedCarrierOperation(tx, event.outboxId);
+    const expectedType = row.operation === "create_shipment"
+      ? (row.status === "sent" ? "carrier.shipment.created" : "carrier.shipment.failed")
+      : "carrier.status.updated";
+    if (!["sent", "dead_letter"].includes(row.status) || event.eventType !== expectedType ||
+        event.companyId !== row.companyId || event.providerId !== row.providerId ||
+        event.providerCode !== row.providerCode || event.aggregateType !== row.aggregateType ||
+        event.aggregateId !== leg.id) throw orderError("Carrier event source context disagrees", 403);
+    const attempt = await tx.integrationDeliveryAttempt.findUnique({
+      where: { outboxId_attemptNo: { outboxId: row.id, attemptNo: row.attemptCount } },
     });
-    if (leg) return leg;
-  }
-
-  if (partnerShipmentId || trackingNumber) {
-    return tx.orderLeg.findFirst({
-      where: {
-        ...(event.providerId ? { carrierProviderId: event.providerId } : {}),
-        OR: [
-          ...(partnerShipmentId ? [{ carrierRef: partnerShipmentId }] : []),
-          ...(trackingNumber ? [{ carrierTrackingNumber: trackingNumber }] : []),
-        ],
-      },
-      include: { order: { select: { id: true, status: true } } },
-    });
-  }
-
-  return null;
+    if (!attempt || (row.status === "sent" ? attempt.outcome !== "success" : attempt.outcome !== "dead_letter") ||
+        (row.operation !== "create_shipment" && row.status !== "sent")) {
+      throw orderError("Carrier delivery result is not durable", 403);
+    }
+    const authoritative = { ...event, occurredAt: attempt.finishedAt.toISOString(),
+      payloadJson: row.operation === "create_shipment"
+        ? { responseJson: attempt.responseJson, message: attempt.errorMessage }
+        : { ...(toObject(attempt.responseJson)), ...(row.operation === "cancel_shipment"
+          ? { statusCode: "cancelled", statusLabel: "Cancelled" } : {}) } };
+    const result = await applyVerifiedCarrierEvent(authoritative, tx, afterCommit);
+    if (!result.applied) throw orderError("Carrier result cannot be applied", 409);
+    await tx.integrationCanonicalEvent.update({ where: { id: event.id }, data: {
+      status: "processed", processedAt: new Date(), lockedAt: null, lastError: null,
+    } });
+    return result;
+  });
+  for (const effect of afterCommit) void effect().catch(() => undefined);
+  return outcome;
 }
 
-export async function applyCarrierIntegrationEvent(
-  event: IntegrationCanonicalEventRecord,
-): Promise<ApplyCarrierEventResult> {
+async function applyVerifiedCarrierEvent(event: IntegrationCanonicalEventRecord, tx: any, afterCommit: Array<() => Promise<unknown>>): Promise<ApplyCarrierEventResult> {
+  const db = { $transaction: (run: (client: any) => Promise<void>) => run(tx) };
   if (event.domain !== "carrier") {
     return { applied: false, ignored: true, reason: "not a carrier event" };
   }
-
-  // Canonical worker events do not retain selected membership authorization.
-  // Keep them failed/recoverable rather than applying a context-free order mutation.
-  denyUnboundCarrierApplication();
 
   if (event.eventType === "carrier.shipment.created") {
     const data = findCreateShipmentPayload(event);
@@ -249,7 +262,8 @@ export async function applyCarrierIntegrationEvent(
       });
     });
     if (ticketInput) {
-      void createCarrierFailureSupportTicket(ticketInput).catch(() => undefined);
+      const acceptedTicket = ticketInput;
+      afterCommit.push(() => createCarrierFailureSupportTicket(acceptedTicket));
     }
     return { applied: true };
   }
@@ -317,7 +331,8 @@ export async function applyCarrierIntegrationEvent(
       });
     });
     if (ticketInput) {
-      void createCarrierFailureSupportTicket(ticketInput).catch(() => undefined);
+      const acceptedTicket = ticketInput;
+      afterCommit.push(() => createCarrierFailureSupportTicket(acceptedTicket));
     }
 
     return { applied: true };

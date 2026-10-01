@@ -49,5 +49,5 @@ export interface IntegrationCanonicalEventRepository {
   claimBatch(args: { limit: number; staleProcessingBeforeIso?: string | null }): Promise<IntegrationCanonicalEventRecord[]>;
   markProcessed(id: string): Promise<void>;
   markIgnored(id: string, message?: string | null): Promise<void>;
-  markFailed(id: string, message: string): Promise<void>;
+  markFailed(id: string, message: string, processAttempts?: number): Promise<void>;
 }
