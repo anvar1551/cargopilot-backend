@@ -1,3 +1,4 @@
+import { loadAcceptedCashFinance, assertAcceptedCashSource } from "./cash-finance-authority";
 import { Prisma } from "@prisma/client";
 import prisma from "../../../config/prismaClient";
 import type {
@@ -1136,6 +1137,9 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
   }
 
   async ingestSourceEvent(command: IngestFinanceSourceEventCommand) {
+    if (command.event.sourceType === "cash_custody" || command.event.sourceEventId.startsWith("cash:")) {
+      throw financeConflict("Cash ingestion requires its durable acceptance outbox", "FINANCE_CASH_AUTHORITY_REJECTED");
+    }
     return prisma.$transaction(async (tx) => {
       const existing = await tx.financeSourceEvent.findUnique({
         where: {
@@ -1180,16 +1184,30 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
   async processSourceEvent(sourceEventRecordId: string) {
     try {
       return await prisma.$transaction(async (tx) => {
-        const sourceRecord = await tx.financeSourceEvent.findUnique({
+        let sourceRecord = await tx.financeSourceEvent.findUnique({
           where: { id: sourceEventRecordId },
         });
         if (!sourceRecord) {
           throw financeNotFound("Finance source event not found", "FINANCE_SOURCE_EVENT_NOT_FOUND");
         }
+        const cashPath = sourceRecord.sourceType === "cash_custody" || sourceRecord.sourceEventId.startsWith("cash:") ||
+          (sourceRecord.payloadJson as any)?.sourceType === "cash_custody";
+        let acceptedCash: Awaited<ReturnType<typeof loadAcceptedCashFinance>> | undefined;
+        if (cashPath) {
+          await tx.$queryRaw`SELECT "id" FROM "FinanceSourceEvent" WHERE "id" = ${sourceEventRecordId}::uuid FOR UPDATE`;
+          sourceRecord = await tx.financeSourceEvent.findUniqueOrThrow({ where: { id: sourceEventRecordId } });
+          acceptedCash = await loadAcceptedCashFinance(tx, sourceRecord.sourceEventId);
+          assertAcceptedCashSource(sourceRecord, acceptedCash);
+          if (sourceRecord.status === "posted") {
+            const document = await tx.financeDocument.findFirst({ where: { id: sourceRecord.financeDocumentId ?? "00000000-0000-0000-0000-000000000000", legalEntityId: acceptedCash.entity.id, sourceEventId: sourceRecord.sourceEventId } });
+            const journal = await tx.financeJournalEntry.findFirst({ where: { id: sourceRecord.financeJournalEntryId ?? "00000000-0000-0000-0000-000000000000", legalEntityId: acceptedCash.entity.id, documentId: document?.id ?? "00000000-0000-0000-0000-000000000000" } });
+            if (!document || !journal) throw financeConflict("Cash posting result binding rejected", "FINANCE_CASH_AUTHORITY_REJECTED");
+          }
+        }
         if (sourceRecord.status === "posted") {
           return { event: sourceRecord, idempotent: true };
         }
-        const event = normalizeFinanceSourceEvent(
+        const event = acceptedCash?.event ?? normalizeFinanceSourceEvent(
           sourceRecord.payloadJson as Parameters<typeof normalizeFinanceSourceEvent>[0],
         );
         if (financeSourceEventHash(event) !== sourceRecord.payloadHash) {
@@ -1204,6 +1222,11 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
             `Foreign-currency event ${event.currency} requires an immutable FX snapshot`,
             "FINANCE_SOURCE_EVENT_FX_SNAPSHOT_REQUIRED",
           );
+        }
+        if (acceptedCash) {
+          await tx.$queryRaw`SELECT "id" FROM "FinanceFiscalPeriod" WHERE "legalEntityId" = ${entity.id}::uuid AND "startDate" <= ${event.postingDate} AND "endDate" >= ${event.postingDate} FOR SHARE`;
+          await tx.$queryRaw`SELECT a."id" FROM "FinancePostingRule" r JOIN "FinancePostingRuleLine" l ON l."postingRuleId" = r."id" JOIN "FinanceAccount" a ON a."id" = l."accountId"
+            WHERE r."legalEntityId" = ${entity.id}::uuid AND r."sourceType" = 'cash_custody' AND r."eventType" = ${event.eventType} FOR SHARE OF r, l, a`;
         }
         await requireOpenPeriod(tx, entity.id, event.postingDate);
 
@@ -1244,6 +1267,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
         const rule = highest[0];
         const invalidAccount = rule.lines.find(
           (line) =>
+            (acceptedCash && line.account.legalEntityId !== entity.id) ||
             line.account.status !== "active" ||
             !line.account.allowPosting ||
             (line.account.currency && line.account.currency !== event.currency),
@@ -1386,6 +1410,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
               action: "finance.source_event.posted",
               actorUserId,
               detailsJson: {
+                ...(acceptedCash ? { executionCapability: "accepted_cash_finance_post" } : {}),
                 financeSourceEventId: sourceRecord.id,
                 sourceEventId: event.sourceEventId,
                 sourceType: event.sourceType,

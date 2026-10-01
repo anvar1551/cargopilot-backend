@@ -389,7 +389,7 @@ export async function projectFinanceSubledgerEvent(
   const orderId = event.dimensions.orderId;
   const payableItemId = metadataString(event, "payableItemId");
   await tx.$queryRaw(Prisma.sql`
-    SELECT pg_advisory_xact_lock(hashtextextended(${`${legalEntityId}:subledger:${orderId ?? payableItemId ?? event.sourceId}`}, 0))
+    SELECT pg_advisory_xact_lock(hashtextextended(${`${legalEntityId}:subledger:${orderId ?? payableItemId ?? event.sourceId}`}, 0))::text
   `);
   if (event.eventType === "invoice.issued") return projectInvoice(tx, legalEntityId, event);
   if (event.eventType === "payment.succeeded") {

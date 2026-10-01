@@ -1,18 +1,17 @@
 import "dotenv/config";
+import { ingestDurableFinanceEnvelope } from "../modules/finance-core/infrastructure/finance-queue-ingestion";
+import { FinanceError } from "../modules/finance-core/domain/finance.errors";
 import prisma from "../config/prismaClient";
 import { createRedisClient, getRedisClient, getRedisPrefix } from "../config/redis";
-import { FinanceService } from "../modules/finance-core/application/finance.service";
 import {
   financePostingConsumerId,
   processFinancePostingBatchOnce,
 } from "../modules/finance-core/infrastructure/finance-posting.processor";
-import { prismaFinanceRepository } from "../modules/finance-core/infrastructure/prisma-finance.repository";
 
 const STREAM_KEY = `${getRedisPrefix()}:cp:events`;
 const GROUP_NAME = process.env.FINANCE_POSTING_STREAM_GROUP || "finance-posting";
 const CONSUMER_NAME = financePostingConsumerId();
 const IDLE_MS = Math.max(250, Number(process.env.FINANCE_POSTING_IDLE_MS || 1000));
-const service = new FinanceService(prismaFinanceRepository);
 let stopping = false;
 
 function sleep(ms: number) {
@@ -62,18 +61,12 @@ async function ingestEntries(
   for (const [entryId, fields] of entries) {
     const envelope = streamEvent(fields);
     try {
-      if (envelope?.type === "finance_source_event" && envelope.payload) {
-        await service.ingestSourceEvent({
-          ...(envelope.payload as any),
-          sourceEventId: String(envelope.payload.sourceEventId || envelope.id || ""),
-          occurredAt: envelope.payload.occurredAt || envelope.occurredAt,
-        });
-      }
+      await ingestDurableFinanceEnvelope(envelope);
       await redis.xack(STREAM_KEY, GROUP_NAME, entryId);
     } catch (error: any) {
       log("error", "source event ingestion failed", {
         entryId,
-        error: String(error?.message || error),
+        code: error instanceof FinanceError ? error.code : "FINANCE_INGESTION_TRANSIENT_ERROR",
       });
       // Leave the entry pending. XAUTOCLAIM will retry it after the stale window.
     }
