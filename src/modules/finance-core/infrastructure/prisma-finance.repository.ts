@@ -1,3 +1,4 @@
+import { rejectUnacceptedInvoiceExecution } from "../domain/invoice-execution-containment";
 import { loadAcceptedCashFinance, assertAcceptedCashSource } from "./cash-finance-authority";
 import { Prisma } from "@prisma/client";
 import prisma from "../../../config/prismaClient";
@@ -1137,6 +1138,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
   }
 
   async ingestSourceEvent(command: IngestFinanceSourceEventCommand) {
+    rejectUnacceptedInvoiceExecution(command.event);
     if (command.event.sourceType === "cash_custody" || command.event.sourceEventId.startsWith("cash:")) {
       throw financeConflict("Cash ingestion requires its durable acceptance outbox", "FINANCE_CASH_AUTHORITY_REJECTED");
     }
@@ -1190,6 +1192,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
         if (!sourceRecord) {
           throw financeNotFound("Finance source event not found", "FINANCE_SOURCE_EVENT_NOT_FOUND");
         }
+        rejectUnacceptedInvoiceExecution(sourceRecord);
         const cashPath = sourceRecord.sourceType === "cash_custody" || sourceRecord.sourceEventId.startsWith("cash:") ||
           (sourceRecord.payloadJson as any)?.sourceType === "cash_custody";
         let acceptedCash: Awaited<ReturnType<typeof loadAcceptedCashFinance>> | undefined;
@@ -1483,6 +1486,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
       if (!event) {
         throw financeNotFound("Finance source event not found", "FINANCE_SOURCE_EVENT_NOT_FOUND");
       }
+      rejectUnacceptedInvoiceExecution(event);
       if (event.status !== "exception") {
         throw financeConflict("Only exception events can be retried", "FINANCE_SOURCE_EVENT_NOT_EXCEPTION");
       }
