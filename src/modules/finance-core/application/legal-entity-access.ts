@@ -20,3 +20,8 @@ export function rejectUnapprovedLegalEntityConfiguration(): never {
   throw financeConflict("Financial legal-entity configuration requires independent durable approval",
     "FINANCE_CONFIGURATION_APPROVAL_REQUIRED");
 }
+
+export function rejectUnapprovedPeriodConfiguration(): never {
+  throw financeConflict("Fiscal period configuration and transitions require independent durable approval",
+    "FINANCE_PERIOD_APPROVAL_REQUIRED");
+}

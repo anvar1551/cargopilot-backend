@@ -1,7 +1,7 @@
 import { rejectUnacceptedInvoiceExecution } from "../domain/invoice-execution-containment";
 import { financeBadRequest } from "../domain/finance.errors";
 import type { AppUser } from "../../../types/app-user";
-import { requireLegalEntityContext, rejectUnapprovedLegalEntityConfiguration } from "../application/legal-entity-access";
+import { requireLegalEntityContext, rejectUnapprovedLegalEntityConfiguration, rejectUnapprovedPeriodConfiguration } from "../application/legal-entity-access";
 import { loadAcceptedCashFinance, assertAcceptedCashSource } from "./cash-finance-authority";
 import { Prisma } from "@prisma/client";
 import prisma from "../../../config/prismaClient";
@@ -541,6 +541,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
   }
 
   async createPeriod(command: CreatePeriodCommand) {
+    rejectUnapprovedPeriodConfiguration();
     return prisma.$transaction(async (tx) => {
       const entity = await requireLegalEntity(tx, command.companyId);
       const overlap = await tx.financeFiscalPeriod.findFirst({
@@ -592,6 +593,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
   }
 
   async changePeriodStatus(command: ChangePeriodStatusCommand) {
+    rejectUnapprovedPeriodConfiguration();
     return prisma.$transaction(async (tx) => {
       const entity = await requireLegalEntity(tx, command.companyId);
       const period = await tx.financeFiscalPeriod.findFirst({

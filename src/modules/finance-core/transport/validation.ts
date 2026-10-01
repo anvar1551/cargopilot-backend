@@ -106,11 +106,11 @@ export const createPeriodSchema = z.object({
   name: z.string().trim().min(1).max(100),
   startDate: date,
   endDate: date,
-});
+}).strict();
 
 export const changePeriodStatusSchema = z.object({
   status: z.enum(["open", "restricted", "closed"]),
-});
+}).strict();
 
 const journalLineSchema = z.object({
   accountId: uuid,

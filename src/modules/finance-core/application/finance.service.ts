@@ -19,7 +19,7 @@ import {
   type CanonicalFinanceSourceEventInput,
 } from "../domain/source-event";
 import type { AppUser } from "../../../types/app-user";
-import { requireLegalEntityContext, rejectUnapprovedLegalEntityConfiguration } from "./legal-entity-access";
+import { requireLegalEntityContext, rejectUnapprovedLegalEntityConfiguration, rejectUnapprovedPeriodConfiguration } from "./legal-entity-access";
 
 export class FinanceService {
   constructor(private readonly repository: FinanceRepositoryPort) {}
@@ -81,7 +81,7 @@ export class FinanceService {
     return this.repository.listPeriods(actor, page);
   }
 
-  createPeriod(input: {
+  async createPeriod(input: {
     companyId: string;
     actorUserId: string;
     fiscalYear: number;
@@ -89,22 +89,26 @@ export class FinanceService {
     name: string;
     startDate: Date;
     endDate: Date;
-  }) {
+  }, actor: AppUser) {
+    await requireLegalEntityContext(actor, "finance.periods.manage");
     if (input.startDate > input.endDate) {
       throw financeBadRequest(
         "Fiscal period startDate must be on or before endDate",
         "FINANCE_INVALID_PERIOD_RANGE",
       );
     }
+    rejectUnapprovedPeriodConfiguration();
     return this.repository.createPeriod(input);
   }
 
-  changePeriodStatus(input: {
+  async changePeriodStatus(input: {
     companyId: string;
     actorUserId: string;
     periodId: string;
     status: "open" | "restricted" | "closed";
-  }) {
+  }, actor: AppUser) {
+    await requireLegalEntityContext(actor, "finance.periods.close");
+    rejectUnapprovedPeriodConfiguration();
     return this.repository.changePeriodStatus(input);
   }
 

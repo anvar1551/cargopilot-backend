@@ -899,7 +899,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           endDate: toDate(input.endDate),
           companyId: request.user!.companyId,
           actorUserId: request.user!.id,
-        });
+        }, request.user!);
         return reply.code(201).send(period);
       } catch (error) {
         return sendError(reply, error, "Failed to create fiscal period");
@@ -920,7 +920,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
             status: input.status,
             companyId: request.user!.companyId,
             actorUserId: request.user!.id,
-          }),
+          }, request.user!),
         );
       } catch (error) {
         return sendError(reply, error, "Failed to change fiscal period status");

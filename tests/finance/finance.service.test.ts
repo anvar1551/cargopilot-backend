@@ -46,10 +46,10 @@ describe("FinanceService", () => {
     expect(repository.configureLegalEntity).not.toHaveBeenCalled();
   });
 
-  it("rejects an inverted fiscal period without calling persistence", () => {
+  it("rejects an inverted fiscal period without calling persistence", async () => {
     const repository = repositoryMock();
     const service = new FinanceService(repository);
-    expect(() =>
+    await expect(
       service.createPeriod({
         companyId: "company",
         actorUserId: "actor",
@@ -58,8 +58,8 @@ describe("FinanceService", () => {
         name: "January",
         startDate: new Date("2026-02-01T00:00:00.000Z"),
         endDate: new Date("2026-01-01T00:00:00.000Z"),
-      }),
-    ).toThrow(expect.objectContaining({ code: "FINANCE_INVALID_PERIOD_RANGE" }));
+      }, {} as any)).rejects
+      .toMatchObject({ code: "FINANCE_INVALID_PERIOD_RANGE" });
     expect(repository.createPeriod).not.toHaveBeenCalled();
   });
 
