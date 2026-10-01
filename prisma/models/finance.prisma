@@ -258,6 +258,8 @@ model FinanceAccount {
   parentId String?          @db.Uuid
   parent   FinanceAccount?  @relation("FinanceAccountHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
   children FinanceAccount[] @relation("FinanceAccountHierarchy")
+  ownedParent FinanceAccount? @relation("FinanceAccountOwnedHierarchy", fields: [legalEntityId, parentId], references: [legalEntityId, id], onDelete: Restrict, onUpdate: Restrict, map: "FinanceAccount_owned_parent_fkey")
+  ownedChildren FinanceAccount[] @relation("FinanceAccountOwnedHierarchy")
 
   allowPosting     Boolean  @default(true)
   isControlAccount Boolean  @default(false)
@@ -271,6 +273,7 @@ model FinanceAccount {
   journalLines     FinanceJournalLine[]
 
   @@unique([legalEntityId, code])
+  @@unique([legalEntityId, id], map: "FinanceAccount_entity_identity_key")
   @@index([legalEntityId, type, status])
   @@index([parentId])
 }
