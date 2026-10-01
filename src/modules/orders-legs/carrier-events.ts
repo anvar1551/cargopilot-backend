@@ -4,6 +4,7 @@ import prisma from "../../config/prismaClient";
 import type { IntegrationCanonicalEventRecord } from "../integrations-core/application/canonical-event.types";
 import { createCarrierFailureSupportTicket } from "../support-core/application/autoTriage";
 import { loadAcceptedCarrierOperation } from "./carrier-worker-authority";
+import { bindCarrierWebhook, assertCarrierWebhookTransition } from "./carrier-webhook-binding";
 
 const db = prisma as any;
 
@@ -114,7 +115,17 @@ export async function applyCarrierIntegrationEvent(
     if (event.domain !== "carrier") return { applied: false, ignored: true, reason: "not a carrier event" };
     if (event.status === "processed") return { applied: true };
     if (event.status !== "processing") throw orderError("Carrier event lease required", 403);
-    // Webhook aggregate/metadata IDs do not yet prove a unique accepted operation.
+    if (event.source === "inbound_webhook") {
+      const bound = await bindCarrierWebhook(tx, event);
+      const next = mapCarrierStatusToLegStatus(pickString(bound.event.payloadJson, ["statusCode", "status", "code", "state"]));
+      assertCarrierWebhookTransition(bound.leg.status, next);
+      const result = await applyVerifiedCarrierEvent(bound.event, tx, afterCommit);
+      if (!result.applied) throw orderError("Carrier webhook cannot be applied", 409);
+      await tx.integrationCanonicalEvent.update({ where: { id: event.id }, data: {
+        status: "processed", processedAt: new Date(), lockedAt: null, lastError: null,
+      } });
+      return result;
+    }
     if (event.source !== "outbound_response" || !event.outboxId) {
       throw orderError("Carrier webhook requires durable accepted-operation binding", 503);
     }

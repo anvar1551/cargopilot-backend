@@ -63,7 +63,7 @@ export function createWebhookGatewayService(args: {
       const verification = await providerVerifier.verifier.verifyAndNormalize({
         headers: input.headers,
         rawBody,
-        companyHintId: normalizeString(input.companyHintId) ?? providerVerifier.companyId,
+        companyHintId: providerVerifier.companyId,
       });
 
       if (!verification.ok || !verification.data) {
@@ -115,13 +115,13 @@ export function createWebhookGatewayService(args: {
             ...canonical,
             providerCode: providerVerifier.providerCode,
             eventId: providerEventId,
-            companyId: canonical.companyId ?? providerVerifier.companyId,
+            companyId: providerVerifier.companyId,
           },
         });
 
         await args.canonicalEvents?.enqueue({
           source: "inbound_webhook",
-          companyId: canonical.companyId ?? providerVerifier.companyId,
+          companyId: providerVerifier.companyId,
           providerId: providerVerifier.providerId,
           webhookEventId: rawRecord.webhookEventId,
           domain: providerVerifier.domain,

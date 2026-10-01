@@ -6,7 +6,7 @@ import { createHmacWebhookVerifier } from "./verifiers/hmac-webhook.verifier";
 const db = prisma as any;
 
 function isUuid(value: string) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
     value,
   );
 }
@@ -42,13 +42,13 @@ function pickNumber(source: unknown, keys: string[]) {
   return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : null;
 }
 
-async function loadSecretConfig(secretRef: string | null) {
+async function loadSecretConfig(secretRef: string | null, providerId: string) {
   if (!secretRef) return null;
   const row = await db.integrationProviderSecret.findUnique({
     where: { id: secretRef },
-    select: { encryptedSecretJson: true },
+    select: { encryptedSecretJson: true, providerId: true },
   });
-  if (!row?.encryptedSecretJson) return null;
+  if (!row?.encryptedSecretJson || row.providerId !== providerId) return null;
   return parseSecretPayload(decryptIntegrationSecret(row.encryptedSecretJson));
 }
 
@@ -60,7 +60,7 @@ export const providerWebhookVerifierResolver: WebhookProviderVerifierResolver = 
       return null;
     }
 
-    const provider = await db.integrationProvider.findFirst({
+    const providers = await db.integrationProvider.findMany({
       where: isUuid(providerIdentifier)
         ? {
             id: providerIdentifier,
@@ -71,7 +71,7 @@ export const providerWebhookVerifierResolver: WebhookProviderVerifierResolver = 
             ...(args.companyHintId ? { companyId: args.companyHintId } : {}),
             status: "active",
           },
-      orderBy: [{ updatedAt: "desc" }],
+      take: 2,
       select: {
         id: true,
         companyId: true,
@@ -81,9 +81,11 @@ export const providerWebhookVerifierResolver: WebhookProviderVerifierResolver = 
         secretRef: true,
       },
     });
-    if (!provider) return null;
+    if (providers.length !== 1) return null;
+    const provider = providers[0];
+    if (args.companyHintId && args.companyHintId !== provider.companyId) return null;
 
-    const secretConfig = await loadSecretConfig(provider.secretRef);
+    const secretConfig = await loadSecretConfig(provider.secretRef, provider.id);
     const secret =
       pickString(secretConfig, [
         "webhookSecret",

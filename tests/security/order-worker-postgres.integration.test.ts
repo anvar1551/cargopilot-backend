@@ -6,6 +6,8 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { createTenantDemoFixture, TENANT_DEMO_IDS as ids } from "../../src/modules/tenancy/demo-fixtures";
 import { persistTenantDemoFixture } from "../tenancy/postgres-fixture.persistence";
 import { applyCarrierIntegrationEvent } from "../../src/modules/orders-legs/carrier-events";
+import { createHash, randomUUID } from "crypto";
+import { createCarrierFailureSupportTicket } from "../../src/modules/support-core/application/autoTriage";
 
 const url = process.env.CARGOPILOT_WORKER_TEST_DATABASE_URL;
 const runId = process.env.CARGOPILOT_WORKER_RUN_ID;
@@ -95,4 +97,74 @@ it("allows only one durable mutating dispatch admission under concurrent attempt
     where: { id: outboxId, executionStartedAt: null }, data: { executionStartedAt: new Date() },
   })));
   expect(results.map(row => row.count).sort()).toEqual([0, 1]);
+});
+
+describe("inbound webhook PostgreSQL binding", () => {
+  const inboundProvider = "019b3000-0000-7000-8b00-000000000011";
+  const inboundLeg = "019b3000-0000-7000-8b00-000000000012";
+  const inboundBooking = "019b3000-0000-7000-8b00-000000000013";
+  beforeAll(async () => {
+    await mockPrisma.integrationProvider.create({ data: { id: inboundProvider, companyId: ids.organizations.transAsiaUz, domain: "carrier", providerCode: "fake_carrier", environment: "sandbox" } });
+    await mockPrisma.orderLeg.create({ data: { id: inboundLeg, orderId: ids.orders.transAsiaUz, sequence: 2, mode: "road", status: "booked", carrierProviderId: inboundProvider, carrierCode: "fake_carrier", carrierRef: "synthetic-inbound-booking", carrierBookingStatus: "booked" } });
+    await mockPrisma.integrationOutbox.create({ data: { id: inboundBooking, companyId: ids.organizations.transAsiaUz, providerId: inboundProvider,
+      domain: "carrier", providerCode: "fake_carrier", environment: "sandbox", operation: "create_shipment", eventType: "shipment.assigned",
+      aggregateType: "shipment", aggregateId: inboundLeg, ownershipTenantId: ids.tenants.transAsia, ownershipOrderId: ids.orders.transAsiaUz,
+      acceptedAt: new Date(), status: "sent", attemptCount: 1, executionStartedAt: new Date(), idempotencyKey: `synthetic-inbound:${runId}`,
+      payload: { companyId: ids.organizations.transAsiaUz, aggregateType: "shipment", aggregateId: inboundLeg, payload: { action: "create_shipment", input: { metadata: { orderId: ids.orders.transAsiaUz, orderLegId: inboundLeg } } } },
+    } });
+    await mockPrisma.integrationDeliveryAttempt.create({ data: { outboxId: inboundBooking, attemptNo: 1, outcome: "success", startedAt: new Date(), finishedAt: new Date(), responseJson: { partnerShipmentId: "synthetic-inbound-booking" } } });
+  });
+  async function acceptedEvent(overrides: Record<string, unknown> = {}) {
+    const rawId = randomUUID(), canonicalId = randomUUID();
+    const payload = { eventId: randomUUID(), eventType: "carrier.status.updated", partnerShipmentId: "synthetic-inbound-booking", statusCode: "in_transit", ...overrides };
+    const rawBody = JSON.stringify(payload), occurredAt = new Date();
+    // Persistence/application evidence only: ingress HMAC is exercised in the unit suite.
+    await mockPrisma.integrationWebhookEvent.create({ data: { id: rawId, providerId: inboundProvider, companyId: ids.organizations.transAsiaUz, domain: "carrier", providerCode: "fake_carrier", environment: "sandbox", providerEventId: payload.eventId, rawBody, rawBodySha256: createHash("sha256").update(rawBody).digest("hex"), signatureVerified: true, headersJson: {} } });
+    await mockPrisma.integrationWebhookCanonicalEvent.create({ data: { webhookEventId: rawId, providerCode: "fake_carrier", domain: "carrier", eventType: "carrier.status.updated", companyId: ids.organizations.transAsiaUz, occurredAt, payloadJson: payload } });
+    await mockPrisma.integrationCanonicalEvent.create({ data: { id: canonicalId, source: "inbound_webhook", status: "processing", providerId: inboundProvider, companyId: ids.organizations.transAsiaUz, webhookEventId: rawId, domain: "carrier", providerCode: "fake_carrier", eventType: "carrier.status.updated", occurredAt, payloadJson: payload } });
+    return canonicalId;
+  }
+  it("inbound concurrent duplicate application commits one tracking row and one receipt", async () => {
+    const id = await acceptedEvent();
+    await Promise.all([applyCarrierIntegrationEvent({ id } as any), applyCarrierIntegrationEvent({ id } as any)]);
+    expect(await mockPrisma.tracking.count({ where: { orderLegId: inboundLeg } })).toBe(1);
+    expect((await mockPrisma.orderLeg.findUniqueOrThrow({ where: { id: inboundLeg } })).status).toBe("in_transit");
+    expect((await mockPrisma.integrationCanonicalEvent.findUniqueOrThrow({ where: { id } })).status).toBe("processed");
+  });
+  it("inbound foreign company and child claims leave business records and outboxes unchanged", async () => {
+    const before = await mockPrisma.orderLeg.findUniqueOrThrow({ where: { id: inboundLeg } });
+    const count = await mockPrisma.tracking.count({ where: { orderLegId: inboundLeg } });
+    const outboxes = await mockPrisma.integrationOutbox.count();
+    for (const claims of [{ companyId: ids.organizations.transAsiaDe }, { tenantId: ids.tenants.unrelated }, { orderLegId: legId }]) {
+      const id = await acceptedEvent(claims);
+      await expect(applyCarrierIntegrationEvent({ id } as any)).rejects.toMatchObject({ statusCode: 403 });
+      expect((await mockPrisma.integrationCanonicalEvent.findUniqueOrThrow({ where: { id } })).status).toBe("processing");
+    }
+    expect(await mockPrisma.orderLeg.findUniqueOrThrow({ where: { id: inboundLeg } })).toEqual(before);
+    expect(await mockPrisma.tracking.count({ where: { orderLegId: inboundLeg } })).toBe(count);
+    expect(await mockPrisma.integrationOutbox.count()).toBe(outboxes);
+  });
+  it("inbound receipt failure rolls back leg/tracking mutations and does not launch a ticket", async () => {
+    const id = await acceptedEvent({ statusCode: "failed" });
+    const before = await mockPrisma.orderLeg.findUniqueOrThrow({ where: { id: inboundLeg } });
+    const count = await mockPrisma.tracking.count({ where: { orderLegId: inboundLeg } });
+    await pool.query(`CREATE FUNCTION cp_reject_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW."id" = '${id}'::uuid THEN RAISE EXCEPTION 'Synthetic receipt rejection'; END IF; RETURN NEW; END $$;
+      CREATE TRIGGER cp_reject_receipt BEFORE UPDATE ON "IntegrationCanonicalEvent" FOR EACH ROW EXECUTE FUNCTION cp_reject_receipt();`);
+    try {
+      await expect(applyCarrierIntegrationEvent({ id } as any)).rejects.toThrow();
+      expect(await mockPrisma.orderLeg.findUniqueOrThrow({ where: { id: inboundLeg } })).toEqual(before);
+      expect(await mockPrisma.tracking.count({ where: { orderLegId: inboundLeg } })).toBe(count);
+      expect((await mockPrisma.integrationCanonicalEvent.findUniqueOrThrow({ where: { id } })).status).toBe("processing");
+      expect(createCarrierFailureSupportTicket).not.toHaveBeenCalled();
+    } finally { await pool.query('DROP TRIGGER cp_reject_receipt ON "IntegrationCanonicalEvent"; DROP FUNCTION cp_reject_receipt();'); }
+  });
+  it("inbound terminal regression is rejected without changing the terminal record", async () => {
+    await mockPrisma.orderLeg.update({ where: { id: inboundLeg }, data: { status: "completed" } });
+    const before = await mockPrisma.orderLeg.findUniqueOrThrow({ where: { id: inboundLeg } });
+    const count = await mockPrisma.tracking.count({ where: { orderLegId: inboundLeg } });
+    const id = await acceptedEvent();
+    await expect(applyCarrierIntegrationEvent({ id } as any)).rejects.toMatchObject({ statusCode: 409 });
+    expect(await mockPrisma.orderLeg.findUniqueOrThrow({ where: { id: inboundLeg } })).toEqual(before);
+    expect(await mockPrisma.tracking.count({ where: { orderLegId: inboundLeg } })).toBe(count);
+  });
 });
