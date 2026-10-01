@@ -25,3 +25,8 @@ export function rejectUnapprovedPeriodConfiguration(): never {
   throw financeConflict("Fiscal period configuration and transitions require independent durable approval",
     "FINANCE_PERIOD_APPROVAL_REQUIRED");
 }
+
+export function rejectUnapprovedManualJournalExecution(): never {
+  throw financeConflict("Manual journal posting and reversal require independent durable approval",
+    "FINANCE_MANUAL_APPROVAL_REQUIRED");
+}

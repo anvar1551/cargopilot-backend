@@ -19,7 +19,7 @@ import {
   type CanonicalFinanceSourceEventInput,
 } from "../domain/source-event";
 import type { AppUser } from "../../../types/app-user";
-import { requireLegalEntityContext, rejectUnapprovedLegalEntityConfiguration, rejectUnapprovedPeriodConfiguration } from "./legal-entity-access";
+import { requireLegalEntityContext, rejectUnapprovedLegalEntityConfiguration, rejectUnapprovedPeriodConfiguration, rejectUnapprovedManualJournalExecution } from "./legal-entity-access";
 
 export class FinanceService {
   constructor(private readonly repository: FinanceRepositoryPort) {}
@@ -145,6 +145,7 @@ export class FinanceService {
 
   async postJournal(actor: AppUser, journalId: string) {
     await requireLegalEntityContext(actor, "finance.journals.post");
+    rejectUnapprovedManualJournalExecution();
     return this.repository.postJournal(actor, journalId);
   }
 
@@ -157,6 +158,7 @@ export class FinanceService {
     idempotencyKey: string;
   }, actor: AppUser) {
     await requireLegalEntityContext(actor, "finance.journals.reverse");
+    rejectUnapprovedManualJournalExecution();
     return this.repository.reverseJournal(input, actor);
   }
 

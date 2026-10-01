@@ -3,7 +3,7 @@ import { listOwnedJournals, getOwnedJournal } from "./journal-read";
 import { rejectUnacceptedInvoiceExecution } from "../domain/invoice-execution-containment";
 import { financeBadRequest } from "../domain/finance.errors";
 import type { AppUser } from "../../../types/app-user";
-import { requireLegalEntityContext, rejectUnapprovedLegalEntityConfiguration, rejectUnapprovedPeriodConfiguration } from "../application/legal-entity-access";
+import { requireLegalEntityContext, rejectUnapprovedLegalEntityConfiguration, rejectUnapprovedPeriodConfiguration, rejectUnapprovedManualJournalExecution } from "../application/legal-entity-access";
 import { loadAcceptedCashFinance, assertAcceptedCashSource } from "./cash-finance-authority";
 import { Prisma } from "@prisma/client";
 import prisma from "../../../config/prismaClient";
@@ -801,6 +801,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
 
   async postJournal(actor: AppUser, journalId: string) {
     const context = await requireLegalEntityContext(actor, "finance.journals.post");
+    rejectUnapprovedManualJournalExecution();
     const companyId = context.companyId, actorUserId = context.userId;
     return prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT j."id" FROM "FinanceJournalEntry" j JOIN "FinanceLegalEntity" e ON e."id"=j."legalEntityId" WHERE j."id"=${journalId}::uuid AND e."companyId"=${context.companyId}::uuid AND e."tenantId"=${context.tenantId}::uuid FOR UPDATE OF j`;
@@ -877,6 +878,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
   async reverseJournal(command: ReverseJournalCommand, actor: AppUser) {
     const context = await requireLegalEntityContext(actor, "finance.journals.reverse");
     if (command.companyId !== context.companyId || command.actorUserId !== context.userId) throw new FinanceError("Journal actor context mismatch", 403, "FINANCE_JOURNAL_CONTEXT_REJECTED");
+    rejectUnapprovedManualJournalExecution();
     return prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT j."id" FROM "FinanceJournalEntry" j JOIN "FinanceLegalEntity" e ON e."id"=j."legalEntityId" WHERE j."id"=${command.journalId}::uuid AND e."companyId"=${context.companyId}::uuid AND e."tenantId"=${context.tenantId}::uuid FOR UPDATE OF j`;
       const original = await findJournal(tx, command.companyId, command.journalId, context.tenantId);
