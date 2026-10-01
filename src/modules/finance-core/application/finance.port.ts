@@ -106,7 +106,7 @@ export type IngestFinanceSourceEventCommand = {
 export interface FinanceRepositoryPort {
   getLegalEntity(actor: AppUser): Promise<unknown>;
   configureLegalEntity(command: ConfigureLegalEntityCommand): Promise<unknown>;
-  listAccounts(companyId: string, page: CursorPage): Promise<unknown>;
+  listAccounts(actor: AppUser, page: CursorPage): Promise<unknown>;
   createAccount(command: CreateAccountCommand): Promise<unknown>;
   bootstrapChart(command: BootstrapChartCommand): Promise<unknown>;
   listPeriods(companyId: string, page: CursorPage): Promise<unknown>;

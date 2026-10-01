@@ -50,8 +50,9 @@ export class FinanceService {
     });
   }
 
-  listAccounts(companyId: string, page: { cursor?: string; limit: number }) {
-    return this.repository.listAccounts(companyId, page);
+  async listAccounts(actor: AppUser, page: { cursor?: string; limit: number }) {
+    await requireLegalEntityContext(actor, "finance.accounts.read");
+    return this.repository.listAccounts(actor, page);
   }
 
   createAccount(input: CreateAccountCommand) {

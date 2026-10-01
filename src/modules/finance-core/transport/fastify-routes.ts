@@ -80,7 +80,7 @@ function sendError(reply: any, error: unknown, fallback: string) {
     ? candidate.statusCode
     : 500;
   return reply.code(statusCode).send({
-    error: candidate?.message ?? fallback,
+    error: statusCode >= 500 ? fallback : candidate?.message ?? fallback,
     code: statusCode === 500 ? "FINANCE_INTERNAL_ERROR" : "FINANCE_REFERENCE_ERROR",
   });
 }
@@ -727,7 +727,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const page = cursorPageSchema.parse(request.query);
-        return reply.send(await financeService.listAccounts(request.user!.companyId, page));
+        return reply.send(await financeService.listAccounts(request.user!, page));
       } catch (error) {
         return sendError(reply, error, "Failed to load chart of accounts");
       }

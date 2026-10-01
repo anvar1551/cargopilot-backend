@@ -1,4 +1,5 @@
 import { rejectUnacceptedInvoiceExecution } from "../domain/invoice-execution-containment";
+import { financeBadRequest } from "../domain/finance.errors";
 import type { AppUser } from "../../../types/app-user";
 import { requireLegalEntityContext, rejectUnapprovedLegalEntityConfiguration } from "../application/legal-entity-access";
 import { loadAcceptedCashFinance, assertAcceptedCashSource } from "./cash-finance-authority";
@@ -313,15 +314,44 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
     });
   }
 
-  async listAccounts(companyId: string, page: CursorPage) {
+  async listAccounts(actor: AppUser, page: CursorPage) {
+    const context = await requireLegalEntityContext(actor, "finance.accounts.read");
+    if (!Number.isInteger(page.limit) || page.limit < 1 || page.limit > 100) {
+      throw financeBadRequest("Invalid account page limit");
+    }
+    const owned: Prisma.FinanceAccountWhereInput = { legalEntity: { is: {
+      tenantId: context.tenantId, companyId: context.companyId, isActive: true,
+      company: { is: { tenantId: context.tenantId, isActive: true } },
+      tenant: { is: { status: "active" } },
+    } } };
+    let position: { code: string; id: string } | null = null;
+    if (page.cursor) {
+      position = await prisma.financeAccount.findFirst({ where: { AND: [owned, { id: page.cursor }] },
+        select: { code: true, id: true } });
+      if (!position) throw financeNotFound("Account cursor not found");
+    }
     const rows = await prisma.financeAccount.findMany({
-      where: { legalEntity: { companyId } },
-      orderBy: [{ code: "asc" }, { id: "asc" }],
-      take: page.limit + 1,
-      ...(page.cursor ? { cursor: { id: page.cursor }, skip: 1 } : {}),
-      include: { parent: { select: { id: true, code: true, name: true } } },
+      where: { AND: [owned, ...(position ? [{ OR: [{ code: { gt: position.code } },
+        { code: position.code, id: { gt: position.id } }] }] : [])] },
+      orderBy: [{ code: "asc" }, { id: "asc" }], take: page.limit + 1,
+      select: { id: true, legalEntityId: true, code: true, name: true, type: true, status: true,
+        allowPosting: true, isControlAccount: true, currency: true, description: true,
+        createdAt: true, updatedAt: true, parentId: true },
     });
-    return pageResult(rows, page.limit);
+    const parentIds = [...new Set(rows.flatMap(row => row.parentId ? [row.parentId] : []))];
+    const parents = parentIds.length ? await prisma.financeAccount.findMany({
+      where: { AND: [owned, { id: { in: parentIds } }] },
+      select: { id: true, code: true, name: true, legalEntityId: true },
+    }) : [];
+    const parentById = new Map(parents.map(parent => [parent.id, parent]));
+    return pageResult(rows.map(row => {
+      const candidate = row.parentId ? parentById.get(row.parentId) : null;
+      const parent = candidate?.legalEntityId === row.legalEntityId ? candidate : null;
+      return { id: row.id, legalEntityId: row.legalEntityId, code: row.code, name: row.name,
+        type: row.type, status: row.status, allowPosting: row.allowPosting, isControlAccount: row.isControlAccount,
+        currency: row.currency, description: row.description, createdAt: row.createdAt, updatedAt: row.updatedAt,
+        parentId: parent?.id ?? null, parent: parent ? { id: parent.id, code: parent.code, name: parent.name } : null };
+    }), page.limit);
   }
 
   async createAccount(command: CreateAccountCommand) {
