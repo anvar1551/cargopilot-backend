@@ -1,19 +1,17 @@
+import { ADMINISTRATIVE_CONTAINMENT } from "../application/managementAccess";
 import { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
 import { fastifyAuth } from "./fastify-auth";
 import {
   changeUserPassword,
-  deleteUserMembershipFromCompany,
   listUsersForCompany,
   InvalidMembershipSelectionError,
   loginUser,
   MembershipSelectionRequiredError,
   refreshUserSession,
   revokeRefreshSession,
-  updateUserAccessByCompanyAdmin,
 } from "../application/auth.service";
 import {
-  createRoleForCompany,
   listPermissions,
   listRolesForCompany,
 } from "../application/iam.service";
@@ -230,47 +228,16 @@ const usersFastifyRoutes: FastifyPluginAsync<IdentityAccessRouteOptions> = async
   fastify.get(
     "/permissions",
     { preHandler: fastifyAuth({ permission: "roles.read" }) },
-    async (_request, reply) => {
-      const items = await listPermissions();
-      return reply.send({ items });
+    async (request, reply) => {
+      try { return reply.send({ items: await listPermissions(request.user!) }); }
+      catch (error: any) { return reply.code(error.statusCode ?? 500).send({ error: error.statusCode === 403 ? "Forbidden" : "Failed to load permissions" }); }
     },
   );
 
   fastify.get("/roles", { preHandler: fastifyAuth({ permission: "roles.read" }) }, async (request, reply) => {
-    if (!request.user?.companyId) return reply.code(400).send({ error: "companyId missing" });
-    const query = (request.query ?? {}) as Record<string, unknown>;
-    const includeSystem = String(query.includeSystem ?? "true").toLowerCase() !== "false";
-    const items = await listRolesForCompany({
-      companyId: request.user.companyId,
-      includeSystem,
-    });
-    return reply.send({ items });
+    try { return reply.send({ items: await listRolesForCompany({ actor: request.user! }) }); }
+    catch (error: any) { return reply.code(error.statusCode ?? 500).send({ error: error.statusCode === 403 ? "Forbidden" : "Failed to load roles" }); }
   });
-
-  fastify.post(
-    "/roles",
-    { preHandler: fastifyAuth({ permission: "role.bindPermissions" }) },
-    async (request, reply) => {
-      try {
-        if (!request.user?.companyId) {
-          return reply.code(400).send({ error: "companyId missing" });
-        }
-        const body = (request.body ?? {}) as Record<string, unknown>;
-        const role = await createRoleForCompany({
-          companyId: request.user.companyId,
-          code: typeof body.code === "string" ? body.code : null,
-          name: String(body.name ?? ""),
-          permissionKeys: Array.isArray(body.permissionKeys)
-            ? body.permissionKeys.map((value) => String(value))
-            : [],
-          isOwnerRole: Boolean(body.isOwnerRole),
-        });
-        return reply.code(201).send({ role });
-      } catch (err: any) {
-        return reply.code(400).send({ error: err?.message ?? "Failed to create role" });
-      }
-    },
-  );
 
   fastify.get(
     "/",
@@ -281,13 +248,13 @@ const usersFastifyRoutes: FastifyPluginAsync<IdentityAccessRouteOptions> = async
       const q = typeof query.q === "string" ? query.q : undefined;
       const page = query.page ? Number(query.page) : 1;
       const limit = query.limit ? Number(query.limit) : 20;
-      const result = await listUsersForCompany({
-        companyId: request.user.companyId,
+      try { const result = await listUsersForCompany({
+        actor: request.user!,
         q,
         page,
         limit,
       });
-      return reply.send(result);
+      return reply.send(result); } catch(error: any) { return reply.code(error.statusCode ?? 500).send({ error: error.statusCode === 403 ? "Forbidden" : "Failed to load users" }); }
     },
   );
 
@@ -306,84 +273,14 @@ const usersFastifyRoutes: FastifyPluginAsync<IdentityAccessRouteOptions> = async
     },
   );
 
-  fastify.delete(
-    "/:id", { preHandler: fastifyAuth({ permission: "membership.suspend" }) },
-    async (request, reply) => {
-      try {
-        if (!request.user?.id || !request.user?.companyId) {
-          return reply.code(401).send({ error: "Unauthorized" });
-        }
-        const userId = typeof (request.params as any)?.id === "string" ? (request.params as any).id : "";
-        const result = await deleteUserMembershipFromCompany({
-          actorUserId: request.user.id,
-          targetUserId: userId,
-          companyId: request.user.companyId,
-        });
-        return reply.send({
-          message: result.deleted
-            ? "User deleted permanently"
-            : "User access removed and active sessions revoked",
-        });
-      } catch (err: any) {
-        return reply.code(400).send({
-          error: err?.message ?? "Failed to remove user access",
-        });
-      }
-    },
-  );
-
-  fastify.patch(
-    "/:id",
-    { preHandler: fastifyAuth({ permission: "membership.invite" }) },
-    async (request, reply) => {
-      try {
-        if (!request.user?.companyId) {
-          return reply.code(400).send({ error: "companyId missing" });
-        }
-        const userId = typeof (request.params as any)?.id === "string" ? (request.params as any).id : "";
-        const body = (request.body ?? {}) as Record<string, unknown>;
-        const user = await updateUserAccessByCompanyAdmin({
-          companyId: request.user.companyId,
-          userId,
-          name: body.name === undefined ? undefined : String(body.name),
-          email: body.email === undefined ? undefined : String(body.email),
-          roleCodes: Array.isArray(body.roleCodes)
-            ? body.roleCodes.map((value) => String(value))
-            : undefined,
-          branchId:
-            body.branchId === undefined
-              ? undefined
-              : typeof body.branchId === "string"
-                ? body.branchId
-                : null,
-          warehouseId:
-            body.warehouseId === undefined
-              ? undefined
-              : typeof body.warehouseId === "string"
-                ? body.warehouseId
-                : null,
-          customerEntityId:
-            body.customerEntityId === undefined
-              ? undefined
-              : typeof body.customerEntityId === "string"
-                ? body.customerEntityId
-                : null,
-          driverType:
-            body.driverType === undefined
-              ? undefined
-              : body.driverType === "local" || body.driverType === "linehaul"
-                ? body.driverType
-                : null,
-          scopes: body.scopes,
-        });
-        return reply.send({ user });
-      } catch (err: any) {
-        return reply.code(400).send({ error: err?.message ?? "Failed to update user access" });
-      }
-    },
-  );
+  // No approved durable delegation/revocation capability exists. Deny before parsing or effects.
+  const rejectAccessChange = async (_request: unknown, reply: FastifyReply) => {
+    reply.header("Cache-Control", "no-store");
+    return reply.code(403).send({ error: ADMINISTRATIVE_CONTAINMENT, code: "DELEGATION_POLICY_REQUIRED" });
+  };
+  fastify.post("/roles", { onRequest: rejectAccessChange }, rejectAccessChange);
+  fastify.patch("/:id", { onRequest: rejectAccessChange }, rejectAccessChange);
+  fastify.delete("/:id", { onRequest: rejectAccessChange }, rejectAccessChange);
 };
 
 export default usersFastifyRoutes;
-
-

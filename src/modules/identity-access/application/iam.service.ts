@@ -1,12 +1,8 @@
 import prisma from "../../../config/prismaClient";
 import { SYSTEM_PERMISSIONS } from "../permission-registry";
+import type { AppUser } from "../../../types/app-user";
+import { requireIdentityManagementContext, rejectAdministrativeMutation } from "./managementAccess";
 
-function normalizeCode(value: string) {
-  return String(value || "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "_");
-}
 
 export async function seedSystemPermissions() {
   for (const permission of SYSTEM_PERMISSIONS) {
@@ -26,35 +22,11 @@ export async function seedSystemPermissions() {
     });
   }
 
-  // Keep system owner roles (e.g. super_admin) in sync when new permissions are introduced.
-  const [systemOwnerRoles, permissions] = await prisma.$transaction([
-    prisma.role.findMany({
-      where: { isSystem: true, isOwnerRole: true },
-      select: { id: true },
-    }),
-    prisma.permission.findMany({ select: { id: true } }),
-  ]);
-
-  for (const role of systemOwnerRoles) {
-    for (const permission of permissions) {
-      await prisma.rolePermission.upsert({
-        where: {
-          roleId_permissionId: {
-            roleId: role.id,
-            permissionId: permission.id,
-          },
-        },
-        create: {
-          roleId: role.id,
-          permissionId: permission.id,
-        },
-        update: {},
-      });
-    }
-  }
+  // Catalog maintenance does not delegate new permissions to existing roles.
 }
 
-export async function listPermissions() {
+export async function listPermissions(actor: AppUser) {
+  await requireIdentityManagementContext(actor, "roles.read");
   const rows = await prisma.permission.findMany({
     orderBy: [{ resource: "asc" }, { action: "asc" }, { key: "asc" }],
     select: {
@@ -69,13 +41,12 @@ export async function listPermissions() {
 }
 
 export async function listRolesForCompany(args: {
-  companyId: string;
+  actor: AppUser;
   includeSystem?: boolean;
 }) {
+  const context = await requireIdentityManagementContext(args.actor, "roles.read");
   const roles = await prisma.role.findMany({
-    where: args.includeSystem
-      ? { OR: [{ companyId: args.companyId }, { companyId: null }] }
-      : { companyId: args.companyId },
+    where: { companyId: context.companyId, company: { is: { tenantId: context.tenantId, isActive: true } }, isSystem: false },
     orderBy: [{ isSystem: "desc" }, { code: "asc" }],
     select: {
       id: true,
@@ -110,47 +81,5 @@ export async function createRoleForCompany(args: {
   permissionKeys: string[];
   isOwnerRole?: boolean;
 }) {
-  const name = String(args.name || "").trim();
-  if (!name) throw new Error("name is required");
-
-  const permissionKeys = Array.from(
-    new Set(args.permissionKeys.map((item) => String(item || "").trim()).filter(Boolean)),
-  );
-  if (permissionKeys.length === 0) throw new Error("permissionKeys is required");
-
-  const permissions = await prisma.permission.findMany({
-    where: { key: { in: permissionKeys } },
-    select: { id: true, key: true },
-  });
-  const permissionIdByKey = new Map(permissions.map((item) => [item.key, item.id] as const));
-  for (const key of permissionKeys) {
-    if (!permissionIdByKey.has(key)) {
-      throw new Error(`Unknown permission: ${key}`);
-    }
-  }
-
-  const code = normalizeCode(args.code || name);
-  const role = await prisma.role.create({
-    data: {
-      companyId: args.companyId,
-      code,
-      name,
-      isSystem: false,
-      isOwnerRole: Boolean(args.isOwnerRole),
-    },
-    select: { id: true, code: true, name: true, isSystem: true, isOwnerRole: true },
-  });
-
-  for (const key of permissionKeys) {
-    const permissionId = permissionIdByKey.get(key);
-    if (!permissionId) continue;
-    await prisma.rolePermission.create({
-      data: {
-        roleId: role.id,
-        permissionId,
-      },
-    });
-  }
-
-  return role;
+  rejectAdministrativeMutation();
 }

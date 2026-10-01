@@ -1,5 +1,6 @@
 import bcrypt from "bcryptjs";
-import { rejectGlobalWarehouseAssignments } from "../../warehouse-core/application/warehouseAccess";
+import type { AppUser } from "../../../types/app-user";
+import { requireIdentityManagementContext, rejectAdministrativeMutation } from "./managementAccess";
 import jwt from "jsonwebtoken";
 import { randomUUID, createHash } from "crypto";
 import { MembershipStatus, Prisma } from "@prisma/client";
@@ -68,98 +69,6 @@ function signRefreshToken(payload: RefreshTokenPayload) {
   return jwt.sign(payload, getRefreshTokenSecret(), {
     expiresIn: getRefreshTokenTtl() as jwt.SignOptions["expiresIn"],
   });
-}
-
-function cleanRoleCodes(input: unknown): string[] {
-  if (!Array.isArray(input)) return [];
-  return Array.from(
-    new Set(
-      input
-        .map((value) => String(value || "").trim().toLowerCase())
-        .filter(Boolean),
-    ),
-  );
-}
-
-function roleCodesAllowCustomerEntity(roleCodes: string[]) {
-  return roleCodes.some((code) => {
-    const normalized = String(code || "").toLowerCase();
-    return normalized === "customer" || normalized === "client" || normalized.includes("customer");
-  });
-}
-
-function cleanScopeInput(
-  input: unknown,
-): Array<{
-  scopeType:
-    | "company"
-    | "branch"
-    | "warehouse"
-    | "agent"
-    | "pickup_point"
-    | "carrier"
-    | "client";
-  scopeRefId: string;
-}> {
-  if (!Array.isArray(input)) return [];
-  const normalized = input
-    .map((item) => {
-      if (!item || typeof item !== "object") return null;
-      const scopeType = String((item as any).scopeType || "").trim().toLowerCase();
-      const scopeRefId = String((item as any).scopeRefId || "").trim();
-      if (!scopeType || !scopeRefId) return null;
-      if (
-        scopeType !== "company" &&
-        scopeType !== "branch" &&
-        scopeType !== "warehouse" &&
-        scopeType !== "agent" &&
-        scopeType !== "pickup_point" &&
-        scopeType !== "carrier" &&
-        scopeType !== "client"
-      ) {
-        return null;
-      }
-      return {
-        scopeType: scopeType as
-          | "company"
-          | "branch"
-          | "warehouse"
-          | "agent"
-          | "pickup_point"
-          | "carrier"
-          | "client",
-        scopeRefId,
-      };
-    })
-    .filter((value): value is NonNullable<typeof value> => Boolean(value));
-  const dedupe = new Map<string, (typeof normalized)[number]>();
-  for (const item of normalized) {
-    dedupe.set(`${item.scopeType}:${item.scopeRefId}`, item);
-  }
-  return Array.from(dedupe.values());
-}
-
-async function resolveRoleIdsForCompany(args: {
-  tx: Prisma.TransactionClient;
-  companyId: string;
-  roleCodes: string[];
-}) {
-  if (args.roleCodes.length === 0) return [];
-  const roles = await args.tx.role.findMany({
-    where: {
-      code: { in: args.roleCodes },
-      OR: [{ companyId: null }, { companyId: args.companyId }],
-    },
-    select: { id: true, code: true },
-  });
-  const roleMap = new Map(roles.map((item) => [item.code, item.id] as const));
-  const resolved: string[] = [];
-  for (const code of args.roleCodes) {
-    const id = roleMap.get(code);
-    if (!id) throw new Error(`Role '${code}' was not found for this company`);
-    resolved.push(id);
-  }
-  return resolved;
 }
 
 type TenantSessionContext = {
@@ -503,11 +412,12 @@ export async function changeUserPassword(args: {
 }
 
 export async function listUsersForCompany(args: {
-  companyId: string;
+  actor: AppUser;
   q?: string;
   page?: number;
   limit?: number;
 }) {
+  const context = await requireIdentityManagementContext(args.actor, "membership.invite");
   const page = Number.isFinite(args.page) ? Math.max(1, Math.floor(args.page as number)) : 1;
   const limit = Number.isFinite(args.limit)
     ? Math.min(100, Math.max(1, Math.floor(args.limit as number)))
@@ -515,7 +425,9 @@ export async function listUsersForCompany(args: {
   const whereSearch = String(args.q || "").trim();
 
   const where: Prisma.CompanyMembershipWhereInput = {
-    companyId: args.companyId,
+    companyId: context.companyId,
+    tenantId: context.tenantId,
+    tenantMembership: { is: { tenantId: context.tenantId, status: "active" } },
     status: MembershipStatus.active,
     ...(whereSearch
       ? {
@@ -544,12 +456,13 @@ export async function listUsersForCompany(args: {
             id: true,
             name: true,
             email: true,
-            warehouseId: true,
-            customerEntityId: true,
+
+
             driverType: true,
           },
         },
         roles: {
+          where: { role: { is: { companyId: context.companyId, isSystem: false } } },
           select: {
             role: {
               select: {
@@ -578,8 +491,8 @@ export async function listUsersForCompany(args: {
       membershipId: membership.id,
       name: membership.user.name,
       email: membership.user.email,
-      warehouseId: membership.user.warehouseId ?? null,
-      customerEntityId: membership.user.customerEntityId ?? null,
+      warehouseId: null,
+      customerEntityId: null,
       driverType: membership.user.driverType ?? null,
       branchId: membership.branchId ?? null,
       createdAt: membership.createdAt.toISOString(),
@@ -612,120 +525,7 @@ export async function updateUserAccessByCompanyAdmin(args: {
   driverType?: "local" | "linehaul" | null;
   scopes?: unknown;
 }) {
-  rejectGlobalWarehouseAssignments(args);
-  const userId = String(args.userId || "").trim();
-  if (!userId) throw new Error("userId is required");
-
-  const membership = await prisma.companyMembership.findFirst({
-    where: {
-      companyId: args.companyId,
-      userId,
-      status: MembershipStatus.active,
-    },
-    select: { id: true },
-  });
-  if (!membership) throw new Error("Membership not found");
-
-  const nextName =
-    args.name === undefined ? undefined : String(args.name || "").trim();
-  const nextEmail =
-    args.email === undefined
-      ? undefined
-      : String(args.email || "").trim().toLowerCase();
-  if (nextName !== undefined && !nextName) throw new Error("Name is required");
-  if (nextEmail !== undefined && !nextEmail) throw new Error("Email is required");
-
-  const nextRoleCodes =
-    args.roleCodes == null ? null : cleanRoleCodes(args.roleCodes);
-  if (nextRoleCodes && nextRoleCodes.length === 0) {
-    throw new Error("At least one role is required");
-  }
-  const nextScopes = args.scopes === undefined ? undefined : cleanScopeInput(args.scopes);
-  const currentRoleCodes =
-    nextRoleCodes == null && args.customerEntityId !== undefined
-      ? (
-          await prisma.membershipRole.findMany({
-            where: { membershipId: membership.id },
-            select: { role: { select: { code: true } } },
-          })
-        ).map((entry) => entry.role.code)
-      : null;
-  const roleCodesForCustomerLink = nextRoleCodes ?? currentRoleCodes;
-  const nextCustomerEntityId =
-    args.customerEntityId === undefined
-      ? undefined
-      : roleCodesForCustomerLink && roleCodesAllowCustomerEntity(roleCodesForCustomerLink)
-        ? args.customerEntityId
-        : null;
-
-  await prisma.$transaction(async (tx) => {
-    if (nextName !== undefined || nextEmail !== undefined || args.warehouseId !== undefined || args.customerEntityId !== undefined || args.driverType !== undefined) {
-      await tx.user.update({
-        where: { id: userId },
-        data: {
-          ...(nextName !== undefined ? { name: nextName } : {}),
-          ...(nextEmail !== undefined ? { email: nextEmail } : {}),
-          ...(args.warehouseId !== undefined ? { warehouseId: args.warehouseId } : {}),
-          ...(nextCustomerEntityId !== undefined ? { customerEntityId: nextCustomerEntityId } : {}),
-          ...(args.driverType !== undefined ? { driverType: args.driverType } : {}),
-        },
-      });
-    }
-
-    if (args.branchId !== undefined) {
-      await tx.companyMembership.update({
-        where: { id: membership.id },
-        data: { branchId: args.branchId },
-      });
-    }
-
-    if (nextRoleCodes) {
-      const roleIds = await resolveRoleIdsForCompany({
-        tx,
-        companyId: args.companyId,
-        roleCodes: nextRoleCodes,
-      });
-      await tx.membershipRole.deleteMany({
-        where: { membershipId: membership.id },
-      });
-      for (const roleId of roleIds) {
-        await tx.membershipRole.create({
-          data: { membershipId: membership.id, roleId },
-        });
-      }
-    }
-
-    if (nextScopes !== undefined) {
-      const scopeList =
-        nextScopes.length > 0
-          ? nextScopes
-          : [
-              {
-                scopeType: "company" as const,
-                scopeRefId: args.companyId,
-              },
-            ];
-      await tx.membershipScope.deleteMany({
-        where: { membershipId: membership.id },
-      });
-      for (const scope of scopeList) {
-        await tx.membershipScope.create({
-          data: {
-            membershipId: membership.id,
-            scopeType: scope.scopeType,
-            scopeRefId: scope.scopeRefId,
-          },
-        });
-      }
-    }
-  });
-
-  clearIdentityAccessCacheForUser(userId);
-  const access = await loadAccessSnapshot({
-    userId,
-    membershipId: membership.id,
-  });
-  return access;
+  rejectAdministrativeMutation();
 }
 
 export async function createUserByCompanyAdmin(args: {
@@ -740,91 +540,7 @@ export async function createUserByCompanyAdmin(args: {
   driverType?: "local" | "linehaul" | null;
   scopes?: unknown;
 }) {
-  rejectGlobalWarehouseAssignments(args);
-  const name = String(args.name || "").trim();
-  const email = String(args.email || "").trim().toLowerCase();
-  const password = String(args.password || "");
-  if (!name) throw new Error("Name is required");
-  if (!email) throw new Error("Email is required");
-  if (password.length < 6) throw new Error("Password must be at least 6 characters");
-
-  const existing = await prisma.user.findUnique({ where: { email }, select: { id: true } });
-  if (existing) throw new Error("Email already registered");
-  const roleCodes = cleanRoleCodes(args.roleCodes);
-  if (roleCodes.length === 0) throw new Error("roleCodes is required");
-  const scopes = cleanScopeInput(args.scopes);
-  const customerEntityId = roleCodesAllowCustomerEntity(roleCodes)
-    ? args.customerEntityId ?? null
-    : null;
-  const hashedPassword = await bcrypt.hash(password, 10);
-
-  const created = await prisma.$transaction(async (tx) => {
-    const user = await tx.user.create({
-      data: {
-        name,
-        email,
-        password: hashedPassword,
-        warehouseId: args.warehouseId ?? null,
-        customerEntityId,
-        driverType: args.driverType ?? null,
-      },
-      select: { id: true },
-    });
-
-    const membership = await tx.companyMembership.create({
-      data: {
-        userId: user.id,
-        companyId: args.companyId,
-        branchId: args.branchId ?? null,
-        status: MembershipStatus.active,
-      },
-      select: { id: true, companyId: true, branchId: true },
-    });
-
-    const roleIds = await resolveRoleIdsForCompany({
-      tx,
-      companyId: args.companyId,
-      roleCodes,
-    });
-    for (const roleId of roleIds) {
-      await tx.membershipRole.create({
-        data: { membershipId: membership.id, roleId },
-      });
-    }
-
-    const scopeList =
-      scopes.length > 0
-        ? scopes
-        : [
-            {
-              scopeType: "company" as const,
-              scopeRefId: args.companyId,
-            },
-          ];
-    for (const scope of scopeList) {
-      await tx.membershipScope.create({
-        data: {
-          membershipId: membership.id,
-          scopeType: scope.scopeType,
-          scopeRefId: scope.scopeRefId,
-        },
-      });
-    }
-
-    return {
-      userId: user.id,
-      membershipId: membership.id,
-      companyId: membership.companyId,
-      branchId: membership.branchId,
-    };
-  });
-
-  clearIdentityAccessCacheForUser(created.userId);
-  const access = await loadAccessSnapshot({
-    userId: created.userId,
-    membershipId: created.membershipId,
-  });
-  return access;
+  rejectAdministrativeMutation();
 }
 
 export async function deleteUserMembershipFromCompany(args: {
@@ -832,63 +548,5 @@ export async function deleteUserMembershipFromCompany(args: {
   targetUserId: string;
   companyId: string;
 }) {
-  if (args.actorUserId === args.targetUserId) {
-    throw new Error("You cannot delete yourself");
-  }
-
-  const membership = await prisma.companyMembership.findFirst({
-    where: { userId: args.targetUserId, companyId: args.companyId },
-    select: { id: true },
-  });
-  if (!membership) throw new Error("Membership not found");
-
-  const [
-    otherMemberships,
-    customerOrders,
-    driverOrders,
-    invoices,
-    trackingEvents,
-    heldCashCollections,
-    cashCollectionEvents,
-  ] = await prisma.$transaction([
-    prisma.companyMembership.count({
-      where: {
-        userId: args.targetUserId,
-        id: { not: membership.id },
-      },
-    }),
-    prisma.order.count({ where: { customerId: args.targetUserId } }),
-    prisma.order.count({ where: { assignedDriverId: args.targetUserId } }),
-    prisma.invoice.count({ where: { customerId: args.targetUserId } }),
-    prisma.tracking.count({ where: { actorId: args.targetUserId } }),
-    prisma.cashCollection.count({ where: { currentHolderUserId: args.targetUserId } }),
-    prisma.cashCollectionEvent.count({ where: { actorId: args.targetUserId } }),
-  ]);
-  const hasOperationalHistory =
-    otherMemberships > 0 ||
-    customerOrders > 0 ||
-    driverOrders > 0 ||
-    invoices > 0 ||
-    trackingEvents > 0 ||
-    heldCashCollections > 0 ||
-    cashCollectionEvents > 0;
-
-  await prisma.$transaction(async (tx) => {
-    await tx.userRefreshSession.updateMany({
-      where: { userId: args.targetUserId, revokedAt: null },
-      data: { revokedAt: new Date() },
-    });
-
-    if (hasOperationalHistory) {
-      await tx.companyMembership.update({
-        where: { id: membership.id },
-        data: { status: MembershipStatus.suspended },
-      });
-      return;
-    }
-
-    await tx.user.delete({ where: { id: args.targetUserId } });
-  });
-  clearIdentityAccessCacheForUser(args.targetUserId);
-  return { deleted: !hasOperationalHistory };
+  rejectAdministrativeMutation();
 }
