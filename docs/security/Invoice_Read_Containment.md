@@ -1,0 +1,29 @@
+# Invoice read and PDF access containment
+
+## Plan and current enforced scope
+
+Baseline 1d9bcc2cba98a44b6654d5dc321531e87cb5727d. This bounded finance slice scopes list/detail/PDF signing and pagination, reusing fresh membership resolution and existing parent-order permissions/object scopes. No migration, pricing calculation, financial posting, provider call or client rewrite. Invoice issuance is explicitly a separate incomplete path.
+
+Confirmed source findings: invoice list and signing used a tenant-scoped order helper without restricting the selected owning company, signed URLs queried broad includes, the generic detail export accepted only an order ID, and Prisma cursor IDs were not checked inside the authorized invoice scope. This is source evidence, not a live database exploit.
+
+Lists require finance.invoices.read; signing retains payments.intents.read for the existing document client. Every service entry verifies the full current selected user/company-membership/tenant-membership/company/tenant tuple and action permission. It uses the established order helper, including warehouse/driver/customer/organizational scopes, and additionally requires invoice tenant/company and parent order tenant/ownerOrgId equal that verified selection. Tenant-null invoices/orders and unsupported context fail closed. A referenced customer master must have the same tenant before nested master fields can be selected. No role/global override fallback was added.
+
+Pagination validates 1..100 at the service boundary; a cursor must itself be an authorized invoice before its date/ID keyset is used. A foreign cursor cannot anchor a scoped page. The existing nextCursor UUID contract remains. Queries use explicit projections; list/detail responses and the issuance response serializer expose only named fields/nested fields and exact Decimal strings. Raw invoiceKey and metadataJson are omitted. Signing retrieves the private storage key only after authorization, preserves order-ID-first/invoice-ID fallback within the same scoped predicate, and returns the existing {url} envelope with 300-second expiry. Unknown database/S3 failures return sanitized generic errors. Every retry/access still requires current permission; a document identifier or stored key is not authorization.
+
+## Compatibility and remaining finance blockers
+
+The actual frontend lib/documents.ts getInvoiceUrl consumes /api/invoices/orders/:id/url and res.data.url, which is preserved. lib/orders.ts has invoice DTO declarations; no new frontend/driver changes. No direct driver invoice endpoint caller was found in inspected lib consumers. Generic getInvoiceByOrder now requires an actor; there were no current internal callers. No browser/device or real S3 signing claim.
+
+Legacy invoice issuance remains unresolved: issueOrderInvoiceForActor uses the older order helper without selected-company equality, creates tenant-null invoices, converts Decimal component sums through JavaScript numbers and defaults missing FX to 1. Issuance concurrency/current pricing and invoice-customer/order consistency require a separate complete mutation slice and actual PostgreSQL validation. These reads intentionally hide its unowned output; they do not repair or certify issuance. Payment checkout and downstream finance paths are not declared tenant-isolated by this change. Tenant/company equality does not prove legal organizational classification; provider recovery, legal-entity worker ingestion, legacy Float authority and maker-checker remain open. Current record customerUser/customerEntity matching to authoritative source order and storage-key provenance are not certified for existing data. No historical mapping/backfill performed.
+
+Rollback must preserve scoped access or disable read/signing APIs. RLS stays deferred defense in depth. Fresh verification does not eliminate concurrent revocation between checks and signing or revoke an already issued signed URL. All prior release gates remain open.
+
+## Evidence
+
+- node node_modules/jest/bin/jest.js --runInBand tests/security/invoice-read-containment.test.ts: 28 passed. Actual services/Fastify routes/Decimal projection; mocked Prisma, membership/order helper, ingress authentication, outbox/pricing and signer. Negative cases assert predicates and mocked no-effects; they do not prove PostgreSQL filtering, real storage transport or all concurrent schedules. The issuance case verifies only the changed response projection, not its outstanding authority/money behavior.
+- node node_modules/typescript/bin/tsc --noEmit: passed. No emitted dist or generated client changes. No schema/transaction changes, so no new migrations/disposable PostgreSQL needed for this read slice.
+- One milestone offline regression across delegation, sessions, core order access, order children and invoice reads is recorded below. Its cases are not added again as distinct new cases.
+
+Exact files: src/modules/invoice-core/application/invoiceAccess.ts (new), invoiceRepo.ts; src/modules/invoice-core/transport/fastify-routes.ts; tests/security/invoice-read-containment.test.ts (new); this report; Security_Hardening_Backlog.md. Self-review only. Existing dist/private/unrelated work preserved.
+
+Milestone regression: node node_modules/jest/bin/jest.js --runInBand tests/security/delegation-containment.test.ts tests/security/tenant-session-auth.test.ts tests/security/order-tenant-containment.test.ts tests/security/order-child-access.test.ts tests/security/invoice-read-containment.test.ts: 101 passed across 5 suites, mocked/HTTP evidence; reruns do not increase distinct-case counts. Final four-file exercised source/test plus dependency/test/compiler config SHA256 (LF normalized): 5f280be3cecbf1de7d3a3cf3a82c4e17c3bbe29c8c6ea45c1b186adb86cb8534. Source unchanged since passing checks. Exact six-file staged scope, whitespace and credential review passed before checkpoint.

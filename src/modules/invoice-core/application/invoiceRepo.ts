@@ -1,3 +1,4 @@
+import { authorizedInvoiceWhere } from "./invoiceAccess";
 import { InvoiceStatus, Prisma } from "@prisma/client";
 import prisma from "../../../config/prismaClient";
 import type { AppUser } from "../../../types/app-user";
@@ -11,11 +12,18 @@ function invoiceError(message: string, statusCode: number) {
   return Object.assign(new Error(message), { statusCode });
 }
 
-function publicInvoice<T extends { amount: Prisma.Decimal; fxRate: Prisma.Decimal }>(invoice: T) {
+function publicInvoice(invoice: any) {
   return {
-    ...invoice,
-    amount: invoice.amount.toFixed(4),
-    fxRate: invoice.fxRate.toFixed(10),
+    id: invoice.id, companyId: invoice.companyId, orderId: invoice.orderId,
+    customerId: invoice.customerId, customerEntityId: invoice.customerEntityId,
+    invoiceNumber: invoice.invoiceNumber, amount: invoice.amount.toFixed(4), currency: invoice.currency,
+    fxRate: invoice.fxRate.toFixed(10), fxRateAsOf: invoice.fxRateAsOf,
+    status: invoice.status, paymentUrl: invoice.paymentUrl, issuedByUserId: invoice.issuedByUserId,
+    issuedAt: invoice.issuedAt, dueAt: invoice.dueAt, createdAt: invoice.createdAt, updatedAt: invoice.updatedAt,
+    ...(invoice.order ? { order: { orderNumber: invoice.order.orderNumber } } : {}),
+    ...(invoice.customerEntity !== undefined ? { customerEntity: invoice.customerEntity ? {
+      id: invoice.customerEntity.id, name: invoice.customerEntity.name, companyName: invoice.customerEntity.companyName,
+    } : null } : {}),
   };
 }
 
@@ -157,16 +165,17 @@ export async function listInvoicesForActor(args: {
   limit: number;
   status?: InvoiceStatus;
 }) {
-  await authorize(args.user, "finance.invoices.read");
-  const scopeWhere = (await buildOrderScopeWhere(args.user)) ?? { id: "__no_access__" };
+  const ownedWhere = await authorizedInvoiceWhere(args.user, "finance.invoices.read");
+  if (!Number.isInteger(args.limit) || args.limit < 1 || args.limit > 100) throw invoiceError("Invalid invoice limit", 400);
+  const cursor = args.cursor ? await prisma.invoice.findFirst({ where: { AND: [ownedWhere, { id: args.cursor }] }, select: { id: true, createdAt: true } }) : null;
+  if (args.cursor && !cursor) throw invoiceError("Invoice cursor not found", 404);
   const rows = await prisma.invoice.findMany({
     where: {
       ...(args.status ? { status: args.status } : null),
-      order: { is: scopeWhere },
+      AND: [ownedWhere, ...(cursor ? [{ OR: [{ createdAt: { lt: cursor.createdAt } }, { createdAt: cursor.createdAt, id: { lt: cursor.id } }] }] : [])],
     },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take: args.limit + 1,
-    ...(args.cursor ? { cursor: { id: args.cursor }, skip: 1 } : null),
     select: {
       id: true,
       companyId: true,
@@ -180,7 +189,6 @@ export async function listInvoicesForActor(args: {
       fxRateAsOf: true,
       status: true,
       paymentUrl: true,
-      invoiceKey: true,
       issuedByUserId: true,
       issuedAt: true,
       dueAt: true,
@@ -198,6 +206,19 @@ export async function listInvoicesForActor(args: {
   };
 }
 
-export async function getInvoiceByOrder(orderId: string) {
-  return prisma.invoice.findUnique({ where: { orderId } });
+export async function getInvoiceByOrder(orderId: string, actor: AppUser) {
+  const where = await authorizedInvoiceWhere(actor, "finance.invoices.read");
+  const invoice = await prisma.invoice.findFirst({ where: { AND: [where, { orderId }] },
+    select: { id: true, invoiceNumber: true, companyId: true, orderId: true, status: true, amount: true, currency: true, fxRate: true, issuedAt: true, dueAt: true } });
+  return invoice ? publicInvoice(invoice) : null;
+}
+
+/** Returns a private storage reference only after fresh document and parent-order authorization. */
+export async function getAuthorizedInvoiceFile(id: string, actor: AppUser) {
+  const where = await authorizedInvoiceWhere(actor, "payments.intents.read");
+  const select = { id: true, invoiceKey: true } as const;
+  const invoice = await prisma.invoice.findFirst({ where: { AND: [where, { orderId: id }] }, select })
+    ?? await prisma.invoice.findFirst({ where: { AND: [where, { id }] }, select });
+  if (!invoice?.invoiceKey) throw invoiceError("Invoice PDF not found", 404);
+  return invoice.invoiceKey;
 }
