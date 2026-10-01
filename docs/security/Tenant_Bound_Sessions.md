@@ -96,10 +96,18 @@ establish complete tenant isolation. Company permissions and object scopes
 remain tied to the selected `CompanyMembership`; tenant membership alone grants
 no access to other companies in the tenant. Refresh rotation uses a conditional
 single-row update and creates the replacement in one transaction, but concurrent
-reuse behavior has not been validated against PostgreSQL. It also does not
+reuse behavior has now been validated for the focused disposable PostgreSQL schedules recorded below. It still does not
 implement refresh-token-family reuse detection or revoke descendant sessions.
 A membership-status change between the pre-transaction eligibility read and
 rotation can issue a replacement session, although subsequent HTTP authentication
 reloads the membership and rejects that token. Concurrent logout and refresh can
 also leave the newly rotated session active because logout targets only the
 presented session identifier.
+
+## Focused PostgreSQL rotation evidence (mission continuation)
+
+Application source unchanged at cd4a275 (session implementation originates in the prior checkpoint). Executed node "$env:TEMP/cp-refresh-disposable-run.cjs" targeting tests/security/refresh-rotation-postgres.integration.test.ts: three distinct cases passed. The actual refreshUserSession, JWT signing/verification, current membership resolution and Prisma transaction run against PostgreSQL; only the application Prisma import is redirected to the owned test adapter and Redis is disabled. A bounded test barrier admits all three callers only after they reach the real transaction boundary, ensuring the old session was checked by each before competing conditional updates. One succeeds, two reject, the old row is revoked and exactly one replacement preserves the exact tenant/company/membership tuple. Consuming the old token again rejects without additional rows.
+
+A PostgreSQL BEFORE INSERT trigger injects the specific replacement failure; the old session row and session count remain unchanged, then a confirmed retry succeeds after removing the test-only trigger. A suspended membership rejects without consuming or creating sessions. This is actual database evidence for these schedules, not a token-family design or proof of all revocation races. No auth source or client behavior changed; unchanged mocked suites were not rerun. node node_modules/typescript/bin/tsc --noEmit passed for the added integration test.
+
+The reused runner created only cp-refresh-rotation-6bc6406eac88 with cached image (--pull never), synthetic credentials, an allowlisted environment, run-marker/URL guards, loopback port, 512 MiB memory, one CPU, 128 PIDs and 256 MiB owned tmpfs. All 72 committed migrations applied. Cleanup checked container name/run label/tmpfs/no volume or bind mounts and removed only that resource. Existing databases/containers were untouched. Three cases are counted once. Expiry/eligibility are checked before the transaction; changes during rotation and concurrent logout remain timing gaps. Token families/descendant revocation, distributed cache/socket revocation and real transport remain release blockers.
