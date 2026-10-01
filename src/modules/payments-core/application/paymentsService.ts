@@ -1,4 +1,5 @@
 import { paymentWebhookMetadata } from "../../../utils/webhookMetadata";
+import { lockOnlineCashReconciliation } from "../../orders-core/cash/cash-authority";
 import { createAuthorizedPayment } from "./payment-creation";
 import {
   CashCollectionEventType,
@@ -364,6 +365,8 @@ async function reconcileOrderServiceChargeAfterOnlinePayment(
   },
 ) {
   if (args.intentStatus !== PaymentIntentStatus.SUCCEEDED) return;
+
+  await lockOnlineCashReconciliation(tx, args.orderId);
 
   const order = await tx.order.findUnique({
     where: { id: args.orderId },

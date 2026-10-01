@@ -58,8 +58,10 @@ model CashCollection {
   updatedAt DateTime @updatedAt
 
   events CashCollectionEvent[]
+  custodyOperations CashCustodyOperation[]
 
   @@unique([orderId, kind])
+  @@unique([orderId, id], map: "CashCollection_order_identity_key")
   @@index([status])
   @@index([currentHolderType, status])
   @@index([currentHolderUserId, status])
@@ -90,6 +92,37 @@ model CashCollectionEvent {
 
   createdAt DateTime @default(now())
 
+  custodyOperation CashCustodyOperation?
+
+  @@unique([cashCollectionId, id], map: "CashCollectionEvent_collection_identity_key")
+
   @@index([cashCollectionId, createdAt])
   @@index([actorId, createdAt])
+}
+
+// New operation receipts are fully owned; legacy cash columns remain compatibility mirrors.
+model CashCustodyOperation {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  orderId String @db.Uuid
+  order Order @relation(fields: [tenantId, orderId, companyId], references: [tenantId, id, ownerOrgId], onDelete: Restrict, onUpdate: Restrict, map: "CashCustodyOperation_order_owner_fkey")
+  collectionId String @db.Uuid
+  collection CashCollection @relation(fields: [orderId, collectionId], references: [orderId, id], onDelete: Restrict, onUpdate: Restrict, map: "CashCustodyOperation_collection_fkey")
+  eventId String @unique @db.Uuid
+  event CashCollectionEvent @relation(fields: [collectionId, eventId], references: [cashCollectionId, id], onDelete: Restrict, onUpdate: Restrict, map: "CashCustodyOperation_event_fkey")
+  actorId String @db.Uuid
+  companyMembershipId String @db.Uuid
+  actorMembership CompanyMembership @relation(fields: [companyMembershipId, actorId, tenantId, companyId], references: [id, userId, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "CashCustodyOperation_actor_context_fkey")
+  operationKey String
+  action String
+  fingerprint String
+  amount Decimal @db.Decimal(20, 4)
+  currency String
+  resultJson Json
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, companyId, operationKey])
+  @@unique([collectionId, eventId], map: "CashCustodyOperation_event_identity_key")
+  @@index([tenantId, companyId, orderId, createdAt])
 }

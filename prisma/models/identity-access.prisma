@@ -96,6 +96,7 @@ model CompanyMembership {
   scopes MembershipScope[]
   refreshSessions UserRefreshSession[] @relation("RefreshSessionCompanyMembership")
   notifications UserNotification[] @relation("UserNotificationRecipientMembership")
+  cashCustodyOperations CashCustodyOperation[]
 
   @@unique([userId, companyId])
   @@unique([id, tenantMembershipId, userId, tenantId], map: "CompanyMembership_session_bridge_key")

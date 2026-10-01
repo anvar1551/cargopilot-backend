@@ -1,9 +1,5 @@
 import { CashCollectionKind, CashCollectionStatus } from "@prisma/client";
 import {
-  emitDriverNotification,
-  emitDriverOrderUpdate,
-} from "../../../modules/realtime-core/realtimeHub";
-import {
   collectOrderCash,
   getCashQueueSummaryForActor,
   handoffOrderCash,
@@ -16,6 +12,8 @@ import type { OrderActor } from "../shared";
 type CashBulkItem = {
   orderId: string;
   kind: CashCollectionKind;
+  operationId: string;
+  expectedEventId?: string | null;
 };
 
 type CashCollectBulkItem = CashBulkItem & {
@@ -47,7 +45,7 @@ type CashQueueSummaryInput = {
 type CollectCashInput = {
   actor: OrderActor;
   orderId: string;
-  body: { kind?: unknown; amount?: unknown; note?: unknown };
+  body: { kind?: unknown; amount?: unknown; note?: unknown; operationId?: unknown; expectedEventId?: unknown };
 };
 
 type HandoffCashInput = {
@@ -55,6 +53,8 @@ type HandoffCashInput = {
   orderId: string;
   body: {
     kind?: unknown;
+    operationId?: unknown;
+    expectedEventId?: unknown;
     toHolderType?: unknown;
     toDriverId?: unknown;
     toWarehouseId?: unknown;
@@ -65,7 +65,7 @@ type HandoffCashInput = {
 type SettleCashInput = {
   actor: OrderActor;
   orderId: string;
-  body: { kind?: unknown; note?: unknown };
+  body: { kind?: unknown; note?: unknown; operationId?: unknown; expectedEventId?: unknown };
 };
 
 type CashBulkInput = {
@@ -73,6 +73,15 @@ type CashBulkInput = {
   body: Record<string, unknown>;
 };
 
+function assertCashBody(value: unknown, allowed: string[]) {
+  if (!value || typeof value !== "object" || Array.isArray(value) ||
+      Object.keys(value).some(key => !allowed.includes(key)) || (value as any).amount != null ||
+      ("operationId" in value && typeof (value as any).operationId !== "string") ||
+      ((value as any).expectedEventId != null && typeof (value as any).expectedEventId !== "string") ||
+      ((value as any).note != null && (typeof (value as any).note !== "string" || (value as any).note.length > 500))) {
+    throw orderError("Caller monetary or ownership authority is forbidden", 400);
+  }
+}
 function parseKind(value: unknown): CashCollectionKind {
   if (value === CashCollectionKind.cod) return CashCollectionKind.cod;
   if (value === CashCollectionKind.service_charge) return CashCollectionKind.service_charge;
@@ -83,15 +92,19 @@ function parseBulkItems(input: unknown): CashBulkItem[] {
   if (!Array.isArray(input) || input.length === 0) {
     throw orderError("items must be a non-empty array", 400);
   }
+  if (input.length > ORDER_BULK_MAX_IDS) throw orderError("Too many cash items", 400);
 
   const normalized = input
     .map((raw) => {
-      const item = raw as { orderId?: unknown; kind?: unknown };
+      const item = raw as { orderId?: unknown; kind?: unknown; operationId?: unknown; expectedEventId?: unknown };
       const orderId = typeof item?.orderId === "string" ? item.orderId.trim() : "";
       if (!orderId) throw orderError("Each item must contain a valid orderId", 400);
-      return { orderId, kind: parseKind(item?.kind) };
+      assertCashBody(item, ["orderId", "kind", "operationId", "expectedEventId"]);
+      return { orderId, kind: parseKind(item?.kind), operationId: String(item?.operationId ?? ""), expectedEventId: typeof item?.expectedEventId === "string" ? item.expectedEventId : null };
     })
     .reduce<CashBulkItem[]>((acc, item) => {
+      const prior = acc.find(row => row.orderId === item.orderId && row.kind === item.kind);
+      if (prior && (prior.operationId !== item.operationId || prior.expectedEventId !== item.expectedEventId)) throw orderError("Conflicting duplicate cash item", 409);
       if (!acc.some((row) => row.orderId === item.orderId && row.kind === item.kind)) {
         acc.push(item);
       }
@@ -111,12 +124,14 @@ function parseCollectBulkItems(input: unknown): CashCollectBulkItem[] {
   if (!Array.isArray(input) || input.length === 0) {
     throw orderError("items must be a non-empty array", 400);
   }
+  if (input.length > ORDER_BULK_MAX_IDS) throw orderError("Too many cash items", 400);
 
   const normalized = input.map((raw) => {
-    const item = raw as { orderId?: unknown; kind?: unknown; amount?: unknown; note?: unknown };
+    const item = raw as { orderId?: unknown; kind?: unknown; amount?: unknown; note?: unknown; operationId?: unknown; expectedEventId?: unknown };
     const orderId = typeof item?.orderId === "string" ? item.orderId.trim() : "";
     if (!orderId) throw orderError("Each item must contain a valid orderId", 400);
 
+    assertCashBody(item, ["orderId", "kind", "operationId", "expectedEventId", "amount", "note"]);
     const amount = item?.amount == null || item?.amount === "" ? null : Number(item.amount);
     if (amount != null && (!Number.isFinite(amount) || amount <= 0)) {
       throw orderError("Collected amount must be a positive number", 400);
@@ -124,6 +139,8 @@ function parseCollectBulkItems(input: unknown): CashCollectBulkItem[] {
 
     return {
       orderId,
+      operationId: String(item?.operationId ?? ""),
+      expectedEventId: typeof item?.expectedEventId === "string" ? item.expectedEventId : null,
       kind: parseKind(item?.kind),
       amount,
       note: typeof item?.note === "string" ? item.note : null,
@@ -195,31 +212,6 @@ function uniqueOrders(orders: any[]) {
   return rows;
 }
 
-function pushDriverCashRealtime(order: any, kind: CashCollectionKind, title: string, body: string) {
-  const assignedDriverId = String(order?.assignedDriverId ?? "").trim();
-  if (!assignedDriverId) return;
-
-  const orderId = String(order?.id ?? "").trim();
-  const orderNumber = String(order?.orderNumber ?? "").trim();
-  const status = String(order?.status ?? "").trim();
-  const updatedAt = new Date().toISOString();
-
-  void emitDriverOrderUpdate(assignedDriverId, {
-    orderId,
-    orderNumber: orderNumber || null,
-    status,
-    updatedAt,
-  }).catch(() => undefined);
-
-  void emitDriverNotification(assignedDriverId, {
-    type: "cash",
-    orderId,
-    title,
-    body: `${body} (${kind === CashCollectionKind.cod ? "COD" : "Service charge"})`,
-    at: updatedAt,
-  }).catch(() => undefined);
-}
-
 function buildCashFilters(query: CashFiltersInput) {
   return {
     statuses: parseStatuses(query.statuses),
@@ -252,27 +244,24 @@ export async function getCashQueueSummaryForActorView(input: CashQueueSummaryInp
 
 export async function collectCashForActor(input: CollectCashInput) {
   const { actor, orderId, body } = input;
+  assertCashBody(body, ["kind", "operationId", "expectedEventId", "amount", "note"]);
   const kind = parseKind(body.kind);
   const order = await collectOrderCash({
     orderId,
+    operationId: String(body.operationId ?? ""),
+    expectedEventId: typeof body.expectedEventId === "string" ? body.expectedEventId : null,
     kind,
     amount: body.amount == null || body.amount === "" ? null : Number(body.amount),
     note: typeof body.note === "string" ? body.note : null,
     actor,
   });
 
-  pushDriverCashRealtime(
-    order,
-    kind,
-    `Cash collected for order ${order?.orderNumber ?? order?.id}`,
-    "Cash custody has been updated.",
-  );
-
   return { success: true, message: "Cash collection updated", order };
 }
 
 export async function handoffCashForActor(input: HandoffCashInput) {
   const { actor, orderId, body } = input;
+  assertCashBody(body, ["kind", "operationId", "expectedEventId", "amount", "note", "toHolderType", "toDriverId", "toWarehouseId"]);
   const toHolderType =
     body.toHolderType === "driver" ||
     body.toHolderType === "warehouse" ||
@@ -286,6 +275,8 @@ export async function handoffCashForActor(input: HandoffCashInput) {
   const kind = parseKind(body.kind);
   const order = await handoffOrderCash({
     orderId,
+    operationId: String(body.operationId ?? ""),
+    expectedEventId: typeof body.expectedEventId === "string" ? body.expectedEventId : null,
     kind,
     toHolderType,
     toDriverId: typeof body.toDriverId === "string" ? body.toDriverId : null,
@@ -294,38 +285,28 @@ export async function handoffCashForActor(input: HandoffCashInput) {
     actor,
   });
 
-  pushDriverCashRealtime(
-    order,
-    kind,
-    `Cash handoff for order ${order?.orderNumber ?? order?.id}`,
-    "Cash holder has been changed.",
-  );
-
   return { success: true, message: "Cash handoff recorded", order };
 }
 
 export async function settleCashForActor(input: SettleCashInput) {
   const { actor, orderId, body } = input;
+  assertCashBody(body, ["kind", "operationId", "expectedEventId", "note"]);
   const kind = parseKind(body.kind);
   const order = await settleOrderCash({
     orderId,
+    operationId: String(body.operationId ?? ""),
+    expectedEventId: typeof body.expectedEventId === "string" ? body.expectedEventId : null,
     kind,
     note: typeof body.note === "string" ? body.note : null,
     actor,
   });
-
-  pushDriverCashRealtime(
-    order,
-    kind,
-    `Cash settled for order ${order?.orderNumber ?? order?.id}`,
-    "Cash was settled to finance.",
-  );
 
   return { success: true, message: "Cash settled to finance", order };
 }
 
 export async function collectCashBulkForActor(input: CashBulkInput) {
   const { actor, body } = input;
+  assertCashBody(body, ["items", "note"]);
   const items = parseCollectBulkItems(body.items);
   const defaultNote = typeof body.note === "string" ? body.note : null;
 
@@ -336,6 +317,8 @@ export async function collectCashBulkForActor(input: CashBulkInput) {
     try {
       const order = await collectOrderCash({
         orderId: item.orderId,
+        operationId: item.operationId,
+        expectedEventId: item.expectedEventId,
         kind: item.kind,
         amount: item.amount ?? null,
         note: item.note ?? defaultNote,
@@ -352,16 +335,6 @@ export async function collectCashBulkForActor(input: CashBulkInput) {
   }
 
   const orders = uniqueOrders(updatedOrders);
-  for (const order of orders) {
-    const matched = items.find((item) => item.orderId === order?.id);
-    if (!matched) continue;
-    pushDriverCashRealtime(
-      order,
-      matched.kind,
-      `Cash collected for order ${order?.orderNumber ?? order?.id}`,
-      "Cash custody has been updated.",
-    );
-  }
 
   return {
     statusCode: failed.length ? 207 : 200,
@@ -377,6 +350,7 @@ export async function collectCashBulkForActor(input: CashBulkInput) {
 
 export async function handoffCashBulkForActor(input: CashBulkInput) {
   const { actor, body } = input;
+  assertCashBody(body, ["items", "note", "toHolderType", "toDriverId", "toWarehouseId"]);
   const toHolderType =
     body.toHolderType === "driver" ||
     body.toHolderType === "warehouse" ||
@@ -399,6 +373,8 @@ export async function handoffCashBulkForActor(input: CashBulkInput) {
     try {
       const order = await handoffOrderCash({
         orderId: item.orderId,
+        operationId: item.operationId,
+        expectedEventId: item.expectedEventId,
         kind: item.kind,
         toHolderType,
         toDriverId,
@@ -417,16 +393,6 @@ export async function handoffCashBulkForActor(input: CashBulkInput) {
   }
 
   const orders = uniqueOrders(updatedOrders);
-  for (const order of orders) {
-    const matched = items.find((item) => item.orderId === order?.id);
-    if (!matched) continue;
-    pushDriverCashRealtime(
-      order,
-      matched.kind,
-      `Cash handoff for order ${order?.orderNumber ?? order?.id}`,
-      "Cash holder has been changed.",
-    );
-  }
 
   return {
     statusCode: failed.length ? 207 : 200,
@@ -442,6 +408,7 @@ export async function handoffCashBulkForActor(input: CashBulkInput) {
 
 export async function settleCashBulkForActor(input: CashBulkInput) {
   const { actor, body } = input;
+  assertCashBody(body, ["items", "note"]);
   const items = parseBulkItems(body.items);
   const note = typeof body.note === "string" ? body.note : null;
 
@@ -452,6 +419,8 @@ export async function settleCashBulkForActor(input: CashBulkInput) {
     try {
       const order = await settleOrderCash({
         orderId: item.orderId,
+        operationId: item.operationId,
+        expectedEventId: item.expectedEventId,
         kind: item.kind,
         note,
         actor,
@@ -467,16 +436,6 @@ export async function settleCashBulkForActor(input: CashBulkInput) {
   }
 
   const orders = uniqueOrders(updatedOrders);
-  for (const order of orders) {
-    const matched = items.find((item) => item.orderId === order?.id);
-    if (!matched) continue;
-    pushDriverCashRealtime(
-      order,
-      matched.kind,
-      `Cash settled for order ${order?.orderNumber ?? order?.id}`,
-      "Cash was settled to finance.",
-    );
-  }
 
   return {
     statusCode: failed.length ? 207 : 200,

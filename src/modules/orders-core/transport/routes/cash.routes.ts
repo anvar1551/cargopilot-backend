@@ -11,14 +11,13 @@ import {
   settleCashBulkForActor,
   settleCashForActor,
 } from "../..";
-import { emitMutationInvalidation, sendError } from "../shared";
+import { sendError } from "../shared";
 
 const cashRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post("/cash/collect-bulk", { preHandler: fastifyAuth({ permission: "shipment.update" }) }, async (request, reply) => {
     try {
       const actor = requireOrderActor(request.user);
       const result = await collectCashBulkForActor({ actor, body: (request.body ?? {}) as any });
-      await emitMutationInvalidation("cash_mutation");
       return reply.code(result.statusCode).send(result.payload);
     } catch (err: any) {
       return sendError(reply, err, "Failed to collect cash in bulk");
@@ -29,7 +28,6 @@ const cashRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       const actor = requireOrderActor(request.user);
       const result = await handoffCashBulkForActor({ actor, body: (request.body ?? {}) as any });
-      await emitMutationInvalidation("cash_mutation");
       return reply.code(result.statusCode).send(result.payload);
     } catch (err: any) {
       return sendError(reply, err, "Failed to hand off cash in bulk");
@@ -40,7 +38,6 @@ const cashRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       const actor = requireOrderActor(request.user);
       const result = await settleCashBulkForActor({ actor, body: (request.body ?? {}) as any });
-      await emitMutationInvalidation("cash_mutation");
       return reply.code(result.statusCode).send(result.payload);
     } catch (err: any) {
       return sendError(reply, err, "Failed to settle cash in bulk");
@@ -75,7 +72,6 @@ const cashRoutes: FastifyPluginAsync = async (fastify) => {
         orderId: String((request.params as any)?.id ?? "").trim(),
         body: (request.body ?? {}) as any,
       });
-      await emitMutationInvalidation("cash_mutation");
       return reply.send(result);
     } catch (err: any) {
       return sendError(reply, err, "Failed to collect cash");
@@ -90,7 +86,6 @@ const cashRoutes: FastifyPluginAsync = async (fastify) => {
         orderId: String((request.params as any)?.id ?? "").trim(),
         body: (request.body ?? {}) as any,
       });
-      await emitMutationInvalidation("cash_mutation");
       return reply.send(result);
     } catch (err: any) {
       return sendError(reply, err, "Failed to hand off cash");
@@ -105,7 +100,6 @@ const cashRoutes: FastifyPluginAsync = async (fastify) => {
         orderId: String((request.params as any)?.id ?? "").trim(),
         body: (request.body ?? {}) as any,
       });
-      await emitMutationInvalidation("cash_mutation");
       return reply.send(result);
     } catch (err: any) {
       return sendError(reply, err, "Failed to settle cash");
