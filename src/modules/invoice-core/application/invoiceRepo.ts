@@ -2,11 +2,6 @@ import { authorizedInvoiceWhere } from "./invoiceAccess";
 import { InvoiceStatus, Prisma } from "@prisma/client";
 import prisma from "../../../config/prismaClient";
 import type { AppUser } from "../../../types/app-user";
-import { enqueueCargoPilotDomainEventTx } from "../../analytics-core/infrastructure/analyticsOutbox";
-import { authorize, buildOrderScopeWhere } from "../../identity-access";
-import { resolvePayableTotalFromPricing } from "../../orders-legs/pricing";
-
-const SUPPORTED_CURRENCIES = new Set(["UZS", "USD", "CNY"]);
 
 function invoiceError(message: string, statusCode: number) {
   return Object.assign(new Error(message), { statusCode });
@@ -32,129 +27,52 @@ export async function issueOrderInvoiceForActor(args: {
   orderId: string;
   dueAt?: Date | null;
 }) {
-  await authorize(args.user, "finance.invoices.issue");
-  const scopeWhere = (await buildOrderScopeWhere(args.user)) ?? { id: "__no_access__" };
-  const order = await prisma.order.findFirst({
-    where: { AND: [{ id: args.orderId }, scopeWhere] },
-    select: {
-      id: true,
-      orderNumber: true,
-      ownerOrgId: true,
-      customerId: true,
-      customerEntityId: true,
-    },
-  });
-  if (!order) throw invoiceError("Order not found", 404);
-  if (!order.ownerOrgId) throw invoiceError("Order does not have a company scope", 409);
 
-  const pricing = await resolvePayableTotalFromPricing(order.id);
-  if (!pricing || pricing.amountMajor <= 0) {
-    throw invoiceError("Order has no authoritative payable pricing snapshot", 409);
+  if (Object.keys(args).some(key => !["user", "orderId", "dueAt"].includes(key)) ||
+      (args.dueAt != null && (!(args.dueAt instanceof Date) || !Number.isFinite(args.dueAt.getTime())))) {
+    throw invoiceError("Unsupported invoice input", 400);
   }
-  const currency = pricing.currency.trim().toUpperCase();
-  if (!SUPPORTED_CURRENCIES.has(currency)) {
-    throw invoiceError("Invoice currency must be UZS, USD, or CNY", 400);
-  }
-  const fxRate = pricing.fxRate ?? "1";
-  const now = new Date();
-  const invoiceNumber = `INV-${order.orderNumber}`;
-
-  const invoice = await prisma.$transaction(async (tx) => {
-    const current = await tx.invoice.findUnique({ where: { orderId: order.id } });
+  const owned = await authorizedInvoiceWhere(args.user, "finance.invoices.issue");
+  const invoice = await prisma.$transaction(async tx => {
+    await tx.$executeRaw`SET LOCAL lock_timeout = '3s'`;
+    await tx.$executeRaw`SET LOCAL statement_timeout = '5s'`;
+    const locked = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT id FROM "Order" WHERE id = ${args.orderId}::uuid
+      AND "tenantId" = ${args.user.tenantId}::uuid
+      AND "ownerOrgId" = ${args.user.companyId}::uuid FOR UPDATE`;
+    if (locked.length !== 1) throw invoiceError("Order not found", 404);
+    const order = await tx.order.findFirst({
+      where: { AND: [{ id: args.orderId }, owned.order!.is!] },
+      select: { id: true, tenantId: true, ownerOrgId: true, customerId: true, customerEntityId: true },
+    });
+    if (!order || order.tenantId !== args.user.tenantId || order.ownerOrgId !== args.user.companyId) {
+      throw invoiceError("Order not found", 404);
+    }
+    const entity = await tx.financeLegalEntity.findFirst({ where: {
+      tenantId: args.user.tenantId, companyId: order.ownerOrgId, isActive: true,
+    }, select: { id: true } });
+    if (!entity) throw invoiceError("Active owned financial legal entity required", 409);
+    await tx.$queryRaw`SELECT id FROM "Invoice" WHERE "orderId" = ${order.id}::uuid FOR SHARE`;
+    const current = await tx.invoice.findFirst({ where: { AND: [owned, { orderId: order.id }] } });
+    if (current && (current.customerId !== order.customerId || current.customerEntityId !== order.customerEntityId)) {
+      throw invoiceError("Invoice ownership conflicts with order", 409);
+    }
     if (current?.status === InvoiceStatus.issued || current?.status === InvoiceStatus.paid) {
+      if (!current.issuedAt || !current.issuedByUserId || !current.amount.isFinite() || !current.amount.gt(0) ||
+          !current.fxRate.isFinite() || !current.fxRate.gt(0)) throw invoiceError("Invoice requires reconciliation", 409);
+      if (args.dueAt !== undefined && (args.dueAt?.getTime() ?? null) !== (current.dueAt?.getTime() ?? null)) {
+        throw invoiceError("Issued invoice intent conflicts with stored receipt", 409);
+      }
       return current;
     }
     if (current?.status === InvoiceStatus.cancelled || current?.status === InvoiceStatus.credited) {
       throw invoiceError("Cancelled or credited invoice cannot be reissued", 409);
     }
-
-    const issued = current
-      ? await tx.invoice.update({
-          where: { id: current.id },
-          data: {
-            companyId: order.ownerOrgId!,
-            customerId: order.customerId,
-            customerEntityId: order.customerEntityId,
-            invoiceNumber,
-            amount: new Prisma.Decimal(pricing.amountMajor),
-            currency,
-            fxRate: new Prisma.Decimal(fxRate),
-            fxRateAsOf: pricing.fxRateAsOf,
-            status: InvoiceStatus.issued,
-            issuedByUserId: args.user.id,
-            issuedAt: now,
-            dueAt: args.dueAt ?? null,
-            metadataJson: {
-              pricingSource: pricing.source,
-              pricingComponentCount: pricing.componentCount,
-              baseCurrency: pricing.baseCurrency,
-            },
-          },
-        })
-      : await tx.invoice.create({
-          data: {
-            companyId: order.ownerOrgId!,
-            orderId: order.id,
-            customerId: order.customerId,
-            customerEntityId: order.customerEntityId,
-            invoiceNumber,
-            amount: new Prisma.Decimal(pricing.amountMajor),
-            currency,
-            fxRate: new Prisma.Decimal(fxRate),
-            fxRateAsOf: pricing.fxRateAsOf,
-            status: InvoiceStatus.issued,
-            issuedByUserId: args.user.id,
-            issuedAt: now,
-            dueAt: args.dueAt ?? null,
-            metadataJson: {
-              pricingSource: pricing.source,
-              pricingComponentCount: pricing.componentCount,
-              baseCurrency: pricing.baseCurrency,
-            },
-          },
-        });
-
-    const sourceEventId = `invoice:${issued.id}:issued`;
-    await enqueueCargoPilotDomainEventTx(tx, {
-      id: `finance:${sourceEventId}`,
-      type: "finance_source_event",
-      tenantScope: `company:${order.ownerOrgId}`,
-      entityId: order.id,
-      occurredAt: now.toISOString(),
-      payload: {
-        schemaVersion: 1,
-        sourceEventId,
-        companyId: order.ownerOrgId,
-        sourceType: "invoice",
-        eventType: "invoice.issued",
-        sourceId: issued.id,
-        actorUserId: args.user.id,
-        occurredAt: now.toISOString(),
-        documentDate: now.toISOString(),
-        postingDate: now.toISOString(),
-        currency,
-        fxRate,
-        fxRateAsOf: pricing.fxRateAsOf?.toISOString() ?? null,
-        amounts: { gross_amount: issued.amount.toFixed(4) },
-        dimensions: {
-          orderId: order.id,
-          customerEntityId: order.customerEntityId ?? undefined,
-        },
-        attributes: {
-          invoiceStatus: issued.status,
-          pricingSource: pricing.source,
-        },
-        description: `Invoice ${invoiceNumber} issued for order ${order.orderNumber}`,
-        metadata: {
-          invoiceNumber,
-          pricingComponentCount: pricing.componentCount,
-          baseCurrency: pricing.baseCurrency,
-          dueAt: args.dueAt?.toISOString() ?? null,
-        },
-      },
-    });
-    return issued;
-  });
+    // Manual rows can forge rule/source keys; server seeds pass through Float.
+    // No durable approved pricing acceptance exists. Never backfill ownership or invent FX.
+    throw Object.assign(invoiceError("Approved exact pricing and FX acceptance required for invoice issuance", 409),
+      { code: "INVOICE_PRICING_ACCEPTANCE_REQUIRED" });
+  }, { maxWait: 3000, timeout: 10000 });
 
   return publicInvoice(invoice);
 }

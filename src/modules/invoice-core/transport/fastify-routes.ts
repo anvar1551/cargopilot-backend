@@ -48,7 +48,7 @@ const invoiceFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         const invoice = await issueOrderInvoiceForActor({
           user: request.user!,
           orderId: params.orderId,
-          dueAt: body.dueAt ? new Date(body.dueAt) : null,
+          dueAt: body.dueAt === undefined ? undefined : body.dueAt === null ? null : new Date(body.dueAt),
         });
         return reply.code(201).send(invoice);
       } catch (error) {

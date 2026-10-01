@@ -5,7 +5,7 @@ export const invoiceOrderParamsSchema = z.object({ orderId: z.string().uuid() })
 
 export const issueInvoiceSchema = z.object({
   dueAt: z.string().datetime().nullable().optional(),
-});
+}).strict();
 
 export const listInvoicesSchema = z.object({
   cursor: z.string().uuid().optional(),

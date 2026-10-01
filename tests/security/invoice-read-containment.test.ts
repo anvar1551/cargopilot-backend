@@ -56,8 +56,13 @@ test("HTTP denied lookup produces no protected output or signing call",async()=>
 test("HTTP database failures are sanitized and never invoke signing",async()=>{
  database.invoice.findFirst.mockRejectedValue(new Error("CANARY database detail"));const app=Fastify();await app.register(routes);try{const response=await app.inject({method:"GET",url:"/orders/foreign/url"});expect(response.statusCode).toBe(500);expect(response.body).not.toContain("CANARY");noEffects();}finally{await app.close();}
 });
-test("issuance response projection change does not expose private fields",async()=>{
- jest.mocked(resolvePayableTotalFromPricing).mockResolvedValue({amountMajor:12.75,currency:"USD",fxRate:"1",fxRateAsOf:new Date(),source:"original",componentCount:1,baseCurrency:"USD"});
- const result=await issueOrderInvoiceForActor({user:mockActor,orderId:"order-a"});expect(result.amount).toBe("90071992547409.9300");expect(JSON.stringify(result)).not.toContain("CANARY");expect(result).not.toHaveProperty("invoiceKey");
- // This verifies projection only; legacy issuance monetary/ownership behavior remains an open task.
+test("issuance receipt preserves exact projection after fresh authorization",async()=>{
+ jest.mocked(loadAccessSnapshot).mockResolvedValue({...snapshot,permissionCodes:["finance.invoices.issue"]});
+ database.$executeRaw.mockResolvedValue(0); database.$queryRaw.mockResolvedValue([{id:"order-a"}]);
+ database.financeLegalEntity.findFirst.mockResolvedValue({id:"entity-a"});
+ database.order.findFirst.mockResolvedValue({id:"order-a",tenantId:"tenant-a",ownerOrgId:"company-a",customerId:"user-a",customerEntityId:null});
+ database.invoice.findFirst.mockResolvedValue({...row,customerId:"user-a",customerEntityId:null,issuedAt:new Date(),issuedByUserId:"user-a"});
+ const result=await issueOrderInvoiceForActor({user:mockActor,orderId:"order-a"});
+ expect(result.amount).toBe("90071992547409.9300");expect(result.fxRate).toBe("1.1234567890");
+ expect(JSON.stringify(result)).not.toContain("CANARY");expect(result).not.toHaveProperty("invoiceKey");noEffects();
 });
