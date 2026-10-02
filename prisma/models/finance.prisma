@@ -193,6 +193,7 @@ model FinanceLegalEntity {
   ownedCarrierHeaders FinanceCarrierBill[] @relation("CarrierCompanyEntity")
   ownedCarrierLines FinanceCarrierBillLine[] @relation("CarrierLineEntity")
   ownedSettlementLines FinanceProviderSettlementLine[] @relation("SettlementLineEntity")
+  ownedJournalDimensions FinanceJournalLine[] @relation("JournalDimensionEntity")
   @@unique([id, companyId], map: "FinanceLegalEntity_id_companyId_key")
 }
 
@@ -451,6 +452,17 @@ model FinanceJournalEntry {
 }
 
 model FinanceJournalLine {
+  tenantId String? @db.Uuid
+  companyId String? @db.Uuid
+  dimensionEntity FinanceLegalEntity? @relation("JournalDimensionEntity", fields: [legalEntityId, tenantId, companyId], references: [id, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "JournalLine_dimension_entity_fkey")
+  dimensionOrder Order? @relation("JournalDimensionOrder", fields: [tenantId, orderId, companyId], references: [tenantId, id, ownerOrgId], onDelete: Restrict, onUpdate: Restrict, map: "JournalLine_dimension_order_fkey")
+  dimensionLeg OrderLeg? @relation("JournalDimensionLeg", fields: [orderLegId, orderId], references: [id, orderId], onDelete: Restrict, onUpdate: Restrict, map: "JournalLine_dimension_leg_fkey")
+  dimensionCustomer CustomerEntity? @relation("JournalDimensionCustomer", fields: [tenantId, customerEntityId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "JournalLine_dimension_customer_fkey")
+  dimensionWarehouse Warehouse? @relation("JournalDimensionWarehouse", fields: [tenantId, warehouseId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "JournalLine_dimension_warehouse_fkey")
+  dimensionProvider IntegrationProvider? @relation("JournalDimensionProvider", fields: [carrierProviderId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict, map: "JournalLine_dimension_provider_fkey")
+  dimensionOrderCustomer Order? @relation("JournalDimensionOrderCustomer", fields: [tenantId, orderId, customerEntityId], references: [tenantId, id, customerEntityId], onDelete: Restrict, onUpdate: Restrict, map: "JournalLine_order_customer_fkey")
+  dimensionLegProvider OrderLeg? @relation("JournalDimensionLegProvider", fields: [orderLegId, orderId, carrierProviderId], references: [id, orderId, carrierProviderId], onDelete: Restrict, onUpdate: Restrict, map: "JournalLine_leg_provider_fkey")
+  @@index([tenantId, companyId, journalEntryId], map: "JournalLine_dimension_owner_idx")
   id             String              @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   journalEntryId String              @db.Uuid
   legalEntityId  String? @db.Uuid

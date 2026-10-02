@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { financeConflict, financeNotFound } from "../domain/finance.errors";
+import { journalDimensionOwnership } from "./journal-dimension-ownership";
 
 type Tx = Prisma.TransactionClient;
 export async function requireJournalEntity(tx: Tx, companyId: string) {
@@ -11,7 +12,7 @@ export async function requireJournalEntity(tx: Tx, companyId: string) {
 }
 
 /** Defense against uncertified legacy graphs before writes or retry receipts. Never repairs records. */
-export async function assertJournalBindings(tx: Tx, journal: any, entityId: string): Promise<void> {
+export async function assertJournalBindings(tx: Tx, journal: any, entityId: string, owner: {tenantId:string;companyId:string}): Promise<void> {
   const reject = () => { throw financeConflict("Journal ownership relationships rejected", "FINANCE_JOURNAL_OWNERSHIP_REJECTED"); };
   if (!journal || journal.legalEntityId !== entityId || !journal.document
     || journal.documentId !== journal.document.id || journal.document.legalEntityId !== entityId
@@ -19,6 +20,7 @@ export async function assertJournalBindings(tx: Tx, journal: any, entityId: stri
       || line.journalEntryId !== journal.id || !line.account || line.accountId !== line.account.id || line.account.legalEntityId !== entityId)) reject();
   if (journal.reversalOfId && !await tx.financeJournalEntry.findFirst({ where: { id: journal.reversalOfId, legalEntityId: entityId }, select: { id: true } })) reject();
   if (journal.document.reversalOfId && !await tx.financeDocument.findFirst({ where: { id: journal.document.reversalOfId, legalEntityId: entityId }, select: { id: true } })) reject();
+  if (!owner.tenantId || !owner.companyId || await tx.financeJournalLine.count({ where: { journalEntryId: journal.id, NOT: journalDimensionOwnership(owner, entityId) } })) reject();
 }
 
 /** The existing entity/key uniqueness is not permission to reuse another operation's result. */

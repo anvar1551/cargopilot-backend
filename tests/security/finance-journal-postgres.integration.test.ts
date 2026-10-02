@@ -647,15 +647,53 @@ describe("manual draft operational references",()=>{
   const before=await records(),numbers=await mockPrisma.financeNumberSequence.findMany();await pool.query(`CREATE FUNCTION public.cp_draft_reference_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic reference outbox failure'; END $$;CREATE TRIGGER cp_draft_reference_fail BEFORE INSERT ON "FinanceDomainEventOutbox" FOR EACH ROW EXECUTE FUNCTION public.cp_draft_reference_fail();`);
   try{await expect(repo.createDraftJournal(request(),actor(owned))).rejects.toThrow("synthetic reference outbox failure");}finally{await pool.query('DROP TRIGGER cp_draft_reference_fail ON "FinanceDomainEventOutbox";DROP FUNCTION public.cp_draft_reference_fail();');}expect(await records()).toEqual(before);expect(await mockPrisma.financeNumberSequence.findMany()).toEqual(numbers);
  });
- it("actual validation share locks block competing non-key child retarget until transaction end",async()=>{
+ it("actual validation locks block child-provider retarget then the compound constraint rejects",async()=>{
   const parent=await pool.connect();let release!:()=>void,ready!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;}),locked=new Promise<void>(resolve=>{ready=resolve;});let work:Promise<unknown>|undefined,pending:Promise<unknown>|undefined;
   try{await parent.query("BEGIN");const pid=(await parent.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
    work=mockPrisma.$transaction(async tx=>{await requireDraftOperationalReferences(tx,actor(owned),[refs()],{tenantId:owned.tenantId!,companyId:owned.companyId});ready();await gate;});
    await Promise.race([locked,work.then(()=>{throw Error("Validation did not hold lock");})]);
-   pending=parent.query('UPDATE "OrderLeg" SET "carrierProviderId"=$1 WHERE id=$2',[foreignProvider,leg]);let blocked=false;for(let i=0;i<40;i++){const rows:any[]=await mockPrisma.$queryRaw`SELECT wait_event_type FROM pg_stat_activity WHERE pid=${pid}`;if(rows[0]?.wait_event_type==="Lock"){blocked=true;break;}await new Promise(resolve=>setTimeout(resolve,25));}expect(blocked).toBe(true);release();await work;await pending;
-   // Raw retarget is still allowed after validation ends: relational dimension
-   // certification is a deferred gap. Roll it back; do not alter committed work.
+   pending=parent.query('UPDATE "OrderLeg" SET "carrierProviderId"=$1 WHERE id=$2',[foreignProvider,leg]).then(()=>({accepted:true}),error=>({error}));let blocked=false;for(let i=0;i<40;i++){const rows:any[]=await mockPrisma.$queryRaw`SELECT wait_event_type FROM pg_stat_activity WHERE pid=${pid}`;if(rows[0]?.wait_event_type==="Lock"){blocked=true;break;}await new Promise(resolve=>setTimeout(resolve,25));}expect(blocked).toBe(true);release();await work;const result:any=await pending;expect(result.error?.code).toBe("23503");expect(result.error?.constraint).toBe("JournalLine_leg_provider_fkey");
   }finally{release();await work?.catch(()=>{});await pending?.catch(()=>{});await parent.query("ROLLBACK");parent.release();}
   expect((await mockPrisma.orderLeg.findUniqueOrThrow({where:{id:leg}})).carrierProviderId).toBe(provider);
+ });
+ it("compound inserts and updates reject foreign tenant/company/resources with audit/outbox rollback",async()=>{
+  const draft:any=await repo.createDraftJournal(request(),actor(owned)),line=await mockPrisma.financeJournalLine.findFirstOrThrow({where:{journalEntryId:draft.id}}),before=await records();
+  const cases:Array<[string,unknown,string]>=[["companyId",ids.organizations.transAsiaDe,"JournalLine_dimension_entity_fkey"],["tenantId",ids.tenants.unrelated,"JournalLine_dimension_entity_fkey"],["orderId",ids.orders.unrelated,"JournalLine_dimension_order_fkey"],["orderId",ids.orders.transAsiaDe,"JournalLine_dimension_order_fkey"],["customerEntityId",ids.customers.unrelated,"JournalLine_dimension_customer_fkey"],["warehouseId",ids.warehouses.unrelated,"JournalLine_dimension_warehouse_fkey"],["carrierProviderId",foreignProvider,"JournalLine_dimension_provider_fkey"],["orderLegId",foreignLeg,"JournalLine_dimension_leg_fkey"]];
+  for(const [key,value,constraint]of cases){await rejected('UPDATE "FinanceJournalLine" SET "'+key+'"=$1 WHERE id=$2',[value,line.id],constraint);
+   const row={journalEntryId:draft.id,legalEntityId:entity().id,tenantId:owned.tenantId,companyId:owned.companyId,lineNumber:99,accountId:accounts.get(owned.companyId),currency:"UZS",fxRate:"1",...refs(),[key]:value},keys=Object.keys(row);await rejected('INSERT INTO "FinanceJournalLine" ('+keys.map(k=>'"'+k+'"').join(',')+') VALUES ('+keys.map((_,i)=>'$'+(i+1)).join(',')+')',Object.values(row),constraint);}
+  expect(await records()).toEqual(before);
+ });
+ it("paired same-tenant customer and carrier relationships cannot diverge",async()=>{
+  const customer=await mockPrisma.customerEntity.create({data:{tenantId:owned.tenantId,name:"Synthetic alternate journal customer"}}),alternate=(await mockPrisma.integrationProvider.create({data:{companyId:owned.companyId,domain:"carrier",providerCode:randomUUID(),environment:"sandbox"}})).id;
+  const draft:any=await repo.createDraftJournal(request(),actor(owned)),line=await mockPrisma.financeJournalLine.findFirstOrThrow({where:{journalEntryId:draft.id}}),before=await records();
+  await rejected('UPDATE "FinanceJournalLine" SET "customerEntityId"=$1 WHERE id=$2',[customer.id,line.id],"JournalLine_order_customer_fkey");
+  await rejected('UPDATE "FinanceJournalLine" SET "carrierProviderId"=$1 WHERE id=$2',[alternate,line.id],"JournalLine_leg_provider_fkey");
+  await rejected('UPDATE "Order" SET "customerEntityId"=$1 WHERE id=$2',[customer.id,ids.orders.transAsiaUz],"JournalLine_order_customer_fkey");
+  expect(await records()).toEqual(before);
+ });
+ it("partial/null dimension bridges and unaccepted financial tags reject while ordinary reference-free lines remain valid",async()=>{
+  const draft:any=await repo.createDraftJournal(request(),actor(owned)),line=await mockPrisma.financeJournalLine.findFirstOrThrow({where:{journalEntryId:draft.id}}),before=await records();
+  for(const sql of ['"tenantId"=NULL','"companyId"=NULL','"tenantId"=NULL,"companyId"=NULL'])await rejected('UPDATE "FinanceJournalLine" SET '+sql+' WHERE id=$1',[line.id],"JournalLine_dimension_owner_check","23514");
+  for(const key of ["branchId","costCenterCode","profitCenterCode"])await rejected('UPDATE "FinanceJournalLine" SET "'+key+'"=$1 WHERE id=$2',[key==="branchId"?ids.organizations.transAsiaUz:"synthetic-unaccepted",line.id],"JournalLine_dimension_policy_check","23514");
+  await rejected('UPDATE "FinanceJournalLine" SET "orderId"=NULL WHERE id=$1',[line.id],"JournalLine_dimension_policy_check","23514");expect(await records()).toEqual(before);
+  const c=command(),ordinary:any=await repo.createDraftJournal(c,actor(owned));expect((await repo.createDraftJournal(c,actor(owned))as any).id).toBe(ordinary.id);
+ });
+ it("catalog keeps historical certification open and legacy unbound dimensions hide the complete journal",async()=>{
+  const names=["JournalLine_dimension_entity_fkey","JournalLine_dimension_order_fkey","JournalLine_dimension_leg_fkey","JournalLine_dimension_customer_fkey","JournalLine_dimension_warehouse_fkey","JournalLine_dimension_provider_fkey","JournalLine_order_customer_fkey","JournalLine_leg_provider_fkey","JournalLine_dimension_owner_check","JournalLine_dimension_policy_check"],rows=(await pool.query('SELECT conname,convalidated,pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conname=ANY($1)',[names])).rows;
+  expect(rows).toHaveLength(10);for(const row of rows){expect(row.convalidated).toBe(false);if(row.conname.endsWith("fkey"))expect(row.definition).toContain("ON UPDATE RESTRICT ON DELETE RESTRICT");}
+  const historical=journals.get(owned.companyId)![0],line=await mockPrisma.financeJournalLine.findFirstOrThrow({where:{journalEntryId:historical}});
+  // Synthetic pre-expansion row only in the owned schema. Restore the original
+  // NOT VALID check before API reads; never bypass constraints on an existing DB.
+  const definition=rows.find(row=>row.conname==="JournalLine_dimension_owner_check")!.definition;
+  await pool.query('ALTER TABLE "FinanceJournalLine" DROP CONSTRAINT "JournalLine_dimension_owner_check"');try{await pool.query('UPDATE "FinanceJournalLine" SET "orderId"=$1 WHERE id=$2',[ids.orders.transAsiaUz,line.id]);}finally{await pool.query('ALTER TABLE "FinanceJournalLine" ADD CONSTRAINT "JournalLine_dimension_owner_check" '+definition);}
+  const before=await records();await expect(repo.getJournal(actor(owned),historical)).rejects.toMatchObject({code:"FINANCE_JOURNAL_NOT_FOUND"});await expect(repo.listJournals(actor(owned),{limit:10,cursor:historical})).rejects.toMatchObject({code:"FINANCE_JOURNAL_NOT_FOUND"});expect((await repo.listJournals(actor(owned),{limit:100})).items.map(row=>row.id)).not.toContain(historical);expect(await records()).toEqual(before);
+ });
+ it("valid separate legal entities and unrelated tenants retain owned dimensions and complete read projections",async()=>{
+  for(const company of [ids.organizations.transAsiaDe,ids.organizations.unrelated]){
+   const m=fixture.companyMemberships.find(row=>row.userId===ids.users.multiTenant&&row.companyId===company)!,order=fixture.orders.find(row=>row.ownerOrgId===company)!,journalId=journals.get(company)![0];
+   const line=await mockPrisma.financeJournalLine.findFirstOrThrow({where:{journalEntryId:journalId}});
+   await mockPrisma.financeJournalLine.update({where:{id:line.id},data:{tenantId:m.tenantId,companyId:company,orderId:order.id,customerEntityId:order.customerEntityId,warehouseId:order.currentWarehouseId}});
+   const before=await records(),result:any=await repo.getJournal(actor(m),journalId);expect(result.lines).toHaveLength(2);expect(result.totalDebitBase.eq(result.totalCreditBase)).toBe(true);expect(result.lines[0]).not.toHaveProperty("tenantId");expect(result.lines[0]).not.toHaveProperty("orderId");expect(await records()).toEqual(before);
+  }
  });
 });

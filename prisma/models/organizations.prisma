@@ -81,6 +81,7 @@ model Organization {
 }
 
 model Warehouse {
+  financeJournalDimensions FinanceJournalLine[] @relation("JournalDimensionWarehouse")
   tenantSupportTickets SupportTicket[] @relation("SupportTenantWarehouse")
   id                  String                  @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   name                String

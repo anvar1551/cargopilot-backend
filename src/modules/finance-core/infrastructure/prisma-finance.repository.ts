@@ -145,7 +145,7 @@ async function findJournal(tx: Tx, companyId: string, journalId: string, tenantI
   }
   const entity = await requireJournalEntity(tx, companyId);
   if (entity.tenantId !== tenantId) throw financeConflict("Journal tenant context rejected", "FINANCE_JOURNAL_OWNERSHIP_REJECTED");
-  await assertJournalBindings(tx, journal, entity.id);
+  await assertJournalBindings(tx, journal, entity.id, {tenantId,companyId});
   return journal;
 }
 
@@ -690,7 +690,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
       });
       if (duplicate) {
         if (!duplicate.journalEntry) throw financeConflict("Draft key has an incomplete or legacy result", "FINANCE_DRAFT_IDEMPOTENCY_CONFLICT");
-        await assertJournalBindings(tx, duplicate.journalEntry, entity.id);
+        await assertJournalBindings(tx, duplicate.journalEntry, entity.id, context);
         assertDraftRetry(duplicate.journalEntry, intent);
         return projectDraftResult(duplicate.journalEntry);
       }
@@ -764,6 +764,8 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
           lines: {
             create: prepared.lines.map((line) => ({
               legalEntityId: entity.id,
+              tenantId: context.tenantId,
+              companyId: entity.companyId,
               lineNumber: line.lineNumber,
               accountId: line.accountId,
               debitAmount: line.debitAmount,
@@ -902,7 +904,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
         },
         include: { journalEntry: { include: journalInclude } },
       });
-      if (existing?.journalEntry) { await assertJournalBindings(tx, existing.journalEntry, original.legalEntityId); assertReversalRetry(existing.journalEntry, original, command); return existing.journalEntry; }
+      if (existing?.journalEntry) { await assertJournalBindings(tx, existing.journalEntry, original.legalEntityId, context); assertReversalRetry(existing.journalEntry, original, command); return existing.journalEntry; }
       if (original.status !== "posted") {
         throw financeConflict("Only posted journals can be reversed", "FINANCE_JOURNAL_NOT_POSTED");
       }
@@ -957,6 +959,8 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
           lines: {
             create: original.lines.map((line) => ({
               legalEntityId: original.legalEntityId,
+              tenantId: context.tenantId,
+              companyId: context.companyId,
               lineNumber: line.lineNumber,
               accountId: line.accountId,
               debitAmount: line.creditAmount,
@@ -1389,6 +1393,8 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
             lines: {
               create: prepared.lines.map((line) => ({
                 legalEntityId: entity.id,
+                tenantId: entity.tenantId,
+                companyId: entity.companyId,
                 lineNumber: line.lineNumber,
                 accountId: line.accountId,
                 debitAmount: line.debitAmount,

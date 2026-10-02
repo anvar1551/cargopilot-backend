@@ -48,6 +48,7 @@ enum IntegrationEventProcessStatus {
 }
 
 model IntegrationProvider {
+  financeJournalDimensions FinanceJournalLine[] @relation("JournalDimensionProvider")
   id              String                    @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   companyId       String                    @db.Uuid
   company         Organization              @relation(fields: [companyId], references: [id], onDelete: Cascade)

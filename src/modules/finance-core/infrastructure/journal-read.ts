@@ -4,6 +4,7 @@ import type { AppUser } from "../../../types/app-user";
 import type { CursorPage } from "../application/finance.port";
 import { requireLegalEntityContext } from "../application/legal-entity-access";
 import { financeBadRequest, financeConflict, financeNotFound } from "../domain/finance.errors";
+import { journalDimensionOwnership } from "./journal-dimension-ownership";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const accountSelect = { id: true, legalEntityId: true, code: true, name: true, type: true, status: true,
@@ -28,7 +29,7 @@ async function ownership(actor: AppUser) {
   if (!entity) return null;
   // Each final read repeats active ownership and checks nested document/account/reversal equality.
   return { legalEntityId: entity.id, legalEntity: { is: legalEntity }, document: { is: { legalEntityId: entity.id } },
-    lines: { every: { legalEntityId: entity.id, account: { is: { legalEntityId: entity.id,
+    lines: { every: { ...journalDimensionOwnership(context, entity.id), legalEntityId: entity.id, account: { is: { legalEntityId: entity.id,
       OR: [{ parentId: null }, { parent: { is: { legalEntityId: entity.id } } }] } } } },
     OR: [{ reversalOfId: null }, { reversalOf: { is: { legalEntityId: entity.id } } }],
   } satisfies Prisma.FinanceJournalEntryWhereInput;
