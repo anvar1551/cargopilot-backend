@@ -2,7 +2,7 @@ import { createHash } from "crypto";
 import { PaymentEnvironment, PaymentIntent, PaymentIntentStatus, PaymentProvider, Prisma, PrismaClient } from "@prisma/client";
 import type { AppUser } from "../../../types/app-user";
 import { authorityError } from "../../orders-core/domain/creation-authority";
-import { hasCompanyScope, requireCompanyAuthority } from "../../orders-core/domain/company-authority";
+import { hasCompanyScope, requireTenantBoundOrderCompanyAuthority } from "../../orders-core/domain/company-authority";
 import { CreatePaymentIntentInput, toCanonicalStatus } from "../domain/contracts";
 import type { PaymentProviderAdapter, ResolvedProviderConfig } from "../infrastructure/providers/providerAdapter";
 import { createPaymentIntentSchema } from "../shared/validation";
@@ -53,31 +53,31 @@ export async function createAuthorizedPayment(
   const input = createPaymentIntentSchema.parse(args.input);
   const requestDigest = digest({ provider: input.provider ?? null, returnUrl: input.returnUrl ?? null, metadata: input.metadata ?? {} });
   const reservation = async () => deps.db.$transaction(async (tx) => {
-    const membership = await requireCompanyAuthority(tx, args.user, "payments.intents.create");
+    const membership = await requireTenantBoundOrderCompanyAuthority(tx, args.user, "payments.intents.create");
     const companyId = membership.companyId;
     if (input.companyId !== undefined && input.companyId !== companyId) throw authorityError("Order company mismatch", 403);
     // Bounded database lock wait; no network operation occurs inside this transaction.
     await tx.$executeRaw`SET LOCAL lock_timeout = '3s'`;
     await tx.$executeRaw`SET LOCAL statement_timeout = '5s'`;
     const locked = await tx.$queryRaw<Array<{ id: string }>>`
-      SELECT id FROM "Order" WHERE id = ${input.orderId}::uuid AND "ownerOrgId" = ${companyId}::uuid FOR UPDATE`;
+      SELECT id FROM "Order" WHERE id = ${input.orderId}::uuid AND "ownerOrgId" = ${companyId}::uuid AND "tenantId" = ${membership.tenantId}::uuid FOR UPDATE`;
     if (locked.length !== 1) throw authorityError("Order not accessible", 404);
     const order = await tx.order.findUnique({
       where: { id: input.orderId },
-      select: { id: true, ownerOrgId: true, currentWarehouseId: true, customerEntityId: true, paymentType: true, paymentState: true, status: true },
+      select: { id: true, tenantId: true, ownerOrgId: true, currentWarehouseId: true, customerEntityId: true, paymentType: true, paymentState: true, status: true },
     });
-    if (!order || order.ownerOrgId !== companyId || (!hasCompanyScope(membership) &&
+    if (!order || order.tenantId !== membership.tenantId || order.ownerOrgId !== companyId || (!hasCompanyScope(membership) &&
         !membership.scopes.some((scope) => scope.scopeType === "warehouse" && !!order.currentWarehouseId && scope.scopeRefId === order.currentWarehouseId))) {
       throw authorityError("Order not accessible", 404);
     }
     await tx.$queryRaw`SELECT id FROM "Invoice" WHERE "orderId" = ${order.id}::uuid FOR SHARE`;
     const invoice = await tx.invoice.findUnique({ where: { orderId: order.id } });
-    if (!invoice || invoice.companyId !== companyId || !invoice.issuedAt || !invoice.issuedByUserId ||
+    if (!invoice || invoice.tenantId !== membership.tenantId || invoice.orderId !== order.id || invoice.companyId !== companyId || !invoice.issuedAt || !invoice.issuedByUserId ||
         !["issued", "paid"].includes(invoice.status) || invoice.customerEntityId !== order.customerEntityId) {
       throw authorityError("An issued invoice belonging to the order company is required", 409);
     }
-    const legalEntity = await tx.financeLegalEntity.findUnique({ where: { companyId }, select: { id: true, companyId: true, isActive: true } });
-    if (!legalEntity?.isActive || legalEntity.companyId !== companyId) throw authorityError("Active order legal entity required", 409);
+    const legalEntity = await tx.financeLegalEntity.findUnique({ where: { companyId }, select: { id: true, tenantId: true, companyId: true, isActive: true } });
+    if (!legalEntity?.isActive || legalEntity.tenantId !== membership.tenantId || legalEntity.companyId !== companyId) throw authorityError("Active order legal entity required", 409);
     const currency = invoice.currency;
     const amountMinor = invoiceMinorUnits(invoice.amount, currency);
     if ((input.amountMinor !== undefined && input.amountMinor !== amountMinor) ||
@@ -89,8 +89,14 @@ export async function createAuthorizedPayment(
       legalEntityId: legalEntity.id, amountMinor: amountMinor.toString(), currency, issuedAt: invoice.issuedAt.toISOString() });
     const existing = await tx.paymentIntent.findUnique({ where: { companyId_idempotencyKey: { companyId, idempotencyKey: input.idempotencyKey } } });
     if (existing) {
+      // NOT VALID expansion does not certify historical sources. Every retry
+      // must still prove the currently configured provider tuple before exposing checkout.
+      const currentConfig = await tx.paymentProviderConfig.findFirst({ where: {
+        id: existing.providerConfigId, companyId, provider: existing.provider, environment: existing.environment, isEnabled: true,
+        company: { is: { tenantId: membership.tenantId, isActive: true, tenant: { is: { status: "active" } } } },
+      }, select: { id: true } });
       const binding = existing.metadataJson as Record<string, unknown> | null;
-      if (existing.orderId !== order.id || existing.companyId !== companyId || existing.amountMinor !== amountMinor || existing.currency !== currency ||
+      if (!currentConfig || existing.orderId !== order.id || existing.companyId !== companyId || existing.amountMinor !== amountMinor || existing.currency !== currency ||
           binding?.phase0bRequestDigest !== requestDigest || binding?.phase0bAuthorityDigest !== authorityDigest) {
         throw authorityError("Idempotency key conflicts with the existing payment request", 409);
       }

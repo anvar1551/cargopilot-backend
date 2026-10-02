@@ -223,6 +223,8 @@ model Order {
   pricingComponents    PricingComponent[]
   documents            OrderDocument[]
   paymentIntents       PaymentIntent[]
+  ownedPaymentIntents  PaymentIntent[] @relation("PaymentIntentOwnedOrder")
+  @@unique([id, ownerOrgId], map: "Order_payment_owner_key")
   paymentLedgerEntries PaymentLedgerEntry[]
   paymentRefunds       PaymentRefund[]
   tenantNotifications  UserNotification[] @relation("UserNotificationTenantOrder")

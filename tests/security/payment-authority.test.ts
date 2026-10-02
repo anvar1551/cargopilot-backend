@@ -11,16 +11,16 @@ const warehouseB = "30000000-0000-4000-8000-000000000002";
 const key = "checkout-request-0001";
 
 function fixture() {
-  const user: any = { id: "user-a", membershipId: "membership-a", companyId: companyA };
+  const user: any = { id: "user-a", membershipId: "membership-a", companyMembershipId:"membership-a", tenantId:"tenant-a", tenantMembershipId:"tm-a", companyId: companyA };
   const membership: any = {
-    companyId: companyA, scopes: [{ scopeType: "company", scopeRefId: companyA }],
+    companyId: companyA, tenantId:"tenant-a", tenantMembershipId:"tm-a", scopes: [{ scopeType: "company", scopeRefId: companyA }],
     roles: [{ role: { companyId: companyA, isSystem: false, rolePermissions: [{ permission: { key: "payments.intents.create" } }] } }],
   };
-  const order: any = { id: orderId, ownerOrgId: companyA, currentWarehouseId: warehouseA,
+  const order: any = { id: orderId, tenantId:"tenant-a", ownerOrgId: companyA, currentWarehouseId: warehouseA,
     customerEntityId: null, paymentType: "CARD", paymentState: "UNPAID", status: "pending" };
-  const invoice: any = { id: "invoice-a", orderId, companyId: companyA, customerEntityId: null,
+  const invoice: any = { id: "invoice-a", tenantId:"tenant-a", orderId, companyId: companyA, customerEntityId: null,
     status: "issued", issuedAt: new Date("2026-09-01T12:00:00Z"), issuedByUserId: "issuer-a", amount: new Prisma.Decimal("1200.25"), currency: "UZS" };
-  const legalEntity: any = { id: "legal-a", companyId: companyA, isActive: true };
+  const legalEntity: any = { id: "legal-a", tenantId:"tenant-a", companyId: companyA, isActive: true };
   const policy: any = { onlinePaymentsEnabled: true, defaultProvider: "PAYME", allowProviderOverride: false };
   const config: any = { id: "config-a", companyId: companyA, provider: "PAYME", environment: "TEST", isEnabled: true, secretPlain: "fixture-only" };
   const intents: any[] = [];
@@ -30,6 +30,7 @@ function fixture() {
     invoice: { findUnique: jest.fn(async () => invoice) },
     financeLegalEntity: { findUnique: jest.fn(async () => legalEntity) },
     companyPaymentSetting: { findUnique: jest.fn(async () => policy) },
+    paymentProviderConfig: { findFirst: jest.fn(async ({where}:any) => where.id===config.id && where.companyId===config.companyId && where.provider===config.provider && where.environment===config.environment && config.isEnabled ? {id:config.id} : null) },
     paymentIntent: {
       findUnique: jest.fn(async ({ where }: any) => intents.find((item) => where.id ? item.id === where.id :
         item.companyId === where.companyId_idempotencyKey.companyId && item.idempotencyKey === where.companyId_idempotencyKey.idempotencyKey) ?? null),
@@ -85,6 +86,15 @@ it("permits a matching warehouse scope only within the owning company", async ()
 });
 
 it.each([
+  ["missing tenant bridge", (f: ReturnType<typeof fixture>) => { f.user.tenantMembershipId = null; }],
+  ["conflicting selected membership", (f: ReturnType<typeof fixture>) => { f.user.companyMembershipId = "other"; }],
+  ["tenant-null order", (f: ReturnType<typeof fixture>) => { f.order.tenantId = null; }],
+  ["foreign tenant order", (f: ReturnType<typeof fixture>) => { f.order.tenantId = "foreign"; }],
+  ["tenant-null invoice", (f: ReturnType<typeof fixture>) => { f.invoice.tenantId = null; }],
+  ["foreign tenant invoice", (f: ReturnType<typeof fixture>) => { f.invoice.tenantId = "foreign"; }],
+  ["wrong invoice order", (f: ReturnType<typeof fixture>) => { f.invoice.orderId = "other"; }],
+  ["tenant-null legal entity", (f: ReturnType<typeof fixture>) => { f.legalEntity.tenantId = null; }],
+  ["foreign tenant legal entity", (f: ReturnType<typeof fixture>) => { f.legalEntity.tenantId = "foreign"; }],
   ["missing membership", (f: ReturnType<typeof fixture>) => { f.user.membershipId = null; }],
   ["revoked membership", (f: ReturnType<typeof fixture>) => { f.db.companyMembership.findFirst.mockResolvedValue(null); }],
   ["stale token permission", (f: ReturnType<typeof fixture>) => { f.user.permissionCodes = ["payments.intents.create"]; f.membership.roles = []; }],
@@ -142,6 +152,15 @@ it.each([{ metadata: { changed: true } }, { provider: "PAYME" }, { returnUrl: "h
 it("rejects changed invoice authority on the same key", async () => {
   const f = fixture(); await f.call(); f.invoice.amount = new Prisma.Decimal("999");
   await expect(f.call()).rejects.toMatchObject({ statusCode: 409 }); expect(f.createPayment).toHaveBeenCalledTimes(1);
+});
+
+it.each(["disabled", "foreign", "environment"])("a matching retry cannot re-expose %s historical provider configuration", async kind => {
+  const f=fixture(); await f.call();
+  if(kind==="disabled")f.config.isEnabled=false;
+  else if(kind==="foreign")f.config.companyId=companyB;
+  else f.config.environment="PRODUCTION";
+  f.db.paymentIntent.create.mockClear(); f.db.paymentIntent.updateMany.mockClear(); f.db.paymentAttempt.create.mockClear(); f.createPayment.mockClear();
+  await expect(f.call()).rejects.toMatchObject({statusCode:409}); f.noEffects();
 });
 
 it.each(["cancelled", "returned"])("does not re-expose checkout for a now-%s order on matching reuse", async (status) => {

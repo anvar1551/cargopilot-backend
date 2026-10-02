@@ -91,6 +91,8 @@ model PaymentProviderConfig {
   createdAt       DateTime           @default(now())
   updatedAt       DateTime           @updatedAt
   paymentIntents  PaymentIntent[]
+  ownedPaymentIntents PaymentIntent[] @relation("PaymentIntentOwnedConfig")
+  @@unique([id, companyId, provider, environment], map: "PaymentProviderConfig_execution_key")
 
   @@unique([companyId, provider, environment], map: "uniq_provider_per_company_env")
   @@index([companyId, isEnabled])
@@ -99,6 +101,12 @@ model PaymentProviderConfig {
 }
 
 model PaymentIntent {
+  ownedOrder Order @relation("PaymentIntentOwnedOrder", fields: [orderId, companyId], references: [id, ownerOrgId], onDelete: Restrict, onUpdate: Restrict, map: "PaymentIntent_order_owner_fkey")
+  ownedProviderConfig PaymentProviderConfig @relation("PaymentIntentOwnedConfig", fields: [providerConfigId, companyId, provider, environment], references: [id, companyId, provider, environment], onDelete: Restrict, onUpdate: Restrict, map: "PaymentIntent_provider_context_fkey")
+  ownedRefunds PaymentRefund[] @relation("PaymentRefundOwnedIntent")
+  ownedLedgerEntries PaymentLedgerEntry[] @relation("PaymentLedgerOwnedIntent")
+  @@unique([id, companyId, orderId, provider, environment, currency], map: "PaymentIntent_refund_source_key")
+  @@unique([id, companyId, orderId, provider, currency], map: "PaymentIntent_ledger_source_key")
   settlementLines FinanceProviderSettlementLine[] @relation("SettlementLineIntent")
   @@unique([id, companyId, orderId, providerConfigId, currency], map: "PaymentIntent_settlement_owner_key")
   id                  String                @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
@@ -131,6 +139,7 @@ model PaymentIntent {
 }
 
 model PaymentRefund {
+  ownedIntent PaymentIntent @relation("PaymentRefundOwnedIntent", fields: [paymentIntentId, companyId, orderId, provider, environment, currency], references: [id, companyId, orderId, provider, environment, currency], onDelete: Restrict, onUpdate: Restrict, map: "PaymentRefund_intent_context_fkey")
   settlementLines FinanceProviderSettlementLine[] @relation("SettlementLineRefund")
   @@unique([id, companyId, orderId, paymentIntentId, currency], map: "PaymentRefund_settlement_owner_key")
   id                   String              @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
@@ -203,6 +212,7 @@ model PaymentWebhookEvent {
 }
 
 model PaymentLedgerEntry {
+  ownedIntent PaymentIntent @relation("PaymentLedgerOwnedIntent", fields: [paymentIntentId, companyId, orderId, provider, currency], references: [id, companyId, orderId, provider, currency], onDelete: Restrict, onUpdate: Restrict, map: "PaymentLedgerEntry_intent_context_fkey")
   id              String          @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   companyId       String          @db.Uuid
   company         Organization    @relation(fields: [companyId], references: [id], onDelete: Cascade)
