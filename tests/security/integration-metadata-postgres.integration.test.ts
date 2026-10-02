@@ -1,5 +1,8 @@
 import {publishRouteTemplateConfigurationForActor as publishTemplateConfiguration} from "../../src/modules/integrations-core/application/template-configuration-publication";
 
+
+import {listTemplateConfigurationsForActor as templateHistory,listRoutingConfigurationsForActor as routingHistory} from "../../src/modules/integrations-core/application/routing-configuration-read";
+
 import {publishCarrierRoutingConfigurationForActor as publishRoutingConfiguration} from "../../src/modules/integrations-core/application/routing-configuration-publication";
 import {listIntegrationProviderConfigurationsForActor as readConfigurations} from "../../src/modules/integrations-core/application/provider-configuration-read";
 import {publishIntegrationProviderConfigurationForActor as publishConfiguration} from "../../src/modules/integrations-core/application/provider-configuration-publication";
@@ -896,4 +899,45 @@ it("routing publication PostgreSQL inactive accepted template cannot be publishe
   await tx.carrierRoutingRule.update({where:{id:fresh.rule.id},data:{configurationRevision:1,currentConfigurationId:v.id}});
  })).rejects.toThrow("snapshot disagrees");
  expect(await routingPublicationSnapshot()).toEqual(before);
+});
+
+it("configuration history PostgreSQL scopes three selected companies counts cursors and safe readonly versions",async()=>{
+ const resources=[];
+ for(let i=0;i<memberships.length;i++){
+  const g=await routingPublicationFixture(i);
+  const rv1=await publishRoutingConfiguration({user:g.user,ruleId:g.rule.id,operationId:randomUUID(),expectedRevision:0});
+  await publishTemplateConfiguration({user:g.user,templateId:g.t.id,operationId:randomUUID(),expectedRevision:1});
+  await publishRoutingConfiguration({user:g.user,ruleId:g.rule.id,operationId:randomUUID(),expectedRevision:1});
+  resources.push({...g,rv1});
+ }
+ const empty=await mockPrisma.routeTemplate.create({data:{companyId:memberships[0].companyId,name:"Synthetic unpublished history"}});
+ const before=await routingPublicationSnapshot();
+ for(let i=0;i<resources.length;i++){
+  const g=resources[i];
+  for(const [read,resourceId] of [[templateHistory,g.t.id],[routingHistory,g.rule.id]] as const){
+   const first=await read({user:g.user,resourceId,limit:1});expect(first.total).toBe(2);expect(first.currentRevision).toBe(2);expect(first.data.map(r=>r.revision)).toEqual([2]);expect(first.pageInfo.hasNextPage).toBe(true);
+   expect(Object.keys(first.data[0]).sort()).toEqual(["acceptedAt","id","isActive","priority","revision"]);
+   expect(first.currentConfigurationId).toBe(first.data[0].id);
+   const second=await read({user:g.user,resourceId,limit:1,cursor:first.pageInfo.nextCursor!});expect(second.data.map(r=>r.revision)).toEqual([1]);expect(second.total).toBe(2);expect(second.pageInfo.hasNextPage).toBe(false);
+  }
+  for(let j=0;j<resources.length;j++)if(i!==j){
+   await expect(templateHistory({user:g.user,resourceId:resources[j].t.id})).rejects.toMatchObject({statusCode:404});
+   await expect(routingHistory({user:g.user,resourceId:resources[j].rule.id})).rejects.toMatchObject({statusCode:404});
+   await expect(templateHistory({user:g.user,resourceId:g.t.id,cursor:resources[j].tv.id})).rejects.toMatchObject({statusCode:404});
+   await expect(routingHistory({user:g.user,resourceId:g.rule.id,cursor:resources[j].rv1.id})).rejects.toMatchObject({statusCode:404});
+  }
+ }
+ expect(await templateHistory({user:resources[0].user,resourceId:empty.id})).toMatchObject({currentRevision:0,currentConfigurationId:null,total:0,data:[]});
+ await expect(routingHistory({user:{id:memberships[0].userId} as any,resourceId:resources[0].rule.id})).rejects.toMatchObject({statusCode:403});
+ expect(await routingPublicationSnapshot()).toEqual(before);
+});
+
+it("configuration history PostgreSQL revoked read roles and absent company scopes deny both resources without writes",async()=>{
+ const g=await routingPublicationFixture();await publishRoutingConfiguration({user:g.user,ruleId:g.rule.id,operationId:randomUUID(),expectedRevision:0});
+ const roles=await mockPrisma.membershipRole.findMany({where:{membershipId:memberships[0].id}});
+ await mockPrisma.membershipRole.deleteMany({where:{membershipId:memberships[0].id}});
+ try{const before=await routingPublicationSnapshot();for(const [read,resourceId] of [[templateHistory,g.t.id],[routingHistory,g.rule.id]] as const)await expect(read({user:g.user,resourceId})).rejects.toMatchObject({statusCode:403});expect(await routingPublicationSnapshot()).toEqual(before);}finally{await mockPrisma.membershipRole.createMany({data:roles});}
+ const scopes=await mockPrisma.membershipScope.findMany({where:{membershipId:memberships[0].id}});
+ await mockPrisma.membershipScope.deleteMany({where:{membershipId:memberships[0].id}});
+ try{const before=await routingPublicationSnapshot();for(const [read,resourceId] of [[templateHistory,g.t.id],[routingHistory,g.rule.id]] as const)await expect(read({user:g.user,resourceId})).rejects.toMatchObject({statusCode:403});expect(await routingPublicationSnapshot()).toEqual(before);}finally{await mockPrisma.membershipScope.createMany({data:scopes});}
 });

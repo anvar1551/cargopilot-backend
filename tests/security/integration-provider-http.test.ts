@@ -1,4 +1,7 @@
 import {listIntegrationProviderConfigurationsForActor} from "../../src/modules/integrations-core/application/integration-admin.service";
+
+import {listTemplateConfigurationsForActor,listRoutingConfigurationsForActor} from "../../src/modules/integrations-core/application/routing-configuration-read";
+jest.mock("../../src/modules/integrations-core/application/routing-configuration-read",()=>({listTemplateConfigurationsForActor:jest.fn(),listRoutingConfigurationsForActor:jest.fn()}));
 import {listRouteTemplatesForActor,getRouteTemplateForActor,createRouteTemplateForActor,updateRouteTemplateForActor,deleteRouteTemplateForActor} from "../../src/modules/integrations-core/application/route-template.service";
 import {createCarrierRoutingRuleForActor,updateCarrierRoutingRuleForActor,deleteCarrierRoutingRuleForActor,listCarrierRoutingRulesForActor} from "../../src/modules/integrations-core/application/carrier-routing.service";
 const mockWebhookClose = jest.fn(async () => undefined);
@@ -169,3 +172,22 @@ it.each([createRouteTemplateForActor,updateRouteTemplateForActor,deleteRouteTemp
 it.each([400,403,404,500])("configuration version error %s is credential safe",async statusCode=>{const app=Fastify();try{await app.register(routes);jest.mocked(listIntegrationProviderConfigurationsForActor).mockRejectedValue(Object.assign(Error("PRIVATE-CANARY"),{statusCode}));const r=await app.inject({method:"GET",url:"/providers/10000000-0000-4000-8000-000000000001/configurations"});expect(r.statusCode).toBe(statusCode);expect(r.body).not.toContain("PRIVATE-CANARY");}finally{await app.close();}});
 it("configuration version transport rejects client ownership fields",async()=>{const app=Fastify();try{await app.register(routes);const r=await app.inject({method:"GET",url:"/providers/10000000-0000-4000-8000-000000000001/configurations?tenantId=foreign"});expect(r.statusCode).toBe(400);expect(listIntegrationProviderConfigurationsForActor).not.toHaveBeenCalled();}finally{await app.close();}});
 it("configuration version transport returns the minimal paginated contract",async()=>{const app=Fastify();try{await app.register(routes);jest.mocked(listIntegrationProviderConfigurationsForActor).mockResolvedValue({providerId:"id",currentRevision:0,currentConfigurationId:null,data:[],total:0,pageInfo:{limit:25,hasNextPage:false,nextCursor:null}});const r=await app.inject({method:"GET",url:"/providers/10000000-0000-4000-8000-000000000001/configurations"});expect(r.statusCode).toBe(200);expect(r.json().currentRevision).toBe(0);}finally{await app.close();}});
+
+it.each([["/route-templates",listTemplateConfigurationsForActor],["/carrier-routing-rules",listRoutingConfigurationsForActor]] as const)("configuration history %s retains safe bounded transport contract",async(path,handler)=>{
+ const app=Fastify();try{await app.register(routes);const expected={resourceId:"10000000-0000-4000-8000-000000000001",data:[],total:0,currentRevision:0,currentConfigurationId:null,pageInfo:{limit:2,hasNextPage:false,nextCursor:null}};
+ jest.mocked(handler).mockResolvedValue(expected);
+ const response=await app.inject({method:"GET",url:path+"/"+expected.resourceId+"/configurations?limit=2"});
+ expect(response.statusCode).toBe(200);expect(response.json()).toEqual(expected);expect(handler).toHaveBeenCalledWith(expect.objectContaining({resourceId:expected.resourceId,limit:2}));
+ }finally{await app.close();}
+});
+it.each([["/route-templates",listTemplateConfigurationsForActor],["/carrier-routing-rules",listRoutingConfigurationsForActor]] as const)("configuration history %s rejects client ownership and limits before service work",async(path,handler)=>{
+ const app=Fastify();try{await app.register(routes);for(const query of ["tenantId=foreign","companyId=foreign","limit=101","cursor=invalid"]){
+ const response=await app.inject({method:"GET",url:path+"/10000000-0000-4000-8000-000000000001/configurations?"+query});expect(response.statusCode).toBe(400);expect(handler).not.toHaveBeenCalled();
+ }}finally{await app.close();}
+});
+it.each([400,403,404,500])("configuration history errors %s omit private diagnostics",async statusCode=>{
+ const app=Fastify();try{await app.register(routes);for(const [path,handler] of [["/route-templates",listTemplateConfigurationsForActor],["/carrier-routing-rules",listRoutingConfigurationsForActor]] as const){
+ jest.mocked(handler).mockRejectedValue(Object.assign(Error("PRIVATE-CANARY"),{statusCode}));const response=await app.inject({method:"GET",url:path+"/10000000-0000-4000-8000-000000000001/configurations"});
+ expect(response.statusCode).toBe(statusCode);expect(response.body).not.toContain("PRIVATE-CANARY");
+ }}finally{await app.close();}
+});

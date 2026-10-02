@@ -1,4 +1,5 @@
 import { closeIntegrationWebhookDatabase } from "../application/webhook-database";
+import {listTemplateConfigurationsForActor,listRoutingConfigurationsForActor} from "../application/routing-configuration-read";
 import { integrationWebhookBodyLimit } from "../application/webhook-admission";
 import type { FastifyPluginAsync } from "fastify";
 import { ServiceType, TransportMode } from "@prisma/client";
@@ -304,6 +305,16 @@ const integrationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.send(await listIntegrationProviderConfigurationsForActor({ user: request.user!, providerId: params.id, ...query }));
     } catch (error) { return sendOutboxReadError(reply, error); }
   });
+  for(const [path,handler] of [["/route-templates/:id/configurations",listTemplateConfigurationsForActor],
+    ["/carrier-routing-rules/:id/configurations",listRoutingConfigurationsForActor]] as const){
+    fastify.get(path,{preHandler:fastifyAuth({permission:"integration.routing.read"})},async(request,reply)=>{
+      try{
+        const params=z.object({id:z.string().uuid()}).strict().parse(request.params);
+        const query=z.object({cursor:z.string().uuid().optional(),limit:z.coerce.number().int().min(1).max(100).optional()}).strict().parse(request.query??{});
+        return reply.send(await handler({user:request.user!,resourceId:params.id,...query}));
+      }catch(error){return sendOutboxReadError(reply,error);}
+    });
+  }
 
   fastify.post(
     "/providers",
