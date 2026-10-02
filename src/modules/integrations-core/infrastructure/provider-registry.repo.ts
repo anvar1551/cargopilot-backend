@@ -72,30 +72,6 @@ export const providerRegistryRepository: ProviderRegistryRepository = {
     return row ? mapProvider(row) : null;
   },
 
-  async updateStatus(args) {
-    await db.integrationProvider.update({
-      where: { id: args.providerId },
-      data: { status: args.status },
-    });
-  },
-
-  async rotateSecret(args) {
-    await db.$transaction(async (tx: any) => {
-      const created = await tx.integrationProviderSecret.create({
-        data: {
-          providerId: args.providerId,
-          keyVersion: args.keyVersion,
-          encryptedSecretJson: args.encryptedSecretJson,
-          rotatedAt: new Date(),
-        },
-      });
-
-      await tx.integrationProvider.update({
-        where: { id: args.providerId },
-        data: { secretRef: created.id },
-      });
-    });
-  },
 };
 
 export const providerRegistryService: ProviderRegistryService = {

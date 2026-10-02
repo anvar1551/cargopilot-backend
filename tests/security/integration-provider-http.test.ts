@@ -1,5 +1,5 @@
 jest.mock("../../src/modules/identity-access/transport/fastify-auth", () => ({ fastifyAuth: () => async () => undefined }));
-jest.mock("../../src/modules/integrations-core/application/integration-admin.service", () => ({ listIntegrationProvidersForActor: jest.fn() }));
+jest.mock("../../src/modules/integrations-core/application/integration-admin.service", () => ({ listIntegrationProvidersForActor: jest.fn(), upsertIntegrationProviderForActor: jest.fn(), rotateIntegrationProviderSecretForActor: jest.fn(), deleteIntegrationProviderForActor: jest.fn(), updateIntegrationProviderStatusForActor: jest.fn() }));
 jest.mock("../../src/modules/integrations-core/application/carrier-routing.service", () => ({}));
 jest.mock("../../src/modules/integrations-core/application/route-template.service", () => ({}));
 jest.mock("../../src/modules/integrations-core/application/webhook-gateway.service", () => ({ createWebhookGatewayService: () => ({}) }));
@@ -9,6 +9,7 @@ jest.mock("../../src/modules/integrations-core/infrastructure/canonical-event.re
 import Fastify from "fastify";
 import routes from "../../src/modules/integrations-core/transport/fastify-routes";
 import { listIntegrationProvidersForActor } from "../../src/modules/integrations-core/application/integration-admin.service";
+import { upsertIntegrationProviderForActor, rotateIntegrationProviderSecretForActor, deleteIntegrationProviderForActor, updateIntegrationProviderStatusForActor } from "../../src/modules/integrations-core/application/integration-admin.service";
 beforeEach(() => jest.clearAllMocks());
 it.each([400, 403, 404, 500])("provider list error %s exposes no database or credential detail", async statusCode => {
   const app = Fastify();
@@ -37,4 +38,16 @@ it("invalid pagination rejects before service work", async () => {
     const response = await app.inject({ method: "GET", url: "/providers?limit=101" });
     expect(response.statusCode).toBe(400); expect(listIntegrationProvidersForActor).not.toHaveBeenCalled();
   } finally { await app.close(); }
+});
+it.each([
+  ["POST","/providers",upsertIntegrationProviderForActor,"INTEGRATION_CONFIGURATION_WORKFLOW_REQUIRED",{companyId:"10000000-0000-4000-8000-000000000001",domain:"carrier",providerCode:"sandbox",environment:"sandbox"}],
+  ["PATCH","/providers/10000000-0000-4000-8000-000000000001/status",updateIntegrationProviderStatusForActor,"INTEGRATION_FINANCE_CONFIGURATION_APPROVAL_REQUIRED",{status:"paused"}],
+  ["DELETE","/providers/10000000-0000-4000-8000-000000000001",deleteIntegrationProviderForActor,"INTEGRATION_PROVIDER_HISTORY_REQUIRED",undefined],
+  ["POST","/providers/10000000-0000-4000-8000-000000000001/rotate-secret",rotateIntegrationProviderSecretForActor,"INTEGRATION_CONFIGURATION_WORKFLOW_REQUIRED",{secretPayload:"synthetic"}],
+] as const)("%s provider mutation returns a safe explicit containment contract",async(method,url,handler,code,payload)=>{
+  const app=Fastify();try{
+    await app.register(routes);jest.mocked(handler).mockRejectedValue(Object.assign(Error("PRIVATE-CANARY"),{statusCode:409,code}));
+    const response=await app.inject({method,url,payload});expect(response.statusCode).toBe(409);expect(response.json().code).toBe(code);expect(response.body).not.toContain("PRIVATE-CANARY");
+    expect(handler).toHaveBeenCalledTimes(1);
+  }finally{await app.close();}
 });

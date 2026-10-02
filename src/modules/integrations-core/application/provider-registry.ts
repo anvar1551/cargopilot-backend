@@ -11,8 +11,8 @@ export interface ProviderRegistryRepository {
   findMany(filter: ProviderFilter): Promise<IntegrationProviderRef[]>;
   findById(providerId: string): Promise<IntegrationProviderRef | null>;
   findOne(args: { companyId: string; domain: IntegrationProviderRef["domain"]; providerCode: string }): Promise<IntegrationProviderRef | null>;
-  updateStatus(args: { providerId: string; status: ProviderStatus }): Promise<void>;
-  rotateSecret(args: { providerId: string; encryptedSecretJson: string; keyVersion: number }): Promise<void>;
+
+
 }
 
 export interface ProviderRegistryService {
