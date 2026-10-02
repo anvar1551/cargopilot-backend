@@ -580,6 +580,8 @@ model FinanceProviderSettlement {
   @@unique([legalEntityId, idempotencyKey])
   @@index([legalEntityId, status, periodEnd])
   @@index([providerConfigId, periodStart, periodEnd])
+  ownedBankStatementLine FinanceBankStatementLine? @relation("StatementSettlementOwnership")
+  @@unique([id, legalEntityId])
 }
 
 model FinanceProviderSettlementLine {
@@ -832,6 +834,7 @@ model FinanceBankAccount {
   @@unique([legalEntityId, accountIdentifierHash])
   @@unique([legalEntityId, idempotencyKey])
   @@index([legalEntityId, isActive, currency])
+  ownedBankStatements FinanceBankStatement[] @relation("StatementBankOwnership")
 }
 
 model FinancePaymentRun {
@@ -877,6 +880,8 @@ model FinancePaymentRun {
   @@unique([legalEntityId, bankReference])
   @@index([legalEntityId, status, paymentDate, id])
   @@index([bankAccountId, paymentDate])
+  ownedBankStatementLine FinanceBankStatementLine? @relation("StatementRunOwnership")
+  @@unique([id, bankAccountId, legalEntityId])
 }
 
 model FinancePaymentRunLine {
@@ -971,6 +976,9 @@ model FinanceBankStatement {
   @@unique([legalEntityId, idempotencyKey])
   @@index([legalEntityId, status, periodEnd, id])
   @@index([bankAccountId, periodStart, periodEnd])
+  ownedBankAccount FinanceBankAccount @relation("StatementBankOwnership", fields: [bankAccountId, legalEntityId], references: [id, legalEntityId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceBankStatement_bank_entity_fkey")
+  ownedLines FinanceBankStatementLine[] @relation("StatementLineOwnership")
+  @@unique([id, bankAccountId, legalEntityId])
 }
 
 model FinanceBankStatementLine {
@@ -1005,4 +1013,11 @@ model FinanceBankStatementLine {
   @@unique([bankAccountId, externalTransactionId])
   @@index([bankStatementId, reconciliationStatus, bookingDate])
   @@index([externalTransactionId])
+  legalEntityId String? @db.Uuid
+  ownedBankStatement FinanceBankStatement? @relation("StatementLineOwnership", fields: [bankStatementId, bankAccountId, legalEntityId], references: [id, bankAccountId, legalEntityId], onDelete: Cascade, onUpdate: Restrict, map: "FinanceBankStatementLine_parent_bank_entity_fkey")
+  ownedPaymentRun FinancePaymentRun? @relation("StatementRunOwnership", fields: [paymentRunId, bankAccountId, legalEntityId], references: [id, bankAccountId, legalEntityId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceBankStatementLine_run_bank_entity_fkey")
+  ownedProviderSettlement FinanceProviderSettlement? @relation("StatementSettlementOwnership", fields: [providerSettlementId, legalEntityId], references: [id, legalEntityId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceBankStatementLine_settlement_entity_fkey")
+  @@unique([paymentRunId, bankAccountId, legalEntityId], map: "FinanceBankStatementLine_run_bank_entity_key")
+  @@unique([providerSettlementId, legalEntityId], map: "FinanceBankStatementLine_settlement_entity_key")
+  @@index([legalEntityId, bankStatementId])
 }

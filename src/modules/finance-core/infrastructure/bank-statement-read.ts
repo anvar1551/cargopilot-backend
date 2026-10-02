@@ -20,7 +20,7 @@ async function ownership(actor:AppUser) {
   const owner={tenantId:context.tenantId,companyId:context.companyId,isActive:true,tenant:{is:{status:"active" as const}},company:{is:{tenantId:context.tenantId,isActive:true}}};
   const entity=await prisma.financeLegalEntity.findFirst({where:owner,select:{id:true}});
   if(!entity)return null;
-  return {legalEntityId:entity.id,legalEntity:{is:owner},bankAccount:{is:{legalEntityId:entity.id}},lines:{every:{bankAccount:{is:{legalEntityId:entity.id}},AND:[
+  return {legalEntityId:entity.id,legalEntity:{is:owner},bankAccount:{is:{legalEntityId:entity.id}},lines:{every:{legalEntityId:entity.id,bankAccount:{is:{legalEntityId:entity.id}},AND:[
     {OR:[{paymentRun:{is:null}},{paymentRun:{is:{legalEntityId:entity.id,bankAccount:{is:{legalEntityId:entity.id}}}}}]},
     {OR:[{providerSettlement:{is:null}},{providerSettlement:{is:{legalEntityId:entity.id}}}]},
   ]}}} satisfies Prisma.FinanceBankStatementWhereInput;

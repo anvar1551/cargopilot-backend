@@ -473,6 +473,7 @@ export class PrismaFinanceTreasuryRepository implements FinanceTreasuryRepositor
           metadataJson: json(command.metadata),
           createdByUserId: command.actorUserId,
           lines: { create: command.statement.lines.map((line) => ({
+            legalEntityId: entity.id,
             bankAccountId: bank.id,
             sequence: line.sequence,
             bookingDate: line.bookingDate,
