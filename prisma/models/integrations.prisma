@@ -78,6 +78,8 @@ model IntegrationProvider {
   @@index([providerCode, environment, status])
   ownedFinanceHeaders FinanceCarrierBill[] @relation("CarrierCompanyProvider")
   @@unique([id, companyId])
+  @@unique([id, companyId, domain, providerCode, environment], map: "IntegrationProvider_context_key")
+  @@unique([id, companyId, domain, providerCode], map: "IntegrationProvider_event_context_key")
 }
 
 model RouteTemplate {
@@ -206,7 +208,7 @@ model IntegrationOutbox {
   companyId      String                  @db.Uuid
   company        Organization            @relation(fields: [companyId], references: [id], onDelete: Cascade)
   providerId     String?                 @db.Uuid
-  provider       IntegrationProvider?    @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  provider       IntegrationProvider?    @relation(fields: [providerId, companyId, domain, providerCode, environment], references: [id, companyId, domain, providerCode, environment], onDelete: Restrict, onUpdate: Restrict, map: "IntegrationOutbox_provider_context_fkey")
   domain         IntegrationDomain
   providerCode   String
   environment    IntegrationEnvironment  @default(sandbox)
@@ -239,6 +241,7 @@ model IntegrationOutbox {
   @@index([providerId, status, nextAttemptAt])
   @@index([aggregateType, aggregateId, operation])
   @@index([ownershipTenantId, companyId, status])
+  @@unique([id, companyId, providerId, domain, providerCode], map: "IntegrationOutbox_event_context_key")
 }
 
 model IntegrationDeliveryAttempt {
@@ -267,7 +270,7 @@ model IntegrationWebhookEvent {
   companyId         String?                @db.Uuid
   company           Organization?          @relation(fields: [companyId], references: [id], onDelete: SetNull)
   providerId        String?                @db.Uuid
-  provider          IntegrationProvider?   @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  provider          IntegrationProvider?   @relation(fields: [providerId, companyId, domain, providerCode, environment], references: [id, companyId, domain, providerCode, environment], onDelete: Restrict, onUpdate: Restrict, map: "IntegrationWebhookEvent_provider_context_fkey")
   domain            IntegrationDomain
   providerCode      String
   environment       IntegrationEnvironment @default(sandbox)
@@ -288,6 +291,7 @@ model IntegrationWebhookEvent {
   @@index([companyId, receivedAt])
   @@index([providerId, receivedAt])
   @@index([domain, providerCode, receivedAt])
+  @@unique([id, companyId, providerId, domain, providerCode], map: "IntegrationWebhookEvent_context_key")
 }
 
 model IntegrationWebhookCanonicalEvent {
@@ -316,11 +320,11 @@ model IntegrationCanonicalEvent {
 
   companyId      String?                  @db.Uuid
   providerId     String?                  @db.Uuid
-  provider       IntegrationProvider?     @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  provider       IntegrationProvider?     @relation(fields: [providerId, companyId, domain, providerCode], references: [id, companyId, domain, providerCode], onDelete: Restrict, onUpdate: Restrict, map: "IntegrationCanonicalEvent_provider_context_fkey")
   webhookEventId String?                  @db.Uuid
-  webhookEvent   IntegrationWebhookEvent? @relation(fields: [webhookEventId], references: [id], onDelete: SetNull)
+  webhookEvent   IntegrationWebhookEvent? @relation(fields: [webhookEventId, companyId, providerId, domain, providerCode], references: [id, companyId, providerId, domain, providerCode], onDelete: Restrict, onUpdate: Restrict, map: "IntegrationCanonicalEvent_webhook_context_fkey")
   outboxId       String?                  @db.Uuid
-  outbox         IntegrationOutbox?       @relation("CanonicalOutboxSource", fields: [outboxId], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "IntegrationCanonicalEvent_outbox_source_fkey")
+  outbox         IntegrationOutbox?       @relation("CanonicalOutboxSource", fields: [outboxId, companyId, providerId, domain, providerCode], references: [id, companyId, providerId, domain, providerCode], onDelete: Restrict, onUpdate: Restrict, map: "IntegrationCanonicalEvent_outbox_context_fkey")
 
   domain        IntegrationDomain
   providerCode  String
@@ -338,6 +342,7 @@ model IntegrationCanonicalEvent {
   updatedAt       DateTime  @updatedAt
 
   @@unique([outboxId], map: "uniq_integration_canonical_event_outbox")
+  @@unique([outboxId, companyId, providerId, domain, providerCode], map: "IntegrationCanonicalEvent_outbox_context_key")
   @@unique([webhookEventId], map: "uniq_integration_canonical_event_webhook")
   @@unique([source, providerCode, eventType, aggregateType, aggregateId, occurredAt], map: "uniq_integration_canonical_event_identity")
   @@index([status, occurredAt, createdAt])

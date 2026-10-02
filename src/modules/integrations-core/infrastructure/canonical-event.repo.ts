@@ -1,3 +1,6 @@
+import { deriveCanonicalSource } from "../application/canonical-source";
+import { authorityError } from "../../orders-core/domain/creation-authority";
+import { isDeepStrictEqual } from "util";
 import { Prisma } from "@prisma/client";
 import prisma from "../../../config/prismaClient";
 import type {
@@ -54,50 +57,38 @@ function isUniqueConstraint(error: unknown) {
 
 export const integrationCanonicalEventRepository: IntegrationCanonicalEventRepository = {
   async enqueue(input: EnqueueIntegrationCanonicalEventInput) {
+    const options = { maxWait: 2000, timeout: 5000 };
+    const derive = async (tx: Prisma.TransactionClient) => {
+      await tx.$executeRaw`SET LOCAL lock_timeout = '1000ms'`;
+      await tx.$executeRaw`SET LOCAL statement_timeout = '3000ms'`;
+      return deriveCanonicalSource(tx, input);
+    };
     try {
-      const row = await db.integrationCanonicalEvent.create({
-        data: {
-          source: input.source,
-          status: "pending",
-          companyId: input.companyId ?? null,
-          providerId: input.providerId ?? null,
-          webhookEventId: input.webhookEventId ?? null,
-          outboxId: input.outboxId ?? null,
-          domain: input.domain,
-          providerCode: input.providerCode,
-          eventType: input.eventType,
-          aggregateType: input.aggregateType ?? null,
-          aggregateId: input.aggregateId ?? null,
-          payloadJson: input.payloadJson as any,
-          occurredAt: toDate(input.occurredAt),
-        },
-      });
+      const row = await prisma.$transaction(async tx => {
+        const data = await derive(tx);
+        return tx.integrationCanonicalEvent.create({ data: { ...data, status: "pending" } });
+      }, options);
       return mapCanonicalEvent(row);
     } catch (error) {
       if (!isUniqueConstraint(error)) throw error;
-
-      const existing = await db.integrationCanonicalEvent.findFirst({
-        where: {
-          OR: [
-            ...(input.outboxId ? [{ outboxId: input.outboxId }] : []),
-            ...(input.webhookEventId ? [{ webhookEventId: input.webhookEventId }] : []),
-            {
-              source: input.source,
-              providerCode: input.providerCode,
-              eventType: input.eventType,
-              aggregateType: input.aggregateType ?? null,
-              aggregateId: input.aggregateId ?? null,
-              occurredAt: toDate(input.occurredAt),
-            },
-          ],
-        },
-        orderBy: { createdAt: "asc" },
-      });
-      if (!existing) throw error;
-      return mapCanonicalEvent(existing);
+      // A source uniqueness collision is not permission to return another source,
+      // tenant or provider's receipt. Revalidate the persisted source on every retry.
+      return prisma.$transaction(async tx => {
+        const data = await derive(tx);
+        const existing = await tx.integrationCanonicalEvent.findFirst({ where: {
+          source: data.source, companyId: data.companyId, providerId: data.providerId,
+          domain: data.domain, providerCode: data.providerCode,
+          webhookEventId: data.webhookEventId, outboxId: data.outboxId,
+        } });
+        if (!existing || existing.eventType !== data.eventType || existing.aggregateType !== data.aggregateType ||
+          existing.aggregateId !== data.aggregateId || existing.occurredAt.getTime() !== data.occurredAt.getTime() ||
+          !isDeepStrictEqual(existing.payloadJson, data.payloadJson)) {
+          throw Object.assign(authorityError("Canonical event identity conflict", 409), { code: "INTEGRATION_CANONICAL_ID_CONFLICT" });
+        }
+        return mapCanonicalEvent(existing);
+      }, options);
     }
   },
-
   async claimBatch(args) {
     const limit = Math.max(1, Math.min(Number(args.limit || 25), 200));
     const staleProcessingBefore = args.staleProcessingBeforeIso
@@ -107,6 +98,13 @@ export const integrationCanonicalEventRepository: IntegrationCanonicalEventRepos
     return db.$transaction(async (tx: any) => {
       const candidates = await tx.integrationCanonicalEvent.findMany({
         where: {
+          companyId: { not: null }, providerId: { not: null },
+          provider: { is: { status: "active", company: { is: { isActive: true, type: "company",
+            tenantId: { not: null }, tenant: { is: { status: "active" } } } } } },
+          AND: [{ OR: [
+            { source: "inbound_webhook", webhookEventId: { not: null }, outboxId: null },
+            { source: "outbound_response", outboxId: { not: null }, webhookEventId: null },
+          ] }],
           OR: [
             { status: "pending" },
             ...(staleProcessingBefore

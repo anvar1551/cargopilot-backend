@@ -5,6 +5,8 @@ import { Pool } from "pg";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { randomUUID } from "crypto";
+import { createHash } from "crypto";
+import { integrationCanonicalEventRepository as canonicalRepo } from "../../src/modules/integrations-core/infrastructure/canonical-event.repo";
 import { createTenantDemoFixture, TENANT_DEMO_IDS as ids } from "../../src/modules/tenancy/demo-fixtures";
 import { persistTenantDemoFixture } from "../tenancy/postgres-fixture.persistence";
 import { listIntegrationOutboxForActor as outboxes, listIntegrationOutboxAttemptsForActor as attempts,
@@ -78,28 +80,111 @@ it("foreign and same-tenant other-company attempt IDs deny without mutations", a
     await expect(attempts({ user: actor(memberships[0]), outboxId: s.outbox.id })).rejects.toMatchObject({ statusCode: 404 });
   expect(await snapshot()).toEqual(before);
 });
-it("provider company/domain/code/environment conflicts accepted by simple legacy references are hidden", async () => {
+it("populated provider company/domain/code/environment conflicts reject inserts and updates without writes", async () => {
   const p = providers[0], user = actor(memberships[0]);
   const baseline = await outboxes({ user });
-  for (const override of [{ providerId: providers[1].id }, { domain: "sms" }, { providerCode: "wrong" }, { environment: "production" }])
-    await mockPrisma.integrationOutbox.create({ data: { companyId: p.companyId, providerId: p.id, domain: p.domain,
-      providerCode: p.providerCode, environment: p.environment, eventType: "synthetic", payload: {}, idempotencyKey: randomUUID(), ...override as any } });
-  const before = await snapshot(); expect((await outboxes({ user })).total).toBe(baseline.total); expect(await snapshot()).toEqual(before);
+  const before = await snapshot();
+  for (const override of [{ providerId: providers[1].id }, { domain: "sms" }, { providerCode: "wrong" }, { environment: "production" }]) {
+    await expect(mockPrisma.integrationOutbox.create({ data: { companyId: p.companyId, providerId: p.id, domain: p.domain,
+      providerCode: p.providerCode, environment: p.environment, eventType: "synthetic", payload: {}, idempotencyKey: randomUUID(), ...override as any } })).rejects.toThrow();
+    await expect(mockPrisma.integrationOutbox.update({ where: { id: sources[0].outbox.id }, data: override as any })).rejects.toThrow();
+    await expect(mockPrisma.integrationWebhookEvent.update({ where: { id: sources[0].webhook.id }, data: override as any })).rejects.toThrow();
+    expect(await snapshot()).toEqual(before);
+  }
+  expect((await outboxes({ user })).total).toBe(baseline.total);
 });
 it("canonical unbound/conflicting/dual sources and unauthenticated webhook sources are not counted", async () => {
   const p = providers[0], user = actor(memberships[0]), base = await events({ user });
   const data = { companyId: p.companyId, providerId: p.id, domain: p.domain, providerCode: p.providerCode,
     eventType: "synthetic", occurredAt: new Date(), payloadJson: {} };
-  await mockPrisma.integrationCanonicalEvent.create({ data: { ...data, source: "outbound_response" } });
+  await expect(mockPrisma.integrationCanonicalEvent.create({ data: { ...data, source: "outbound_response" } })).rejects.toThrow();
   const foreign = await makeSource(providers[1]);
   await mockPrisma.integrationCanonicalEvent.deleteMany({ where: { outboxId: foreign.outbox.id } });
-  await mockPrisma.integrationCanonicalEvent.create({ data: { ...data, source: "outbound_response", outboxId: foreign.outbox.id } });
+  let before = await snapshot();
+  await expect(mockPrisma.integrationCanonicalEvent.create({ data: { ...data, source: "outbound_response", outboxId: foreign.outbox.id } })).rejects.toThrow();
+  expect(await snapshot()).toEqual(before);
   const own = await makeSource(p); await mockPrisma.integrationCanonicalEvent.deleteMany({ where: { OR: [{ outboxId: own.outbox.id }, { webhookEventId: own.webhook.id }] } });
-  await mockPrisma.integrationCanonicalEvent.create({ data: { ...data, source: "inbound_webhook", webhookEventId: own.webhook.id, outboxId: own.outbox.id } });
+  before = await snapshot();
+  await expect(mockPrisma.integrationCanonicalEvent.create({ data: { ...data, source: "inbound_webhook", webhookEventId: own.webhook.id, outboxId: own.outbox.id } })).rejects.toThrow();
+  expect(await snapshot()).toEqual(before);
   const unsigned = await makeSource(p); await mockPrisma.integrationWebhookEvent.update({ where: { id: unsigned.webhook.id }, data: { signatureVerified: false } });
-  const before = await snapshot();
+  before = await snapshot();
   // The newly created legitimate outbound source for the unsigned ingress is still independent and readable.
   expect((await events({ user })).total).toBe(base.total + 1); expect(await snapshot()).toEqual(before);
+});
+
+async function incoming(p = providers[0]) {
+  const occurredAt = new Date(), payload = { eventType: "carrier.status.updated", statusCode: "in_transit" }, rawBody = JSON.stringify(payload);
+  const raw = await mockPrisma.integrationWebhookEvent.create({ data: { companyId: p.companyId, providerId: p.id, domain: "carrier", providerCode: p.providerCode,
+    environment: p.environment, providerEventId: randomUUID(), signatureVerified: true, rawBody, rawBodySha256: createHash("sha256").update(rawBody).digest("hex") } });
+  await mockPrisma.integrationWebhookCanonicalEvent.create({ data: { webhookEventId: raw.id, companyId: p.companyId, domain: "carrier", providerCode: p.providerCode,
+    eventType: "carrier.status.updated", occurredAt, payloadJson: payload } });
+  const input: any = { source: "inbound_webhook", webhookEventId: raw.id, companyId: p.companyId, providerId: p.id, domain: "carrier",
+    providerCode: p.providerCode, eventType: "carrier.status.updated", occurredAt: occurredAt.toISOString(), payloadJson: payload };
+  return { raw, input };
+}
+it("actual canonical enqueue concurrently deduplicates the verified source and rejects changed context/content with no effects", async () => {
+  const { input } = await incoming();
+  const results = await Promise.all([canonicalRepo.enqueue(input), canonicalRepo.enqueue(input)]);
+  expect(results[0].id).toBe(results[1].id); expect(await mockPrisma.integrationCanonicalEvent.count({ where: { webhookEventId: input.webhookEventId } })).toBe(1);
+  const before = await snapshot();
+  for (const change of [{ companyId: providers[1].companyId }, { providerId: providers[1].id }, { payloadJson: { forged: true } },
+    { eventType: "carrier.shipment.created" }, { occurredAt: new Date(0).toISOString() }, { outboxId: sources[0].outbox.id }]) {
+    await expect(canonicalRepo.enqueue({ ...input, ...change })).rejects.toThrow(); expect(await snapshot()).toEqual(before);
+  }
+  await mockPrisma.tenant.update({ where: { id: memberships[0].tenantId }, data: { status: "suspended" } });
+  try { const paused = await snapshot(); await expect(canonicalRepo.enqueue(input)).rejects.toThrow(); expect(await snapshot()).toEqual(paused); }
+  finally { await mockPrisma.tenant.update({ where: { id: memberships[0].tenantId }, data: { status: "active" } }); }
+});
+it("authoritative completed carrier attempt derives output; unaccepted source and forged output remain contained", async () => {
+  const p = providers[0], m = memberships[0], order = fixture.orders.find(o => o.ownerOrgId === m.companyId)!;
+  const leg = await mockPrisma.orderLeg.create({ data: { orderId: order.id, sequence: 100, mode: "road", carrierProviderId: p.id, carrierCode: p.providerCode, carrierRef: "synthetic-ref" } });
+  const outbox = await mockPrisma.integrationOutbox.create({ data: { companyId: p.companyId, providerId: p.id, domain: "carrier", providerCode: p.providerCode,
+    environment: p.environment, operation: "track", eventType: "carrier.command.requested", aggregateType: "shipment", aggregateId: leg.id,
+    ownershipTenantId: m.tenantId, ownershipOrderId: order.id, acceptedAt: new Date(), status: "sent", attemptCount: 1, idempotencyKey: randomUUID(),
+    payload: { companyId: p.companyId, aggregateType: "shipment", aggregateId: leg.id, payload: { action: "track", input: { partnerShipmentId: "synthetic-ref", metadata: { orderId: order.id, orderLegId: leg.id } } } } } });
+  const finishedAt = new Date();
+  await mockPrisma.integrationDeliveryAttempt.create({ data: { outboxId: outbox.id, attemptNo: 1, outcome: "success", startedAt: finishedAt, finishedAt, statusCode: 200, responseJson: { statusCode: "in_transit" } } });
+  const input: any = { source: "outbound_response", outboxId: outbox.id, companyId: p.companyId, providerId: p.id, domain: "carrier", providerCode: p.providerCode,
+    eventType: "carrier.status.updated", aggregateType: "shipment", aggregateId: leg.id, occurredAt: finishedAt.toISOString(),
+    payloadJson: { statusCode: "in_transit", providerRequestId: null, providerHttpStatusCode: 200 } };
+  const results = await Promise.all([canonicalRepo.enqueue(input), canonicalRepo.enqueue(input)]); expect(results[0].id).toBe(results[1].id);
+  const before = await snapshot();
+  await expect(canonicalRepo.enqueue({ ...input, payloadJson: { ...input.payloadJson, statusCode: "delivered" } })).rejects.toThrow();
+  await expect(canonicalRepo.enqueue({ ...input, outboxId: sources[0].outbox.id })).rejects.toThrow(); expect(await snapshot()).toEqual(before);
+});
+it("source identity collisions cannot return a different provider/company receipt", async () => {
+  const left = await incoming(), right = await incoming(providers[1]);
+  const common = { aggregateType: "synthetic", aggregateId: randomUUID(), occurredAt: new Date("2026-10-03T01:00:00Z") };
+  for (const v of [left, right]) {
+    await mockPrisma.integrationWebhookCanonicalEvent.update({ where: { webhookEventId: v.raw.id }, data: common });
+    Object.assign(v.input, common, { occurredAt: common.occurredAt.toISOString() });
+  }
+  const confirmed = await canonicalRepo.enqueue(left.input), before = await snapshot();
+  await expect(canonicalRepo.enqueue(right.input)).rejects.toMatchObject({ statusCode: 409, code: "INTEGRATION_CANONICAL_ID_CONFLICT" });
+  expect(await snapshot()).toEqual(before); expect(await mockPrisma.integrationCanonicalEvent.count({ where: { id: confirmed.id } })).toBe(1);
+});
+it("injected enqueue failure rolls back its metadata receipt without resetting sources or adding business effects", async () => {
+  const v = await incoming(), before = await snapshot(), original = mockPrisma;
+  mockPrisma = new Proxy(original, { get(target, key) {
+    if (key === "$transaction") return (work: any, options: any) => target.$transaction(async tx => {
+      await work(tx); throw Error("synthetic-enqueue-rollback");
+    }, options);
+    const value = (target as any)[key]; return typeof value === "function" ? value.bind(target) : value;
+  } });
+  try { await expect(canonicalRepo.enqueue(v.input)).rejects.toThrow("synthetic-enqueue-rollback"); }
+  finally { mockPrisma = original; }
+  expect(await snapshot()).toEqual(before); await expect(canonicalRepo.enqueue(v.input)).resolves.toMatchObject({ webhookEventId: v.raw.id });
+});
+it("structurally unaccepted legacy event seeded before expansion stays unclaimed and cannot starve valid work", async () => {
+  const legacy = await mockPrisma.integrationCanonicalEvent.findFirstOrThrow({ where: { providerCode: `legacy-${run}` } });
+  const before = await snapshot();
+  const claimed = await canonicalRepo.claimBatch({ limit: 200 });
+  expect(claimed.some(r => r.id === legacy.id)).toBe(false);
+  expect(await mockPrisma.integrationCanonicalEvent.findUnique({ where: { id: legacy.id } })).toEqual(legacy);
+  expect(claimed.length).toBeGreaterThan(0);
+  // Claiming changes only leases on eligible metadata; no finance or business events are dispatched here.
+  expect(await mockPrisma.financeDomainEventOutbox.count()).toBe(before.finance); expect(await mockPrisma.financeAuditEvent.count()).toBe(before.audit);
 });
 it("populated order bridge is preserved at read; foreign owner references and partial bridges are rejected by current constraints", async () => {
   const p = providers[0], m = memberships[0], user = actor(m);
