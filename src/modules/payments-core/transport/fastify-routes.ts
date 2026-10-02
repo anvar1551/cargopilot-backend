@@ -46,6 +46,20 @@ function sendError(reply: any, error: unknown, fallback: string) {
     .send({ error: candidate?.message ?? fallback });
 }
 
+// Configuration errors can originate from encrypted credentials or database drivers.
+// Return only fixed public messages; never serialize those exception messages.
+function sendSettingsError(reply: any, error: unknown) {
+  if (error instanceof ZodError) return reply.code(400).send({ error: "Validation failed", issues: error.flatten() });
+  const candidate = error as { status?: number; statusCode?: number; code?: string };
+  const status = candidate?.statusCode ?? candidate?.status;
+  if (status === 409 && candidate.code === "PAYMENT_CONFIGURATION_APPROVAL_REQUIRED")
+    return reply.code(409).send({ error: "Payment configuration requires independent durable approval", code: candidate.code });
+  const safeStatus = status === 400 || status === 403 || status === 404 ? status : 500;
+  return reply.code(safeStatus).send({ error: safeStatus === 403 ? "Payment configuration access denied"
+    : safeStatus === 404 ? "Provider config not found" : safeStatus === 400 ? "Invalid payment configuration request"
+    : "Payment configuration request failed" });
+}
+
 const paymentsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get(
     "/settings/payments/policy",
@@ -59,7 +73,7 @@ const paymentsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         });
         return reply.send(result);
       } catch (error) {
-        return sendError(reply, error, "Failed to load payment policy");
+        return sendSettingsError(reply, error);
       }
     },
   );
@@ -76,7 +90,7 @@ const paymentsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         });
         return reply.send(result);
       } catch (error) {
-        return sendError(reply, error, "Failed to update payment policy");
+        return sendSettingsError(reply, error);
       }
     },
   );
@@ -94,7 +108,7 @@ const paymentsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         });
         return reply.send(result);
       } catch (error) {
-        return sendError(reply, error, "Failed to load available payment providers");
+        return sendSettingsError(reply, error);
       }
     },
   );
@@ -114,7 +128,7 @@ const paymentsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         });
         return reply.send(result);
       } catch (error) {
-        return sendError(reply, error, "Failed to load payment provider configs");
+        return sendSettingsError(reply, error);
       }
     },
   );
@@ -131,7 +145,7 @@ const paymentsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         });
         return reply.code(201).send(result);
       } catch (error) {
-        return sendError(reply, error, "Failed to save payment provider config");
+        return sendSettingsError(reply, error);
       }
     },
   );
@@ -167,7 +181,7 @@ const paymentsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         });
         return reply.send(result);
       } catch (error) {
-        return sendError(reply, error, "Failed to update payment provider config");
+        return sendSettingsError(reply, error);
       }
     },
   );
@@ -181,7 +195,7 @@ const paymentsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         const result = await testProviderConfigForActor({ user: request.user!, id: params.id });
         return reply.send(result);
       } catch (error) {
-        return sendError(reply, error, "Failed to validate payment provider config");
+        return sendSettingsError(reply, error);
       }
     },
   );
