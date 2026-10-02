@@ -328,10 +328,10 @@ it("webhook native pool lock deadline releases the transaction and permits subse
 it("routing inventory PostgreSQL isolates selected companies and excludes foreign provider/template graphs from counts",async()=>{
  const own=await mockPrisma.carrierRoutingRule.create({data:{companyId:providers[0].companyId,providerId:providers[0].id,name:"Synthetic owned",conditionsJson:{private:"SENSITIVE-CANARY"}}});
  for(let i=1;i<providers.length;i++)await mockPrisma.carrierRoutingRule.create({data:{companyId:providers[i].companyId,providerId:providers[i].id,name:"Synthetic other"}});
- await mockPrisma.carrierRoutingRule.create({data:{companyId:providers[0].companyId,providerId:providers[1].id,name:"Invalid primary"}});
- await mockPrisma.carrierRoutingRule.create({data:{companyId:providers[0].companyId,providerId:providers[0].id,fallbackProviderId:providers[2].id,name:"Invalid fallback"}});
+ await expect(mockPrisma.carrierRoutingRule.create({data:{companyId:providers[0].companyId,providerId:providers[1].id,name:"Invalid primary"}})).rejects.toMatchObject({code:"P2003"});
+ await expect(mockPrisma.carrierRoutingRule.create({data:{companyId:providers[0].companyId,providerId:providers[0].id,fallbackProviderId:providers[2].id,name:"Invalid fallback"}})).rejects.toMatchObject({code:"P2003"});
  const foreign=await mockPrisma.routeTemplate.create({data:{companyId:providers[2].companyId,name:"Synthetic foreign"}});
- await mockPrisma.carrierRoutingRule.create({data:{companyId:providers[0].companyId,providerId:providers[0].id,routeTemplateId:foreign.id,name:"Invalid template"}});
+ await expect(mockPrisma.carrierRoutingRule.create({data:{companyId:providers[0].companyId,providerId:providers[0].id,routeTemplateId:foreign.id,name:"Invalid template"}})).rejects.toMatchObject({code:"P2003"});
  const before=await snapshot(),rules=await mockPrisma.carrierRoutingRule.findMany({orderBy:{id:"asc"}});
  for(let i=0;i<memberships.length;i++){const result:any=await routingInventory({user:actor(memberships[i]),filters:{limit:10}});expect(result.total).toBe(1);expect(result.data).toHaveLength(1);expect(result.data.every((r:any)=>r.companyId===memberships[i].companyId)).toBe(true);expect(JSON.stringify(result)).not.toContain("SENSITIVE-CANARY");}
  const cursor:any=await routingInventory({user:actor(memberships[0]),filters:{limit:1,cursor:own.id}});expect(cursor.data).toHaveLength(0);expect(cursor.total).toBe(1);
@@ -341,10 +341,89 @@ it("routing inventory PostgreSQL isolates selected companies and excludes foreig
 it("routing inventory PostgreSQL rejects mismatched template children from list/count and missing scope without writes",async()=>{
  const p=providers[0],template=await mockPrisma.routeTemplate.create({data:{companyId:p.companyId,name:"Synthetic template"}}),other=await mockPrisma.routeTemplate.create({data:{companyId:p.companyId,name:"Synthetic second"}});
  const leg=await mockPrisma.routeTemplateLeg.create({data:{routeTemplateId:other.id,sequence:1,legCode:"synthetic"}});
- const invalid=await mockPrisma.carrierRoutingRule.create({data:{companyId:p.companyId,providerId:p.id,name:"Wrong template child",routeTemplateId:template.id,routeTemplateLegId:leg.id}});
+ await expect(mockPrisma.carrierRoutingRule.create({data:{companyId:p.companyId,providerId:p.id,name:"Wrong template child",routeTemplateId:template.id,routeTemplateLegId:leg.id}})).rejects.toMatchObject({code:"P2003"});
  const before=await snapshot(),rules=await mockPrisma.carrierRoutingRule.findMany({orderBy:{id:"asc"}});
- const result:any=await routingInventory({user:actor(memberships[0]),filters:{limit:10}});expect(result.total).toBe(1);expect(result.data.map((r:any)=>r.id)).not.toContain(invalid.id);
+ const result:any=await routingInventory({user:actor(memberships[0]),filters:{limit:10}});expect(result.total).toBe(1);expect(result.data.every((r:any)=>r.name!=="Wrong template child")).toBe(true);
  const scopes=await mockPrisma.membershipScope.findMany({where:{membershipId:memberships[0].id}});await mockPrisma.membershipScope.deleteMany({where:{membershipId:memberships[0].id}});
  try{await expect(routingInventory({user:actor(memberships[0])})).rejects.toMatchObject({statusCode:403});}finally{await mockPrisma.membershipScope.createMany({data:scopes});}
  expect(await snapshot()).toEqual(before);expect(await mockPrisma.carrierRoutingRule.findMany({orderBy:{id:"asc"}})).toEqual(rules);
+});
+
+async function routingSnapshot() {
+  return { business: await snapshot(), rules: await mockPrisma.carrierRoutingRule.findMany({orderBy:{id:"asc"}}),
+    templates: await mockPrisma.routeTemplate.findMany({orderBy:{id:"asc"}}),
+    legs: await mockPrisma.routeTemplateLeg.findMany({orderBy:{id:"asc"}}) };
+}
+async function routingGraph(companyIndex = 0) {
+  const p = providers[companyIndex];
+  const template = await mockPrisma.routeTemplate.create({data:{companyId:p.companyId,name:"Synthetic compound template"}});
+  const leg = await mockPrisma.routeTemplateLeg.create({data:{routeTemplateId:template.id,sequence:1,legCode:"synthetic"}});
+  return {template,leg,p};
+}
+it("routing compound accepts optional and complete same-company graphs across separate legal entities",async()=>{
+  expect(memberships[0].tenantId).toBe(memberships[1].tenantId);
+  expect(memberships[0].tenantId).not.toBe(memberships[2].tenantId);
+  for(let i=0;i<providers.length;i++) {
+    const {p,template,leg}=await routingGraph(i);
+    for(const refs of [{},{routeTemplateId:template.id},{routeTemplateId:template.id,routeTemplateLegId:leg.id,fallbackProviderId:p.id}]) {
+      const rule=await mockPrisma.carrierRoutingRule.create({data:{companyId:p.companyId,providerId:p.id,name:"Synthetic valid",...refs}});
+      await expect(mockPrisma.carrierRoutingRule.update({where:{id:rule.id},data:{priority:1}})).resolves.toMatchObject({priority:1});
+    }
+  }
+});
+it("routing compound rejects foreign company/tenant inserts and updates without business effects",async()=>{
+  const own=await routingGraph(),foreign=[await routingGraph(1),await routingGraph(2)];
+  const rule=await mockPrisma.carrierRoutingRule.create({data:{companyId:own.p.companyId,providerId:own.p.id,name:"Synthetic unchanged",routeTemplateId:own.template.id,routeTemplateLegId:own.leg.id}});
+  const before=await routingSnapshot();
+  for(const f of foreign) for(const change of [{providerId:f.p.id},{fallbackProviderId:f.p.id},{routeTemplateId:f.template.id},{routeTemplateLegId:f.leg.id},{companyId:f.p.companyId}]) {
+    await expect(mockPrisma.carrierRoutingRule.create({data:{companyId:own.p.companyId,providerId:own.p.id,name:"Synthetic denied",routeTemplateId:own.template.id,routeTemplateLegId:own.leg.id,...change}})).rejects.toMatchObject({code:"P2003"});
+    await expect(mockPrisma.carrierRoutingRule.update({where:{id:rule.id},data:change})).rejects.toMatchObject({code:"P2003"});
+    expect(await routingSnapshot()).toEqual(before);
+  }
+});
+it("routing compound rejects wrong same-company template child and partial template bridges",async()=>{
+  const a=await routingGraph(),b=await routingGraph();
+  await mockPrisma.routeTemplateLeg.update({where:{id:b.leg.id},data:{sequence:2,legCode:"other"}});
+  const rule=await mockPrisma.carrierRoutingRule.create({data:{companyId:a.p.companyId,providerId:a.p.id,name:"Synthetic complete",routeTemplateId:a.template.id,routeTemplateLegId:a.leg.id}});
+  const before=await routingSnapshot();
+  for(const change of [{routeTemplateId:b.template.id,routeTemplateLegId:a.leg.id},{routeTemplateId:null,routeTemplateLegId:a.leg.id}]) {
+    await expect(mockPrisma.carrierRoutingRule.create({data:{companyId:a.p.companyId,providerId:a.p.id,name:"Synthetic denied",...change}})).rejects.toThrow();
+    await expect(mockPrisma.carrierRoutingRule.update({where:{id:rule.id},data:change})).rejects.toThrow();
+    expect(await routingSnapshot()).toEqual(before);
+  }
+  await expect(mockPrisma.routeTemplateLeg.update({where:{id:a.leg.id},data:{routeTemplateId:b.template.id}})).rejects.toMatchObject({code:"P2003"});
+  expect(await routingSnapshot()).toEqual(before);
+});
+it("routing compound transaction rejection rolls back preceding changes and leaves outbox/audit untouched",async()=>{
+  const a=await routingGraph(),b=await routingGraph(1);
+  const before=await routingSnapshot();
+  await expect(mockPrisma.$transaction(async tx=>{
+    await tx.routeTemplate.update({where:{id:a.template.id},data:{name:"Must roll back"}});
+    await tx.carrierRoutingRule.create({data:{companyId:a.p.companyId,providerId:b.p.id,name:"Synthetic denied"}});
+  },{maxWait:2000,timeout:5000})).rejects.toMatchObject({code:"P2003"});
+  expect(await routingSnapshot()).toEqual(before);
+});
+it("routing compound concurrent leg reparent versus rule insertion cannot commit a mismatched graph",async()=>{
+  const a=await routingGraph(),b=await routingGraph(),ruleId=randomUUID();
+  await mockPrisma.routeTemplateLeg.update({where:{id:b.leg.id},data:{sequence:2,legCode:"other"}});
+  const effects=await snapshot();
+  const outcomes=await Promise.allSettled([
+    mockPrisma.carrierRoutingRule.create({data:{id:ruleId,companyId:a.p.companyId,providerId:a.p.id,name:"Synthetic race",routeTemplateId:a.template.id,routeTemplateLegId:a.leg.id}}),
+    mockPrisma.routeTemplateLeg.update({where:{id:a.leg.id},data:{routeTemplateId:b.template.id}})
+  ]);
+  expect(outcomes.filter(r=>r.status==="fulfilled")).toHaveLength(1);
+  const failed=outcomes.find(r=>r.status==="rejected") as PromiseRejectedResult;
+  expect(failed.reason).toMatchObject({code:"P2003"});
+  const rule=await mockPrisma.carrierRoutingRule.findUnique({where:{id:ruleId}}),leg=await mockPrisma.routeTemplateLeg.findUniqueOrThrow({where:{id:a.leg.id}});
+  if(rule) expect(rule.routeTemplateId).toBe(leg.routeTemplateId);
+  else expect(leg.routeTemplateId).toBe(b.template.id);
+  expect(await snapshot()).toEqual(effects);
+});
+it("routing compound catalog preserves expansion status and reuses pre-existing parent targets",async()=>{
+  const result=await pool.query("SELECT conname,convalidated,pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conname = ANY($1::text[])",[[
+    "CarrierRoutingRule_provider_company_fkey","CarrierRoutingRule_fallback_company_fkey","CarrierRoutingRule_template_company_fkey","CarrierRoutingRule_template_leg_fkey","CarrierRoutingRule_template_complete_check"]]);
+  expect(result.rows).toHaveLength(5);expect(result.rows.every(r=>!r.convalidated)).toBe(true);
+  expect(result.rows.find(r=>r.conname==="CarrierRoutingRule_template_leg_fkey").definition).toMatch(/FOREIGN KEY \("routeTemplateId", "routeTemplateLegId"\).*REFERENCES "RouteTemplateLeg"\("routeTemplateId", id\)/);
+  const targets=await pool.query("SELECT indexname FROM pg_indexes WHERE indexname=ANY($1::text[])",[["IntegrationProvider_id_companyId_key","RouteTemplate_company_identity_key","RouteTemplateLeg_template_identity_key"]]);
+  expect(targets.rows).toHaveLength(3);
 });

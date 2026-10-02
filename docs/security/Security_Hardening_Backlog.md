@@ -1,6 +1,42 @@
 # CargoPilot security hardening backlog
 
 ## Current state / resume
+Current continuation: compound routing ownership expansion verified: 90 migrations; 8 distinct PostgreSQL scenarios (initial 6 pass/2 fixture collisions, corrected only those 2 and both passed), 76 affected mock/HTTP cases and no-emit passed. Both uniquely labeled tmpfs instances ownership-verified removed. Reuses existing provider/company and template/company targets; adds one template-leg target, four NOT VALID compound FKs and leg/template completeness check. Public configuration mutations remain contained. Next independent task: route-template fresh selected context and mutation containment, then automatic selector context/ownership proof. No historical certification, policy invention or workflow restoration claim.
+Saved session-capacity handoff2026-10-02: actual HEAD 03c23d4c735352613b1166f9840bd3f189924895, branch cargopilot/erp-foundation; index empty. Four coherent reviewed local checkpoints since a75d1be:ed692b4786e19d6d97c896b358ee9b0839484927 (12files, atomic normalized ingress/new compound FK/check),c7eab9cbeca027cf3242561eebee9e899931658f (14files, generic HMAC native bounds),d9047f03078be9e099c3b1900f09ffb5016171f0 (7files, scoped routing inventory/read-only snapshot),03c23d4c735352613b1166f9840bd3f189924895 (6files, routing mutation entry containment). Exact staged manifests/manual review/whitespace/credential-pattern checks passed with explicit native exit guards. None pushed. All implementation/tests/migration/reports committed; only this newly saved backlog note and preserved pre-existing dist scope dirty. No compound-routing migration/journal/secret-pointer/template/automatic-selector edits started.
+
+Current evidence:104affected ingress mocks/HTTP/offline HMAC plus8affected correction reruns;84affected admission mocks/HTTP;27distinct routing inventory unit/HTTP across correction runs;46latest routing entry/inventory/HTTP cases (15new mutation/4newHTTP/27affected), final no-emit passed. Actual21distinct combined source/ingress/native pool/routing cases at89migrations across scoped runs, not sum of reruns. Ingress clone failures and snapshot enum compile failures corrected without weakening assertions; failed runs and cleanup explicitly recorded in reports. New native runs:0aeeb9cb7efc14passes/3failures;53232940372e3affected passes;1f25b7e37ff35passes(3rerun/2new);8f9dc04136a50assertions due compile;9f54066c43fe2new routing passes. Each fullchain/owned cached-image --pull never loopback synthetic/tmpfs resource removed after identity/label/no-bind/no-volume check; filtered absence verified. Offline Prisma validate/ignored client generation passed after optional-relation correction; later schema unchanged. Scoped inventory and automatic selector bodies compared unchanged for last checkpoint, native read evidence reused; mutation denials introduce no database transaction/schema changes. No real provider/Redis/S3/device/blackhole/distributed fairness/historical certification. No production readiness claim.
+
+Exact next executable task: compound carrier-routing configuration ownership constraints and matching guarded service source proof. Current PostgreSQL accepts rule company linked to another company's provider/fallback/template and mismatched template leg; preceding native tests demonstrate these rows are hidden by inventory, not prevented at database writes. Public routing/provider mutations are contained409, not restored. Inspect only actual model/relations and automatic booking/template consumers. Reuse IntegrationProvider(id,companyId) and RouteTemplate(companyId,id), add suitable RouteTemplateLeg(templateId,id) target, new additive NOT VALID rule compound FKs/completeness checks for populated references. Preserve optional relationships intentionally; document null combinations/legacy uncertified rows, do not infer/backfill or edit historical migrations. Test positive links, same-tenant other-company/cross-tenant inserts and updates, partial references, rollback/no business effects using one new owned disposable PostgreSQL fullchain. Keep current writer containment until durable immutable configuration-version/action journal/controlled retirement is implemented. Then secret pointer/version concurrency, scoped route-template/automatic selector and other finite ready tasks remain; no all-task blocker. Finance acceptance/accounting/FX/checker/cancellation/recovery questions and prior nullable/history/RLS/infrastructure gates remain consolidated; clients deferred. Continue standing authorization without renewed prompt/permission or repeated unchanged audit/suites.
+
+Exact dirty scope before this saved note (afterward additionally M docs/security/Security_Hardening_Backlog.md):
+```text
+ M dist/src/config/redis.js
+ M dist/src/index.js
+ M dist/src/modules/identity-access/permission-registry.js
+ M dist/src/modules/invoice-core/application/invoiceRepo.js
+ M dist/src/modules/invoice-core/transport/fastify-routes.js
+ M dist/src/modules/orders-core/cash/collection.service.js
+ M dist/src/modules/orders-core/write/create-order.js
+ M dist/src/modules/orders-core/write/delete-order.js
+ M dist/src/modules/orders-legs/pricing.js
+ M dist/src/modules/payments-core/application/paymentsService.js
+ M dist/src/modules/payments-core/infrastructure/providers/clickAdapter.js
+ M dist/src/modules/payments-core/infrastructure/providers/stripeAdapter.js
+ M dist/src/modules/payments-core/shared/money.js
+ M dist/src/modules/payments-core/transport/fastify-routes.js
+ M dist/src/modules/support-core/application/supportService.js
+?? dist/src/modules/finance-core/
+?? dist/src/modules/integrations-core/application/finance-reference.service.js
+?? dist/src/modules/invoice-core/transport/validation.js
+?? dist/src/modules/orders-core/application/
+?? dist/src/modules/payments-core/application/finance-reference.service.js
+?? dist/src/modules/payments-core/domain/refunds.js
+?? dist/src/workers/finance-outbox.worker.js
+?? dist/src/workers/finance-posting.worker.js
+?? dist/tests/finance/
+?? dist/tests/payments/
+```
+
 Current continuation2026-10-02: inventory checkpoint d9047f03078be9e099c3b1900f09ffb5016171f0 (7exact reviewed files) completed.27distinct current inventory unit/HTTP cases;2native cases passed at89migrations in9f54066c43fe. Initial snapshot enum typing failure yielded0native cases in8f9dc04136a5, no assertions weakened; both owned instances removed after identity/label/tmpfs/no-bind/no-volume checks and absence. Final no-emit passed.
 
 Routing mutation entry containment now reviewed/tested: fresh exact routing.manage/company scope, selected owned id-only lookup,409 controlled config workflow before every business write/effect. Removed user-global/policy.override and id-only mutation implementation.46current focused cases (15new unit/4newHTTP/27affected), no-emit passed. Compared inventory body and automatic selector tail to d9047f0, unchanged;2native read cases reused. No new schema/transaction/native check. Mutations unavailable, not restored. See Integration_Routing_Mutation_Containment.md.
@@ -153,8 +189,9 @@ This is the current mission checklist; older next-task/handoff prose below is hi
 | Integration ingress duplicate acknowledgement | implemented/tested containment | Verified exact raw/current tuple and complete normalized/pending presence;17newmocked/4newHTTP/2new PostgreSQL at88migrations. Partial persistence503 is contained, not atomic recovery/restoration. |
 | Generic integration webhook admission / deadlines | implemented/tested / infrastructure verification outstanding | Eight fail-fast process permits held until underlying settlement, explicit1MiB body bound, dedicated native pool/deadlines and close hook.84affected mocks/HTTP and2new PostgreSQL timeout/rollback/recovery cases at89migrations; blackholes/replicas/distributed fairness unverified. See Integration_Webhook_Admission.md. |
 | Normalized webhook ownership / atomic ingress persistence | implemented/tested / historical verification outstanding | Gateway-only evidence, locked current configured ownership, atomic raw/normalized/pending transaction and source serialization; new/changed normalized compound references constrained.17distinct native cases at89migrations across affected runs. Historical incomplete receipts remain503 without repair/replay; real-provider execution/recovery not restored. See Integration_Atomic_Webhook_Ingress.md. |
-| Carrier routing mutation entry | implemented/tested containment | Fresh selected routing.manage/company scope/id-only owned lookup then409 before every write/effect.15new mutation unit/4newHTTP cases; version/action/compound graph/retirement restoration technically unfinished, not restored. See Integration_Routing_Mutation_Containment.md. |
+| Carrier routing mutation entry | implemented/tested containment | Fresh selected routing.manage/company scope/id-only owned lookup then409 before every write/effect.15new mutation unit/4newHTTP cases; version/action/retirement restoration technically unfinished; compound graph expansion separately tracked, not restored. See Integration_Routing_Mutation_Containment.md. |
 | Carrier routing inventory | implemented/tested | Fresh selected routing.read/company scope, repeated active owner/reference graph, bounded eligible-ID assessment and read-only snapshot counts/cursors/projections. Mutations/template/automatic selector remain unfinished. See Integration_Routing_Read_Containment.md. |
+| Carrier routing compound graph | implemented/tested | Primary/fallback company, template company and template-child FK equality plus completeness; optional absent references retained. NOT VALID historical certification unresolved. See Integration_Routing_Ownership.md. |
 | Manual outbox replay / retry-now | implemented/tested containment | Fresh selected permission/scope/id-only lookup;409 accepted recovery requirement before random key/lease/write/effect.17mocked/2newHTTP cases; manual recovery remains unavailable, not restored. Automatic retry unchanged. |
 | Dispatch / analytics / live-map / caches / remaining workers | technically unfinished | One finite inventory of actual entry points and source-owned context needed; scoped queries/events/jobs/files and no generic worker bypass. Existing covered workers remain complete only for their reported capabilities. |
 | Durable order/import identity/recovery | technically unfinished | Server-normalized immutable selected intent, unique receipt/atomic retries and conflict/no-effects; preserve partial import success and uncertain external recovery containment. |
