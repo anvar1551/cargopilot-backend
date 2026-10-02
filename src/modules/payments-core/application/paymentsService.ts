@@ -1,3 +1,5 @@
+import { paymentAccess, ownedPaymentIntent, refundOwnership, paymentIntentReadSelect } from "./payment-access";
+import { authorityError } from "../../orders-core/domain/creation-authority";
 import { paymentWebhookMetadata } from "../../../utils/webhookMetadata";
 import { lockOnlineCashReconciliation } from "../../orders-core/cash/cash-authority";
 import { createAuthorizedPayment } from "./payment-creation";
@@ -38,11 +40,6 @@ import {
 } from "../../support-core/application/autoTriage";
 import { enqueueCargoPilotDomainEventTx } from "../../analytics-core/infrastructure/analyticsOutbox";
 import { minorToMajorString } from "../shared/money";
-import {
-  mapProviderRefundStatus,
-  paymentStatusAfterSuccessfulRefund,
-  resolveRefundAmount,
-} from "../domain/refunds";
 
 type AuthUser = AppUser;
 type PaymentProviderTransition = {
@@ -1067,205 +1064,26 @@ async function applyPaymentIntentProviderStatus(
 }
 
 export async function getPaymentIntentForActor(args: { user: AuthUser; id: string }) {
-  await authorize(args.user, "payments.intents.read");
-
-  const intent = await prisma.paymentIntent.findUnique({
-    where: { id: args.id },
-    include: {
-      attempts: {
-        orderBy: { createdAt: "desc" },
-        take: 10,
-      },
-      providerConfig: {
-        select: {
-          id: true,
-          provider: true,
-          environment: true,
-          merchantId: true,
-          serviceId: true,
-          accountId: true,
-          secretMasked: true,
-          callbackPath: true,
-        },
-      },
-    },
-  });
-
-  if (!intent) {
-    const err = new Error("Payment intent not found") as Error & { statusCode: number };
-    err.statusCode = 404;
-    throw err;
-  }
-
-  await assertCompanyAccess({
-    user: args.user,
-    companyId: intent.companyId,
-    permission: "payments.intents.read",
-  });
-
-  return {
-    ...intent,
-    amountMinor: intent.amountMinor.toString(),
-    statusCanonical: toCanonicalStatus(intent.status),
-  };
+  const {access,intent}=await ownedPaymentIntent(args.user,args.id);
+  const attempts=await prisma.paymentAttempt.findMany({where:{paymentIntentId:intent.id,paymentIntent:{is:access.where}},orderBy:{createdAt:"desc"},take:10,
+    select:{id:true,provider:true,status:true,createdAt:true,updatedAt:true}});
+  return publicPaymentIntentPayload(intent,{attempts});
 }
 
-export async function listOrderPaymentIntentsForActor(args: {
-  user: AuthUser;
-  orderId: string;
-}) {
-  await authorize(args.user, "payments.intents.read");
-
-  const order = await prisma.order.findUnique({
-    where: { id: args.orderId },
-    select: {
-      id: true,
-      ownerOrgId: true,
-    },
-  });
-
-  if (!order) {
-    const err = new Error("Order not found") as Error & { statusCode: number };
-    err.statusCode = 404;
-    throw err;
-  }
-
-  const companyId = order.ownerOrgId;
-  if (!companyId) {
-    const err = new Error("Order does not have a company scope") as Error & {
-      statusCode: number;
-    };
-    err.statusCode = 400;
-    throw err;
-  }
-
-  await assertCompanyAccess({
-    user: args.user,
-    companyId,
-    permission: "payments.intents.read",
-  });
-
-  const intents = await prisma.paymentIntent.findMany({
-    where: {
-      orderId: order.id,
-      companyId,
-    },
-    orderBy: { createdAt: "desc" },
-    take: 10,
-    select: {
-      id: true,
-      orderId: true,
-      companyId: true,
-      provider: true,
-      providerConfigId: true,
-      environment: true,
-      amountMinor: true,
-      currency: true,
-      status: true,
-      providerPaymentId: true,
-      providerInvoiceId: true,
-      providerCheckoutUrl: true,
-      idempotencyKey: true,
-      createdAt: true,
-      updatedAt: true,
-    },
-  });
-
-  return {
-    items: intents.map((intent) => publicPaymentIntentPayload(intent)),
-  };
+export async function listOrderPaymentIntentsForActor(args: { user: AuthUser; orderId: string }) {
+  if(typeof args.orderId!=="string" || !args.orderId.trim())throw authorityError("Order ID required",400);
+  const access=await paymentAccess(args.user);
+  const order=await prisma.order.findFirst({where:{AND:[access.parent,{id:args.orderId}]},select:{id:true}});
+  if(!order)throw authorityError("Order not found",404);
+  const intents=await prisma.paymentIntent.findMany({where:{AND:[access.where,{orderId:order.id}]},orderBy:{createdAt:"desc"},take:10,select:paymentIntentReadSelect});
+  return {items:intents.map(intent=>publicPaymentIntentPayload(intent))};
 }
 
-export async function syncPaymentIntentForActor(args: { user: AuthUser; id: string }) {
-  await authorize(args.user, "payments.intents.read");
-
-  const intent = await prisma.paymentIntent.findUnique({
-    where: { id: args.id },
-    include: {
-      providerConfig: true,
-    },
-  });
-
-  if (!intent) {
-    const err = new Error("Payment intent not found") as Error & { statusCode: number };
-    err.statusCode = 404;
-    throw err;
-  }
-
-  await assertCompanyAccess({
-    user: args.user,
-    companyId: intent.companyId,
-    permission: "payments.intents.read",
-  });
-
-  const resolvedConfig = toResolvedProviderConfig({
-    id: intent.providerConfig.id,
-    companyId: intent.providerConfig.companyId,
-    provider: intent.providerConfig.provider,
-    environment: intent.providerConfig.environment,
-    merchantId: intent.providerConfig.merchantId,
-    serviceId: intent.providerConfig.serviceId,
-    accountId: intent.providerConfig.accountId,
-    isEnabled: intent.providerConfig.isEnabled,
-    secretEncrypted: intent.providerConfig.secretEncrypted,
-  });
-
-  if (!resolvedConfig.isEnabled) {
-    const err = new Error("Payment provider config is disabled") as Error & {
-      statusCode: number;
-    };
-    err.statusCode = 409;
-    throw err;
-  }
-
-  const adapter = getPaymentProviderAdapter(intent.provider);
-  const providerStatus = await adapter.getStatus({
-    config: resolvedConfig,
-    intent,
-  });
-  const nextStatus = canonicalToIntentStatus(providerStatus.status) ?? intent.status;
-
-  const transition = await prisma.$transaction((tx) =>
-    applyPaymentIntentProviderStatus(tx, {
-      intentId: intent.id,
-      provider: intent.provider,
-      status: nextStatus,
-      providerPaymentId: providerStatus.providerPaymentId,
-      providerInvoiceId: providerStatus.providerInvoiceId,
-      checkoutUrl: providerStatus.checkoutUrl,
-      requestJson: {
-        source: "manual_provider_status_sync",
-        provider: intent.provider,
-      } as Prisma.InputJsonValue,
-      responseJson: (providerStatus.rawResponse ?? null) as Prisma.InputJsonValue,
-      actorId: args.user.id,
-    }),
-  );
-
-  if (
-    transition.status === PaymentIntentStatus.FAILED ||
-    transition.status === PaymentIntentStatus.CANCELED
-  ) {
-    void createPaymentFailureSupportTicket({
-      orderId: transition.orderId,
-      companyId: transition.companyId,
-      paymentIntentId: transition.id,
-      provider: transition.provider,
-      environment: transition.environment,
-      status: transition.status,
-      reason: "Manual provider status sync returned a failed payment state",
-    }).catch(() => undefined);
-  }
-
-  const refreshed = await prisma.paymentIntent.findUniqueOrThrow({
-    where: { id: intent.id },
-  });
-
-  return {
-    paymentIntent: publicPaymentIntentPayload(refreshed),
-    providerStatus: providerStatus.status,
-    providerResponse: providerStatus.rawResponse ?? null,
-  };
+export async function syncPaymentIntentForActor(args: { user: AuthUser; id: string }): Promise<never> {
+  await ownedPaymentIntent(args.user,args.id);
+  // A read grant cannot authorize a financial transition. Provider getStatus does
+  // not currently establish exact amount/currency or durable reconciliation authority.
+  throw Object.assign(authorityError("Payment status synchronization requires verified reconciliation authority",409),{code:"PAYMENT_STATUS_AUTHORITY_REQUIRED"});
 }
 
 export async function retryOrderPaymentForActor(args: {
@@ -1277,348 +1095,14 @@ export async function retryOrderPaymentForActor(args: {
   return createPaymentIntentForActor({ user, input });
 }
 
-export async function createRefundForActor(_args: {
-  user: AuthUser;
-  companyId: string;
-  paymentIntentId: string;
-  amountMinor?: bigint;
-  reason?: string;
-  idempotencyKey: string;
-}) {
-  const args = _args;
-  await assertCompanyAccess({
-    user: args.user,
-    companyId: args.companyId,
-    permission: "finance.refund",
-  });
-
-  const intent = await prisma.paymentIntent.findUnique({
-    where: { id: args.paymentIntentId },
-    include: {
-      providerConfig: true,
-      order: { select: { customerEntityId: true } },
-      refunds: {
-        where: { status: PaymentRefundStatus.succeeded },
-        select: { amountMinor: true },
-      },
-    },
-  });
-  if (!intent) {
-    const err = new Error("Payment intent not found") as Error & { statusCode: number };
-    err.statusCode = 404;
-    throw err;
-  }
-  if (intent.companyId !== args.companyId) {
-    const err = new Error("Payment intent does not belong to this company") as Error & {
-      statusCode: number;
-    };
-    err.statusCode = 403;
-    throw err;
-  }
-
-  const existing = await prisma.paymentRefund.findUnique({
-    where: {
-      companyId_idempotencyKey: {
-        companyId: args.companyId,
-        idempotencyKey: args.idempotencyKey,
-      },
-    },
-  });
-  if (existing) {
-    if (existing.paymentIntentId !== intent.id ||
-      (args.amountMinor !== undefined && existing.amountMinor !== args.amountMinor)) {
-      const err = new Error("Refund idempotency key was already used for another request") as Error & {
-        statusCode: number;
-      };
-      err.statusCode = 409;
-      throw err;
-    }
-    return publicPaymentRefundPayload(existing);
-  }
-
-  if (
-    intent.status !== PaymentIntentStatus.SUCCEEDED &&
-    intent.status !== PaymentIntentStatus.PARTIALLY_REFUNDED
-  ) {
-    const err = new Error("Only a confirmed payment can be refunded") as Error & {
-      statusCode: number;
-    };
-    err.statusCode = 409;
-    throw err;
-  }
-  if (!intent.providerConfig.isEnabled) {
-    const err = new Error("Payment provider config is disabled") as Error & {
-      statusCode: number;
-    };
-    err.statusCode = 409;
-    throw err;
-  }
-
-  let requestedAmountMinor: bigint;
-  try {
-    requestedAmountMinor = resolveRefundAmount({
-      paidAmountMinor: intent.amountMinor,
-      reservedRefundAmountsMinor: intent.refunds.map((refund) => refund.amountMinor),
-      requestedAmountMinor: args.amountMinor,
-    }).amountMinor;
-  } catch {
-    const err = new Error("Refund amount exceeds the remaining refundable amount") as Error & {
-      statusCode: number;
-    };
-    err.statusCode = 400;
-    throw err;
-  }
-
-  let refund;
-  try {
-    refund = await prisma.$transaction(async (tx) => {
-      await tx.$queryRaw(
-        Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${intent.id}, 0))`,
-      );
-
-      const raced = await tx.paymentRefund.findUnique({
-        where: {
-          companyId_idempotencyKey: {
-            companyId: args.companyId,
-            idempotencyKey: args.idempotencyKey,
-          },
-        },
-      });
-      if (raced) {
-        if (
-          raced.paymentIntentId !== intent.id ||
-          raced.amountMinor !== requestedAmountMinor
-        ) {
-          throw Object.assign(
-            new Error("Refund idempotency key was already used for another request"),
-            { statusCode: 409 },
-          );
-        }
-        return raced;
-      }
-
-      const reserved = await tx.paymentRefund.findMany({
-        where: {
-          paymentIntentId: intent.id,
-          status: {
-            in: [
-              PaymentRefundStatus.requested,
-              PaymentRefundStatus.processing,
-              PaymentRefundStatus.succeeded,
-            ],
-          },
-        },
-        select: { amountMinor: true },
-      });
-      const amountMinor = resolveRefundAmount({
-        paidAmountMinor: intent.amountMinor,
-        reservedRefundAmountsMinor: reserved.map((item) => item.amountMinor),
-        requestedAmountMinor: args.amountMinor,
-      }).amountMinor;
-
-      return tx.paymentRefund.create({
-        data: {
-          companyId: args.companyId,
-          paymentIntentId: intent.id,
-          orderId: intent.orderId,
-          provider: intent.provider,
-          environment: intent.environment,
-          amountMinor,
-          currency: intent.currency,
-          status: PaymentRefundStatus.requested,
-          reason: normalizedOrNull(args.reason),
-          idempotencyKey: args.idempotencyKey,
-          requestedByUserId: args.user.id,
-        },
-      });
-    });
-  } catch (error) {
-    if (error instanceof RangeError) {
-      const err = new Error("Refund amount exceeds the remaining refundable amount") as Error & {
-        statusCode: number;
-      };
-      err.statusCode = 400;
-      throw err;
-    }
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-      const raced = await prisma.paymentRefund.findUnique({
-        where: {
-          companyId_idempotencyKey: {
-            companyId: args.companyId,
-            idempotencyKey: args.idempotencyKey,
-          },
-        },
-      });
-      if (raced) {
-        if (
-          raced.paymentIntentId !== intent.id ||
-          raced.amountMinor !== requestedAmountMinor
-        ) {
-          const err = new Error(
-            "Refund idempotency key was already used for another request",
-          ) as Error & { statusCode: number };
-          err.statusCode = 409;
-          throw err;
-        }
-        return publicPaymentRefundPayload(raced);
-      }
-    }
-    throw error;
-  }
-
-  const adapter = getPaymentProviderAdapter(intent.provider);
-  const amountMinor = refund.amountMinor;
-  let providerResult;
-  try {
-    providerResult = await adapter.refund({
-      config: toResolvedProviderConfig({
-        id: intent.providerConfig.id,
-        companyId: intent.providerConfig.companyId,
-        provider: intent.providerConfig.provider,
-        environment: intent.providerConfig.environment,
-        merchantId: intent.providerConfig.merchantId,
-        serviceId: intent.providerConfig.serviceId,
-        accountId: intent.providerConfig.accountId,
-        isEnabled: intent.providerConfig.isEnabled,
-        secretEncrypted: intent.providerConfig.secretEncrypted,
-      }),
-      intent,
-      amountMinor,
-      reason: args.reason,
-      idempotencyKey: args.idempotencyKey,
-    });
-  } catch (error) {
-    const failureMessage = error instanceof Error ? error.message : "Payment provider refund failed";
-    const failed = await prisma.paymentRefund.update({
-      where: { id: refund.id },
-      data: {
-        status: PaymentRefundStatus.failed,
-        failureCode: "PROVIDER_REQUEST_FAILED",
-        failureMessage,
-        completedAt: new Date(),
-      },
-    });
-    return publicPaymentRefundPayload(failed);
-  }
-
-  const nextRefundStatus = mapProviderRefundStatus(providerResult.status);
-  const providerResponse = providerResult.rawResponse == null
-    ? Prisma.JsonNull
-    : providerResult.rawResponse as Prisma.InputJsonValue;
-
-  const finalized = await prisma.$transaction(async (tx) => {
-    const updatedRefund = await tx.paymentRefund.update({
-      where: { id: refund.id },
-      data: {
-        status: nextRefundStatus,
-        providerRefundId: providerResult.providerRefundId ?? null,
-        providerResponseJson: providerResponse,
-        failureCode:
-          nextRefundStatus === PaymentRefundStatus.failed ? "PROVIDER_REFUND_REJECTED" : null,
-        failureMessage:
-          nextRefundStatus === PaymentRefundStatus.failed
-            ? "Provider did not confirm the refund"
-            : null,
-        completedAt:
-          nextRefundStatus === PaymentRefundStatus.succeeded ||
-          nextRefundStatus === PaymentRefundStatus.failed ||
-          nextRefundStatus === PaymentRefundStatus.cancelled
-            ? new Date()
-            : null,
-      },
-    });
-
-    if (nextRefundStatus !== PaymentRefundStatus.succeeded) return updatedRefund;
-
-    const successfulRefunds = await tx.paymentRefund.aggregate({
-      where: {
-        paymentIntentId: intent.id,
-        status: PaymentRefundStatus.succeeded,
-      },
-      _sum: { amountMinor: true },
-    });
-    const refundedTotal = successfulRefunds._sum.amountMinor ?? 0n;
-    const nextIntentStatus = paymentStatusAfterSuccessfulRefund(
-      intent.amountMinor,
-      refundedTotal,
-    );
-    await tx.paymentIntent.update({
-      where: { id: intent.id },
-      data: { status: nextIntentStatus },
-    });
-    await tx.order.update({
-      where: { id: intent.orderId },
-      data: { paymentState: mapIntentStatusToOrderPaymentState(nextIntentStatus) },
-    });
-    await tx.paymentLedgerEntry.create({
-      data: {
-        companyId: intent.companyId,
-        paymentIntentId: intent.id,
-        orderId: intent.orderId,
-        entryType: "refund",
-        amountMinor,
-        currency: intent.currency,
-        provider: intent.provider,
-        reference: providerResult.providerRefundId ?? updatedRefund.id,
-        occurredAt: updatedRefund.completedAt ?? new Date(),
-      },
-    });
-
-    const metadata = intent.metadataJson && typeof intent.metadataJson === "object"
-      ? intent.metadataJson as Record<string, unknown>
-      : {};
-    const occurredAt = updatedRefund.completedAt ?? new Date();
-    const sourceEventId = `refund:${updatedRefund.id}:succeeded`;
-    await enqueueCargoPilotDomainEventTx(tx, {
-      id: `finance:${sourceEventId}`,
-      type: "finance_source_event",
-      tenantScope: `company:${intent.companyId}`,
-      entityId: intent.orderId,
-      occurredAt: occurredAt.toISOString(),
-      payload: {
-        schemaVersion: 1,
-        sourceEventId,
-        companyId: intent.companyId,
-        sourceType: "refund",
-        eventType: "payment.refunded",
-        sourceId: updatedRefund.id,
-        actorUserId: args.user.id,
-        occurredAt: occurredAt.toISOString(),
-        documentDate: occurredAt.toISOString(),
-        postingDate: occurredAt.toISOString(),
-        currency: intent.currency,
-        fxRate:
-          typeof metadata.fxRate === "string" || typeof metadata.fxRate === "number"
-            ? String(metadata.fxRate)
-            : "1",
-        fxRateAsOf: typeof metadata.fxRateAsOf === "string" ? metadata.fxRateAsOf : null,
-        amounts: {
-          refund_amount: minorToMajorString(amountMinor, intent.currency),
-        },
-        dimensions: {
-          orderId: intent.orderId,
-          customerEntityId: intent.order.customerEntityId ?? undefined,
-        },
-        attributes: {
-          provider: intent.provider,
-          environment: intent.environment,
-          refundType: nextIntentStatus === PaymentIntentStatus.REFUNDED ? "full" : "partial",
-        },
-        description: `Payment refund confirmed for order ${intent.orderId}`,
-        metadata: {
-          paymentIntentId: intent.id,
-          paymentRefundId: updatedRefund.id,
-          providerRefundId: providerResult.providerRefundId ?? null,
-          reason: updatedRefund.reason,
-          baseCurrency: metadata.baseCurrency ?? null,
-        },
-      },
-    });
-
-    return updatedRefund;
-  });
-
-  return publicPaymentRefundPayload(finalized);
+export async function createRefundForActor(args: {
+  user: AuthUser; companyId: string; paymentIntentId: string; amountMinor?: bigint; reason?: string; idempotencyKey: string;
+}): Promise<never> {
+  if(args.companyId!==args.user?.companyId)throw authorityError("Refund company context rejected",403);
+  await ownedPaymentIntent(args.user,args.paymentIntentId,"finance.refund");
+  // No approved independent checker/immutable refund acceptance or safe uncertain
+  // provider recovery contract exists. Never reserve or dispatch unaccepted refunds.
+  throw Object.assign(authorityError("Refund execution requires independent durable approval",409),{code:"PAYMENT_REFUND_APPROVAL_REQUIRED"});
 }
 
 function publicPaymentRefundPayload(refund: {
@@ -1663,31 +1147,11 @@ function publicPaymentRefundPayload(refund: {
   };
 }
 
-export async function listPaymentRefundsForActor(args: {
-  user: AuthUser;
-  paymentIntentId: string;
-}) {
-  await authorize(args.user, "payments.intents.read");
-  const intent = await prisma.paymentIntent.findUnique({
-    where: { id: args.paymentIntentId },
-    select: { id: true, companyId: true },
-  });
-  if (!intent) {
-    const err = new Error("Payment intent not found") as Error & { statusCode: number };
-    err.statusCode = 404;
-    throw err;
-  }
-  await assertCompanyAccess({
-    user: args.user,
-    companyId: intent.companyId,
-    permission: "payments.intents.read",
-  });
-  const refunds = await prisma.paymentRefund.findMany({
-    where: { paymentIntentId: intent.id },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    take: 100,
-  });
-  return { items: refunds.map(publicPaymentRefundPayload) };
+export async function listPaymentRefundsForActor(args: { user: AuthUser; paymentIntentId: string }) {
+  const {access,intent}=await ownedPaymentIntent(args.user,args.paymentIntentId);
+  const refunds=await prisma.paymentRefund.findMany({where:refundOwnership(intent,access.where),orderBy:[{createdAt:"desc"},{id:"desc"}],take:100,
+    select:{id:true,companyId:true,paymentIntentId:true,orderId:true,provider:true,environment:true,amountMinor:true,currency:true,status:true,providerRefundId:true,reason:true,idempotencyKey:true,failureCode:true,requestedAt:true,completedAt:true,createdAt:true,updatedAt:true}});
+  return {items:refunds.map(refund=>publicPaymentRefundPayload({...refund,failureMessage:refund.status==="failed"?"Refund failed":null}))};
 }
 
 async function resolveWebhookContext(args: {
