@@ -1,3 +1,4 @@
+export { listIntegrationProvidersForActor } from "./provider-access";
 import { MembershipStatus } from "@prisma/client";
 import prisma from "../../../config/prismaClient";
 import { authorize, hasAnyPermissionSync } from "../../identity-access";
@@ -125,81 +126,6 @@ function mapProviderRow(row: any) {
     secretRef: row.secretRef ?? null,
     createdAt: toIso(row.createdAt),
     updatedAt: toIso(row.updatedAt),
-  };
-}
-
-export async function listIntegrationProvidersForActor(args: {
-  user: AuthUser;
-  companyId?: string;
-  domain?: IntegrationDomain;
-  status?: IntegrationProviderStatus;
-  environment?: IntegrationEnvironment;
-  providerCode?: string;
-  q?: string;
-  cursor?: string;
-  limit?: number;
-}) {
-  await authorize(args.user, "integration.provider.read");
-  const scopedIds = await listAccessibleCompanyIds(args.user);
-  const companyIdFilter = args.companyId?.trim() || undefined;
-  if (companyIdFilter) {
-    if (scopedIds !== null && !scopedIds.includes(companyIdFilter)) {
-      const err = new Error("Forbidden for this company") as Error & { statusCode: number };
-      err.statusCode = 403;
-      throw err;
-    }
-  }
-
-  if (scopedIds !== null && scopedIds.length === 0) {
-    return [] as ReturnType<typeof mapProviderRow>[];
-  }
-
-  const q = args.q?.trim();
-  const where = {
-    ...(companyIdFilter
-      ? { companyId: companyIdFilter }
-      : scopedIds === null
-        ? {}
-        : { companyId: { in: scopedIds } }),
-    ...(args.domain ? { domain: args.domain } : {}),
-    ...(args.status ? { status: args.status } : {}),
-    ...(args.environment ? { environment: args.environment } : {}),
-    ...(args.providerCode ? { providerCode: normalizeProviderCode(args.providerCode) } : {}),
-    ...(q
-      ? {
-          OR: [
-            { providerCode: { contains: q, mode: "insensitive" } },
-            { retryPolicyId: { contains: q, mode: "insensitive" } },
-          ],
-        }
-      : {}),
-  };
-  const limit = Math.min(Math.max(Number(args.limit ?? 0), 1), 100);
-  const usePagination = Boolean(args.limit);
-
-  const rows = await db.integrationProvider.findMany({
-    where,
-    orderBy: [{ companyId: "asc" }, { domain: "asc" }, { providerCode: "asc" }],
-    ...(usePagination
-      ? {
-          take: limit + 1,
-          ...(args.cursor ? { cursor: { id: args.cursor }, skip: 1 } : {}),
-        }
-      : {}),
-  });
-  if (!usePagination) return rows.map(mapProviderRow);
-
-  const pageRows = rows.slice(0, limit);
-  const hasNextPage = rows.length > limit;
-  const total = await db.integrationProvider.count({ where });
-  return {
-    data: pageRows.map(mapProviderRow),
-    total,
-    pageInfo: {
-      limit,
-      hasNextPage,
-      nextCursor: hasNextPage ? pageRows[pageRows.length - 1]?.id ?? null : null,
-    },
   };
 }
 

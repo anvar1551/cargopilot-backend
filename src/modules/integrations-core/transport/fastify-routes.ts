@@ -261,7 +261,13 @@ const integrationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         });
         return reply.send(result);
       } catch (error) {
-        return sendError(reply, error, "Failed to list integration providers");
+        if (error instanceof ZodError) return sendError(reply, error, "Invalid integration provider query");
+        const candidate = error as { statusCode?: number; status?: number };
+        const status = candidate?.statusCode ?? candidate?.status;
+        const safeStatus = status === 400 || status === 403 || status === 404 ? status : 500;
+        return reply.code(safeStatus).send({ error: safeStatus === 403 ? "Integration provider access denied"
+          : safeStatus === 404 ? "Integration provider cursor not found" : safeStatus === 400 ? "Invalid integration provider query"
+          : "Failed to list integration providers" });
       }
     },
   );
