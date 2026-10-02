@@ -1,5 +1,5 @@
 import type { AppUser } from "../../../types/app-user";
-import { requirePaymentRunMutation, requireBankAccountMutation, requireLegalEntityContext } from "./legal-entity-access";
+import { requireBankStatementMutation, requirePaymentRunMutation, requireBankAccountMutation, requireLegalEntityContext } from "./legal-entity-access";
 import { authoritativeDocumentHash } from "../domain/authoritative-documents";
 import { financeConflict } from "../domain/finance.errors";
 import {
@@ -111,7 +111,7 @@ export class FinanceTreasuryService {
     return this.repository.executePaymentRun(input, actor);
   }
 
-  createBankStatement(input: {
+  async createBankStatement(input: {
     companyId: string;
     actorUserId: string;
     bankAccountId: string;
@@ -124,7 +124,8 @@ export class FinanceTreasuryService {
     reportedClosingBalance: string;
     lines: BankStatementLineInput[];
     metadata?: Record<string, unknown>;
-  }) {
+  }, actor: AppUser) {
+    await requireBankStatementMutation(actor, input, "create");
     const statement = prepareBankStatement(input);
     return this.repository.createBankStatement({
       companyId: input.companyId,
@@ -140,43 +141,35 @@ export class FinanceTreasuryService {
       }),
       statement,
       metadata: input.metadata,
-    });
+    }, actor);
   }
 
-  listBankStatements(companyId: string, page: TreasuryPage) {
-    return this.repository.listBankStatements(companyId, page);
+  async listBankStatements(actor: AppUser, page: TreasuryPage) {
+    await requireLegalEntityContext(actor, "finance.bankReconciliation.read");
+    return this.repository.listBankStatements(actor, page);
   }
-
-  getBankStatement(companyId: string, statementId: string) {
-    return this.repository.getBankStatement(companyId, statementId);
+  async getBankStatement(actor: AppUser, statementId: string) {
+    await requireLegalEntityContext(actor, "finance.bankReconciliation.read");
+    return this.repository.getBankStatement(actor, statementId);
   }
-
-  reconcileBankStatementLine(input: Parameters<FinanceTreasuryRepositoryPort["reconcileBankStatementLine"]>[0]) {
-    return this.repository.reconcileBankStatementLine(input);
+  async reconcileBankStatementLine(input: Parameters<FinanceTreasuryRepositoryPort["reconcileBankStatementLine"]>[0], actor: AppUser) {
+    await requireBankStatementMutation(actor, input, "reconcile");
+    return this.repository.reconcileBankStatementLine(input, actor);
   }
-
-  ignoreBankStatementLine(input: Parameters<FinanceTreasuryRepositoryPort["ignoreBankStatementLine"]>[0]) {
-    return this.repository.ignoreBankStatementLine(input);
+  async ignoreBankStatementLine(input: Parameters<FinanceTreasuryRepositoryPort["ignoreBankStatementLine"]>[0], actor: AppUser) {
+    await requireBankStatementMutation(actor, input, "ignore");
+    return this.repository.ignoreBankStatementLine(input, actor);
   }
-
-  submitBankStatement(companyId: string, statementId: string, actorUserId: string) {
-    return this.repository.submitBankStatement(companyId, statementId, actorUserId);
+  async submitBankStatement(companyId: string, statementId: string, actorUserId: string, actor: AppUser) {
+    await requireBankStatementMutation(actor, {companyId, actorUserId}, "submit");
+    return this.repository.submitBankStatement(companyId, statementId, actorUserId, actor);
   }
-
-  async approveBankStatement(input: {
-    companyId: string;
-    statementId: string;
-    actorUserId: string;
-    allowSelfApproval: boolean;
-  }) {
-    const statement = await this.repository.getBankStatement(input.companyId, input.statementId);
-    if (!input.allowSelfApproval && statement.createdByUserId === input.actorUserId) {
-      throw financeConflict("Statement creator cannot approve it", "FINANCE_SELF_APPROVAL_FORBIDDEN");
-    }
-    return this.repository.approveBankStatement(input.companyId, input.statementId, input.actorUserId);
+  async approveBankStatement(input: { companyId: string; statementId: string; actorUserId: string }, actor: AppUser) {
+    await requireBankStatementMutation(actor, input, "approve");
+    return this.repository.approveBankStatement(input.companyId, input.statementId, input.actorUserId, actor);
   }
-
-  rejectBankStatement(companyId: string, statementId: string, actorUserId: string, reason: string) {
-    return this.repository.rejectBankStatement(companyId, statementId, actorUserId, reason);
+  async rejectBankStatement(companyId: string, statementId: string, actorUserId: string, reason: string, actor: AppUser) {
+    await requireBankStatementMutation(actor, {companyId, actorUserId}, "reject");
+    return this.repository.rejectBankStatement(companyId, statementId, actorUserId, reason, actor);
   }
 }

@@ -50,9 +50,9 @@ export interface FinanceTreasuryRepositoryPort {
     payloadHash: string;
     statement: ReturnTypeOfPrepareBankStatement;
     metadata?: Record<string, unknown>;
-  }): Promise<any>;
-  listBankStatements(companyId: string, page: TreasuryPage): Promise<any>;
-  getBankStatement(companyId: string, statementId: string): Promise<any>;
+  }, actor: AppUser): Promise<any>;
+  listBankStatements(actor: AppUser, page: TreasuryPage): Promise<any>;
+  getBankStatement(actor: AppUser, statementId: string): Promise<any>;
   reconcileBankStatementLine(command: {
     companyId: string;
     statementId: string;
@@ -60,15 +60,15 @@ export interface FinanceTreasuryRepositoryPort {
     actorUserId: string;
     targetType: "payment_run" | "provider_settlement";
     targetId: string;
-  }): Promise<any>;
+  }, actor: AppUser): Promise<any>;
   ignoreBankStatementLine(command: {
     companyId: string;
     statementId: string;
     lineId: string;
     actorUserId: string;
     reason: string;
-  }): Promise<any>;
-  submitBankStatement(companyId: string, statementId: string, actorUserId: string): Promise<any>;
-  approveBankStatement(companyId: string, statementId: string, actorUserId: string): Promise<any>;
-  rejectBankStatement(companyId: string, statementId: string, actorUserId: string, reason: string): Promise<any>;
+  }, actor: AppUser): Promise<any>;
+  submitBankStatement(companyId: string, statementId: string, actorUserId: string, actor: AppUser): Promise<any>;
+  approveBankStatement(companyId: string, statementId: string, actorUserId: string, actor: AppUser): Promise<any>;
+  rejectBankStatement(companyId: string, statementId: string, actorUserId: string, reason: string, actor: AppUser): Promise<any>;
 }

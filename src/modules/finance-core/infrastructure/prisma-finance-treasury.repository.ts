@@ -1,6 +1,7 @@
+import { listOwnedBankStatements, getOwnedBankStatement } from "./bank-statement-read";
 import { listOwnedPaymentRuns, getOwnedPaymentRun } from "./payment-run-read";
 import type { AppUser } from "../../../types/app-user";
-import { requirePaymentRunMutation, requireBankAccountMutation } from "../application/legal-entity-access";
+import { requireBankStatementMutation, requirePaymentRunMutation, requireBankAccountMutation } from "../application/legal-entity-access";
 import { listOwnedBankAccounts } from "./bank-account-read";
 import {
   FinanceBankStatementStatus,
@@ -418,7 +419,8 @@ export class PrismaFinanceTreasuryRepository implements FinanceTreasuryRepositor
     });
   }
 
-  async createBankStatement(command: Parameters<FinanceTreasuryRepositoryPort["createBankStatement"]>[0]) {
+  async createBankStatement(command: Parameters<FinanceTreasuryRepositoryPort["createBankStatement"]>[0], actor: AppUser) {
+    await requireBankStatementMutation(actor, command, "create");
     return prisma.$transaction(async (tx) => {
       const entity = await requireEntity(tx, command.companyId);
       await lock(tx, `${entity.id}:bank-statement:${command.idempotencyKey}`);
@@ -502,25 +504,11 @@ export class PrismaFinanceTreasuryRepository implements FinanceTreasuryRepositor
     });
   }
 
-  async listBankStatements(companyId: string, page: TreasuryPage) {
-    const status = statementStatus(page.status);
-    const rows = await prisma.financeBankStatement.findMany({
-      where: { legalEntity: { companyId }, ...(status ? { status } : {}) },
-      orderBy: [{ periodEnd: "desc" }, { id: "desc" }],
-      take: page.limit + 1,
-      ...(page.cursor ? { cursor: { id: page.cursor }, skip: 1 } : {}),
-      include: bankStatementListInclude,
-    });
-    return pageResult(rows, page.limit);
-  }
+  async listBankStatements(actor: AppUser, page: TreasuryPage) { return listOwnedBankStatements(actor, page); }
+  async getBankStatement(actor: AppUser, statementId: string) { return getOwnedBankStatement(actor, statementId); }
 
-  async getBankStatement(companyId: string, statementId: string) {
-    const row = await prisma.financeBankStatement.findFirst({ where: { id: statementId, legalEntity: { companyId } }, include: bankStatementInclude });
-    if (!row) throw financeNotFound("Bank statement not found", "FINANCE_BANK_STATEMENT_NOT_FOUND");
-    return row;
-  }
-
-  async reconcileBankStatementLine(command: Parameters<FinanceTreasuryRepositoryPort["reconcileBankStatementLine"]>[0]) {
+  async reconcileBankStatementLine(command: Parameters<FinanceTreasuryRepositoryPort["reconcileBankStatementLine"]>[0], actor: AppUser) {
+    await requireBankStatementMutation(actor, command, "reconcile");
     return prisma.$transaction(async (tx) => {
       await lock(tx, `bank-line-reconcile:${command.lineId}`);
       const line = await tx.financeBankStatementLine.findFirst({
@@ -550,7 +538,8 @@ export class PrismaFinanceTreasuryRepository implements FinanceTreasuryRepositor
     });
   }
 
-  async ignoreBankStatementLine(command: Parameters<FinanceTreasuryRepositoryPort["ignoreBankStatementLine"]>[0]) {
+  async ignoreBankStatementLine(command: Parameters<FinanceTreasuryRepositoryPort["ignoreBankStatementLine"]>[0], actor: AppUser) {
+    await requireBankStatementMutation(actor, command, "ignore");
     return prisma.$transaction(async (tx) => {
       const line = await tx.financeBankStatementLine.findFirst({ where: { id: command.lineId, bankStatementId: command.statementId, bankStatement: { legalEntity: { companyId: command.companyId } } }, include: { bankStatement: true } });
       if (!line) throw financeNotFound("Bank statement line not found", "FINANCE_BANK_LINE_NOT_FOUND");
@@ -561,7 +550,8 @@ export class PrismaFinanceTreasuryRepository implements FinanceTreasuryRepositor
     });
   }
 
-  async submitBankStatement(companyId: string, statementId: string, actorUserId: string) {
+  async submitBankStatement(companyId: string, statementId: string, actorUserId: string, actor: AppUser) {
+    await requireBankStatementMutation(actor, {companyId, actorUserId}, "submit");
     return prisma.$transaction(async (tx) => {
       const row = await tx.financeBankStatement.findFirst({ where: { id: statementId, legalEntity: { companyId } }, include: { lines: true } });
       if (!row) throw financeNotFound("Bank statement not found", "FINANCE_BANK_STATEMENT_NOT_FOUND");
@@ -575,7 +565,8 @@ export class PrismaFinanceTreasuryRepository implements FinanceTreasuryRepositor
     });
   }
 
-  async approveBankStatement(companyId: string, statementId: string, actorUserId: string) {
+  async approveBankStatement(companyId: string, statementId: string, actorUserId: string, actor: AppUser) {
+    await requireBankStatementMutation(actor, {companyId, actorUserId}, "approve");
     return prisma.$transaction(async (tx) => {
       await lock(tx, `bank-statement-approval:${statementId}`);
       const row = await tx.financeBankStatement.findFirst({ where: { id: statementId, legalEntity: { companyId } } });
@@ -588,7 +579,8 @@ export class PrismaFinanceTreasuryRepository implements FinanceTreasuryRepositor
     });
   }
 
-  async rejectBankStatement(companyId: string, statementId: string, actorUserId: string, reason: string) {
+  async rejectBankStatement(companyId: string, statementId: string, actorUserId: string, reason: string, actor: AppUser) {
+    await requireBankStatementMutation(actor, {companyId, actorUserId}, "reject");
     return prisma.$transaction(async (tx) => {
       const row = await tx.financeBankStatement.findFirst({ where: { id: statementId, legalEntity: { companyId } } });
       if (!row) throw financeNotFound("Bank statement not found", "FINANCE_BANK_STATEMENT_NOT_FOUND");

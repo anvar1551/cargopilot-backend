@@ -55,3 +55,13 @@ export async function requirePaymentRunMutation(actor: AppUser, intent: { compan
   throw financeConflict("Payment runs require authoritative financial basis and independent durable approval",
     "FINANCE_PAYMENT_RUN_ACCEPTANCE_REQUIRED");
 }
+
+export async function requireBankStatementMutation(actor: AppUser, intent: { companyId: string; actorUserId: string },
+  operation: "create" | "reconcile" | "ignore" | "submit" | "approve" | "reject"): Promise<void> {
+  const permission = operation === "approve" || operation === "reject" ? "finance.bankReconciliation.approve" : "finance.bankReconciliation.manage";
+  const context = await requireLegalEntityContext(actor, permission);
+  if (!intent || intent.companyId !== context.companyId || intent.actorUserId !== context.userId)
+    throw new FinanceError("Bank statement actor context mismatch", 403, "FINANCE_BANK_STATEMENT_CONTEXT_REJECTED");
+  throw financeConflict("Bank statements require authoritative source and independent durable reconciliation approval",
+    "FINANCE_BANK_STATEMENT_ACCEPTANCE_REQUIRED");
+}

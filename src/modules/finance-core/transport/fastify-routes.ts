@@ -313,7 +313,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const page = bankStatementPageSchema.parse(request.query);
-        return reply.send(await financeTreasuryService.listBankStatements(request.user!.companyId, page));
+        return reply.send(await financeTreasuryService.listBankStatements(request.user!, page));
       } catch (error) {
         return sendError(reply, error, "Failed to load bank statements");
       }
@@ -337,7 +337,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
             bookingDate: toDate(line.bookingDate),
             valueDate: line.valueDate ? toDate(line.valueDate) : null,
           })),
-        }));
+        }, request.user!));
       } catch (error) {
         return sendError(reply, error, "Failed to import bank statement");
       }
@@ -350,7 +350,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const { id } = financeIdParamSchema.parse(request.params);
-        return reply.send(await financeTreasuryService.getBankStatement(request.user!.companyId, id));
+        return reply.send(await financeTreasuryService.getBankStatement(request.user!, id));
       } catch (error) {
         return sendError(reply, error, "Failed to load bank statement");
       }
@@ -372,7 +372,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           lineId,
           actorUserId: request.user!.id,
           ...input,
-        }));
+        }, request.user!));
       } catch (error) {
         return sendError(reply, error, "Failed to reconcile bank-statement line");
       }
@@ -394,7 +394,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           lineId,
           actorUserId: request.user!.id,
           reason,
-        }));
+        }, request.user!));
       } catch (error) {
         return sendError(reply, error, "Failed to ignore bank-statement line");
       }
@@ -411,6 +411,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           request.user!.companyId,
           id,
           request.user!.id,
+          request.user!,
         ));
       } catch (error) {
         return sendError(reply, error, "Failed to submit bank statement");
@@ -428,8 +429,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           companyId: request.user!.companyId,
           statementId: id,
           actorUserId: request.user!.id,
-          allowSelfApproval: hasAnyPermissionSync(request.user!, ["policy.override"]),
-        }));
+        }, request.user!));
       } catch (error) {
         return sendError(reply, error, "Failed to approve bank statement");
       }
@@ -448,6 +448,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           id,
           request.user!.id,
           reason,
+          request.user!,
         ));
       } catch (error) {
         return sendError(reply, error, "Failed to reject bank statement");

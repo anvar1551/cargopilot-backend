@@ -4,7 +4,7 @@ import { database } from "../security/fixtures";
 import { loadAccessSnapshot } from "../../src/modules/identity-access/access-control";
 import { secureBankIdentifier } from "../../src/modules/finance-core/domain/treasury";
 const actor:any={id:"actor",tenantId:"t",tenantMembershipId:"tm",companyId:"company",companyMembershipId:"cm",membershipId:"cm"};
-beforeEach(()=>{jest.clearAllMocks();jest.mocked(loadAccessSnapshot).mockResolvedValue({...actor,userId:"actor",permissionCodes:["finance.treasury.manage","finance.treasury.approve","finance.treasury.execute"],scopes:[{scopeType:"company",scopeRefId:"company"}]}as any);database.membershipScope.findFirst.mockResolvedValue({id:"scope"});});
+beforeEach(()=>{jest.clearAllMocks();jest.mocked(loadAccessSnapshot).mockResolvedValue({...actor,userId:"actor",permissionCodes:["finance.treasury.manage","finance.treasury.approve","finance.treasury.execute","finance.bankReconciliation.approve"],scopes:[{scopeType:"company",scopeRefId:"company"}]}as any);database.membershipScope.findFirst.mockResolvedValue({id:"scope"});});
 import { FinanceTreasuryService } from "../../src/modules/finance-core/application/finance-treasury.service";
 import type { FinanceTreasuryRepositoryPort } from "../../src/modules/finance-core/application/finance-treasury.port";
 
@@ -54,7 +54,7 @@ describe("FinanceTreasuryService", () => {
     expect(identifier.masked).toMatch(/\*+7890$/);
   });
 
-  it("contains payment approval and retains bank statement maker-checker check", async () => {
+  it("contains payment approval and contains unaccepted bank statement approval", async () => {
     const repo = repository();
     repo.getPaymentRun.mockResolvedValue({ createdByUserId: "maker" });
     repo.getBankStatement.mockResolvedValue({ createdByUserId: "maker" });
@@ -69,9 +69,9 @@ describe("FinanceTreasuryService", () => {
     await expect(service.approveBankStatement({
       companyId: "company",
       statementId: "statement",
-      actorUserId: "maker",
-      allowSelfApproval: false,
-    })).rejects.toMatchObject({ code: "FINANCE_SELF_APPROVAL_FORBIDDEN" });
+      actorUserId: "actor",
+    },actor)).rejects.toMatchObject({ code: "FINANCE_BANK_STATEMENT_ACCEPTANCE_REQUIRED" });
+    expect(repo.getBankStatement).not.toHaveBeenCalled();
   });
 
   it("contains unaccepted payment execution before retrieving financial records", async () => {

@@ -263,7 +263,7 @@ export const executePaymentRunSchema = z.object({
 
 export const bankStatementPageSchema = cursorPageSchema.extend({
   status: z.enum(["draft", "submitted", "approved", "rejected"]).optional(),
-});
+}).strict();
 
 export const createBankStatementSchema = z.object({
   bankAccountId: uuid,
@@ -283,13 +283,13 @@ export const createBankStatementSchema = z.object({
     externalTransactionId: z.string().trim().max(200).nullable().optional(),
     description: z.string().trim().max(1000).nullable().optional(),
     metadata: metadata.optional(),
-  })).min(1).max(10_000),
-});
+  }).strict()).min(1).max(10_000),
+}).strict();
 
 export const reconcileBankStatementLineSchema = z.object({
   targetType: z.enum(["payment_run", "provider_settlement"]),
   targetId: uuid,
-});
+}).strict();
 
 export const financeReasonSchema = z.object({
   reason: z.string().trim().min(3).max(1000),
