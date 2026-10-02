@@ -1,3 +1,5 @@
+import type { AppUser } from "../../../types/app-user";
+import { requireSettlementMutation } from "../application/legal-entity-access";
 import { Prisma } from "@prisma/client";
 import prisma from "../../../config/prismaClient";
 import type {
@@ -74,7 +76,8 @@ function assertFxSnapshot(entity: { baseCurrency: string }, input: {
 }
 
 export class PrismaFinanceDocumentsRepository implements FinanceDocumentsRepositoryPort {
-  async createProviderSettlement(command: Parameters<FinanceDocumentsRepositoryPort["createProviderSettlement"]>[0]) {
+  async createProviderSettlement(command: Parameters<FinanceDocumentsRepositoryPort["createProviderSettlement"]>[0],actor:AppUser) {
+    await requireSettlementMutation(actor,command,"create");
     return prisma.$transaction(async (tx) => {
       const entity = await requireEntity(tx, command.companyId);
       assertFxSnapshot(entity, command.settlement);
@@ -171,7 +174,8 @@ export class PrismaFinanceDocumentsRepository implements FinanceDocumentsReposit
     return row;
   }
 
-  async submitProviderSettlement(companyId: string, settlementId: string, actorUserId: string) {
+  async submitProviderSettlement(companyId: string, settlementId: string, actorUserId: string,actor:AppUser) {
+    await requireSettlementMutation(actor,{companyId,actorUserId},"submit");
     return prisma.$transaction(async (tx) => {
       const row = await tx.financeProviderSettlement.findFirst({
         where: { id: settlementId, legalEntity: { companyId } },
@@ -199,7 +203,9 @@ export class PrismaFinanceDocumentsRepository implements FinanceDocumentsReposit
 
   async reconcileProviderSettlementLine(
     command: Parameters<FinanceDocumentsRepositoryPort["reconcileProviderSettlementLine"]>[0],
+    actor:AppUser,
   ) {
+    await requireSettlementMutation(actor,command,"reconcile");
     return prisma.$transaction(async (tx) => {
       const settlement = await tx.financeProviderSettlement.findFirst({
         where: {
@@ -252,7 +258,8 @@ export class PrismaFinanceDocumentsRepository implements FinanceDocumentsReposit
     });
   }
 
-  async approveProviderSettlement(companyId: string, settlementId: string, actorUserId: string) {
+  async approveProviderSettlement(companyId: string, settlementId: string, actorUserId: string,actor:AppUser) {
+    await requireSettlementMutation(actor,{companyId,actorUserId},"approve");
     return prisma.$transaction(async (tx) => {
       await lockDocumentKey(tx, `provider-settlement-approval:${settlementId}`);
       const row = await tx.financeProviderSettlement.findFirst({
@@ -337,7 +344,9 @@ export class PrismaFinanceDocumentsRepository implements FinanceDocumentsReposit
     settlementId: string,
     actorUserId: string,
     reason: string,
+    actor:AppUser,
   ) {
+    await requireSettlementMutation(actor,{companyId,actorUserId},"reject");
     return prisma.$transaction(async (tx) => {
       const row = await tx.financeProviderSettlement.findFirst({
         where: { id: settlementId, legalEntity: { companyId } },

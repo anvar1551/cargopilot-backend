@@ -1,3 +1,4 @@
+import type { AppUser } from "../../../types/app-user";
 import type {
   prepareCarrierBill,
   prepareProviderSettlement,
@@ -18,10 +19,10 @@ export interface FinanceDocumentsRepositoryPort {
     actorUserId: string;
     idempotencyKey: string;
     settlement: PreparedProviderSettlement;
-  }): Promise<any>;
+  }, actor: AppUser): Promise<any>;
   listProviderSettlements(companyId: string, page: FinanceDocumentPage): Promise<any>;
   getProviderSettlement(companyId: string, settlementId: string): Promise<any>;
-  submitProviderSettlement(companyId: string, settlementId: string, actorUserId: string): Promise<any>;
+  submitProviderSettlement(companyId: string, settlementId: string, actorUserId: string, actor: AppUser): Promise<any>;
   reconcileProviderSettlementLine(command: {
     companyId: string;
     settlementId: string;
@@ -34,13 +35,14 @@ export interface FinanceDocumentsRepositoryPort {
       paymentRefundId?: string | null;
       orderId?: string | null;
     };
-  }): Promise<any>;
-  approveProviderSettlement(companyId: string, settlementId: string, actorUserId: string): Promise<any>;
+  }, actor: AppUser): Promise<any>;
+  approveProviderSettlement(companyId: string, settlementId: string, actorUserId: string, actor: AppUser): Promise<any>;
   rejectProviderSettlement(
     companyId: string,
     settlementId: string,
     actorUserId: string,
     reason: string,
+    actor: AppUser,
   ): Promise<any>;
 
   createCarrierBill(command: {

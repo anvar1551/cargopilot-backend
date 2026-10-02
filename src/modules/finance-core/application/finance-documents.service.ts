@@ -1,3 +1,5 @@
+import type { AppUser } from "../../../types/app-user";
+import { requireSettlementMutation } from "./legal-entity-access";
 import {
   authoritativeDocumentHash,
   prepareCarrierBill,
@@ -32,7 +34,8 @@ export class FinanceDocumentsService {
     reportedNetAmount?: string | null;
     metadata?: Record<string, unknown>;
     lines: ProviderSettlementLineInput[];
-  }) {
+  }, actor: AppUser) {
+    await requireSettlementMutation(actor,input,"create");
     const provisionalLines = input.lines.map((line, index) => ({
       ...line,
       sequence: index + 1,
@@ -72,7 +75,7 @@ export class FinanceDocumentsService {
       actorUserId: input.actorUserId,
       idempotencyKey: input.idempotencyKey,
       settlement,
-    });
+    },actor);
   }
 
   listProviderSettlements(companyId: string, page: FinanceDocumentPage) {
@@ -83,8 +86,9 @@ export class FinanceDocumentsService {
     return this.repository.getProviderSettlement(companyId, settlementId);
   }
 
-  submitProviderSettlement(companyId: string, settlementId: string, actorUserId: string) {
-    return this.repository.submitProviderSettlement(companyId, settlementId, actorUserId);
+  async submitProviderSettlement(companyId: string, settlementId: string, actorUserId: string, actor: AppUser) {
+    await requireSettlementMutation(actor,{companyId,actorUserId},"submit");
+    return this.repository.submitProviderSettlement(companyId, settlementId, actorUserId, actor);
   }
 
   async reconcileProviderSettlementLine(input: {
@@ -94,7 +98,8 @@ export class FinanceDocumentsService {
     actorUserId: string;
     paymentIntentId?: string | null;
     paymentRefundId?: string | null;
-  }) {
+  }, actor: AppUser) {
+    await requireSettlementMutation(actor,input,"reconcile");
     const settlement = await this.repository.getProviderSettlement(
       input.companyId,
       input.settlementId,
@@ -138,39 +143,16 @@ export class FinanceDocumentsService {
       lineId: input.lineId,
       actorUserId: input.actorUserId,
       resolvedLine: resolved.lines[0],
-    });
+    },actor);
   }
 
-  async approveProviderSettlement(input: {
-    companyId: string;
-    settlementId: string;
-    actorUserId: string;
-    allowSelfApproval: boolean;
-  }) {
-    const settlement = await this.repository.getProviderSettlement(
-      input.companyId,
-      input.settlementId,
-    );
-    if (!input.allowSelfApproval && settlement.createdByUserId === input.actorUserId) {
-      throw financeConflict(
-        "Settlement creator cannot approve the same document",
-        "FINANCE_SELF_APPROVAL_FORBIDDEN",
-      );
-    }
-    return this.repository.approveProviderSettlement(
-      input.companyId,
-      input.settlementId,
-      input.actorUserId,
-    );
+  async approveProviderSettlement(input:{companyId:string;settlementId:string;actorUserId:string},actor:AppUser) {
+    await requireSettlementMutation(actor,input,"approve");
+    return this.repository.approveProviderSettlement(input.companyId,input.settlementId,input.actorUserId,actor);
   }
-
-  rejectProviderSettlement(
-    companyId: string,
-    settlementId: string,
-    actorUserId: string,
-    reason: string,
-  ) {
-    return this.repository.rejectProviderSettlement(companyId, settlementId, actorUserId, reason);
+  async rejectProviderSettlement(companyId:string,settlementId:string,actorUserId:string,reason:string,actor:AppUser) {
+    await requireSettlementMutation(actor,{companyId,actorUserId},"reject");
+    return this.repository.rejectProviderSettlement(companyId,settlementId,actorUserId,reason,actor);
   }
 
   async createCarrierBill(input: {

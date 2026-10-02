@@ -489,7 +489,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
             ...line,
             occurredAt: line.occurredAt ? new Date(line.occurredAt) : null,
           })),
-        });
+        },request.user!);
         return reply.code(201).send(settlement);
       } catch (error) {
         return sendError(reply, error, "Failed to create provider settlement");
@@ -523,6 +523,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           request.user!.companyId,
           id,
           request.user!.id,
+          request.user!,
         ));
       } catch (error) {
         return sendError(reply, error, "Failed to submit provider settlement");
@@ -540,8 +541,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           companyId: request.user!.companyId,
           settlementId: id,
           actorUserId: request.user!.id,
-          allowSelfApproval: hasAnyPermissionSync(request.user!, ["policy.override"]),
-        }));
+        },request.user!));
       } catch (error) {
         return sendError(reply, error, "Failed to approve provider settlement");
       }
@@ -563,7 +563,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           lineId,
           actorUserId: request.user!.id,
           ...body,
-        }));
+        },request.user!));
       } catch (error) {
         return sendError(reply, error, "Failed to reconcile provider settlement line");
       }
@@ -582,6 +582,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           id,
           request.user!.id,
           reason,
+          request.user!,
         ));
       } catch (error) {
         return sendError(reply, error, "Failed to reject provider settlement");

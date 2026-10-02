@@ -1,3 +1,9 @@
+jest.mock("../../src/config/prismaClient",()=>({__esModule:true,default:require("../security/fixtures").database}));
+jest.mock("../../src/modules/identity-access/access-control",()=>({loadAccessSnapshot:jest.fn()}));
+import { database } from "../security/fixtures";
+import { loadAccessSnapshot } from "../../src/modules/identity-access/access-control";
+const actor:any={id:"same-user",tenantId:"t",tenantMembershipId:"tm",companyId:"company",companyMembershipId:"cm",membershipId:"cm"};
+beforeEach(()=>{jest.clearAllMocks();jest.mocked(loadAccessSnapshot).mockResolvedValue({...actor,userId:actor.id,permissionCodes:["finance.settlements.approve"],scopes:[{scopeType:"company",scopeRefId:"company"}]} as any);database.membershipScope.findFirst.mockResolvedValue({id:"scope"});});
 import { FinanceDocumentsService } from "../../src/modules/finance-core/application/finance-documents.service";
 import type {
   FinanceDocumentsRepositoryPort,
@@ -31,7 +37,7 @@ function references(): jest.Mocked<FinanceReferencePort> {
 }
 
 describe("FinanceDocumentsService", () => {
-  it("enforces maker-checker separation for settlements", async () => {
+  it("contains settlement approval before protected records", async () => {
     const repo = repository();
     repo.getProviderSettlement.mockResolvedValue({ createdByUserId: "same-user" });
     const service = new FinanceDocumentsService(repo, references());
@@ -39,8 +45,8 @@ describe("FinanceDocumentsService", () => {
       companyId: "company",
       settlementId: "settlement",
       actorUserId: "same-user",
-      allowSelfApproval: false,
-    })).rejects.toMatchObject({ code: "FINANCE_SELF_APPROVAL_FORBIDDEN" });
+    },actor)).rejects.toMatchObject({ code: "FINANCE_SETTLEMENT_ACCEPTANCE_REQUIRED" });
+    expect(repo.getProviderSettlement).not.toHaveBeenCalled();
     expect(repo.approveProviderSettlement).not.toHaveBeenCalled();
   });
 

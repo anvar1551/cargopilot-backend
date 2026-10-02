@@ -65,3 +65,10 @@ export async function requireBankStatementMutation(actor: AppUser, intent: { com
   throw financeConflict("Bank statements require authoritative source and independent durable reconciliation approval",
     "FINANCE_BANK_STATEMENT_ACCEPTANCE_REQUIRED");
 }
+
+export async function requireSettlementMutation(actor: AppUser, intent: {companyId:string;actorUserId:string}, operation:"create"|"reconcile"|"submit"|"approve"|"reject"): Promise<void> {
+  const context=await requireLegalEntityContext(actor,operation==="approve"||operation==="reject"?"finance.settlements.approve":"finance.settlements.manage");
+  if(!intent||intent.companyId!==context.companyId||intent.actorUserId!==context.userId)
+    throw new FinanceError("Settlement actor context mismatch",403,"FINANCE_SETTLEMENT_CONTEXT_REJECTED");
+  throw financeConflict("Settlement execution requires accepted provider source and independent durable approval","FINANCE_SETTLEMENT_ACCEPTANCE_REQUIRED");
+}
