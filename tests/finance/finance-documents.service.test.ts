@@ -3,7 +3,7 @@ jest.mock("../../src/modules/identity-access/access-control",()=>({loadAccessSna
 import { database } from "../security/fixtures";
 import { loadAccessSnapshot } from "../../src/modules/identity-access/access-control";
 const actor:any={id:"same-user",tenantId:"t",tenantMembershipId:"tm",companyId:"company",companyMembershipId:"cm",membershipId:"cm"};
-beforeEach(()=>{jest.clearAllMocks();jest.mocked(loadAccessSnapshot).mockResolvedValue({...actor,userId:actor.id,permissionCodes:["finance.settlements.approve"],scopes:[{scopeType:"company",scopeRefId:"company"}]} as any);database.membershipScope.findFirst.mockResolvedValue({id:"scope"});});
+beforeEach(()=>{jest.clearAllMocks();jest.mocked(loadAccessSnapshot).mockResolvedValue({...actor,userId:actor.id,permissionCodes:["finance.settlements.approve","finance.payables.approve"],scopes:[{scopeType:"company",scopeRefId:"company"}]} as any);database.membershipScope.findFirst.mockResolvedValue({id:"scope"});});
 import { FinanceDocumentsService } from "../../src/modules/finance-core/application/finance-documents.service";
 import type {
   FinanceDocumentsRepositoryPort,
@@ -50,7 +50,7 @@ describe("FinanceDocumentsService", () => {
     expect(repo.approveProviderSettlement).not.toHaveBeenCalled();
   });
 
-  it("permits explicitly authorized emergency self-approval", async () => {
+  it("contains unsupported carrier approval without an emergency bypass", async () => {
     const repo = repository();
     repo.getCarrierBill.mockResolvedValue({ createdByUserId: "same-user" });
     repo.approveCarrierBill.mockResolvedValue({ status: "approved" });
@@ -59,7 +59,8 @@ describe("FinanceDocumentsService", () => {
       companyId: "company",
       billId: "bill",
       actorUserId: "same-user",
-      allowSelfApproval: true,
-    })).resolves.toEqual({ status: "approved" });
+    },actor)).rejects.toMatchObject({code:"FINANCE_CARRIER_BILL_ACCEPTANCE_REQUIRED"});
+    expect(repo.getCarrierBill).not.toHaveBeenCalled();
+    expect(repo.approveCarrierBill).not.toHaveBeenCalled();
   });
 });

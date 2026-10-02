@@ -72,3 +72,9 @@ export async function requireSettlementMutation(actor: AppUser, intent: {company
     throw new FinanceError("Settlement actor context mismatch",403,"FINANCE_SETTLEMENT_CONTEXT_REJECTED");
   throw financeConflict("Settlement execution requires accepted provider source and independent durable approval","FINANCE_SETTLEMENT_ACCEPTANCE_REQUIRED");
 }
+
+export async function requireCarrierBillMutation(actor: AppUser,intent:{companyId:string;actorUserId:string},operation:"create"|"submit"|"approve"|"reject"):Promise<void>{
+  const context=await requireLegalEntityContext(actor,operation==="approve"||operation==="reject"?"finance.payables.approve":"finance.payables.manage");
+  if(!intent||intent.companyId!==context.companyId||intent.actorUserId!==context.userId)throw new FinanceError("Carrier bill actor context mismatch",403,"FINANCE_CARRIER_BILL_CONTEXT_REJECTED");
+  throw financeConflict("Carrier bills require accepted supplier basis and independent durable approval","FINANCE_CARRIER_BILL_ACCEPTANCE_REQUIRED");
+}

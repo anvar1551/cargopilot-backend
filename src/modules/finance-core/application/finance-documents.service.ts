@@ -1,5 +1,5 @@
 import type { AppUser } from "../../../types/app-user";
-import { requireLegalEntityContext, requireSettlementMutation } from "./legal-entity-access";
+import { requireCarrierBillMutation, requireLegalEntityContext, requireSettlementMutation } from "./legal-entity-access";
 import {
   authoritativeDocumentHash,
   prepareCarrierBill,
@@ -171,7 +171,8 @@ export class FinanceDocumentsService {
     reportedTotalAmount?: string | null;
     metadata?: Record<string, unknown>;
     lines: CarrierBillLineInput[];
-  }) {
+  },actor:AppUser) {
+    await requireCarrierBillMutation(actor,input,"create");
     const carrier = await this.references.resolveCarrierProvider({
       companyId: input.companyId,
       providerId: input.carrierProviderId,
@@ -191,7 +192,7 @@ export class FinanceDocumentsService {
       actorUserId: input.actorUserId,
       idempotencyKey: input.idempotencyKey,
       bill,
-    });
+    },actor);
   }
 
   listCarrierBills(companyId: string, page: FinanceDocumentPage) {
@@ -202,27 +203,17 @@ export class FinanceDocumentsService {
     return this.repository.getCarrierBill(companyId, billId);
   }
 
-  submitCarrierBill(companyId: string, billId: string, actorUserId: string) {
-    return this.repository.submitCarrierBill(companyId, billId, actorUserId);
+  async submitCarrierBill(companyId: string, billId: string, actorUserId: string,actor:AppUser) {
+    await requireCarrierBillMutation(actor,{companyId,actorUserId},"submit");
+    return this.repository.submitCarrierBill(companyId, billId, actorUserId,actor);
   }
 
-  async approveCarrierBill(input: {
-    companyId: string;
-    billId: string;
-    actorUserId: string;
-    allowSelfApproval: boolean;
-  }) {
-    const bill = await this.repository.getCarrierBill(input.companyId, input.billId);
-    if (!input.allowSelfApproval && bill.createdByUserId === input.actorUserId) {
-      throw financeConflict(
-        "Carrier bill creator cannot approve the same document",
-        "FINANCE_SELF_APPROVAL_FORBIDDEN",
-      );
-    }
-    return this.repository.approveCarrierBill(input.companyId, input.billId, input.actorUserId);
+  async approveCarrierBill(input:{companyId:string;billId:string;actorUserId:string},actor:AppUser){
+    await requireCarrierBillMutation(actor,input,"approve");
+    return this.repository.approveCarrierBill(input.companyId,input.billId,input.actorUserId,actor);
   }
-
-  rejectCarrierBill(companyId: string, billId: string, actorUserId: string, reason: string) {
-    return this.repository.rejectCarrierBill(companyId, billId, actorUserId, reason);
+  async rejectCarrierBill(companyId:string,billId:string,actorUserId:string,reason:string,actor:AppUser){
+    await requireCarrierBillMutation(actor,{companyId,actorUserId},"reject");
+    return this.repository.rejectCarrierBill(companyId,billId,actorUserId,reason,actor);
   }
 }

@@ -1,6 +1,6 @@
 import { listOwnedProviderSettlements, getOwnedProviderSettlement } from "./settlement-read";
 import type { AppUser } from "../../../types/app-user";
-import { requireSettlementMutation } from "../application/legal-entity-access";
+import { requireCarrierBillMutation, requireSettlementMutation } from "../application/legal-entity-access";
 import { Prisma } from "@prisma/client";
 import prisma from "../../../config/prismaClient";
 import type {
@@ -361,7 +361,8 @@ export class PrismaFinanceDocumentsRepository implements FinanceDocumentsReposit
     });
   }
 
-  async createCarrierBill(command: Parameters<FinanceDocumentsRepositoryPort["createCarrierBill"]>[0]) {
+  async createCarrierBill(command: Parameters<FinanceDocumentsRepositoryPort["createCarrierBill"]>[0],actor:AppUser) {
+    await requireCarrierBillMutation(actor,command,"create");
     return prisma.$transaction(async (tx) => {
       const entity = await requireEntity(tx, command.companyId);
       assertFxSnapshot(entity, command.bill);
@@ -452,7 +453,8 @@ export class PrismaFinanceDocumentsRepository implements FinanceDocumentsReposit
     return row;
   }
 
-  async submitCarrierBill(companyId: string, billId: string, actorUserId: string) {
+  async submitCarrierBill(companyId: string, billId: string, actorUserId: string,actor:AppUser) {
+    await requireCarrierBillMutation(actor,{companyId,actorUserId},"submit");
     return prisma.$transaction(async (tx) => {
       const row = await tx.financeCarrierBill.findFirst({
         where: { id: billId, legalEntity: { companyId } },
@@ -478,7 +480,8 @@ export class PrismaFinanceDocumentsRepository implements FinanceDocumentsReposit
     });
   }
 
-  async approveCarrierBill(companyId: string, billId: string, actorUserId: string) {
+  async approveCarrierBill(companyId: string, billId: string, actorUserId: string,actor:AppUser) {
+    await requireCarrierBillMutation(actor,{companyId,actorUserId},"approve");
     return prisma.$transaction(async (tx) => {
       await lockDocumentKey(tx, `carrier-bill-approval:${billId}`);
       const row = await tx.financeCarrierBill.findFirst({
@@ -543,7 +546,8 @@ export class PrismaFinanceDocumentsRepository implements FinanceDocumentsReposit
     });
   }
 
-  async rejectCarrierBill(companyId: string, billId: string, actorUserId: string, reason: string) {
+  async rejectCarrierBill(companyId: string, billId: string, actorUserId: string, reason: string,actor:AppUser) {
+    await requireCarrierBillMutation(actor,{companyId,actorUserId},"reject");
     return prisma.$transaction(async (tx) => {
       const row = await tx.financeCarrierBill.findFirst({
         where: { id: billId, legalEntity: { companyId } },

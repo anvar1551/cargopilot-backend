@@ -50,16 +50,17 @@ export interface FinanceDocumentsRepositoryPort {
     actorUserId: string;
     idempotencyKey: string;
     bill: PreparedCarrierBill;
-  }): Promise<any>;
+  }, actor: AppUser): Promise<any>;
   listCarrierBills(companyId: string, page: FinanceDocumentPage): Promise<any>;
   getCarrierBill(companyId: string, billId: string): Promise<any>;
-  submitCarrierBill(companyId: string, billId: string, actorUserId: string): Promise<any>;
-  approveCarrierBill(companyId: string, billId: string, actorUserId: string): Promise<any>;
+  submitCarrierBill(companyId: string, billId: string, actorUserId: string, actor: AppUser): Promise<any>;
+  approveCarrierBill(companyId: string, billId: string, actorUserId: string, actor: AppUser): Promise<any>;
   rejectCarrierBill(
     companyId: string,
     billId: string,
     actorUserId: string,
     reason: string,
+    actor: AppUser,
   ): Promise<any>;
 }
 

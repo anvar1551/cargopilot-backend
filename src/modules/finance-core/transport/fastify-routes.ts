@@ -619,7 +619,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           invoiceDate: toDate(input.invoiceDate),
           dueDate: input.dueDate ? toDate(input.dueDate) : null,
           fxRateAsOf: input.fxRateAsOf ? new Date(input.fxRateAsOf) : null,
-        });
+        },request.user!);
         return reply.code(201).send(bill);
       } catch (error) {
         return sendError(reply, error, "Failed to create carrier bill");
@@ -650,6 +650,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           request.user!.companyId,
           id,
           request.user!.id,
+          request.user!,
         ));
       } catch (error) {
         return sendError(reply, error, "Failed to submit carrier bill");
@@ -667,8 +668,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           companyId: request.user!.companyId,
           billId: id,
           actorUserId: request.user!.id,
-          allowSelfApproval: hasAnyPermissionSync(request.user!, ["policy.override"]),
-        }));
+        },request.user!));
       } catch (error) {
         return sendError(reply, error, "Failed to approve carrier bill");
       }
@@ -687,6 +687,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           id,
           request.user!.id,
           reason,
+          request.user!,
         ));
       } catch (error) {
         return sendError(reply, error, "Failed to reject carrier bill");
