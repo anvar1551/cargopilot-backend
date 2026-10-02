@@ -2,6 +2,8 @@
 
 ## Current state / resume
 
+Latest continuation supersedes older resume notes: compound ownership checkpoint7dfa52ee531cc61aac6fd29fe0a9c0f104593dd2 contains9 reviewed files. Source-event/exception read slice below is validated; next ready backend task is bounded bank-account reads/configuration authority. Sensitive bank configuration needs independently accepted immutable proposals, not treasury.manage alone. Clients remain deferred, financial execution remains contained, no accounting/FX/checker policy inferred.
+
 2026-10-02 continuation from verified ecf8798: posting-rule read/configuration containment implemented below. Immediately continue automatic execution acceptance; active persisted configuration is not independent approval. Prior cash evidence proves custody mechanics/provenance only, not approved accounting mappings. Clients remain deferred.
 
 Current continuation: compound posting-rule/account integrity is verified and ready for exact checkpoint; scoped source-event/exception reads follow. Immutable independent rule-version acceptance, checker eligibility, accounting mappings and FX remain unresolved; financial execution stays contained. Clients deferred.
@@ -268,3 +270,16 @@ Actual PostgreSQL cp-posting-rule-disposable-run.cjs applied76migrations and pas
 Affected mocked suite passed23; final tightened bridge-predicate assertion passed1 repeat. Targeted Jest emitted open-handle warning after assertions and required stopping that exact test process; not reported as a clean process exit. Full preceding suite exited0. No broad suite/audit repeated, dependencies/client/dist untouched. Independent immutable acceptance, nullable/NOT VALID certification, financial dimension/source integrity, SQL immutability, Redis/revocation, provider/storage recovery and RLS remain open. Next exact ready slice: fresh selected context/explicit company scope, legal-entity and nested-reference predicates, scoped cursors/status and minimal projection for source-event and exception lists; keep retry contained.
 
 Final node node_modules/typescript/bin/tsc --noEmit passed after final test/source corrections.
+
+
+## Source-event and exception read continuation
+
+Baseline7dfa52e verified. Only the two existing list endpoints, service/port/repository, explicit read helper, focused tests/report and backlog changed. Fresh finance.exceptions.read selected tuple and explicit company scope; active tenant/company/entity and linked-reference predicates, scoped status/cursors, bounded keyset pagination and minimal projection. Raw payload/hash/error/claim fields omitted. Same-entity journal/document mismatch or incomplete posted result rejects rather than returning partial graph. No worker/retry/configuration restoration, schema change or historical mapping. See Finance_Source_Event_Read_Containment.md.
+
+Initial source suite/type-check found the second HTTP caller still used the old signature; corrected before successful validation. node node_modules/jest/bin/jest.js --runInBand tests/security/finance-source-event-read.test.ts passed22 new mocked/HTTP cases with clean exit0. Separately tests/finance/finance.service.test.ts passed3 affected cases during the initial run; reused after route-only correction. 25 distinct cases, not rerun sums. Final node node_modules/typescript/bin/tsc --noEmit result recorded below; unchanged schema validation reused.
+
+node "$env:TEMP/cp-source-read-run.cjs" applied76migrations and passed5 new PostgreSQL cases: two tenants/three companies, status/cursor isolation, accepted-by-current-DB foreign/null source references hidden by scoped queries, same-entity result pairing and fresh membership/scope/owner rejection; complete snapshots unchanged by reads. Simple source reference FKs remain a demonstrated storage gap; not a successful isolation claim. Owned16c2e5089b91 removed after label/name/tmpfs ownership checks; filtered absence verified. No existing database/container/Redis/AWS/provider access, dependencies, client/dist changes or push/deploy.
+
+Exact next ready slice: GET /bank-accounts service/repository currently accept companyId/global cursor and serialize arbitrary metadata/actor fields. Create/status routes have manage permission but no verified independent configuration acceptance. Inspect only these three chains/direct consumers; require fresh selected treasury scope, safe projections/scoped cursor/status and contain unaccepted configuration before transactions. Preserve payment-run/statement workflow bodies, record their remaining authorization/approval gaps for separate slices. Existing immutable rule acceptance, FX/mappings, nullable certification, source/dimension integrity, revocation/recovery and RLS release gates remain open.
+
+Final no-emit type checking passed after final source/test files.

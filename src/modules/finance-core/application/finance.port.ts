@@ -132,7 +132,7 @@ export interface FinanceRepositoryPort {
   ingestSourceEvent(command: IngestFinanceSourceEventCommand): Promise<unknown>;
   processSourceEvent(sourceEventRecordId: string): Promise<unknown>;
   listSourceEvents(
-    companyId: string,
+    actor: AppUser,
     page: CursorPage,
     status?: "pending" | "processing" | "posted" | "exception",
   ): Promise<unknown>;

@@ -1019,8 +1019,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const query = sourceEventPageSchema.parse(request.query);
-        return reply.send(await financeService.listSourceEvents({
-          companyId: request.user!.companyId,
+        return reply.send(await financeService.listSourceEvents(request.user!, {
           ...query,
         }));
       } catch (error) {
@@ -1034,9 +1033,8 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     { preHandler: fastifyAuth({ permission: "finance.exceptions.read" }) },
     async (request, reply) => {
       try {
-        const page = cursorPageSchema.parse(request.query);
-        return reply.send(await financeService.listSourceEvents({
-          companyId: request.user!.companyId,
+        const page = cursorPageSchema.strict().parse(request.query);
+        return reply.send(await financeService.listSourceEvents(request.user!, {
           status: "exception",
           ...page,
         }));

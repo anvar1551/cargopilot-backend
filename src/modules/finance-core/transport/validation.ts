@@ -17,7 +17,7 @@ export const periodPageSchema = cursorPageSchema.strict();
 
 export const sourceEventPageSchema = cursorPageSchema.extend({
   status: z.enum(["pending", "processing", "posted", "exception"]).optional(),
-});
+}).strict();
 
 export const receivablesAgingQuerySchema = cursorPageSchema.extend({
   asOf: date,

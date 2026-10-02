@@ -255,17 +255,10 @@ export class FinanceService {
     return this.repository.processSourceEvent(sourceEventRecordId);
   }
 
-  listSourceEvents(input: {
-    companyId: string;
-    cursor?: string;
-    limit: number;
-    status?: "pending" | "processing" | "posted" | "exception";
-  }) {
-    return this.repository.listSourceEvents(
-      input.companyId,
-      { cursor: input.cursor, limit: input.limit },
-      input.status,
-    );
+  async listSourceEvents(actor: AppUser, input: { cursor?: string; limit: number; status?: "pending" | "processing" | "posted" | "exception" }) {
+    await requireLegalEntityContext(actor, "finance.exceptions.read");
+    if (!input || Object.keys(input).some(key => !["cursor", "limit", "status"].includes(key))) throw financeBadRequest("Invalid source event page", "FINANCE_INVALID_PAGE");
+    return this.repository.listSourceEvents(actor, { cursor: input.cursor, limit: input.limit }, input.status);
   }
 
   async retrySourceEvent(input: {

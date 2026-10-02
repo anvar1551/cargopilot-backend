@@ -1,3 +1,4 @@
+import { listOwnedSourceEvents } from "./source-event-read";
 import { listOwnedPostingRules, getOwnedPostingRule } from "./posting-rule-read";
 import { rejectUnsupportedGenericFinanceIngestion, rejectUnapprovedAutomaticPosting, requireSupportedFinanceSource } from "../domain/automatic-execution-containment";
 import { readOwnedTrialBalance } from "./trial-balance-read";
@@ -1481,23 +1482,8 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
     }
   }
 
-  async listSourceEvents(
-    companyId: string,
-    page: CursorPage,
-    status?: "pending" | "processing" | "posted" | "exception",
-  ) {
-    const rows = await prisma.financeSourceEvent.findMany({
-      where: { companyId, ...(status ? { status } : {}) },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      take: page.limit + 1,
-      ...(page.cursor ? { cursor: { id: page.cursor }, skip: 1 } : {}),
-      include: {
-        resolvedRule: { select: { id: true, code: true, name: true, version: true } },
-        financeDocument: { select: { id: true, documentNumber: true, status: true } },
-        financeJournalEntry: { select: { id: true, journalNumber: true, status: true } },
-      },
-    });
-    return pageResult(rows, page.limit);
+  async listSourceEvents(actor: AppUser, page: CursorPage, status?: "pending" | "processing" | "posted" | "exception") {
+    return listOwnedSourceEvents(actor, page, status);
   }
 
   async retrySourceEvent(companyId: string, sourceEventRecordId: string, actorUserId: string, actor: AppUser) {
