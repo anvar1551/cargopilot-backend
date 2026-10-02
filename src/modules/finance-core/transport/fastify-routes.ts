@@ -93,9 +93,8 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const query = receivablesAgingQuerySchema.parse(request.query);
-        return reply.send(await financeSubledgerService.getReceivablesAging({
+        return reply.send(await financeSubledgerService.getReceivablesAging(request.user!, {
           ...query,
-          companyId: request.user!.companyId,
           asOf: toDate(query.asOf),
         }));
       } catch (error) {
@@ -110,9 +109,8 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const query = unappliedCashQuerySchema.parse(request.query);
-        return reply.send(await financeSubledgerService.listUnappliedCash({
+        return reply.send(await financeSubledgerService.listUnappliedCash(request.user!, {
           ...query,
-          companyId: request.user!.companyId,
         }));
       } catch (error) {
         return sendError(reply, error, "Failed to load unapplied cash");
@@ -126,9 +124,8 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const query = payablesAgingQuerySchema.parse(request.query);
-        return reply.send(await financeSubledgerService.getPayablesAging({
+        return reply.send(await financeSubledgerService.getPayablesAging(request.user!, {
           ...query,
-          companyId: request.user!.companyId,
           asOf: toDate(query.asOf),
         }));
       } catch (error) {

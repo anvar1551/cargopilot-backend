@@ -1,3 +1,4 @@
+import type { AppUser } from "../../../types/app-user";
 import { assertFinanceCurrency } from "../domain/ledger";
 import { financeBadRequest } from "../domain/finance.errors";
 import type {
@@ -17,24 +18,24 @@ function assertAsOf(asOf: Date) {
 export class FinanceSubledgerService {
   constructor(private readonly repository: FinanceSubledgerRepositoryPort) {}
 
-  getReceivablesAging(query: ReceivablesAgingQuery) {
-    return this.repository.getReceivablesAging({
+  getReceivablesAging(actor: AppUser, query: ReceivablesAgingQuery) {
+    return this.repository.getReceivablesAging(actor, {
       ...query,
       asOf: assertAsOf(query.asOf),
       currency: query.currency ? assertFinanceCurrency(query.currency) : undefined,
     });
   }
 
-  getPayablesAging(query: PayablesAgingQuery) {
-    return this.repository.getPayablesAging({
+  getPayablesAging(actor: AppUser, query: PayablesAgingQuery) {
+    return this.repository.getPayablesAging(actor, {
       ...query,
       asOf: assertAsOf(query.asOf),
       currency: query.currency ? assertFinanceCurrency(query.currency) : undefined,
     });
   }
 
-  listUnappliedCash(query: UnappliedCashQuery) {
-    return this.repository.listUnappliedCash({
+  listUnappliedCash(actor: AppUser, query: UnappliedCashQuery) {
+    return this.repository.listUnappliedCash(actor, {
       ...query,
       currency: query.currency ? assertFinanceCurrency(query.currency) : undefined,
     });

@@ -1,3 +1,5 @@
+import type { AppUser } from "../../src/types/app-user";
+const actor={id:"synthetic"} as AppUser;
 import { FinanceSubledgerService } from "../../src/modules/finance-core/application/finance-subledger.service";
 import type { FinanceSubledgerRepositoryPort } from "../../src/modules/finance-core/application/finance-subledger.port";
 
@@ -13,20 +15,18 @@ describe("FinanceSubledgerService", () => {
 
   it("normalizes a receivables currency before repository access", async () => {
     repository.getReceivablesAging.mockResolvedValue({ items: [] });
-    await service.getReceivablesAging({
-      companyId: "company",
+    await service.getReceivablesAging(actor, {
       asOf: new Date("2026-08-03T00:00:00.000Z"),
       limit: 50,
       currency: "usd",
     });
-    expect(repository.getReceivablesAging).toHaveBeenCalledWith(expect.objectContaining({
+    expect(repository.getReceivablesAging).toHaveBeenCalledWith(actor, expect.objectContaining({
       currency: "USD",
     }));
   });
 
   it("rejects an invalid aging date before repository access", () => {
-    expect(() => service.getPayablesAging({
-      companyId: "company",
+    expect(() => service.getPayablesAging(actor, {
       asOf: new Date("invalid"),
       limit: 50,
     })).toThrow(expect.objectContaining({ code: "FINANCE_AGING_DATE_INVALID" }));
@@ -35,8 +35,8 @@ describe("FinanceSubledgerService", () => {
 
   it("normalizes unapplied cash currency", async () => {
     repository.listUnappliedCash.mockResolvedValue({ items: [] });
-    await service.listUnappliedCash({ companyId: "company", limit: 50, currency: "cny" });
-    expect(repository.listUnappliedCash).toHaveBeenCalledWith(expect.objectContaining({
+    await service.listUnappliedCash(actor, { limit: 50, currency: "cny" });
+    expect(repository.listUnappliedCash).toHaveBeenCalledWith(actor, expect.objectContaining({
       currency: "CNY",
     }));
   });

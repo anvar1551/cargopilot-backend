@@ -1,5 +1,5 @@
+import type { AppUser } from "../../../types/app-user";
 export type ReceivablesAgingQuery = {
-  companyId: string;
   asOf: Date;
   cursor?: string;
   limit: number;
@@ -8,7 +8,6 @@ export type ReceivablesAgingQuery = {
 };
 
 export type PayablesAgingQuery = {
-  companyId: string;
   asOf: Date;
   cursor?: string;
   limit: number;
@@ -17,7 +16,6 @@ export type PayablesAgingQuery = {
 };
 
 export type UnappliedCashQuery = {
-  companyId: string;
   cursor?: string;
   limit: number;
   currency?: string;
@@ -27,7 +25,7 @@ export type UnappliedCashQuery = {
 };
 
 export interface FinanceSubledgerRepositoryPort {
-  getReceivablesAging(query: ReceivablesAgingQuery): Promise<unknown>;
-  getPayablesAging(query: PayablesAgingQuery): Promise<unknown>;
-  listUnappliedCash(query: UnappliedCashQuery): Promise<unknown>;
+  getReceivablesAging(actor: AppUser, query: ReceivablesAgingQuery): Promise<unknown>;
+  getPayablesAging(actor: AppUser, query: PayablesAgingQuery): Promise<unknown>;
+  listUnappliedCash(actor: AppUser, query: UnappliedCashQuery): Promise<unknown>;
 }

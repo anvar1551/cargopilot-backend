@@ -23,20 +23,20 @@ export const receivablesAgingQuerySchema = cursorPageSchema.extend({
   asOf: date,
   currency: z.enum(FINANCE_CURRENCIES).optional(),
   customerEntityId: uuid.optional(),
-});
+}).strict();
 
 export const payablesAgingQuerySchema = cursorPageSchema.extend({
   asOf: date,
   currency: z.enum(FINANCE_CURRENCIES).optional(),
   carrierProviderId: uuid.optional(),
-});
+}).strict();
 
 export const unappliedCashQuerySchema = cursorPageSchema.extend({
   currency: z.enum(FINANCE_CURRENCIES).optional(),
   customerEntityId: uuid.optional(),
   type: z.enum(["receipt", "refund"]).optional(),
   status: z.enum(["open", "applied"]).default("open"),
-});
+}).strict();
 
 export const financeIdParamSchema = z.object({ id: uuid });
 
