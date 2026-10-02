@@ -1,3 +1,4 @@
+import {publishRouteTemplateConfigurationForActor as publishTemplateConfiguration} from "../../src/modules/integrations-core/application/template-configuration-publication";
 import {listIntegrationProviderConfigurationsForActor as readConfigurations} from "../../src/modules/integrations-core/application/provider-configuration-read";
 import {publishIntegrationProviderConfigurationForActor as publishConfiguration} from "../../src/modules/integrations-core/application/provider-configuration-publication";
 import {listCarrierRoutingRulesForActor as routingInventory,resolveCarrierRoutingRuleForOrderLeg as routingSelector} from "../../src/modules/integrations-core/application/carrier-routing.service";
@@ -440,18 +441,19 @@ it("routing compound catalog preserves expansion status and reuses pre-existing 
 
 it("template scoped PostgreSQL list detail cursor and counts separate three selected companies without writes",async()=>{
   const templates=[];
+  const query="Synthetic scoped template "+randomUUID();
   for(const p of providers) {
-    const template=await mockPrisma.routeTemplate.create({data:{companyId:p.companyId,name:"Synthetic scoped template",metadata:{private:"SENSITIVE-CANARY"}}});
+    const template=await mockPrisma.routeTemplate.create({data:{companyId:p.companyId,name:query,metadata:{private:"SENSITIVE-CANARY"}}});
     await mockPrisma.routeTemplateLeg.create({data:{routeTemplateId:template.id,sequence:1,legCode:"synthetic",metadata:{private:"SENSITIVE-CANARY"}}});templates.push(template);
   }
   const before=await routingSnapshot();
   for(let i=0;i<memberships.length;i++) {
-    const user=actor(memberships[i]),result:any=await templateInventory({user,filters:{limit:1}});
+    const user=actor(memberships[i]),result:any=await templateInventory({user,filters:{limit:1,q:query}});
     expect(result.total).toBe(1);expect(result.data.map((r:any)=>r.id)).toEqual([templates[i].id]);expect(JSON.stringify(result)).not.toContain("SENSITIVE-CANARY");
     const detail=await templateDetail({user,routeTemplateId:templates[i].id});expect(detail.legCount).toBe(1);expect(detail.metadata).toBeNull();expect(detail.legs![0].metadata).toBeNull();
     for(let j=0;j<templates.length;j++) if(j!==i) {
       await expect(templateDetail({user,routeTemplateId:templates[j].id})).rejects.toMatchObject({statusCode:404});
-      await expect(templateInventory({user,filters:{limit:1,cursor:templates[j].id}})).rejects.toMatchObject({statusCode:404});
+      await expect(templateInventory({user,filters:{limit:1,q:query,cursor:templates[j].id}})).rejects.toMatchObject({statusCode:404});
     }
   }
   expect(await routingSnapshot()).toEqual(before);
@@ -696,4 +698,97 @@ it("configuration read PostgreSQL owns counts cursors revisions and projections 
   const afterFixture=await publicationSnapshot();const scopes=await mockPrisma.membershipScope.findMany({where:{membershipId:memberships[0].id}});await mockPrisma.membershipScope.deleteMany({where:{membershipId:memberships[0].id}});
   try{await expect(readConfigurations({user:actor(memberships[0]),providerId:owned[0].id})).rejects.toMatchObject({statusCode:403});expect(await publicationSnapshot()).toEqual(afterFixture);}finally{await mockPrisma.membershipScope.createMany({data:scopes});}
   expect((await publicationSnapshot()).versions).toEqual(before.versions);
+});
+
+
+async function templatePublicationFixture(company=0){
+ const permission=await mockPrisma.permission.upsert({where:{key:"integration.routing.manage"},create:{key:"integration.routing.manage",resource:"synthetic-template",action:"publish"},update:{}});
+ for(const m of memberships){const roles=await mockPrisma.membershipRole.findMany({where:{membershipId:m.id}});await mockPrisma.rolePermission.createMany({data:roles.map(r=>({roleId:r.roleId,permissionId:permission.id})),skipDuplicates:true});}
+ return mockPrisma.routeTemplate.create({data:{companyId:memberships[company].companyId,name:"Synthetic version "+randomUUID(),metadata:{canary:"DO-NOT-COPY"},legs:{create:{sequence:1,legCode:"road",mode:"road",metadata:{canary:"DO-NOT-COPY"}}}},include:{legs:true}});
+}
+async function templatePublicationSnapshot(){return {...await snapshot(),templates:await mockPrisma.routeTemplate.findMany({orderBy:{id:"asc"}}),legs:await mockPrisma.routeTemplateLeg.findMany({orderBy:{id:"asc"}}),versions:await mockPrisma.routeTemplateConfigurationVersion.findMany({orderBy:{id:"asc"}}),versionLegs:await mockPrisma.routeTemplateConfigurationLeg.findMany({orderBy:{versionId:"asc"}})};}
+it("template publication PostgreSQL matching concurrent requests create one sealed snapshot and exact retry",async()=>{
+ const t=await templatePublicationFixture(),intent={user:actor(memberships[0]),templateId:t.id,operationId:randomUUID(),expectedRevision:0};
+ const results=await Promise.all([publishTemplateConfiguration(intent),publishTemplateConfiguration(intent)]);expect(results[0]).toEqual(results[1]);
+ expect(await mockPrisma.routeTemplateConfigurationVersion.count({where:{templateId:t.id}})).toBe(1);
+ expect(await mockPrisma.routeTemplateConfigurationLeg.count({where:{versionId:results[0].id}})).toBe(1);
+ expect(await mockPrisma.routeTemplate.findUniqueOrThrow({where:{id:t.id}})).toMatchObject({configurationRevision:1,currentConfigurationId:results[0].id});
+ const before=await templatePublicationSnapshot();await expect(publishTemplateConfiguration({...intent,expectedRevision:1})).rejects.toMatchObject({statusCode:409});expect(await templatePublicationSnapshot()).toEqual(before);
+});
+it("template publication PostgreSQL competing revision and same-tenant company operation reuse serialize",async()=>{
+ const t=await templatePublicationFixture(),user=actor(memberships[0]);
+ const outcomes=await Promise.allSettled([1,2].map(()=>publishTemplateConfiguration({user,templateId:t.id,operationId:randomUUID(),expectedRevision:0})));
+ expect(outcomes.filter(x=>x.status==="fulfilled")).toHaveLength(1);expect(outcomes.find(x=>x.status==="rejected")).toMatchObject({reason:{statusCode:409}});
+ const a=await templatePublicationFixture(),b=await templatePublicationFixture(1),operationId=randomUUID();
+ const reused=await Promise.allSettled([publishTemplateConfiguration({user,templateId:a.id,operationId,expectedRevision:0}),publishTemplateConfiguration({user:actor(memberships[1]),templateId:b.id,operationId,expectedRevision:0})]);
+ expect(reused.filter(x=>x.status==="fulfilled")).toHaveLength(1);expect(reused.find(x=>x.status==="rejected")).toMatchObject({reason:{statusCode:409}});
+ expect(await mockPrisma.routeTemplateConfigurationVersion.count({where:{tenantId:memberships[0].tenantId,operationId}})).toBe(1);
+});
+it("template publication PostgreSQL foreign companies tenants missing scope and suspended context deny without writes",async()=>{
+ const t=await templatePublicationFixture(),intent={user:actor(memberships[0]),templateId:t.id,operationId:randomUUID(),expectedRevision:0};
+ for(const m of memberships.slice(1)){const before=await templatePublicationSnapshot();await expect(publishTemplateConfiguration({...intent,user:actor(m)})).rejects.toMatchObject({statusCode:404});expect(await templatePublicationSnapshot()).toEqual(before);}
+ const scopes=await mockPrisma.membershipScope.findMany({where:{membershipId:memberships[0].id}});await mockPrisma.membershipScope.deleteMany({where:{membershipId:memberships[0].id}});
+ try{const before=await templatePublicationSnapshot();await expect(publishTemplateConfiguration(intent)).rejects.toMatchObject({statusCode:403});expect(await templatePublicationSnapshot()).toEqual(before);}finally{await mockPrisma.membershipScope.createMany({data:scopes});}
+ await mockPrisma.tenant.update({where:{id:memberships[0].tenantId},data:{status:"suspended"}});
+ try{const before=await templatePublicationSnapshot();await expect(publishTemplateConfiguration(intent)).rejects.toMatchObject({statusCode:403});expect(await templatePublicationSnapshot()).toEqual(before);}finally{await mockPrisma.tenant.update({where:{id:memberships[0].tenantId},data:{status:"active"}});}
+});
+it("template publication PostgreSQL sealed immutable history and source snapshot cannot be altered or cleared",async()=>{
+ const t=await templatePublicationFixture(),v=await publishTemplateConfiguration({user:actor(memberships[0]),templateId:t.id,operationId:randomUUID(),expectedRevision:0});
+ const before=await templatePublicationSnapshot();
+ await expect(mockPrisma.routeTemplateConfigurationVersion.update({where:{id:v.id},data:{name:"changed"}})).rejects.toThrow("history is immutable");
+ await expect(mockPrisma.routeTemplateConfigurationVersion.delete({where:{id:v.id}})).rejects.toThrow("history is immutable");
+ await expect(mockPrisma.routeTemplateConfigurationLeg.updateMany({where:{versionId:v.id},data:{label:"changed"}})).rejects.toThrow("history is immutable");
+ await expect(mockPrisma.routeTemplateConfigurationLeg.deleteMany({where:{versionId:v.id}})).rejects.toThrow("history is immutable");
+ await expect(mockPrisma.routeTemplate.update({where:{id:t.id},data:{name:"changed"}})).rejects.toThrow("snapshot disagrees");
+ await expect(mockPrisma.routeTemplate.update({where:{id:t.id},data:{currentConfigurationId:null,configurationRevision:0}})).rejects.toThrow("history cannot be cleared");
+ await expect(mockPrisma.routeTemplateLeg.update({where:{id:t.legs[0].id},data:{label:"changed"}})).rejects.toThrow("snapshot disagrees");
+ await expect(mockPrisma.routeTemplateLeg.create({data:{routeTemplateId:t.id,sequence:2,legCode:"extra",mode:"road"}})).rejects.toThrow("snapshot disagrees");
+ await expect(mockPrisma.routeTemplateConfigurationLeg.create({data:{versionId:v.id,templateId:t.id,sourceLegId:t.legs[0].id,sequence:2,legCode:"extra",mode:"road"}})).rejects.toThrow("children are sealed");
+ for(const table of ["RouteTemplateConfigurationVersion","RouteTemplateConfigurationLeg","RouteTemplateLeg"])await expect(pool.query('TRUNCATE "'+table+'" CASCADE')).rejects.toMatchObject({code:"23514"});
+ expect(await templatePublicationSnapshot()).toEqual(before);
+});
+it("template publication PostgreSQL unpublished receipts foreign actors and wrong template children cannot commit",async()=>{
+ const t=await templatePublicationFixture(),foreign=await templatePublicationFixture(2),accepted=await publishTemplateConfiguration({user:actor(memberships[0]),templateId:t.id,operationId:randomUUID(),expectedRevision:0});
+ const {id,acceptedAt,createdTransaction,...base}=await mockPrisma.routeTemplateConfigurationVersion.findUniqueOrThrow({where:{id:accepted.id}});
+ const fresh=await templatePublicationFixture(),before=await templatePublicationSnapshot();
+ await expect(mockPrisma.routeTemplateConfigurationVersion.create({data:{...base,templateId:fresh.id,operationId:randomUUID()}})).rejects.toThrow("receipt was not published");
+ for(const override of [{companyMembershipId:memberships[1].id},{tenantMembershipId:memberships[2].tenantMembershipId},{tenantId:memberships[2].tenantId}])
+  await expect(mockPrisma.routeTemplateConfigurationVersion.create({data:{...base,templateId:fresh.id,operationId:randomUUID(),...override}})).rejects.toMatchObject({code:"P2003"});
+ await expect(mockPrisma.$transaction(async tx=>{
+  const receipt=await tx.routeTemplateConfigurationVersion.create({data:{...base,templateId:fresh.id,operationId:randomUUID()}});
+  await tx.routeTemplateConfigurationLeg.create({data:{versionId:receipt.id,templateId:fresh.id,sourceLegId:foreign.legs[0].id,sequence:1,legCode:"road",mode:"road"}});
+ })).rejects.toMatchObject({code:"P2003"});
+ expect(await templatePublicationSnapshot()).toEqual(before);
+});
+it("template publication PostgreSQL concurrent child edits preserve the committed snapshot",async()=>{
+ expect((await pool.query("SELECT count(*)::int AS n FROM pg_trigger WHERE tgname='TemplateConfiguration_source_parent_lock' AND NOT tgisinternal")).rows[0].n).toBe(1);
+ const t=await templatePublicationFixture();
+ const settled=await Promise.allSettled([
+  publishTemplateConfiguration({user:actor(memberships[0]),templateId:t.id,operationId:randomUUID(),expectedRevision:0}),
+  mockPrisma.routeTemplateLeg.update({where:{id:t.legs[0].id},data:{label:"synthetic concurrent edit"}}),
+ ]);
+ expect(settled.some(r=>r.status==="fulfilled")).toBe(true);
+ const parent=await mockPrisma.routeTemplate.findUniqueOrThrow({where:{id:t.id}});
+ const versions=await mockPrisma.routeTemplateConfigurationVersion.findMany({where:{templateId:t.id}});
+ if(parent.currentConfigurationId){
+  expect(versions).toHaveLength(1);expect(versions[0].id).toBe(parent.currentConfigurationId);
+  const source=await mockPrisma.routeTemplateLeg.findUniqueOrThrow({where:{id:t.legs[0].id}});
+  const stored=await mockPrisma.routeTemplateConfigurationLeg.findUniqueOrThrow({where:{versionId_sourceLegId:{versionId:parent.currentConfigurationId,sourceLegId:source.id}}});
+  expect(stored.label).toBe(source.label);
+ }else{expect(versions).toHaveLength(0);expect(parent.configurationRevision).toBe(0);}
+});
+it("template publication PostgreSQL oversized authoritative content rejects before journal writes",async()=>{
+ const t=await templatePublicationFixture();
+ await mockPrisma.routeTemplate.update({where:{id:t.id},data:{name:"x".repeat(2049)}});
+ const before=await templatePublicationSnapshot();
+ await expect(publishTemplateConfiguration({user:actor(memberships[0]),templateId:t.id,operationId:randomUUID(),expectedRevision:0})).rejects.toMatchObject({statusCode:409});
+ expect(await templatePublicationSnapshot()).toEqual(before);
+});
+it("template publication PostgreSQL post-work failure rolls back version children pointer and related outbox",async()=>{
+ const t=await templatePublicationFixture(),p=providers[0],before=await templatePublicationSnapshot(),original=mockPrisma;let reached=false;
+ mockPrisma=new Proxy(original,{get(target,key){if(key==="$transaction")return(work:any,options:any)=>target.$transaction(async tx=>{
+  await work(tx);reached=true;await tx.integrationOutbox.create({data:{companyId:p.companyId,providerId:p.id,domain:p.domain,providerCode:p.providerCode,environment:p.environment,eventType:"synthetic-template-rollback",payload:{},idempotencyKey:randomUUID()}});throw Error("synthetic-template-rollback");
+ },options);const value=(target as any)[key];return typeof value==="function"?value.bind(target):value;}});
+ try{await expect(publishTemplateConfiguration({user:actor(memberships[0]),templateId:t.id,operationId:randomUUID(),expectedRevision:0})).rejects.toThrow("synthetic-template-rollback");}finally{mockPrisma=original;}
+ expect(reached).toBe(true);expect(await templatePublicationSnapshot()).toEqual(before);
 });

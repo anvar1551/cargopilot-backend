@@ -90,6 +90,10 @@ model IntegrationProvider {
 
 model RouteTemplate {
   id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  configurationRevision Int @default(0)
+  currentConfigurationId String? @db.Uuid
+  currentConfiguration RouteTemplateConfigurationVersion? @relation("TemplateCurrentConfiguration", fields: [currentConfigurationId, id, companyId, configurationRevision], references: [id, templateId, companyId, revision], onDelete: Restrict, onUpdate: Restrict, map: "Template_current_configuration_fkey")
+  configurationVersions RouteTemplateConfigurationVersion[] @relation("TemplateConfigurationOwner")
 
   companyId String       @db.Uuid
   company   Organization @relation(fields: [companyId], references: [id], onDelete: Cascade)
@@ -123,6 +127,7 @@ model RouteTemplate {
 
 model RouteTemplateLeg {
   id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  configurationSnapshots RouteTemplateConfigurationLeg[] @relation("TemplateConfigurationSourceLeg")
 
   routeTemplateId String        @db.Uuid
   routeTemplate   RouteTemplate @relation(fields: [routeTemplateId], references: [id], onDelete: Cascade)
@@ -364,6 +369,59 @@ model IntegrationCanonicalEvent {
 }
 
 // A published immutable snapshot is also the durable action receipt. No secret values.
+model RouteTemplateConfigurationVersion {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  company Organization @relation("TemplateConfigurationCompany", fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "TemplateConfiguration_company_fkey")
+  templateId String @db.Uuid
+  template RouteTemplate @relation("TemplateConfigurationOwner", fields: [companyId, templateId], references: [companyId, id], onDelete: Restrict, onUpdate: Restrict, map: "TemplateConfiguration_template_fkey")
+  currentForTemplates RouteTemplate[] @relation("TemplateCurrentConfiguration")
+  actorUserId String @db.Uuid
+  companyMembershipId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  actorCompany CompanyMembership @relation("TemplateConfigurationActor", fields: [companyMembershipId, actorUserId, tenantId, companyId], references: [id, userId, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "TemplateConfiguration_actor_fkey")
+  actorBridge CompanyMembership @relation("TemplateConfigurationBridge", fields: [companyMembershipId, tenantMembershipId, actorUserId, tenantId], references: [id, tenantMembershipId, userId, tenantId], onDelete: Restrict, onUpdate: Restrict, map: "TemplateConfiguration_bridge_fkey")
+  operationId String @db.Uuid
+  intentSha256 String
+  expectedRevision Int
+  revision Int
+  name String
+  code String?
+  isActive Boolean
+  priority Int
+  serviceType ServiceType?
+  transportMode TransportMode?
+  originCountryCode String?
+  destinationCountryCode String?
+  legCount Int
+  acceptedAt DateTime @default(now())
+  createdTransaction BigInt @default(dbgenerated("txid_current()"))
+  legs RouteTemplateConfigurationLeg[] @relation("TemplateConfigurationLegOwner")
+  @@unique([tenantId, operationId], map: "TemplateConfiguration_operation_key")
+  @@unique([templateId, revision], map: "TemplateConfiguration_revision_key")
+  @@unique([id, templateId, companyId, revision], map: "TemplateConfiguration_pointer_key")
+  @@unique([id, templateId], map: "TemplateConfiguration_leg_owner_key")
+  @@index([tenantId, companyId, templateId, acceptedAt], map: "TemplateConfiguration_owner_idx")
+}
+
+model RouteTemplateConfigurationLeg {
+  versionId String @db.Uuid
+  templateId String @db.Uuid
+  sourceLegId String @db.Uuid
+  version RouteTemplateConfigurationVersion @relation("TemplateConfigurationLegOwner", fields: [versionId, templateId], references: [id, templateId], onDelete: Restrict, onUpdate: Restrict, map: "TemplateConfigurationLeg_version_fkey")
+  sourceLeg RouteTemplateLeg @relation("TemplateConfigurationSourceLeg", fields: [templateId, sourceLegId], references: [routeTemplateId, id], onDelete: Restrict, onUpdate: Restrict, map: "TemplateConfigurationLeg_source_fkey")
+  sequence Int
+  legCode String
+  label String?
+  mode TransportMode
+  originCountryCode String?
+  destinationCountryCode String?
+  @@id([versionId, sourceLegId])
+  @@unique([versionId, sequence], map: "TemplateConfigurationLeg_sequence_key")
+  @@unique([versionId, legCode], map: "TemplateConfigurationLeg_code_key")
+}
+
 model IntegrationProviderConfigurationVersion {
   id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   tenantId String @db.Uuid

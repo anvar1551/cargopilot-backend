@@ -69,6 +69,8 @@ model RolePermission {
 
 model CompanyMembership {
   providerConfigurationActions IntegrationProviderConfigurationVersion[] @relation("ProviderConfigurationActor")
+  templateConfigurationActions RouteTemplateConfigurationVersion[] @relation("TemplateConfigurationActor")
+  templateConfigurationBridges RouteTemplateConfigurationVersion[] @relation("TemplateConfigurationBridge")
   providerConfigurationBridges IntegrationProviderConfigurationVersion[] @relation("ProviderConfigurationBridge")
   draftDocuments FinanceDocument[] @relation("DraftCompany")
   bridgedDraftDocuments FinanceDocument[] @relation("DraftBridge")
