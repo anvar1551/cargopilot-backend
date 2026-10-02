@@ -10,6 +10,7 @@ import { persistTenantDemoFixture } from "../tenancy/postgres-fixture.persistenc
 jest.mock("../../src/config/redis",()=>({getRedisClient:jest.fn(async()=>null),getRedisPrefix:()=>"disposable-finance",withRedisTimeout:async(_name:string,work:()=>Promise<unknown>)=>work()}));
 import { prismaFinanceRepository as repo } from "../../src/modules/finance-core/infrastructure/prisma-finance.repository";
 import { prismaFinanceTreasuryRepository as treasuryRepo } from "../../src/modules/finance-core/infrastructure/prisma-finance-treasury.repository";
+import { requireDraftOperationalReferences } from "../../src/modules/finance-core/infrastructure/draft-operational-references";
 const url=process.env.CARGOPILOT_WORKER_TEST_DATABASE_URL,runId=process.env.CARGOPILOT_WORKER_RUN_ID;
 if(!url||!runId||!/^[a-f0-9]{12}$/.test(runId))throw Error("Disposable legal entity identity required");
 const target=new URL(url);if(target.hostname!=="127.0.0.1"||target.username!=="cp_worker_it"||target.pathname!==`/cp_worker_${runId}`)throw Error("Refusing existing PostgreSQL target");
@@ -604,4 +605,57 @@ it("provider settlement line concurrent source retarget waits then rejects and r
  try{await child.query("BEGIN");await parent.query("BEGIN");const v=lineValues(own);v[7]=fresh.id;id=(await child.query(settlementLineInsert+' RETURNING id',v)).rows[0].id;await parent.query('INSERT INTO "FinanceAuditEvent" ("legalEntityId",action) VALUES ($1,$2)',[entity().id,"synthetic-source-race"]);await parent.query('INSERT INTO "FinanceDomainEventOutbox" ("legalEntityId","aggregateType","aggregateId","eventType","occurredAt","payloadJson","updatedAt") VALUES ($1,$2,$3,$4,NOW(),$5,NOW())',[entity().id,"synthetic-settlement",own.settlementId,"synthetic.race",{}]);const pid=(await parent.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
  const pending=parent.query('UPDATE "PaymentIntent" SET currency=$1 WHERE id=$2',["USD",fresh.id]).then(()=>({accepted:true}),error=>({error}));let blocked=false;for(let i=0;i<40;i++){const rows:any[]=await mockPrisma.$queryRaw`SELECT wait_event_type FROM pg_stat_activity WHERE pid=${pid}`;if(rows[0]?.wait_event_type==="Lock"){blocked=true;break;}await new Promise(resolve=>setTimeout(resolve,25));}expect(blocked).toBe(true);await child.query("COMMIT");const result:any=await pending;expect(result.error?.code).toBe("23503");expect(result.error?.constraint).toBe("FinanceSettlementLine_intent_owner_fkey");await parent.query("ROLLBACK");
  }finally{await child.query("ROLLBACK");await parent.query("ROLLBACK");child.release();parent.release();if(id)await mockPrisma.financeProviderSettlementLine.delete({where:{id}});}expect(await settlementGraph()).toEqual(before);await mockPrisma.paymentIntent.delete({where:{id:fresh.id}});
+});
+
+describe("manual draft operational references",()=>{
+ let provider:string,foreignProvider:string,leg:string,foreignLeg:string,roleId:string;
+ const refs=():{orderId:string;orderLegId:string;customerEntityId:string;warehouseId:string;carrierProviderId:string}=>({orderId:ids.orders.transAsiaUz,orderLegId:leg,customerEntityId:ids.customers.transAsia,warehouseId:ids.warehouses.transAsiaUz,carrierProviderId:provider});
+ const request=()=>({...command(),lines:command().lines.map(line=>({...line,...refs()}))});
+ beforeAll(async()=>{
+  const role=await mockPrisma.membershipRole.findFirstOrThrow({where:{membershipId:owned.id}});roleId=role.roleId;
+  for(const key of ["shipment.view","integration.provider.read"]){const permission=await mockPrisma.permission.create({data:{key,resource:"synthetic-reference",action:key}});await mockPrisma.rolePermission.create({data:{roleId,permissionId:permission.id}});}
+  await mockPrisma.membershipScope.create({data:{membershipId:owned.id,scopeType:"warehouse",scopeRefId:ids.warehouses.transAsiaUz}});
+  provider=(await mockPrisma.integrationProvider.create({data:{companyId:owned.companyId,domain:"carrier",providerCode:"synthetic-draft-reference",environment:"sandbox"}})).id;
+  foreignProvider=(await mockPrisma.integrationProvider.create({data:{companyId:ids.organizations.transAsiaDe,domain:"carrier",providerCode:"synthetic-draft-reference",environment:"sandbox"}})).id;
+  leg=(await mockPrisma.orderLeg.create({data:{orderId:ids.orders.transAsiaUz,sequence:71,carrierProviderId:provider}})).id;
+  foreignLeg=(await mockPrisma.orderLeg.create({data:{orderId:ids.orders.transAsiaDe,sequence:71,carrierProviderId:foreignProvider}})).id;
+  await mockPrisma.financeFiscalPeriod.create({data:{legalEntityId:entity().id,fiscalYear:2026,periodNumber:1,name:"Synthetic reference period",startDate:new Date("2026-01-01"),endDate:new Date("2026-01-31")}});
+ });
+ it("valid owned scoped draft retains exact money and matching retry creates no duplicate effects",async()=>{
+  const c=request(),result:any=await repo.createDraftJournal(c,actor(owned)),before=await records();
+  const retry:any=await repo.createDraftJournal(c,actor(owned));expect(retry.id).toBe(result.id);expect(result.totalDebitBase.eq(result.totalCreditBase)).toBe(true);
+  const lines=await mockPrisma.financeJournalLine.findMany({where:{journalEntryId:result.id}});expect(lines).toHaveLength(2);for(const line of lines)expect(line).toMatchObject(refs());expect(await records()).toEqual(before);
+ });
+ it("foreign tenant and same-tenant company orders reject without records, numbering or events",async()=>{
+  const before=await records(),numbers=await mockPrisma.financeNumberSequence.findMany();
+  for(const orderId of [ids.orders.unrelated,ids.orders.transAsiaDe]){const c=request();c.lines=c.lines.map(line=>({...line,orderId}));await expect(repo.createDraftJournal(c,actor(owned))).rejects.toMatchObject({code:"FINANCE_DRAFT_REFERENCE_REJECTED"});}
+  expect(await records()).toEqual(before);expect(await mockPrisma.financeNumberSequence.findMany()).toEqual(numbers);
+ });
+ it("foreign customer, warehouse, provider and wrong parent leg reject without effects",async()=>{
+  const before=await records();for(const change of [{customerEntityId:ids.customers.unrelated},{warehouseId:ids.warehouses.unrelated},{carrierProviderId:foreignProvider},{orderLegId:foreignLeg}]){const c=request();c.lines=c.lines.map(line=>({...line,...change}));await expect(repo.createDraftJournal(c,actor(owned))).rejects.toMatchObject({code:"FINANCE_DRAFT_REFERENCE_REJECTED"});}expect(await records()).toEqual(before);
+ });
+ it("current permission and warehouse-scope removal rejects even a confirmed retry",async()=>{
+  const c=request();await repo.createDraftJournal(c,actor(owned));const before=await records();
+  for(const key of ["shipment.view","customers.read","integration.provider.read"]){const p=await mockPrisma.permission.findUniqueOrThrow({where:{key}});await mockPrisma.rolePermission.deleteMany({where:{roleId,permissionId:p.id}});try{await expect(repo.createDraftJournal(c,actor(owned))).rejects.toThrow();expect(await records()).toEqual(before);}finally{await mockPrisma.rolePermission.create({data:{roleId,permissionId:p.id}});}}
+  await mockPrisma.membershipScope.deleteMany({where:{membershipId:owned.id,scopeType:"warehouse"}});try{await expect(repo.createDraftJournal(c,actor(owned))).rejects.toMatchObject({statusCode:403});expect(await records()).toEqual(before);}finally{await mockPrisma.membershipScope.create({data:{membershipId:owned.id,scopeType:"warehouse",scopeRefId:ids.warehouses.transAsiaUz}});}
+ });
+ it("concurrent identical referenced drafts create one durable financial result",async()=>{
+  const c=request(),before=await records(),results:any[]=await Promise.all([1,2,3].map(()=>repo.createDraftJournal(c,actor(owned))));expect(new Set(results.map(row=>row.id)).size).toBe(1);
+  const after=await records();expect(after.documents.length-before.documents.length).toBe(1);expect(after.journals.length-before.journals.length).toBe(1);expect(after.lines.length-before.lines.length).toBe(2);expect(after.audit-before.audit).toBe(1);expect(after.outbox-before.outbox).toBe(1);
+ });
+ it("late outbox failure rolls back authorized referenced draft and numbering",async()=>{
+  const before=await records(),numbers=await mockPrisma.financeNumberSequence.findMany();await pool.query(`CREATE FUNCTION public.cp_draft_reference_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic reference outbox failure'; END $$;CREATE TRIGGER cp_draft_reference_fail BEFORE INSERT ON "FinanceDomainEventOutbox" FOR EACH ROW EXECUTE FUNCTION public.cp_draft_reference_fail();`);
+  try{await expect(repo.createDraftJournal(request(),actor(owned))).rejects.toThrow("synthetic reference outbox failure");}finally{await pool.query('DROP TRIGGER cp_draft_reference_fail ON "FinanceDomainEventOutbox";DROP FUNCTION public.cp_draft_reference_fail();');}expect(await records()).toEqual(before);expect(await mockPrisma.financeNumberSequence.findMany()).toEqual(numbers);
+ });
+ it("actual validation share locks block competing non-key child retarget until transaction end",async()=>{
+  const parent=await pool.connect();let release!:()=>void,ready!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;}),locked=new Promise<void>(resolve=>{ready=resolve;});let work:Promise<unknown>|undefined,pending:Promise<unknown>|undefined;
+  try{await parent.query("BEGIN");const pid=(await parent.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+   work=mockPrisma.$transaction(async tx=>{await requireDraftOperationalReferences(tx,actor(owned),[refs()],{tenantId:owned.tenantId!,companyId:owned.companyId});ready();await gate;});
+   await Promise.race([locked,work.then(()=>{throw Error("Validation did not hold lock");})]);
+   pending=parent.query('UPDATE "OrderLeg" SET "carrierProviderId"=$1 WHERE id=$2',[foreignProvider,leg]);let blocked=false;for(let i=0;i<40;i++){const rows:any[]=await mockPrisma.$queryRaw`SELECT wait_event_type FROM pg_stat_activity WHERE pid=${pid}`;if(rows[0]?.wait_event_type==="Lock"){blocked=true;break;}await new Promise(resolve=>setTimeout(resolve,25));}expect(blocked).toBe(true);release();await work;await pending;
+   // Raw retarget is still allowed after validation ends: relational dimension
+   // certification is a deferred gap. Roll it back; do not alter committed work.
+  }finally{release();await work?.catch(()=>{});await pending?.catch(()=>{});await parent.query("ROLLBACK");parent.release();}
+  expect((await mockPrisma.orderLeg.findUniqueOrThrow({where:{id:leg}})).carrierProviderId).toBe(provider);
+ });
 });

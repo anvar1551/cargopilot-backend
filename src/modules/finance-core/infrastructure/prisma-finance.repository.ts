@@ -3,6 +3,7 @@ import { listOwnedPostingRules, getOwnedPostingRule } from "./posting-rule-read"
 import { rejectUnsupportedGenericFinanceIngestion, rejectUnapprovedAutomaticPosting, requireSupportedFinanceSource } from "../domain/automatic-execution-containment";
 import { readOwnedTrialBalance } from "./trial-balance-read";
 import { buildDraftIntent, assertDraftRetry, projectDraftResult } from "../domain/draft-intent";
+import { requireDraftOperationalReferences } from "./draft-operational-references";
 import { requireJournalEntity, assertJournalBindings, assertReversalRetry } from "./journal-integrity";
 import { listOwnedJournals, getOwnedJournal } from "./journal-read";
 import { rejectUnacceptedInvoiceExecution } from "../domain/invoice-execution-containment";
@@ -676,6 +677,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
       const entity = await requireJournalEntity(tx, command.companyId);
       if (entity.tenantId !== context.tenantId) throw financeConflict("Journal tenant context rejected", "FINANCE_JOURNAL_OWNERSHIP_REJECTED");
       const intent = buildDraftIntent(command, context, entity);
+      await requireDraftOperationalReferences(tx, actor, intent.snapshot.lines, { tenantId: context.tenantId, companyId: entity.companyId });
       await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtextextended(${"finance-draft:" + entity.id + ":" + command.idempotencyKey}, 0))`;
       const duplicate = await tx.financeDocument.findUnique({
         where: {

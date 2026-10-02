@@ -1,6 +1,6 @@
 jest.mock("../../src/config/prismaClient",()=>({__esModule:true,default:require("./fixtures").database}));
 jest.mock("../../src/config/redis",()=>({getRedisClient:jest.fn(async()=>null),getRedisPrefix:()=>"test",withRedisTimeout:async(_name:string,work:()=>Promise<unknown>)=>work()}));
-jest.mock("../../src/modules/identity-access/access-control",()=>({loadAccessSnapshot:jest.fn(),hasAnyPermissionSync:jest.fn()}));
+jest.mock("../../src/modules/identity-access/access-control",()=>({loadAccessSnapshot:jest.fn(),hasAnyPermissionSync:jest.fn(),buildOrderScopeWhere:jest.fn(async()=>({id:"__no_access__"}))}));
 jest.mock("../../src/modules/identity-access/transport/fastify-auth",()=>({fastifyAuth:()=>async(request:any)=>{request.user=mockActor;}}));
 import Fastify from "fastify";
 import { database } from "./fixtures";
@@ -14,7 +14,7 @@ const service=new FinanceService(repo);
 
 
 import { assertJournalBindings, requireJournalEntity } from "../../src/modules/finance-core/infrastructure/journal-integrity";
-const entity={id:"entity-a",companyId:"c",tenantId:"t",isActive:true,tenant:{status:"active"},company:{isActive:true,tenantId:"t"}};
+const entity={id:"entity-a",companyId:"c",tenantId:"t",baseCurrency:"UZS",isActive:true,tenant:{status:"active"},company:{isActive:true,tenantId:"t"}};
 const graph=()=>({id:"j",legalEntityId:"entity-a",documentId:"d",document:{id:"d",legalEntityId:"entity-a"},lines:[{journalEntryId:"j",legalEntityId:"entity-a",accountId:"a",account:{id:"a",legalEntityId:"entity-a"}}]});
 beforeEach(()=>{jest.clearAllMocks();jest.mocked(loadAccessSnapshot).mockResolvedValue({...snapshot,permissionCodes:["finance.journals.create","finance.journals.post","finance.journals.reverse"]});database.membershipScope.findFirst.mockReset().mockResolvedValue({id:"scope"});database.financeLegalEntity.findUnique.mockReset().mockResolvedValue(entity);});
 afterEach(()=>{for(const model of ["financeJournalEntry","financeJournalLine","financeDocument","financeAuditEvent","financeDomainEventOutbox"])for(const operation of ["create","update","updateMany","upsert","delete"])expect(database[model][operation]).not.toHaveBeenCalled();});
@@ -31,4 +31,9 @@ test.each(["branchId","costCenterCode","profitCenterCode"])("unapproved %s rejec
   const command:any={companyId:"c",actorUserId:"u",idempotencyKey:"synthetic-dimension",documentDate:new Date("2026-01-01"),postingDate:new Date("2026-01-01"),currency:"UZS",fxRate:"1",lines:[{accountId:"a",debitAmount:"1",creditAmount:"0",[key]:"foreign"},{accountId:"b",debitAmount:"0",creditAmount:"1"}]};
   await expect(repo.createDraftJournal(command,mockActor)).rejects.toMatchObject({statusCode:409,code:"FINANCE_DIMENSION_CONFIGURATION_REQUIRED"});
   expect(database.$queryRaw).not.toHaveBeenCalled();expect(database.$queryRawUnsafe).not.toHaveBeenCalled();expect(database.financeDocument.findUnique).not.toHaveBeenCalled();expect(database.financeNumberSequence.upsert).not.toHaveBeenCalled();expect(database.financeNumberSequence.update).not.toHaveBeenCalled();
+});
+test("alternate draft caller cannot store an order dimension with finance permission alone",async()=>{
+  database.$transaction.mockImplementation(async(work:any)=>work(database));database.$queryRaw.mockClear();database.financeDocument.findUnique.mockClear();
+  const command:any={companyId:"c",actorUserId:"u",idempotencyKey:"synthetic-order-dimension",documentDate:new Date("2026-01-01"),postingDate:new Date("2026-01-01"),currency:"UZS",fxRate:"1",lines:[{accountId:"a",debitAmount:"1",creditAmount:"0",orderId:"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"},{accountId:"b",debitAmount:"0",creditAmount:"1"}]};
+  await expect(repo.createDraftJournal(command,mockActor)).rejects.toMatchObject({code:"FINANCE_DRAFT_REFERENCE_REJECTED"});expect(database.$queryRaw).not.toHaveBeenCalled();expect(database.financeDocument.findUnique).not.toHaveBeenCalled();
 });

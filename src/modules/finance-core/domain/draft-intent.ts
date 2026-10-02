@@ -33,7 +33,7 @@ function date(value: Date) {
 function reference(value: any) { return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value) ? value.toLowerCase() : value; }
 function lineFields(line: any) {
   return { accountId: reference(line.accountId), description: line.description ?? null,
-    ...Object.fromEntries(dimensions.map(key => [key, key.endsWith("Id") ? reference(line[key] ?? null) : line[key] ?? null])), metadata: line.metadata ?? null };
+    ...Object.fromEntries(dimensions.map(key => [key, key.endsWith("Id") ? reference(line[key] ?? null) : line[key] ?? null])) as Record<typeof dimensions[number], string | null>, metadata: line.metadata ?? null };
 }
 
 export function buildDraftIntent(command: CreateJournalCommand, context: Context, entity: { id: string; baseCurrency: string }) {
