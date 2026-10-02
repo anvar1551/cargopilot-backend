@@ -1,3 +1,4 @@
+import {listCarrierRoutingRulesForActor as routingInventory} from "../../src/modules/integrations-core/application/carrier-routing.service";
 jest.mock("../../src/modules/integrations-core/application/webhook-database", () => ({ getIntegrationWebhookDatabase: () => new Proxy({}, { get: (_target, name) => { const value = (mockPrisma as any)[name]; return typeof value === "function" ? value.bind(mockPrisma) : value; } }) }));
 jest.mock("../../src/config/prismaClient", () => ({ __esModule: true, default: new Proxy({}, { get: (_target, name) => {
   const value = (mockPrisma as any)[name]; return typeof value === "function" ? value.bind(mockPrisma) : value;
@@ -56,11 +57,13 @@ beforeAll(async () => {
   finally { await client.query("ROLLBACK"); client.release(); }
   mockPrisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 4, connectionTimeoutMillis: 3000,
     options: "-c statement_timeout=5000 -c lock_timeout=2000 -c idle_in_transaction_session_timeout=5000" }) });
+  const routingPermission=await mockPrisma.permission.create({data:{key:"integration.routing.read",resource:"synthetic-routing",action:"read"}});
   const permission = await mockPrisma.permission.create({ data: { key: "integration.outbox.read", resource: "synthetic-integration", action: "read" } });
   expect(memberships).toHaveLength(3);
   for (const m of memberships) {
     const role = await mockPrisma.role.create({ data: { companyId: m.companyId, code: randomUUID(), name: "Synthetic integration reader" } });
     await mockPrisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+    await mockPrisma.rolePermission.create({ data: { roleId: role.id, permissionId: routingPermission.id } });
     await mockPrisma.membershipRole.create({ data: { membershipId: m.id, roleId: role.id } });
     await mockPrisma.membershipScope.create({ data: { membershipId: m.id, scopeType: "company", scopeRefId: m.companyId } });
     const p = await mockPrisma.integrationProvider.create({ data: { companyId: m.companyId, domain: "carrier", providerCode: "sandbox", environment: "sandbox" } });
@@ -320,4 +323,28 @@ it("webhook native pool lock deadline releases the transaction and permits subse
     await holder.query("ROLLBACK"); expect(await snapshot()).toEqual(before);
     await expect(resource.db.integrationProvider.count()).resolves.toBe(providers.length);
   } finally { await holder.query("ROLLBACK"); holder.release(); await resource.close(); }
+});
+
+it("routing inventory PostgreSQL isolates selected companies and excludes foreign provider/template graphs from counts",async()=>{
+ const own=await mockPrisma.carrierRoutingRule.create({data:{companyId:providers[0].companyId,providerId:providers[0].id,name:"Synthetic owned",conditionsJson:{private:"SENSITIVE-CANARY"}}});
+ for(let i=1;i<providers.length;i++)await mockPrisma.carrierRoutingRule.create({data:{companyId:providers[i].companyId,providerId:providers[i].id,name:"Synthetic other"}});
+ await mockPrisma.carrierRoutingRule.create({data:{companyId:providers[0].companyId,providerId:providers[1].id,name:"Invalid primary"}});
+ await mockPrisma.carrierRoutingRule.create({data:{companyId:providers[0].companyId,providerId:providers[0].id,fallbackProviderId:providers[2].id,name:"Invalid fallback"}});
+ const foreign=await mockPrisma.routeTemplate.create({data:{companyId:providers[2].companyId,name:"Synthetic foreign"}});
+ await mockPrisma.carrierRoutingRule.create({data:{companyId:providers[0].companyId,providerId:providers[0].id,routeTemplateId:foreign.id,name:"Invalid template"}});
+ const before=await snapshot(),rules=await mockPrisma.carrierRoutingRule.findMany({orderBy:{id:"asc"}});
+ for(let i=0;i<memberships.length;i++){const result:any=await routingInventory({user:actor(memberships[i]),filters:{limit:10}});expect(result.total).toBe(1);expect(result.data).toHaveLength(1);expect(result.data.every((r:any)=>r.companyId===memberships[i].companyId)).toBe(true);expect(JSON.stringify(result)).not.toContain("SENSITIVE-CANARY");}
+ const cursor:any=await routingInventory({user:actor(memberships[0]),filters:{limit:1,cursor:own.id}});expect(cursor.data).toHaveLength(0);expect(cursor.total).toBe(1);
+ await expect(routingInventory({user:actor(memberships[1]),filters:{limit:1,cursor:own.id}})).rejects.toMatchObject({statusCode:404});
+ expect(await snapshot()).toEqual(before);expect(await mockPrisma.carrierRoutingRule.findMany({orderBy:{id:"asc"}})).toEqual(rules);
+});
+it("routing inventory PostgreSQL rejects mismatched template children from list/count and missing scope without writes",async()=>{
+ const p=providers[0],template=await mockPrisma.routeTemplate.create({data:{companyId:p.companyId,name:"Synthetic template"}}),other=await mockPrisma.routeTemplate.create({data:{companyId:p.companyId,name:"Synthetic second"}});
+ const leg=await mockPrisma.routeTemplateLeg.create({data:{routeTemplateId:other.id,sequence:1,legCode:"synthetic"}});
+ const invalid=await mockPrisma.carrierRoutingRule.create({data:{companyId:p.companyId,providerId:p.id,name:"Wrong template child",routeTemplateId:template.id,routeTemplateLegId:leg.id}});
+ const before=await snapshot(),rules=await mockPrisma.carrierRoutingRule.findMany({orderBy:{id:"asc"}});
+ const result:any=await routingInventory({user:actor(memberships[0]),filters:{limit:10}});expect(result.total).toBe(1);expect(result.data.map((r:any)=>r.id)).not.toContain(invalid.id);
+ const scopes=await mockPrisma.membershipScope.findMany({where:{membershipId:memberships[0].id}});await mockPrisma.membershipScope.deleteMany({where:{membershipId:memberships[0].id}});
+ try{await expect(routingInventory({user:actor(memberships[0])})).rejects.toMatchObject({statusCode:403});}finally{await mockPrisma.membershipScope.createMany({data:scopes});}
+ expect(await snapshot()).toEqual(before);expect(await mockPrisma.carrierRoutingRule.findMany({orderBy:{id:"asc"}})).toEqual(rules);
 });

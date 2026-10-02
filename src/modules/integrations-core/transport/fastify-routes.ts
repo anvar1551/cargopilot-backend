@@ -476,7 +476,7 @@ const integrationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         });
         return reply.send(result);
       } catch (error) {
-        return sendError(reply, error, "Failed to list carrier routing rules");
+        return sendOutboxReadError(reply, error);
       }
     },
   );

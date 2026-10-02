@@ -1,9 +1,10 @@
+import {listCarrierRoutingRulesForActor} from "../../src/modules/integrations-core/application/carrier-routing.service";
 const mockWebhookClose = jest.fn(async () => undefined);
 jest.mock("../../src/modules/integrations-core/application/webhook-database", () => ({ closeIntegrationWebhookDatabase: () => mockWebhookClose() }));
 import { replayIntegrationOutboxForActor, retryIntegrationOutboxNowForActor } from "../../src/modules/integrations-core/application/integration-admin.service";
 jest.mock("../../src/modules/identity-access/transport/fastify-auth", () => ({ fastifyAuth: () => async () => undefined }));
 jest.mock("../../src/modules/integrations-core/application/integration-admin.service", () => ({ listIntegrationWebhookEventsForActor: jest.fn(), listIntegrationCanonicalEventsForActor: jest.fn(), listIntegrationOutboxForActor: jest.fn(), listIntegrationOutboxAttemptsForActor: jest.fn(), listIntegrationProvidersForActor: jest.fn(), replayIntegrationOutboxForActor: jest.fn(), retryIntegrationOutboxNowForActor: jest.fn(), upsertIntegrationProviderForActor: jest.fn(), rotateIntegrationProviderSecretForActor: jest.fn(), deleteIntegrationProviderForActor: jest.fn(), updateIntegrationProviderStatusForActor: jest.fn() }));
-jest.mock("../../src/modules/integrations-core/application/carrier-routing.service", () => ({}));
+jest.mock("../../src/modules/integrations-core/application/carrier-routing.service", () => ({listCarrierRoutingRulesForActor:jest.fn()}));
 jest.mock("../../src/modules/integrations-core/application/route-template.service", () => ({}));
 const mockWebhookIngest = jest.fn();
 jest.mock("../../src/modules/integrations-core/application/webhook-gateway.service", () => ({ createWebhookGatewayService: () => ({ ingest: mockWebhookIngest }) }));
@@ -141,3 +142,6 @@ it("HTTP raw-body bound rejects before gateway work", async () => {
     expect(response.statusCode).toBe(413);expect(mockWebhookIngest).not.toHaveBeenCalled();
   }finally{await app.close();}
 });
+
+it.each([400,403,404,500])("routing inventory error %s suppresses private diagnostics",async statusCode=>{const app=Fastify();try{await app.register(routes);jest.mocked(listCarrierRoutingRulesForActor).mockRejectedValue(Object.assign(Error("PRIVATE-CANARY"),{statusCode}));const response=await app.inject({method:"GET",url:"/carrier-routing-rules"});expect(response.statusCode).toBe(statusCode);expect(response.body).not.toContain("PRIVATE-CANARY");}finally{await app.close();}});
+it("routing capacity returns explicit narrow-filter response",async()=>{const app=Fastify();try{await app.register(routes);jest.mocked(listCarrierRoutingRulesForActor).mockRejectedValue(Object.assign(Error("PRIVATE-CANARY"),{statusCode:409,code:"INTEGRATION_READ_CAPACITY"}));const response=await app.inject({method:"GET",url:"/carrier-routing-rules"});expect(response.statusCode).toBe(409);expect(response.json().code).toBe("INTEGRATION_READ_CAPACITY");expect(response.body).not.toContain("PRIVATE-CANARY");}finally{await app.close();}});
