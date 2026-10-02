@@ -51,8 +51,8 @@ export interface FinanceDocumentsRepositoryPort {
     idempotencyKey: string;
     bill: PreparedCarrierBill;
   }, actor: AppUser): Promise<any>;
-  listCarrierBills(companyId: string, page: FinanceDocumentPage): Promise<any>;
-  getCarrierBill(companyId: string, billId: string): Promise<any>;
+  listCarrierBills(actor: AppUser, page: FinanceDocumentPage): Promise<any>;
+  getCarrierBill(actor: AppUser, billId: string): Promise<any>;
   submitCarrierBill(companyId: string, billId: string, actorUserId: string, actor: AppUser): Promise<any>;
   approveCarrierBill(companyId: string, billId: string, actorUserId: string, actor: AppUser): Promise<any>;
   rejectCarrierBill(

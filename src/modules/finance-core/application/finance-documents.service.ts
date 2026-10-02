@@ -195,12 +195,14 @@ export class FinanceDocumentsService {
     },actor);
   }
 
-  listCarrierBills(companyId: string, page: FinanceDocumentPage) {
-    return this.repository.listCarrierBills(companyId, page);
+  async listCarrierBills(actor: AppUser, page: FinanceDocumentPage) {
+    await requireLegalEntityContext(actor,"finance.payables.read");
+    return this.repository.listCarrierBills(actor, page);
   }
 
-  getCarrierBill(companyId: string, billId: string) {
-    return this.repository.getCarrierBill(companyId, billId);
+  async getCarrierBill(actor: AppUser, billId: string) {
+    await requireLegalEntityContext(actor,"finance.payables.read");
+    return this.repository.getCarrierBill(actor, billId);
   }
 
   async submitCarrierBill(companyId: string, billId: string, actorUserId: string,actor:AppUser) {

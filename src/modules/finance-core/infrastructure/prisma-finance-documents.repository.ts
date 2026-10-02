@@ -1,3 +1,4 @@
+import { listOwnedCarrierBills, getOwnedCarrierBill } from "./carrier-bill-read";
 import { listOwnedProviderSettlements, getOwnedProviderSettlement } from "./settlement-read";
 import type { AppUser } from "../../../types/app-user";
 import { requireCarrierBillMutation, requireSettlementMutation } from "../application/legal-entity-access";
@@ -433,25 +434,8 @@ export class PrismaFinanceDocumentsRepository implements FinanceDocumentsReposit
     });
   }
 
-  async listCarrierBills(companyId: string, page: FinanceDocumentPage) {
-    const rows = await prisma.financeCarrierBill.findMany({
-      where: { legalEntity: { companyId }, ...(page.status ? { status: page.status } : {}) },
-      orderBy: [{ invoiceDate: "desc" }, { id: "desc" }],
-      take: page.limit + 1,
-      ...(page.cursor ? { cursor: { id: page.cursor }, skip: 1 } : {}),
-      include: carrierBillInclude,
-    });
-    return pageResult(rows, page.limit);
-  }
-
-  async getCarrierBill(companyId: string, billId: string) {
-    const row = await prisma.financeCarrierBill.findFirst({
-      where: { id: billId, legalEntity: { companyId } },
-      include: carrierBillInclude,
-    });
-    if (!row) throw financeNotFound("Carrier bill not found", "FINANCE_CARRIER_BILL_NOT_FOUND");
-    return row;
-  }
+  async listCarrierBills(actor:AppUser,page:FinanceDocumentPage){return listOwnedCarrierBills(actor,page);}
+  async getCarrierBill(actor:AppUser,id:string){return getOwnedCarrierBill(actor,id);}
 
   async submitCarrierBill(companyId: string, billId: string, actorUserId: string,actor:AppUser) {
     await requireCarrierBillMutation(actor,{companyId,actorUserId},"submit");

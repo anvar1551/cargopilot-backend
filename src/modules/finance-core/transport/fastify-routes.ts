@@ -595,9 +595,9 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     { preHandler: fastifyAuth({ permission: "finance.payables.read" }) },
     async (request, reply) => {
       try {
-        const page = financeDocumentPageSchema.parse(request.query);
+        const page = financeDocumentPageSchema.strict().parse(request.query);
         return reply.send(await financeDocumentsService.listCarrierBills(
-          request.user!.companyId,
+          request.user!,
           page,
         ));
       } catch (error) {
@@ -633,7 +633,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const { id } = financeIdParamSchema.parse(request.params);
-        return reply.send(await financeDocumentsService.getCarrierBill(request.user!.companyId, id));
+        return reply.send(await financeDocumentsService.getCarrierBill(request.user!, id));
       } catch (error) {
         return sendError(reply, error, "Failed to load carrier bill");
       }
