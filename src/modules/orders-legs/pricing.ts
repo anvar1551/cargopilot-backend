@@ -243,14 +243,15 @@ export async function seedInitialServiceChargePricing(
         id: true,
         sequence: true,
         metadata: true,
-        routeTemplateId:true,routeTemplateLegId:true,
+        templateCompanyId:true,routeTemplateId:true,routeTemplateLegId:true,
         routeTemplate:{select:{companyId:true,company:{select:{tenantId:true,isActive:true}}}},
         routeTemplateLeg:{select:{routeTemplateId:true}},
       },
     });
 
     if(legs.length>100 || legs.some(leg=>
-      (leg.routeTemplateId && (leg.routeTemplateId!==input.routeTemplateId || leg.routeTemplate?.companyId!==companyId || leg.routeTemplate.company.tenantId!==tenantId || !leg.routeTemplate.company.isActive)) ||
+      (leg.templateCompanyId && !leg.routeTemplateId) ||
+      (leg.routeTemplateId && (leg.templateCompanyId!==companyId || leg.routeTemplateId!==input.routeTemplateId || leg.routeTemplate?.companyId!==companyId || leg.routeTemplate.company.tenantId!==tenantId || !leg.routeTemplate.company.isActive)) ||
       (leg.routeTemplateLegId && (!leg.routeTemplateId || leg.routeTemplateLeg?.routeTemplateId!==leg.routeTemplateId))))throw orderError("Existing order leg pricing references are inconsistent",409);
     const templates =
       (await loadRouteTemplateLegTemplates(tx,input.routeTemplateId??null,companyId,tenantId)) ??
@@ -269,6 +270,7 @@ export async function seedInitialServiceChargePricing(
               sequence: template.sequence,
               mode: template.mode,
               status: OrderLegStatus.planned,
+              templateCompanyId: template.routeTemplateId ? companyId : null,
               routeTemplateId: template.routeTemplateId ?? null,
               routeTemplateLegId: template.routeTemplateLegId ?? null,
               fromCountry: template.fromCountry ?? null,
@@ -289,7 +291,7 @@ export async function seedInitialServiceChargePricing(
                 ...(template.legCode ? { legCode: template.legCode } : {}),
               },
             },
-            select: {id:true,sequence:true,metadata:true,routeTemplateId:true,routeTemplateLegId:true,routeTemplate:{select:{companyId:true,company:{select:{tenantId:true,isActive:true}}}},routeTemplateLeg:{select:{routeTemplateId:true}}},
+            select: {id:true,sequence:true,metadata:true,templateCompanyId:true,routeTemplateId:true,routeTemplateLegId:true,routeTemplate:{select:{companyId:true,company:{select:{tenantId:true,isActive:true}}}},routeTemplateLeg:{select:{routeTemplateId:true}}},
           }),
         ),
       );

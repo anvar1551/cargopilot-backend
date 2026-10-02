@@ -17,6 +17,17 @@ export async function loadAcceptedCarrierOperation(db: any, outboxId: string) {
   const leg = await db.orderLeg.findFirst({ where: { id: row.aggregateId, orderId: row.ownershipOrderId } });
   if (!leg || leg.orderId !== row.ownershipOrderId || leg.carrierProviderId !== provider.id ||
       leg.carrierCode !== provider.providerCode) throw orderError("Carrier child ownership disagrees", 403);
+  // Ownership proof only: accepted execution does not impersonate its initiating user.
+  // Template retirement/cancellation policy is separate from this immutable reference graph.
+  if (leg.routeTemplateId) {
+    if (leg.templateCompanyId !== row.companyId || !await db.routeTemplate.findFirst({
+      where: { id: leg.routeTemplateId, companyId: row.companyId }, select: { id: true },
+    }) || (leg.routeTemplateLegId && !await db.routeTemplateLeg.findFirst({
+      where: { id: leg.routeTemplateLegId, routeTemplateId: leg.routeTemplateId }, select: { id: true },
+    }))) throw orderError("Carrier template ownership disagrees", 403);
+  } else if (leg.templateCompanyId || leg.routeTemplateLegId) {
+    throw orderError("Carrier template ownership is incomplete", 403);
+  }
   const envelope = row.payload;
   if (!envelope || envelope.companyId !== row.companyId || envelope.aggregateType !== "shipment" ||
       envelope.aggregateId !== leg.id || envelope.payload?.action !== row.operation) {

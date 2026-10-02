@@ -219,7 +219,8 @@ model Order {
   cashCollections      CashCollection[]
   cashCustodyOperations CashCustodyOperation[]
   supportTickets       SupportTicket[]
-  legs                 OrderLeg[]
+  legs                 OrderLeg[] @relation("OrderLegOrder")
+  templateOwnedLegs    OrderLeg[] @relation("OrderLegTemplateOwner")
   pricingComponents    PricingComponent[]
   documents            OrderDocument[]
   paymentIntents       PaymentIntent[]

@@ -460,7 +460,7 @@ it("template scoped PostgreSQL list detail cursor and counts separate three sele
 
 it("routing selector PostgreSQL current parent permission and owner graph constrain the actual rule query",async()=>{
   const m=memberships[0],order=fixture.orders.find(o=>o.ownerOrgId===m.companyId)!,user=actor(m),g=await routingGraph();
-  const leg=await mockPrisma.orderLeg.create({data:{orderId:order.id,sequence:300,mode:"road",routeTemplateId:g.template.id,routeTemplateLegId:g.leg.id}});
+  const leg=await mockPrisma.orderLeg.create({data:{orderId:order.id,sequence:300,mode:"road",templateCompanyId:m.companyId,routeTemplateId:g.template.id,routeTemplateLegId:g.leg.id}});
   const own=await mockPrisma.carrierRoutingRule.create({data:{companyId:m.companyId,providerId:providers[0].id,name:"Synthetic selector",priority:100,routeTemplateId:g.template.id,routeTemplateLegId:g.leg.id}});
   const before=await routingSnapshot();
   await expect(routingSelector({actor:user,orderId:order.id,legId:leg.id})).resolves.toMatchObject({id:own.id,providerId:providers[0].id});
@@ -472,6 +472,9 @@ it("routing selector PostgreSQL current parent permission and owner graph constr
   await mockPrisma.tenant.update({where:{id:m.tenantId},data:{status:"suspended"}});
   try{await expect(routingSelector({actor:user,orderId:order.id,legId:leg.id})).rejects.toMatchObject({statusCode:403});}finally{await mockPrisma.tenant.update({where:{id:m.tenantId},data:{status:"active"}});}
   expect(await routingSnapshot()).toEqual(before);
+  // Remove only this test's synthetic decision/leg so later seeding starts with no legs.
+  await mockPrisma.carrierRoutingRule.delete({where:{id:own.id}});
+  await mockPrisma.orderLeg.delete({where:{id:leg.id}});
 });
 
 async function seedSnapshot() {
@@ -521,4 +524,47 @@ it("pricing source PostgreSQL injected seed failure rolls back component leg and
   mockPrisma=new Proxy(original,{get(target,key){if(key==="$transaction")return(work:any,options:any)=>target.$transaction(async tx=>{await work(tx);throw Error("synthetic-seed-rollback");},options);const value=(target as any)[key];return typeof value==="function"?value.bind(target):value;}});
   try{await expect(pricingSeed(order.id,{serviceCharge:10,currency:"USD",routeTemplateId:g.template.id},actor(m))).rejects.toThrow("synthetic-seed-rollback");}finally{mockPrisma=original;}
   expect(await seedSnapshot()).toEqual(before);
+});
+it("order leg template PostgreSQL optional links and populated graph preserve authoritative company",async()=>{
+  const order=fixture.orders.find(o=>o.ownerOrgId===memberships[0].companyId)!,g=await routingGraph();
+  const plain=await mockPrisma.orderLeg.create({data:{orderId:order.id,sequence:700,mode:"road"}});
+  expect(plain.templateCompanyId).toBeNull();
+  const templated=await mockPrisma.orderLeg.create({data:{orderId:order.id,sequence:701,mode:"road",templateCompanyId:memberships[0].companyId,routeTemplateId:g.template.id}});
+  await expect(mockPrisma.orderLeg.update({where:{id:templated.id},data:{routeTemplateLegId:g.leg.id}})).resolves.toMatchObject({routeTemplateLegId:g.leg.id});
+  const otherOrder=fixture.orders.find(o=>o.ownerOrgId===memberships[1].companyId)!,other=await routingGraph(1);
+  await expect(mockPrisma.orderLeg.create({data:{orderId:otherOrder.id,sequence:702,mode:"road",templateCompanyId:memberships[1].companyId,routeTemplateId:other.template.id,routeTemplateLegId:other.leg.id}})).resolves.toMatchObject({templateCompanyId:memberships[1].companyId});
+  const catalog=await pool.query("SELECT conname,convalidated,pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conname=ANY($1::text[])",[["OrderLeg_template_order_company_fkey","OrderLeg_template_company_fkey","OrderLeg_template_child_fkey","OrderLeg_template_complete_check"]]);
+  expect(catalog.rows).toHaveLength(4);expect(catalog.rows.every(r=>!r.convalidated)).toBe(true);
+  expect(catalog.rows.find(r=>r.conname==="OrderLeg_template_order_company_fkey").definition).toContain('REFERENCES "Order"(id, "ownerOrgId")');
+});
+it("order leg template PostgreSQL foreign company tenant and child insert/update rejection leaves business state unchanged",async()=>{
+  const order=fixture.orders.find(o=>o.ownerOrgId===memberships[0].companyId)!,own=await routingGraph();
+  const leg=await mockPrisma.orderLeg.create({data:{orderId:order.id,sequence:710,mode:"road",templateCompanyId:memberships[0].companyId,routeTemplateId:own.template.id,routeTemplateLegId:own.leg.id}});
+  for(let i=1;i<memberships.length;i++){
+    const foreign=await routingGraph(i),foreignOrder=fixture.orders.find(o=>o.ownerOrgId===memberships[i].companyId)!;
+    const invalid=[{templateCompanyId:memberships[i].companyId,routeTemplateId:foreign.template.id,routeTemplateLegId:foreign.leg.id},{routeTemplateId:foreign.template.id,routeTemplateLegId:foreign.leg.id},{routeTemplateLegId:foreign.leg.id},{orderId:foreignOrder.id}];
+    for(const refs of invalid){const before=await seedSnapshot();await expect(mockPrisma.orderLeg.create({data:{orderId:order.id,sequence:711,mode:"road",templateCompanyId:memberships[0].companyId,routeTemplateId:own.template.id,routeTemplateLegId:own.leg.id,...refs}})).rejects.toMatchObject({code:"P2003"});await expect(mockPrisma.orderLeg.update({where:{id:leg.id},data:refs})).rejects.toMatchObject({code:"P2003"});expect(await seedSnapshot()).toEqual(before);}
+  }
+});
+it("order leg template PostgreSQL partial references and failed transaction do not persist child pricing or events",async()=>{
+  const order=fixture.orders.find(o=>o.ownerOrgId===memberships[0].companyId)!,g=await routingGraph();
+  for(const refs of [{routeTemplateId:g.template.id},{routeTemplateLegId:g.leg.id},{templateCompanyId:memberships[0].companyId}]){
+    const before=await seedSnapshot();await expect(mockPrisma.orderLeg.create({data:{orderId:order.id,sequence:720,mode:"road",...refs}})).rejects.toThrow();expect(await seedSnapshot()).toEqual(before);
+  }
+  let reachedRejectedReference=false;const before=await seedSnapshot();await expect(mockPrisma.$transaction(async tx=>{
+    const leg=await tx.orderLeg.create({data:{orderId:order.id,sequence:721,mode:"road"}});
+    await tx.pricingComponent.create({data:{orderId:order.id,orderLegId:leg.id,componentType:"other",amount:"10",currency:"USD"}});
+    await tx.integrationOutbox.create({data:{companyId:providers[0].companyId,providerId:providers[0].id,domain:"carrier",providerCode:"sandbox",environment:"sandbox",eventType:"synthetic-rollback",payload:{},idempotencyKey:randomUUID()}});
+    reachedRejectedReference=true;await tx.orderLeg.update({where:{id:leg.id},data:{routeTemplateId:g.template.id}});
+  },{maxWait:2000,timeout:5000})).rejects.toThrow();expect(reachedRejectedReference).toBe(true);expect(await seedSnapshot()).toEqual(before);
+});
+it("order leg template PostgreSQL competing template relocation and child insertion cannot commit a conflicting graph",async()=>{
+  const order=fixture.orders.find(o=>o.ownerOrgId===memberships[0].companyId)!,g=await routingGraph();
+  const settled=await Promise.allSettled([
+    mockPrisma.orderLeg.create({data:{orderId:order.id,sequence:730,mode:"road",templateCompanyId:memberships[0].companyId,routeTemplateId:g.template.id,routeTemplateLegId:g.leg.id}}),
+    mockPrisma.routeTemplate.update({where:{id:g.template.id},data:{companyId:memberships[1].companyId}}),
+  ]);
+  expect(settled.filter(r=>r.status==="fulfilled")).toHaveLength(1);
+  const stored=await mockPrisma.orderLeg.findFirst({where:{orderId:order.id,sequence:730}}),template=await mockPrisma.routeTemplate.findUniqueOrThrow({where:{id:g.template.id}});
+  if(stored){expect(template.companyId).toBe(stored.templateCompanyId);expect(stored.templateCompanyId).toBe(order.ownerOrgId);}else expect(template.companyId).toBe(memberships[1].companyId);
 });

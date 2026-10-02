@@ -77,7 +77,9 @@ model OrderLeg {
   id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   orderId String @db.Uuid
-  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  order   Order  @relation("OrderLegOrder", fields: [orderId], references: [id], onDelete: Cascade)
+  templateCompanyId String? @db.Uuid
+  templateOwner Order? @relation("OrderLegTemplateOwner", fields: [orderId, templateCompanyId], references: [id, ownerOrgId], onDelete: Restrict, onUpdate: Restrict, map: "OrderLeg_template_order_company_fkey")
 
   sequence Int
   mode     TransportMode  @default(road)
@@ -95,9 +97,9 @@ model OrderLeg {
   carrierCode           String?
   carrierRef            String?
   routeTemplateId       String?              @db.Uuid
-  routeTemplate         RouteTemplate?       @relation(fields: [routeTemplateId], references: [id], onDelete: SetNull)
+  routeTemplate         RouteTemplate?       @relation(fields: [templateCompanyId, routeTemplateId], references: [companyId, id], onDelete: Restrict, onUpdate: Restrict, map: "OrderLeg_template_company_fkey")
   routeTemplateLegId    String?              @db.Uuid
-  routeTemplateLeg      RouteTemplateLeg?    @relation(fields: [routeTemplateLegId], references: [id], onDelete: SetNull)
+  routeTemplateLeg      RouteTemplateLeg?    @relation(fields: [routeTemplateId, routeTemplateLegId], references: [routeTemplateId, id], onDelete: Restrict, onUpdate: Restrict, map: "OrderLeg_template_child_fkey")
   carrierProviderId     String?              @db.Uuid
   carrierBookingStatus  CarrierBookingStatus @default(not_requested)
   carrierTrackingNumber String?
@@ -128,6 +130,7 @@ model OrderLeg {
   @@index([toWarehouseId])
   @@index([routeTemplateId])
   @@index([routeTemplateLegId])
+  @@index([templateCompanyId, routeTemplateId])
   @@index([carrierProviderId])
   @@index([carrierBookingStatus, updatedAt])
   @@index([carrierRef])

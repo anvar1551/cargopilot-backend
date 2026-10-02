@@ -219,7 +219,7 @@ export async function resolveCarrierRoutingRuleForOrderLeg(args: {
       AND:[{OR:[{senderAddressId:null},{senderAddressObj:{is:{tenantId}}}]},{OR:[{receiverAddressId:null},{receiverAddressObj:{is:{tenantId}}}]}]}},
       AND:[{OR:[{routeTemplateId:null},{routeTemplate:template}]},{OR:[{routeTemplateLegId:null},{routeTemplateLeg:{is:{routeTemplate:template}}}]}]},
     select: {
-      id:true,orderId:true,mode:true,sequence:true,fromCountry:true,toCountry:true,routeTemplateId:true,routeTemplateLegId:true,
+      id:true,orderId:true,templateCompanyId:true,mode:true,sequence:true,fromCountry:true,toCountry:true,routeTemplateId:true,routeTemplateLegId:true,
       routeTemplateLeg:{select:{routeTemplateId:true}},
       order: {
         select: {
@@ -237,6 +237,7 @@ export async function resolveCarrierRoutingRuleForOrderLeg(args: {
   });
   if (!leg) return null;
   if(leg.order.tenantId!==tenantId || leg.order.ownerOrgId!==companyId || leg.orderId!==args.orderId) return null;
+  if((leg.templateCompanyId && !leg.routeTemplateId) || (leg.routeTemplateId && leg.templateCompanyId!==companyId)) return null;
   if(leg.routeTemplateLegId && (!leg.routeTemplateId || leg.routeTemplateLeg?.routeTemplateId!==leg.routeTemplateId)) return null;
 
   const originCountryCode = resolveLegOriginCountry(leg);
