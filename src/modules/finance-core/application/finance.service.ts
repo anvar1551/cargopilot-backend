@@ -19,6 +19,8 @@ import {
   type CanonicalFinanceSourceEventInput,
 } from "../domain/source-event";
 import type { AppUser } from "../../../types/app-user";
+import { rejectUnapprovedAutomaticPosting } from "../domain/automatic-execution-containment";
+import { FinanceError } from "../domain/finance.errors";
 import { requirePostingRuleMutation, requireLegalEntityContext, rejectUnapprovedLegalEntityConfiguration, rejectUnapprovedPeriodConfiguration, rejectUnapprovedManualJournalExecution } from "./legal-entity-access";
 
 export class FinanceService {
@@ -266,15 +268,19 @@ export class FinanceService {
     );
   }
 
-  retrySourceEvent(input: {
+  async retrySourceEvent(input: {
     companyId: string;
     actorUserId: string;
     sourceEventRecordId: string;
-  }) {
+  }, actor: AppUser) {
+    const context = await requireLegalEntityContext(actor, "finance.exceptions.manage");
+    if (context.companyId !== input.companyId || context.userId !== input.actorUserId) throw new FinanceError("Finance retry context mismatch", 403, "FINANCE_SOURCE_CONTEXT_REJECTED");
+    rejectUnapprovedAutomaticPosting();
     return this.repository.retrySourceEvent(
       input.companyId,
       input.sourceEventRecordId,
       input.actorUserId,
+      actor,
     );
   }
 }

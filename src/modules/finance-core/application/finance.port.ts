@@ -136,5 +136,5 @@ export interface FinanceRepositoryPort {
     page: CursorPage,
     status?: "pending" | "processing" | "posted" | "exception",
   ): Promise<unknown>;
-  retrySourceEvent(companyId: string, sourceEventRecordId: string, actorUserId: string): Promise<unknown>;
+  retrySourceEvent(companyId: string, sourceEventRecordId: string, actorUserId: string, actor: AppUser): Promise<unknown>;
 }

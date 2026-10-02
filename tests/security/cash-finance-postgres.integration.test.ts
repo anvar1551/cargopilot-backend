@@ -82,30 +82,12 @@ async function ledgerSnapshot() {
   return { documents, journals, outboxes };
 }
 async function source() { return (await ingestAcceptedCashOutbox(outboxId)).event; }
-it("forged queue values are ignored; posting is exact, balanced and owner-bound", async () => {
-  const result: any = await ingestDurableFinanceEnvelope({ id: outboxId, type: "finance_source_event", payload: { tenantId: ids.tenants.unrelated, companyId: ids.organizations.unrelated, amounts: { cod_amount: "999999" }, currency: "CNY" } } as any);
-  const posted: any = await prismaFinanceRepository.processSourceEvent(result.event.id);
-  expect(posted.exception).not.toBe(true);
-  const state = await ledgerSnapshot(); expect(state.documents).toHaveLength(1); expect(state.journals).toHaveLength(1); expect(state.outboxes).toHaveLength(1);
-  expect(state.documents[0]).toMatchObject({ legalEntityId, currency: "USD", status: "posted" });
-  expect(state.documents[0].totalAmount.toFixed(4)).toBe("100.2500");
-  expect(state.journals[0].totalDebitBase.toFixed(4)).toBe("200.5000"); expect(state.journals[0].totalCreditBase.toFixed(4)).toBe("200.5000");
-  expect(state.journals[0].lines).toHaveLength(2);
-  expect(state.journals[0].lines.every(l => l.orderId === orderId && accountIds.includes(l.accountId))).toBe(true);
-  const frozen = await ledgerSnapshot(); const retry: any = await prismaFinanceRepository.processSourceEvent(result.event.id);
-  expect(retry.idempotent).toBe(true); expect(await ledgerSnapshot()).toEqual(frozen);
-});
+it("forged queue values cannot approve accounting; accepted source remains exact and new posting denies",async()=>{const result:any=await ingestDurableFinanceEnvelope({id:outboxId,type:"finance_source_event",payload:{approved:true,amounts:{cod_amount:"999999"}}}as any);expect(result.event.payloadJson.amounts.cod_amount).toBe("100.2500");const before=await ledgerSnapshot();const posted:any=await prismaFinanceRepository.processSourceEvent(result.event.id);expect(posted.exception).toBe(true);expect((await mockPrisma.financeSourceEvent.findUniqueOrThrow({where:{id:result.event.id}})).lastErrorCode).toBe("FINANCE_POSTING_RULE_APPROVAL_REQUIRED");expect(await ledgerSnapshot()).toEqual(before);});
 it("concurrent duplicate ingestion creates one source without resetting state", async () => {
   const results = await Promise.all([source(), source(), source()]); expect(new Set(results.map(r => r.id)).size).toBe(1);
   expect(await mockPrisma.financeSourceEvent.count({ where: { sourceEventId } })).toBe(1);
 });
-it("concurrent posting produces one journal/document/outbox", async () => {
-  const row = await source(); const results: any[] = await Promise.all([prismaFinanceRepository.processSourceEvent(row.id), prismaFinanceRepository.processSourceEvent(row.id), prismaFinanceRepository.processSourceEvent(row.id)]);
-  expect(results.filter(r => r.idempotent === false)).toHaveLength(1);
-  const state = await ledgerSnapshot(); expect(state.documents).toHaveLength(1); expect(state.journals).toHaveLength(1); expect(state.outboxes).toHaveLength(1);
-  expect(state.journals[0].totalDebitBase.eq(state.journals[0].totalCreditBase)).toBe(true);
-  expect((await mockPrisma.financeSourceEvent.findUniqueOrThrow({ where: { id: row.id } })).status).toBe("posted");
-});
+it("concurrent unapproved posting produces no journal/document/outbox",async()=>{const row=await source(),before=await ledgerSnapshot();const results:any[]=await Promise.all([1,2,3].map(()=>prismaFinanceRepository.processSourceEvent(row.id)));expect(results.every(r=>r.exception)).toBe(true);expect(await ledgerSnapshot()).toEqual(before);expect((await mockPrisma.financeSourceEvent.findUniqueOrThrow({where:{id:row.id}})).status).toBe("exception");});
 it.each(["company", "legalEntity", "sourceId", "payload"])("conflicting durable %s rejects before journal effects", async kind => {
   const row = await source(); const before = await ledgerSnapshot();
   const foreign = await mockPrisma.financeLegalEntity.findUniqueOrThrow({ where: { companyId: ids.organizations.transAsiaDe } });
@@ -146,18 +128,7 @@ it("missing rule and closed period remain exceptions with no invented posting", 
   await mockPrisma.financeFiscalPeriod.updateMany({ where: { legalEntityId }, data: { status: "closed" } });
   result = await prismaFinanceRepository.processSourceEvent(row.id); expect(result.exception).toBe(true); expect(await ledgerSnapshot()).toEqual(before);
 });
-it("outbox failure rolls back journal, document, source transition, audit and numbers", async () => {
-  const row = await source(); const before = await ledgerSnapshot();
-  const numbers = await mockPrisma.financeNumberSequence.findMany({ where: { legalEntityId }, orderBy: { key: "asc" } });
-  const auditCount = await mockPrisma.financeAuditEvent.count({ where: { legalEntityId } });
-  await pool.query(`CREATE FUNCTION public.cp_test_finance_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic outbox failure'; END $$;
-    CREATE TRIGGER cp_test_finance_fail BEFORE INSERT ON "FinanceDomainEventOutbox" FOR EACH ROW EXECUTE FUNCTION public.cp_test_finance_fail();`);
-  try { await expect(prismaFinanceRepository.processSourceEvent(row.id)).rejects.toThrow("synthetic outbox failure"); }
-  finally { await pool.query('DROP TRIGGER cp_test_finance_fail ON "FinanceDomainEventOutbox"; DROP FUNCTION public.cp_test_finance_fail();'); }
-  expect(await ledgerSnapshot()).toEqual(before); expect(await mockPrisma.financeNumberSequence.findMany({ where: { legalEntityId }, orderBy: { key: "asc" } })).toEqual(numbers);
-  expect(await mockPrisma.financeAuditEvent.count({ where: { legalEntityId } })).toBe(auditCount);
-  expect((await mockPrisma.financeSourceEvent.findUniqueOrThrow({ where: { id: row.id } })).status).toBe("pending");
-});
+it("unapproved posting allocates no numbers, audit or outbox business effects",async()=>{const row=await source(),before=await ledgerSnapshot(),numbers=await mockPrisma.financeNumberSequence.findMany(),audit=await mockPrisma.financeAuditEvent.count();expect(await prismaFinanceRepository.processSourceEvent(row.id)).toMatchObject({exception:true});expect(await ledgerSnapshot()).toEqual(before);expect(await mockPrisma.financeNumberSequence.findMany()).toEqual(numbers);expect(await mockPrisma.financeAuditEvent.count()).toBe(audit);});
 it("same-tenant foreign account in a cash rule is rejected", async () => {
   const row = await source(); const foreign = await mockPrisma.financeLegalEntity.findUniqueOrThrow({ where: { companyId: ids.organizations.transAsiaDe } });
   const account = await mockPrisma.financeAccount.create({ data: { legalEntityId: foreign.id, code: randomUUID(), name: "SYNTHETIC FOREIGN", type: "asset" } });
@@ -166,3 +137,5 @@ it("same-tenant foreign account in a cash rule is rejected", async () => {
   try { const before = await ledgerSnapshot(); const result: any = await prismaFinanceRepository.processSourceEvent(row.id); expect(result.exception).toBe(true); expect(await ledgerSnapshot()).toEqual(before); }
   finally { await mockPrisma.financePostingRuleLine.update({ where: { id: line.id }, data: { accountId: accountIds[0] } }); }
 });
+
+it("validated historical cash posting receipt is immutable and does not authorize new execution",async()=>{const row=await source();const doc=await mockPrisma.financeDocument.create({data:{legalEntityId,documentNumber:randomUUID(),type:"cash_movement",status:"posted",documentDate:new Date(),postingDate:new Date(),currency:"USD",totalAmount:"100.25",baseAmount:"200.5",fxRate:"2",sourceEventId,sourceType:"cash_custody",sourceId:row.sourceId,idempotencyKey:randomUUID(),createdByUserId:maker.id}});const journal=await mockPrisma.financeJournalEntry.create({data:{legalEntityId,documentId:doc.id,journalNumber:randomUUID(),status:"posted",postingDate:new Date(),totalDebitBase:"200.5",totalCreditBase:"200.5",lines:{create:[{legalEntityId,lineNumber:1,accountId:accountIds[0],currency:"USD",fxRate:"2",debitAmount:"100.25",debitBase:"200.5"},{legalEntityId,lineNumber:2,accountId:accountIds[1],currency:"USD",fxRate:"2",creditAmount:"100.25",creditBase:"200.5"}]}}});await mockPrisma.financeSourceEvent.update({where:{id:row.id},data:{status:"posted",financeDocumentId:doc.id,financeJournalEntryId:journal.id}});const before=await ledgerSnapshot();for(const result of await Promise.all([1,2].map(()=>prismaFinanceRepository.processSourceEvent(row.id))))expect(result).toMatchObject({idempotent:true});expect(await ledgerSnapshot()).toEqual(before);});

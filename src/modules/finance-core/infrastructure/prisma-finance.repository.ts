@@ -1,4 +1,5 @@
 import { listOwnedPostingRules, getOwnedPostingRule } from "./posting-rule-read";
+import { rejectUnsupportedGenericFinanceIngestion, rejectUnapprovedAutomaticPosting, requireSupportedFinanceSource } from "../domain/automatic-execution-containment";
 import { readOwnedTrialBalance } from "./trial-balance-read";
 import { buildDraftIntent, assertDraftRetry, projectDraftResult } from "../domain/draft-intent";
 import { requireJournalEntity, assertJournalBindings, assertReversalRetry } from "./journal-integrity";
@@ -1153,6 +1154,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
     if (command.event.sourceType === "cash_custody" || command.event.sourceEventId.startsWith("cash:")) {
       throw financeConflict("Cash ingestion requires its durable acceptance outbox", "FINANCE_CASH_AUTHORITY_REJECTED");
     }
+    rejectUnsupportedGenericFinanceIngestion();
     return prisma.$transaction(async (tx) => {
       const existing = await tx.financeSourceEvent.findUnique({
         where: {
@@ -1204,6 +1206,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
           throw financeNotFound("Finance source event not found", "FINANCE_SOURCE_EVENT_NOT_FOUND");
         }
         rejectUnacceptedInvoiceExecution(sourceRecord);
+        requireSupportedFinanceSource(sourceRecord);
         const cashPath = sourceRecord.sourceType === "cash_custody" || sourceRecord.sourceEventId.startsWith("cash:") ||
           (sourceRecord.payloadJson as any)?.sourceType === "cash_custody";
         let acceptedCash: Awaited<ReturnType<typeof loadAcceptedCashFinance>> | undefined;
@@ -1224,6 +1227,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
           if (journal.documentId !== sourceRecord.financeDocumentId || journal.legalEntityId !== sourceRecord.legalEntityId) throw financeConflict("Source result ownership rejected", "FINANCE_JOURNAL_OWNERSHIP_REJECTED");
           return { event: sourceRecord, idempotent: true };
         }
+        rejectUnapprovedAutomaticPosting();
         const event = acceptedCash?.event ?? normalizeFinanceSourceEvent(
           sourceRecord.payloadJson as Parameters<typeof normalizeFinanceSourceEvent>[0],
         );
@@ -1494,7 +1498,10 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
     return pageResult(rows, page.limit);
   }
 
-  async retrySourceEvent(companyId: string, sourceEventRecordId: string, actorUserId: string) {
+  async retrySourceEvent(companyId: string, sourceEventRecordId: string, actorUserId: string, actor: AppUser) {
+    const context = await requireLegalEntityContext(actor, "finance.exceptions.manage");
+    if (context.companyId !== companyId || context.userId !== actorUserId) throw new FinanceError("Finance retry context mismatch", 403, "FINANCE_SOURCE_CONTEXT_REJECTED");
+    rejectUnapprovedAutomaticPosting();
     return prisma.$transaction(async (tx) => {
       const event = await tx.financeSourceEvent.findFirst({
         where: { id: sourceEventRecordId, companyId },

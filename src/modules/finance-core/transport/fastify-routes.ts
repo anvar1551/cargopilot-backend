@@ -1056,7 +1056,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           companyId: request.user!.companyId,
           actorUserId: request.user!.id,
           sourceEventRecordId: id,
-        }));
+        }, request.user!));
       } catch (error) {
         return sendError(reply, error, "Failed to retry finance source event");
       }

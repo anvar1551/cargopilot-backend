@@ -83,15 +83,13 @@ it("a nonexistent durable queue identifier cannot invoke payload-based ingestion
   outbox = null; await expect(ingestDurableFinanceEnvelope({ id: "finance:nonexistent", type: "finance_source_event" })).rejects.toBeDefined();
   expect(mockDb.financeSourceEvent.create).not.toHaveBeenCalled();
 });
-it("posting executes existing balanced mechanics under durable capability, not human membership", async () => {
+it("accepted custody is not independently approved accounting configuration", async () => {
   await ingestAcceptedCashOutbox(outbox.eventId); record.status = "pending";
   const result: any = await prismaFinanceRepository.processSourceEvent(record.id);
-  expect(result.exception).not.toBe(true); expect(result.journal.totalDebitBase.toFixed(4)).toBe("200.5000");
-  expect(result.journal.totalCreditBase.toFixed(4)).toBe("200.5000"); expect(result.document.totalAmount.toFixed(4)).toBe("100.2500");
-  expect(mockDb.financeDomainEventOutbox.create).toHaveBeenCalledTimes(1); expect(mockDb.companyMembership.findFirst).not.toHaveBeenCalled();
+  expect(result.exception).toBe(true);expect(record.lastErrorCode).toBe("FINANCE_POSTING_RULE_APPROVAL_REQUIRED");noPosting();
+  expect(mockDb.financeDomainEventOutbox.create).not.toHaveBeenCalled(); expect(mockDb.companyMembership.findFirst).not.toHaveBeenCalled();
   expect(mockDb.$queryRaw.mock.calls.some((args: any[]) => String(args[0]).includes("FinanceSourceEvent"))).toBe(true);
-  jest.clearAllMocks(); const retry: any = await prismaFinanceRepository.processSourceEvent(record.id);
-  expect(retry.idempotent).toBe(true); noPosting(); expect(mockDb.financeDomainEventOutbox.create).not.toHaveBeenCalled();
+  expect(mockDb.financePostingRule.findMany).not.toHaveBeenCalled();expect(mockDb.financeNumberSequence.upsert).not.toHaveBeenCalled();
 });
 it.each(["legalEntity", "hash", "child", "missing outbox", "suspended"])("posting rejects %s before document/journal/outbox effects", async kind => {
   await ingestAcceptedCashOutbox(outbox.eventId); record.status = "pending";
