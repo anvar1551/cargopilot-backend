@@ -240,7 +240,7 @@ export const changeBankAccountStatusSchema = z.object({
 
 export const paymentRunPageSchema = cursorPageSchema.extend({
   status: z.enum(["draft", "submitted", "approved", "rejected", "executed"]).optional(),
-});
+}).strict();
 
 export const createPaymentRunSchema = z.object({
   bankAccountId: uuid,
@@ -254,12 +254,12 @@ export const createPaymentRunSchema = z.object({
     payableItemId: uuid,
     amount: decimal,
   })).min(1).max(1000),
-});
+}).strict();
 
 export const executePaymentRunSchema = z.object({
   bankReference: z.string().trim().min(1).max(200),
   executedAt: z.string().datetime(),
-});
+}).strict();
 
 export const bankStatementPageSchema = cursorPageSchema.extend({
   status: z.enum(["draft", "submitted", "approved", "rejected"]).optional(),

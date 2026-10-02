@@ -1,5 +1,5 @@
 import type { AppUser } from "../../../types/app-user";
-import { requireBankAccountMutation, requireLegalEntityContext } from "./legal-entity-access";
+import { requirePaymentRunMutation, requireBankAccountMutation, requireLegalEntityContext } from "./legal-entity-access";
 import { authoritativeDocumentHash } from "../domain/authoritative-documents";
 import { financeConflict } from "../domain/finance.errors";
 import {
@@ -51,7 +51,7 @@ export class FinanceTreasuryService {
     return this.repository.changeBankAccountStatus(companyId, bankAccountId, actorUserId, isActive, actor);
   }
 
-  createPaymentRun(input: {
+  async createPaymentRun(input: {
     companyId: string;
     actorUserId: string;
     bankAccountId: string;
@@ -62,7 +62,8 @@ export class FinanceTreasuryService {
     fxRateAsOf?: Date | null;
     lines: PaymentRunLineInput[];
     metadata?: Record<string, unknown>;
-  }) {
+  }, actor: AppUser) {
+    await requirePaymentRunMutation(actor, input, "create");
     const paymentRun = preparePaymentRun(input);
     return this.repository.createPaymentRun({
       companyId: input.companyId,
@@ -77,55 +78,37 @@ export class FinanceTreasuryService {
       }),
       paymentRun,
       metadata: input.metadata,
-    });
+    }, actor);
   }
 
-  listPaymentRuns(companyId: string, page: TreasuryPage) {
-    return this.repository.listPaymentRuns(companyId, page);
+  async listPaymentRuns(actor: AppUser, page: TreasuryPage) {
+    await requireLegalEntityContext(actor, "finance.treasury.read");
+    return this.repository.listPaymentRuns(actor, page);
   }
 
-  getPaymentRun(companyId: string, paymentRunId: string) {
-    return this.repository.getPaymentRun(companyId, paymentRunId);
+  async getPaymentRun(actor: AppUser, paymentRunId: string) {
+    await requireLegalEntityContext(actor, "finance.treasury.read");
+    return this.repository.getPaymentRun(actor, paymentRunId);
   }
 
-  submitPaymentRun(companyId: string, paymentRunId: string, actorUserId: string) {
-    return this.repository.submitPaymentRun(companyId, paymentRunId, actorUserId);
+  async submitPaymentRun(companyId: string, paymentRunId: string, actorUserId: string, actor: AppUser) {
+    await requirePaymentRunMutation(actor, {companyId, actorUserId}, "submit");
+    return this.repository.submitPaymentRun(companyId, paymentRunId, actorUserId, actor);
   }
 
-  async approvePaymentRun(input: {
-    companyId: string;
-    paymentRunId: string;
-    actorUserId: string;
-    allowSelfApproval: boolean;
-  }) {
-    const run = await this.repository.getPaymentRun(input.companyId, input.paymentRunId);
-    if (!input.allowSelfApproval && run.createdByUserId === input.actorUserId) {
-      throw financeConflict("Payment-run creator cannot approve it", "FINANCE_SELF_APPROVAL_FORBIDDEN");
-    }
-    return this.repository.approvePaymentRun(input.companyId, input.paymentRunId, input.actorUserId);
+  async approvePaymentRun(input: { companyId: string; paymentRunId: string; actorUserId: string }, actor: AppUser) {
+    await requirePaymentRunMutation(actor, input, "approve");
+    return this.repository.approvePaymentRun(input.companyId, input.paymentRunId, input.actorUserId, actor);
   }
 
-  rejectPaymentRun(companyId: string, paymentRunId: string, actorUserId: string, reason: string) {
-    return this.repository.rejectPaymentRun(companyId, paymentRunId, actorUserId, reason);
+  async rejectPaymentRun(companyId: string, paymentRunId: string, actorUserId: string, reason: string, actor: AppUser) {
+    await requirePaymentRunMutation(actor, {companyId, actorUserId}, "reject");
+    return this.repository.rejectPaymentRun(companyId, paymentRunId, actorUserId, reason, actor);
   }
 
-  async executePaymentRun(input: {
-    companyId: string;
-    paymentRunId: string;
-    actorUserId: string;
-    allowControlOverride: boolean;
-    bankReference: string;
-    executedAt: Date;
-  }) {
-    const run = await this.repository.getPaymentRun(input.companyId, input.paymentRunId);
-    if (!input.allowControlOverride &&
-      (run.createdByUserId === input.actorUserId || run.approvedByUserId === input.actorUserId)) {
-      throw financeConflict(
-        "Payment executor must differ from creator and approver",
-        "FINANCE_PAYMENT_EXECUTION_SEPARATION_REQUIRED",
-      );
-    }
-    return this.repository.executePaymentRun(input);
+  async executePaymentRun(input: Parameters<FinanceTreasuryRepositoryPort["executePaymentRun"]>[0], actor: AppUser) {
+    await requirePaymentRunMutation(actor, input, "execute");
+    return this.repository.executePaymentRun(input, actor);
   }
 
   createBankStatement(input: {

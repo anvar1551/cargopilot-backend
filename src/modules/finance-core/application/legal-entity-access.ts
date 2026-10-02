@@ -44,3 +44,14 @@ export async function requireBankAccountMutation(actor: AppUser, intent: { compa
     throw new FinanceError("Bank configuration actor context mismatch", 403, "FINANCE_BANK_CONTEXT_REJECTED");
   throw financeConflict("Bank configuration requires independent durable approval", "FINANCE_BANK_CONFIGURATION_APPROVAL_REQUIRED");
 }
+
+export async function requirePaymentRunMutation(actor: AppUser, intent: { companyId: string; actorUserId: string },
+  operation: "create" | "submit" | "approve" | "reject" | "execute"): Promise<void> {
+  const permission = operation === "execute" ? "finance.treasury.execute"
+    : operation === "approve" || operation === "reject" ? "finance.treasury.approve" : "finance.treasury.manage";
+  const context = await requireLegalEntityContext(actor, permission);
+  if (!intent || intent.companyId !== context.companyId || intent.actorUserId !== context.userId)
+    throw new FinanceError("Payment run actor context mismatch", 403, "FINANCE_PAYMENT_RUN_CONTEXT_REJECTED");
+  throw financeConflict("Payment runs require authoritative financial basis and independent durable approval",
+    "FINANCE_PAYMENT_RUN_ACCEPTANCE_REQUIRED");
+}

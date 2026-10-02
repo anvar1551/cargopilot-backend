@@ -193,7 +193,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const page = paymentRunPageSchema.parse(request.query);
-        return reply.send(await financeTreasuryService.listPaymentRuns(request.user!.companyId, page));
+        return reply.send(await financeTreasuryService.listPaymentRuns(request.user!, page));
       } catch (error) {
         return sendError(reply, error, "Failed to load payment runs");
       }
@@ -212,7 +212,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           actorUserId: request.user!.id,
           paymentDate: toDate(input.paymentDate),
           fxRateAsOf: input.fxRateAsOf ? new Date(input.fxRateAsOf) : null,
-        }));
+        }, request.user!));
       } catch (error) {
         return sendError(reply, error, "Failed to create payment run");
       }
@@ -225,7 +225,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const { id } = financeIdParamSchema.parse(request.params);
-        return reply.send(await financeTreasuryService.getPaymentRun(request.user!.companyId, id));
+        return reply.send(await financeTreasuryService.getPaymentRun(request.user!, id));
       } catch (error) {
         return sendError(reply, error, "Failed to load payment run");
       }
@@ -242,6 +242,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           request.user!.companyId,
           id,
           request.user!.id,
+          request.user!,
         ));
       } catch (error) {
         return sendError(reply, error, "Failed to submit payment run");
@@ -259,8 +260,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           companyId: request.user!.companyId,
           paymentRunId: id,
           actorUserId: request.user!.id,
-          allowSelfApproval: hasAnyPermissionSync(request.user!, ["policy.override"]),
-        }));
+        }, request.user!));
       } catch (error) {
         return sendError(reply, error, "Failed to approve payment run");
       }
@@ -279,6 +279,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           id,
           request.user!.id,
           reason,
+          request.user!,
         ));
       } catch (error) {
         return sendError(reply, error, "Failed to reject payment run");
@@ -297,10 +298,9 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           companyId: request.user!.companyId,
           paymentRunId: id,
           actorUserId: request.user!.id,
-          allowControlOverride: hasAnyPermissionSync(request.user!, ["policy.override"]),
           bankReference: input.bankReference,
           executedAt: new Date(input.executedAt),
-        }));
+        }, request.user!));
       } catch (error) {
         return sendError(reply, error, "Failed to execute payment run");
       }

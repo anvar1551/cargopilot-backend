@@ -1,5 +1,6 @@
+import { listOwnedPaymentRuns, getOwnedPaymentRun } from "./payment-run-read";
 import type { AppUser } from "../../../types/app-user";
-import { requireBankAccountMutation } from "../application/legal-entity-access";
+import { requirePaymentRunMutation, requireBankAccountMutation } from "../application/legal-entity-access";
 import { listOwnedBankAccounts } from "./bank-account-read";
 import {
   FinanceBankStatementStatus,
@@ -204,7 +205,8 @@ export class PrismaFinanceTreasuryRepository implements FinanceTreasuryRepositor
     });
   }
 
-  async createPaymentRun(command: Parameters<FinanceTreasuryRepositoryPort["createPaymentRun"]>[0]) {
+  async createPaymentRun(command: Parameters<FinanceTreasuryRepositoryPort["createPaymentRun"]>[0], actor: AppUser) {
+    await requirePaymentRunMutation(actor, command, "create");
     return prisma.$transaction(async (tx) => {
       const entity = await requireEntity(tx, command.companyId);
       assertFxSnapshot(entity, command.paymentRun);
@@ -307,27 +309,16 @@ export class PrismaFinanceTreasuryRepository implements FinanceTreasuryRepositor
     });
   }
 
-  async listPaymentRuns(companyId: string, page: TreasuryPage) {
-    const rows = await prisma.financePaymentRun.findMany({
-      where: { legalEntity: { companyId }, ...(paymentRunStatus(page.status) ? { status: paymentRunStatus(page.status) } : {}) },
-      orderBy: [{ paymentDate: "desc" }, { id: "desc" }],
-      take: page.limit + 1,
-      ...(page.cursor ? { cursor: { id: page.cursor }, skip: 1 } : {}),
-      include: paymentRunListInclude,
-    });
-    return pageResult(rows, page.limit);
+  async listPaymentRuns(actor: AppUser, page: TreasuryPage) {
+    return listOwnedPaymentRuns(actor, page);
   }
 
-  async getPaymentRun(companyId: string, paymentRunId: string) {
-    const row = await prisma.financePaymentRun.findFirst({
-      where: { id: paymentRunId, legalEntity: { companyId } },
-      include: paymentRunInclude,
-    });
-    if (!row) throw financeNotFound("Payment run not found", "FINANCE_PAYMENT_RUN_NOT_FOUND");
-    return row;
+  async getPaymentRun(actor: AppUser, paymentRunId: string) {
+    return getOwnedPaymentRun(actor, paymentRunId);
   }
 
-  async submitPaymentRun(companyId: string, paymentRunId: string, actorUserId: string) {
+  async submitPaymentRun(companyId: string, paymentRunId: string, actorUserId: string, actor: AppUser) {
+    await requirePaymentRunMutation(actor, {companyId, actorUserId}, "submit");
     return prisma.$transaction(async (tx) => {
       const row = await tx.financePaymentRun.findFirst({ where: { id: paymentRunId, legalEntity: { companyId } } });
       if (!row) throw financeNotFound("Payment run not found", "FINANCE_PAYMENT_RUN_NOT_FOUND");
@@ -338,7 +329,8 @@ export class PrismaFinanceTreasuryRepository implements FinanceTreasuryRepositor
     });
   }
 
-  async approvePaymentRun(companyId: string, paymentRunId: string, actorUserId: string) {
+  async approvePaymentRun(companyId: string, paymentRunId: string, actorUserId: string, actor: AppUser) {
+    await requirePaymentRunMutation(actor, {companyId, actorUserId}, "approve");
     return prisma.$transaction(async (tx) => {
       await lock(tx, `payment-run-approval:${paymentRunId}`);
       const row = await tx.financePaymentRun.findFirst({ where: { id: paymentRunId, legalEntity: { companyId } } });
@@ -351,7 +343,8 @@ export class PrismaFinanceTreasuryRepository implements FinanceTreasuryRepositor
     });
   }
 
-  async rejectPaymentRun(companyId: string, paymentRunId: string, actorUserId: string, reason: string) {
+  async rejectPaymentRun(companyId: string, paymentRunId: string, actorUserId: string, reason: string, actor: AppUser) {
+    await requirePaymentRunMutation(actor, {companyId, actorUserId}, "reject");
     return prisma.$transaction(async (tx) => {
       const row = await tx.financePaymentRun.findFirst({ where: { id: paymentRunId, legalEntity: { companyId } } });
       if (!row) throw financeNotFound("Payment run not found", "FINANCE_PAYMENT_RUN_NOT_FOUND");
@@ -362,7 +355,8 @@ export class PrismaFinanceTreasuryRepository implements FinanceTreasuryRepositor
     });
   }
 
-  async executePaymentRun(command: Parameters<FinanceTreasuryRepositoryPort["executePaymentRun"]>[0]) {
+  async executePaymentRun(command: Parameters<FinanceTreasuryRepositoryPort["executePaymentRun"]>[0], actor: AppUser) {
+    await requirePaymentRunMutation(actor, command, "execute");
     return prisma.$transaction(async (tx) => {
       await lock(tx, `payment-run-execution:${command.paymentRunId}`);
       const row = await tx.financePaymentRun.findFirst({

@@ -27,19 +27,19 @@ export interface FinanceTreasuryRepositoryPort {
     payloadHash: string;
     paymentRun: ReturnTypeOfPreparePaymentRun;
     metadata?: Record<string, unknown>;
-  }): Promise<any>;
-  listPaymentRuns(companyId: string, page: TreasuryPage): Promise<any>;
-  getPaymentRun(companyId: string, paymentRunId: string): Promise<any>;
-  submitPaymentRun(companyId: string, paymentRunId: string, actorUserId: string): Promise<any>;
-  approvePaymentRun(companyId: string, paymentRunId: string, actorUserId: string): Promise<any>;
-  rejectPaymentRun(companyId: string, paymentRunId: string, actorUserId: string, reason: string): Promise<any>;
+  }, actor: AppUser): Promise<any>;
+  listPaymentRuns(actor: AppUser, page: TreasuryPage): Promise<any>;
+  getPaymentRun(actor: AppUser, paymentRunId: string): Promise<any>;
+  submitPaymentRun(companyId: string, paymentRunId: string, actorUserId: string, actor: AppUser): Promise<any>;
+  approvePaymentRun(companyId: string, paymentRunId: string, actorUserId: string, actor: AppUser): Promise<any>;
+  rejectPaymentRun(companyId: string, paymentRunId: string, actorUserId: string, reason: string, actor: AppUser): Promise<any>;
   executePaymentRun(command: {
     companyId: string;
     paymentRunId: string;
     actorUserId: string;
     bankReference: string;
     executedAt: Date;
-  }): Promise<any>;
+  }, actor: AppUser): Promise<any>;
 
   createBankStatement(command: {
     companyId: string;
