@@ -43,6 +43,10 @@ export function buildDraftIntent(command: CreateJournalCommand, context: Context
     throw financeBadRequest("Invalid draft intent", "FINANCE_DRAFT_INTENT_INVALID");
   for (const line of command.lines) if (!line || typeof line !== "object" || Object.keys(line).some(key => !["accountId", "debitAmount", "creditAmount", "description", "metadata", ...dimensions].includes(key)))
     throw financeBadRequest("Unknown draft line field", "FINANCE_DRAFT_INTENT_INVALID");
+  // No approved financial branch/center ownership catalog exists. A scalar tag
+  // or an organization hierarchy is not authority to classify a journal line.
+  if (command.lines.some(line => [line.branchId, line.costCenterCode, line.profitCenterCode].some(value => value != null)))
+    throw financeConflict("Financial branch and center configuration is not accepted", "FINANCE_DIMENSION_CONFIGURATION_REQUIRED");
   const rawLines = command.lines.map(line => ({ ...line, debitAmount: amount(line.debitAmount), creditAmount: amount(line.creditAmount) }));
   const requestedRate = amount(command.fxRate);
   if (new Decimal(requestedRate).decimalPlaces() > 10) throw financeBadRequest("FX precision exceeds storage representation", "FINANCE_DRAFT_INTENT_INVALID");

@@ -56,3 +56,16 @@ it("bounds JSON depth, bytes, unsupported values and decimal representation", ()
   for (const value of [cycle, "x".repeat(262145), { fn: () => null }]) expect(() => stableDraftJson(value)).toThrow();
   const c = command(); c.fxRate = "1.00000000001"; expect(() => buildDraftIntent(c, context, entity)).toThrow("precision");
 });
+it.each(["branchId", "costCenterCode", "profitCenterCode"])("rejects unapproved %s tags including empty values", key => {
+  for (const value of [uuid, "foreign", ""]) {
+    const c = command(); c.lines[1][key] = value;
+    expect(() => buildDraftIntent(c, context, entity)).toThrow(expect.objectContaining({ code: "FINANCE_DIMENSION_CONFIGURATION_REQUIRED", statusCode: 409 }));
+  }
+});
+it("omitted and explicitly null unconfigured dimensions preserve ordinary balanced draft identity", () => {
+  const c = command(), original = buildDraftIntent(c, context, entity);
+  for (const line of c.lines) Object.assign(line, { branchId: null, costCenterCode: null, profitCenterCode: null });
+  const retry = buildDraftIntent(c, context, entity);
+  expect(retry.fingerprint).toBe(original.fingerprint);
+  expect(() => assertDraftRetry(stored(original), retry)).not.toThrow();
+});
