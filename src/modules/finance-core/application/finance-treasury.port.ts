@@ -1,3 +1,4 @@
+import type { AppUser } from "../../../types/app-user";
 import type { ReturnTypeOfPrepareBankStatement, ReturnTypeOfPreparePaymentRun } from "./finance-treasury.types";
 
 export type TreasuryPage = { cursor?: string; limit: number; status?: string };
@@ -14,9 +15,9 @@ export interface FinanceTreasuryRepositoryPort {
     accountIdentifierMasked: string;
     currency: string;
     metadata?: Record<string, unknown>;
-  }): Promise<any>;
-  listBankAccounts(companyId: string, page: TreasuryPage): Promise<any>;
-  changeBankAccountStatus(companyId: string, bankAccountId: string, actorUserId: string, isActive: boolean): Promise<any>;
+  }, actor: AppUser): Promise<any>;
+  listBankAccounts(actor: AppUser, page: TreasuryPage): Promise<any>;
+  changeBankAccountStatus(companyId: string, bankAccountId: string, actorUserId: string, isActive: boolean, actor: AppUser): Promise<any>;
 
   createPaymentRun(command: {
     companyId: string;

@@ -1,3 +1,6 @@
+import type { AppUser } from "../../../types/app-user";
+import { requireBankAccountMutation } from "../application/legal-entity-access";
+import { listOwnedBankAccounts } from "./bank-account-read";
 import {
   FinanceBankStatementStatus,
   FinancePaymentRunStatus,
@@ -130,7 +133,8 @@ function statementStatus(value?: string) {
 }
 
 export class PrismaFinanceTreasuryRepository implements FinanceTreasuryRepositoryPort {
-  async createBankAccount(command: Parameters<FinanceTreasuryRepositoryPort["createBankAccount"]>[0]) {
+  async createBankAccount(command: Parameters<FinanceTreasuryRepositoryPort["createBankAccount"]>[0], actor: AppUser) {
+    await requireBankAccountMutation(actor, command);
     return prisma.$transaction(async (tx) => {
       const entity = await requireEntity(tx, command.companyId);
       await lock(tx, `${entity.id}:bank-account:${command.idempotencyKey}`);
@@ -172,22 +176,12 @@ export class PrismaFinanceTreasuryRepository implements FinanceTreasuryRepositor
     });
   }
 
-  async listBankAccounts(companyId: string, page: TreasuryPage) {
-    const rows = await prisma.financeBankAccount.findMany({
-      where: {
-        legalEntity: { companyId },
-        ...(page.status === "active" ? { isActive: true } : {}),
-        ...(page.status === "inactive" ? { isActive: false } : {}),
-      },
-      orderBy: [{ code: "asc" }, { id: "asc" }],
-      take: page.limit + 1,
-      ...(page.cursor ? { cursor: { id: page.cursor }, skip: 1 } : {}),
-      select: bankAccountSelect,
-    });
-    return pageResult(rows, page.limit);
+  async listBankAccounts(actor: AppUser, page: TreasuryPage) {
+    return listOwnedBankAccounts(actor, page);
   }
 
-  async changeBankAccountStatus(companyId: string, bankAccountId: string, actorUserId: string, isActive: boolean) {
+  async changeBankAccountStatus(companyId: string, bankAccountId: string, actorUserId: string, isActive: boolean, actor: AppUser) {
+    await requireBankAccountMutation(actor, {companyId, actorUserId});
     return prisma.$transaction(async (tx) => {
       const account = await tx.financeBankAccount.findFirst({
         where: { id: bankAccountId, legalEntity: { companyId } },

@@ -143,7 +143,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const page = bankAccountPageSchema.parse(request.query);
-        return reply.send(await financeTreasuryService.listBankAccounts(request.user!.companyId, page));
+        return reply.send(await financeTreasuryService.listBankAccounts(request.user!, page));
       } catch (error) {
         return sendError(reply, error, "Failed to load bank accounts");
       }
@@ -160,7 +160,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           ...input,
           companyId: request.user!.companyId,
           actorUserId: request.user!.id,
-        }));
+        }, request.user!));
       } catch (error) {
         return sendError(reply, error, "Failed to create bank account");
       }
@@ -179,6 +179,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           id,
           request.user!.id,
           isActive,
+          request.user!,
         ));
       } catch (error) {
         return sendError(reply, error, "Failed to change bank-account status");

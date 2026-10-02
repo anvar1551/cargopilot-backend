@@ -222,7 +222,7 @@ export const reconcileSettlementLineSchema = z.object({
 
 export const bankAccountPageSchema = cursorPageSchema.extend({
   status: z.enum(["active", "inactive"]).optional(),
-});
+}).strict();
 
 export const createBankAccountSchema = z.object({
   idempotencyKey: z.string().trim().min(8).max(200),
@@ -232,11 +232,11 @@ export const createBankAccountSchema = z.object({
   accountIdentifier: z.string().trim().min(4).max(100),
   currency: z.enum(FINANCE_CURRENCIES),
   metadata: metadata.optional(),
-});
+}).strict();
 
 export const changeBankAccountStatusSchema = z.object({
   isActive: z.boolean(),
-});
+}).strict();
 
 export const paymentRunPageSchema = cursorPageSchema.extend({
   status: z.enum(["draft", "submitted", "approved", "rejected", "executed"]).optional(),

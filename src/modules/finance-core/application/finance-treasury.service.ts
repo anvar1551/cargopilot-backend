@@ -1,3 +1,5 @@
+import type { AppUser } from "../../../types/app-user";
+import { requireBankAccountMutation, requireLegalEntityContext } from "./legal-entity-access";
 import { authoritativeDocumentHash } from "../domain/authoritative-documents";
 import { financeConflict } from "../domain/finance.errors";
 import {
@@ -12,7 +14,7 @@ import type { FinanceTreasuryRepositoryPort, TreasuryPage } from "./finance-trea
 export class FinanceTreasuryService {
   constructor(private readonly repository: FinanceTreasuryRepositoryPort) {}
 
-  createBankAccount(input: {
+  async createBankAccount(input: {
     companyId: string;
     actorUserId: string;
     idempotencyKey: string;
@@ -22,7 +24,8 @@ export class FinanceTreasuryService {
     accountIdentifier: string;
     currency: string;
     metadata?: Record<string, unknown>;
-  }) {
+  }, actor: AppUser) {
+    await requireBankAccountMutation(actor, input);
     const identifier = secureBankIdentifier(input.accountIdentifier);
     return this.repository.createBankAccount({
       companyId: input.companyId,
@@ -35,15 +38,17 @@ export class FinanceTreasuryService {
       accountIdentifierHash: identifier.hash,
       accountIdentifierMasked: identifier.masked,
       metadata: input.metadata,
-    });
+    }, actor);
   }
 
-  listBankAccounts(companyId: string, page: TreasuryPage) {
-    return this.repository.listBankAccounts(companyId, page);
+  async listBankAccounts(actor: AppUser, page: TreasuryPage) {
+    await requireLegalEntityContext(actor, "finance.treasury.read");
+    return this.repository.listBankAccounts(actor, page);
   }
 
-  changeBankAccountStatus(companyId: string, bankAccountId: string, actorUserId: string, isActive: boolean) {
-    return this.repository.changeBankAccountStatus(companyId, bankAccountId, actorUserId, isActive);
+  async changeBankAccountStatus(companyId: string, bankAccountId: string, actorUserId: string, isActive: boolean, actor: AppUser) {
+    await requireBankAccountMutation(actor, {companyId, actorUserId});
+    return this.repository.changeBankAccountStatus(companyId, bankAccountId, actorUserId, isActive, actor);
   }
 
   createPaymentRun(input: {

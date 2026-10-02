@@ -1,3 +1,10 @@
+jest.mock("../../src/config/prismaClient",()=>({__esModule:true,default:require("../security/fixtures").database}));
+jest.mock("../../src/modules/identity-access/access-control",()=>({loadAccessSnapshot:jest.fn()}));
+import { database } from "../security/fixtures";
+import { loadAccessSnapshot } from "../../src/modules/identity-access/access-control";
+import { secureBankIdentifier } from "../../src/modules/finance-core/domain/treasury";
+const actor:any={id:"actor",tenantId:"t",tenantMembershipId:"tm",companyId:"company",companyMembershipId:"cm",membershipId:"cm"};
+beforeEach(()=>{jest.clearAllMocks();jest.mocked(loadAccessSnapshot).mockResolvedValue({...actor,userId:"actor",permissionCodes:["finance.treasury.manage"],scopes:[{scopeType:"company",scopeRefId:"company"}]}as any);database.membershipScope.findFirst.mockResolvedValue({id:"scope"});});
 import { FinanceTreasuryService } from "../../src/modules/finance-core/application/finance-treasury.service";
 import type { FinanceTreasuryRepositoryPort } from "../../src/modules/finance-core/application/finance-treasury.port";
 
@@ -25,12 +32,12 @@ function repository(): jest.Mocked<FinanceTreasuryRepositoryPort> {
 }
 
 describe("FinanceTreasuryService", () => {
-  it("passes only hashed and masked bank identifiers to persistence", async () => {
+  it("masks identifiers but denies unaccepted bank persistence", async () => {
     const repo = repository();
     repo.createBankAccount.mockResolvedValue({ id: "bank" });
     const service = new FinanceTreasuryService(repo);
 
-    await service.createBankAccount({
+    await expect(service.createBankAccount({
       companyId: "company",
       actorUserId: "actor",
       idempotencyKey: "bank-account-1",
@@ -39,15 +46,12 @@ describe("FinanceTreasuryService", () => {
       bankName: "Test bank",
       accountIdentifier: "UZ1234567890",
       currency: "uzs",
-    });
+    },actor)).rejects.toMatchObject({code:"FINANCE_BANK_CONFIGURATION_APPROVAL_REQUIRED"});
 
-    expect(repo.createBankAccount).toHaveBeenCalledWith(expect.objectContaining({
-      code: "MAIN",
-      currency: "UZS",
-      accountIdentifierHash: expect.stringMatching(/^[a-f0-9]{64}$/),
-      accountIdentifierMasked: expect.stringMatching(/\*+7890$/),
-    }));
-    expect(repo.createBankAccount.mock.calls[0][0]).not.toHaveProperty("accountIdentifier");
+    expect(repo.createBankAccount).not.toHaveBeenCalled();
+    const identifier=secureBankIdentifier("UZ1234567890");
+    expect(identifier.hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(identifier.masked).toMatch(/\*+7890$/);
   });
 
   it("enforces maker-checker separation on payment runs and bank statements", async () => {

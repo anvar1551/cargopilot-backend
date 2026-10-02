@@ -37,3 +37,10 @@ export async function requirePostingRuleMutation(actor: AppUser, intent: { compa
     throw new FinanceError("Posting rule actor context mismatch", 403, "FINANCE_POSTING_RULE_CONTEXT_REJECTED");
   throw financeConflict("Posting rule configuration requires independent durable approval", "FINANCE_POSTING_RULE_APPROVAL_REQUIRED");
 }
+
+export async function requireBankAccountMutation(actor: AppUser, intent: { companyId: string; actorUserId: string }): Promise<void> {
+  const context = await requireLegalEntityContext(actor, "finance.treasury.manage");
+  if (!intent || intent.companyId !== context.companyId || intent.actorUserId !== context.userId)
+    throw new FinanceError("Bank configuration actor context mismatch", 403, "FINANCE_BANK_CONTEXT_REJECTED");
+  throw financeConflict("Bank configuration requires independent durable approval", "FINANCE_BANK_CONFIGURATION_APPROVAL_REQUIRED");
+}
