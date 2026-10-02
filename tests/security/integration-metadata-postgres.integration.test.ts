@@ -1,4 +1,6 @@
 import {publishRouteTemplateConfigurationForActor as publishTemplateConfiguration} from "../../src/modules/integrations-core/application/template-configuration-publication";
+
+import {publishCarrierRoutingConfigurationForActor as publishRoutingConfiguration} from "../../src/modules/integrations-core/application/routing-configuration-publication";
 import {listIntegrationProviderConfigurationsForActor as readConfigurations} from "../../src/modules/integrations-core/application/provider-configuration-read";
 import {publishIntegrationProviderConfigurationForActor as publishConfiguration} from "../../src/modules/integrations-core/application/provider-configuration-publication";
 import {listCarrierRoutingRulesForActor as routingInventory,resolveCarrierRoutingRuleForOrderLeg as routingSelector} from "../../src/modules/integrations-core/application/carrier-routing.service";
@@ -791,4 +793,107 @@ it("template publication PostgreSQL post-work failure rolls back version childre
  },options);const value=(target as any)[key];return typeof value==="function"?value.bind(target):value;}});
  try{await expect(publishTemplateConfiguration({user:actor(memberships[0]),templateId:t.id,operationId:randomUUID(),expectedRevision:0})).rejects.toThrow("synthetic-template-rollback");}finally{mockPrisma=original;}
  expect(reached).toBe(true);expect(await templatePublicationSnapshot()).toEqual(before);
+});
+
+async function routingPublicationFixture(company=0,complete=false){
+ await publicationGrants();const t=await templatePublicationFixture(company),p=await credentialProvider(company);
+ await publishConfiguration({user:actor(memberships[company]),providerId:p.id,operationId:randomUUID(),expectedRevision:0});
+ const tv=await publishTemplateConfiguration({user:actor(memberships[company]),templateId:t.id,operationId:randomUUID(),expectedRevision:0});
+ const rule=await mockPrisma.carrierRoutingRule.create({data:{companyId:p.companyId,providerId:p.id,name:"Synthetic immutable routing",minWeightKg:"1.23",maxWeightKg:"2.34",
+ ...(complete?{fallbackProviderId:p.id,routeTemplateId:t.id,routeTemplateLegId:t.legs[0].id}:{})}});
+ return {rule,p,t,tv,user:actor(memberships[company])};
+}
+async function routingPublicationSnapshot(){return {...await templatePublicationSnapshot(),rules:await mockPrisma.carrierRoutingRule.findMany({orderBy:{id:"asc"}}),routingVersions:await mockPrisma.carrierRoutingConfigurationVersion.findMany({orderBy:{id:"asc"}})};}
+it("routing publication PostgreSQL concurrent matching intents bind optional or complete exact versions once",async()=>{
+ for(const complete of [false,true]){
+  const g=await routingPublicationFixture(0,complete),intent={user:g.user,ruleId:g.rule.id,operationId:randomUUID(),expectedRevision:0};
+  const results=await Promise.all([publishRoutingConfiguration(intent),publishRoutingConfiguration(intent)]);expect(results[0]).toEqual(results[1]);
+  expect(await mockPrisma.carrierRoutingConfigurationVersion.count({where:{ruleId:g.rule.id}})).toBe(1);
+  const v=await mockPrisma.carrierRoutingConfigurationVersion.findUniqueOrThrow({where:{id:results[0].id}});
+  expect(v.minWeightKg!.toFixed(2)).toBe("1.23");expect(v.maxWeightKg!.toFixed(2)).toBe("2.34");
+  expect(v.templateVersionId).toBe(complete?g.tv.id:null);
+  const before=await routingPublicationSnapshot();await expect(publishRoutingConfiguration({...intent,expectedRevision:1})).rejects.toMatchObject({statusCode:409});expect(await routingPublicationSnapshot()).toEqual(before);
+ }
+});
+it("routing publication PostgreSQL competing revisions and company operation reuse do not duplicate actions",async()=>{
+ const a=await routingPublicationFixture(),b=await routingPublicationFixture(1),operationId=randomUUID();
+ const outcomes=await Promise.allSettled([publishRoutingConfiguration({user:a.user,ruleId:a.rule.id,operationId,expectedRevision:0}),publishRoutingConfiguration({user:b.user,ruleId:b.rule.id,operationId,expectedRevision:0})]);
+ expect(outcomes.filter(x=>x.status==="fulfilled")).toHaveLength(1);expect(outcomes.find(x=>x.status==="rejected")).toMatchObject({reason:{statusCode:409}});
+ const c=await routingPublicationFixture();const competing=await Promise.allSettled([1,2].map(()=>publishRoutingConfiguration({user:c.user,ruleId:c.rule.id,operationId:randomUUID(),expectedRevision:0})));
+ expect(competing.filter(x=>x.status==="fulfilled")).toHaveLength(1);expect(await mockPrisma.carrierRoutingConfigurationVersion.count({where:{ruleId:c.rule.id}})).toBe(1);
+});
+it("routing publication PostgreSQL foreign contexts unaccepted sources and undefined conditions have no effects",async()=>{
+ const g=await routingPublicationFixture();
+ for(const m of memberships.slice(1)){const before=await routingPublicationSnapshot();await expect(publishRoutingConfiguration({user:actor(m),ruleId:g.rule.id,operationId:randomUUID(),expectedRevision:0})).rejects.toMatchObject({statusCode:404});expect(await routingPublicationSnapshot()).toEqual(before);}
+ const legacy=await credentialProvider();await mockPrisma.carrierRoutingRule.update({where:{id:g.rule.id},data:{providerId:legacy.id}});
+ let before=await routingPublicationSnapshot();await expect(publishRoutingConfiguration({user:g.user,ruleId:g.rule.id,operationId:randomUUID(),expectedRevision:0})).rejects.toMatchObject({statusCode:409});expect(await routingPublicationSnapshot()).toEqual(before);
+ await mockPrisma.carrierRoutingRule.update({where:{id:g.rule.id},data:{providerId:g.p.id,conditionsJson:{unsupported:true}}});
+ before=await routingPublicationSnapshot();await expect(publishRoutingConfiguration({user:g.user,ruleId:g.rule.id,operationId:randomUUID(),expectedRevision:0})).rejects.toMatchObject({statusCode:409});expect(await routingPublicationSnapshot()).toEqual(before);
+});
+it("routing publication PostgreSQL immutable binding rejects foreign versions partial bridges and unpublished receipts",async()=>{
+ const g=await routingPublicationFixture(0,true),f=await routingPublicationFixture(2,true);
+ const result=await publishRoutingConfiguration({user:g.user,ruleId:g.rule.id,operationId:randomUUID(),expectedRevision:0});
+ const foreign=await publishRoutingConfiguration({user:f.user,ruleId:f.rule.id,operationId:randomUUID(),expectedRevision:0});
+ const stored=await mockPrisma.carrierRoutingConfigurationVersion.findUniqueOrThrow({where:{id:result.id}}),fv=await mockPrisma.carrierRoutingConfigurationVersion.findUniqueOrThrow({where:{id:foreign.id}});
+ const fresh=await routingPublicationFixture(0,true),{id,acceptedAt,...base}=stored,before=await routingPublicationSnapshot();
+ for(const override of [{providerVersionId:fv.providerVersionId},{templateVersionId:fv.templateVersionId},{routeTemplateLegId:f.t.legs[0].id},{companyMembershipId:memberships[1].id},{fallbackRevision:null},{templateRevision:null}]){
+  await expect(mockPrisma.carrierRoutingConfigurationVersion.create({data:{...base,ruleId:fresh.rule.id,operationId:randomUUID(),...override}})).rejects.toThrow();
+ }
+ await expect(mockPrisma.carrierRoutingConfigurationVersion.create({data:{...base,ruleId:fresh.rule.id,operationId:randomUUID()}})).rejects.toThrow("receipt was not published");
+ await expect(mockPrisma.carrierRoutingConfigurationVersion.update({where:{id:result.id},data:{name:"changed"}})).rejects.toThrow("versions are immutable");
+ await expect(mockPrisma.carrierRoutingConfigurationVersion.delete({where:{id:result.id}})).rejects.toThrow("versions are immutable");
+ await expect(mockPrisma.carrierRoutingRule.update({where:{id:g.rule.id},data:{priority:77}})).rejects.toThrow("snapshot disagrees");
+ await expect(mockPrisma.carrierRoutingRule.update({where:{id:g.rule.id},data:{currentConfigurationId:null,configurationRevision:0}})).rejects.toThrow("history cannot be cleared");
+ await expect(pool.query('TRUNCATE "CarrierRoutingConfigurationVersion" CASCADE')).rejects.toMatchObject({code:"23514"});
+ expect(await routingPublicationSnapshot()).toEqual(before);
+});
+it("routing publication PostgreSQL retry retains prior accepted references and still denies revoked authority",async()=>{
+ const g=await routingPublicationFixture(),intent={user:g.user,ruleId:g.rule.id,operationId:randomUUID(),expectedRevision:0};
+ const result=await publishRoutingConfiguration(intent);
+ await publishConfiguration({user:g.user,providerId:g.p.id,operationId:randomUUID(),expectedRevision:1});
+ expect(await publishRoutingConfiguration(intent)).toEqual(result);
+ expect((await mockPrisma.carrierRoutingConfigurationVersion.findUniqueOrThrow({where:{id:result.id}})).providerRevision).toBe(1);
+ await mockPrisma.companyMembership.update({where:{id:memberships[0].id},data:{status:"suspended"}});
+ try{const before=await routingPublicationSnapshot();await expect(publishRoutingConfiguration(intent)).rejects.toMatchObject({statusCode:403});expect(await routingPublicationSnapshot()).toEqual(before);}finally{await mockPrisma.companyMembership.update({where:{id:memberships[0].id},data:{status:"active"}});}
+ const scopes=await mockPrisma.membershipScope.findMany({where:{membershipId:memberships[0].id}});
+ await mockPrisma.membershipScope.deleteMany({where:{membershipId:memberships[0].id}});
+ try{const before=await routingPublicationSnapshot();await expect(publishRoutingConfiguration(intent)).rejects.toMatchObject({statusCode:403});expect(await routingPublicationSnapshot()).toEqual(before);}finally{await mockPrisma.membershipScope.createMany({data:scopes});}
+});
+it("routing publication PostgreSQL same-company noncarrier configuration cannot become accepted routing authority",async()=>{
+ const g=await routingPublicationFixture(),sms=await mockPrisma.integrationProvider.create({data:{companyId:g.p.companyId,domain:"sms",providerCode:"synthetic-sms-"+randomUUID(),environment:"sandbox"}});
+ const version=await publishConfiguration({user:g.user,providerId:sms.id,operationId:randomUUID(),expectedRevision:0});
+ await mockPrisma.carrierRoutingRule.update({where:{id:g.rule.id},data:{providerId:sms.id}});
+ const before=await routingPublicationSnapshot();
+ await expect(publishRoutingConfiguration({user:g.user,ruleId:g.rule.id,operationId:randomUUID(),expectedRevision:0})).rejects.toMatchObject({statusCode:409});
+ const valid=await routingPublicationFixture(),receipt=await publishRoutingConfiguration({user:valid.user,ruleId:valid.rule.id,operationId:randomUUID(),expectedRevision:0});
+ const {id,acceptedAt,...base}=await mockPrisma.carrierRoutingConfigurationVersion.findUniqueOrThrow({where:{id:receipt.id}});
+ const baseline=await routingPublicationSnapshot();
+ await expect(mockPrisma.$transaction(async tx=>{
+  const forged=await tx.carrierRoutingConfigurationVersion.create({data:{...base,ruleId:g.rule.id,providerId:sms.id,providerVersionId:version.id,operationId:randomUUID()}});
+  await tx.carrierRoutingRule.update({where:{id:g.rule.id},data:{configurationRevision:1,currentConfigurationId:forged.id}});
+ })).rejects.toThrow("snapshot disagrees");
+ expect(await routingPublicationSnapshot()).toEqual(baseline);expect(before.routingVersions.length+1).toBe(baseline.routingVersions.length);
+});
+it("routing publication PostgreSQL injected failure rolls back rule receipt pointer and downstream outbox",async()=>{
+ const g=await routingPublicationFixture(),before=await routingPublicationSnapshot(),original=mockPrisma;let reached=false;
+ mockPrisma=new Proxy(original,{get(target,key){if(key==="$transaction")return(work:any,options:any)=>target.$transaction(async tx=>{
+ await work(tx);reached=true;await tx.integrationOutbox.create({data:{companyId:g.p.companyId,providerId:g.p.id,domain:g.p.domain,providerCode:g.p.providerCode,environment:g.p.environment,eventType:"synthetic-routing-rollback",payload:{},idempotencyKey:randomUUID()}});throw Error("synthetic-routing-rollback");
+ },options);const value=(target as any)[key];return typeof value==="function"?value.bind(target):value;}});
+ try{await expect(publishRoutingConfiguration({user:g.user,ruleId:g.rule.id,operationId:randomUUID(),expectedRevision:0})).rejects.toThrow("synthetic-routing-rollback");}finally{mockPrisma=original;}
+ expect(reached).toBe(true);expect(await routingPublicationSnapshot()).toEqual(before);
+});
+it("routing publication PostgreSQL inactive accepted template cannot be published through application or raw binding",async()=>{
+ const g=await routingPublicationFixture(),accepted=await publishRoutingConfiguration({user:g.user,ruleId:g.rule.id,operationId:randomUUID(),expectedRevision:0});
+ const {id,acceptedAt,...base}=await mockPrisma.carrierRoutingConfigurationVersion.findUniqueOrThrow({where:{id:accepted.id}});
+ const fresh=await routingPublicationFixture(),inactive=await mockPrisma.routeTemplate.create({data:{companyId:fresh.p.companyId,name:"Synthetic inactive",isActive:false}});
+ const tv=await publishTemplateConfiguration({user:fresh.user,templateId:inactive.id,operationId:randomUUID(),expectedRevision:0});
+ await mockPrisma.carrierRoutingRule.update({where:{id:fresh.rule.id},data:{routeTemplateId:inactive.id}});
+ const p=await mockPrisma.integrationProvider.findUniqueOrThrow({where:{id:fresh.p.id}}),before=await routingPublicationSnapshot();
+ await expect(publishRoutingConfiguration({user:fresh.user,ruleId:fresh.rule.id,operationId:randomUUID(),expectedRevision:0})).rejects.toMatchObject({statusCode:409});
+ await expect(mockPrisma.$transaction(async tx=>{
+  const v=await tx.carrierRoutingConfigurationVersion.create({data:{...base,ruleId:fresh.rule.id,providerId:p.id,providerVersionId:p.currentConfigurationId!,providerRevision:p.configurationRevision,
+   routeTemplateId:inactive.id,templateVersionId:tv.id,templateRevision:1,operationId:randomUUID()}});
+  await tx.carrierRoutingRule.update({where:{id:fresh.rule.id},data:{configurationRevision:1,currentConfigurationId:v.id}});
+ })).rejects.toThrow("snapshot disagrees");
+ expect(await routingPublicationSnapshot()).toEqual(before);
 });

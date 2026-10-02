@@ -23,6 +23,7 @@ enum DriverType {
 model Organization {
   providerConfigurations IntegrationProviderConfigurationVersion[] @relation("ProviderConfigurationCompany")
   templateConfigurations RouteTemplateConfigurationVersion[] @relation("TemplateConfigurationCompany")
+  routingConfigurations CarrierRoutingConfigurationVersion[] @relation("RoutingConfigurationCompany")
   id   String           @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   name String
   type OrganizationType

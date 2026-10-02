@@ -23,7 +23,7 @@ export async function publishRouteTemplateConfigurationForActor(args: {
     await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtextextended(${membership.tenantId! + ":template:" + operationId},0))`;
     const owner = { companyId:membership.companyId, company:{is:{tenantId:membership.tenantId!,isActive:true,type:"company" as const,tenant:{is:{status:"active" as const}}}} };
     if (!await tx.routeTemplate.findFirst({where:{...owner,id:templateId},select:{id:true}})) throw authorityError("Template not found",404);
-    await tx.$queryRaw`SELECT "id" FROM "RouteTemplate" WHERE "id"=${templateId}::uuid FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "RouteTemplate" WHERE "id"=${templateId}::uuid AND "companyId"=${membership.companyId}::uuid FOR UPDATE`;
     const template = await tx.routeTemplate.findFirst({where:{...owner,id:templateId},select:{
       id:true,companyId:true,configurationRevision:true,currentConfigurationId:true,
       name:true,code:true,isActive:true,priority:true,serviceType:true,transportMode:true,originCountryCode:true,destinationCountryCode:true,

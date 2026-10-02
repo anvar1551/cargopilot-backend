@@ -24,6 +24,8 @@ it("publishes bounded typed server snapshots and minimal receipt through selecte
  expect(db.routeTemplate.updateMany.mock.calls[0][0]).toMatchObject({where:{id:templateId,companyId:"company",configurationRevision:0,currentConfigurationId:null},data:{currentConfigurationId:"receipt",configurationRevision:1}});
  const data=db.routeTemplateConfigurationVersion.create.mock.calls[0][0].data;
  expect(data).toMatchObject({tenantId:"tenant",companyId:"company",actorUserId:"user",companyMembershipId:"cm",tenantMembershipId:"tm",legCount:1});
+ const lock=db.$queryRaw.mock.calls.find((c:any[])=>c[0].join("").includes('FROM "RouteTemplate"'))!;
+ expect(lock[0].join("")).toContain('AND "companyId"=');expect(lock.slice(1)).toContain("company");
  expect(JSON.stringify([data,db.routeTemplateConfigurationLeg.createMany.mock.calls[0][0]])).not.toContain("DO-NOT-COPY");
 });
 it.each(["permission","scope","foreign","stale","capacity","bytes","wrong-child"])("rejects %s without business effects",async kind=>{

@@ -155,6 +155,11 @@ model RouteTemplateLeg {
 
 model CarrierRoutingRule {
   id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  configurationRevision Int @default(0)
+  currentConfigurationId String? @db.Uuid
+  currentConfiguration CarrierRoutingConfigurationVersion? @relation("RoutingCurrentConfiguration", fields: [currentConfigurationId, id, companyId, configurationRevision], references: [id, ruleId, companyId, revision], onDelete: Restrict, onUpdate: Restrict, map: "Routing_current_configuration_fkey")
+  configurationVersions CarrierRoutingConfigurationVersion[] @relation("RoutingConfigurationOwner")
+  @@unique([id, companyId], map: "CarrierRoutingRule_identity_owner_key")
 
   companyId String       @db.Uuid
   company   Organization @relation(fields: [companyId], references: [id], onDelete: Cascade)
@@ -369,7 +374,58 @@ model IntegrationCanonicalEvent {
 }
 
 // A published immutable snapshot is also the durable action receipt. No secret values.
+model CarrierRoutingConfigurationVersion {
+ id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+ tenantId String @db.Uuid
+ companyId String @db.Uuid
+ company Organization @relation("RoutingConfigurationCompany", fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "RoutingConfiguration_company_fkey")
+ ruleId String @db.Uuid
+ rule CarrierRoutingRule @relation("RoutingConfigurationOwner", fields: [ruleId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict, map: "RoutingConfiguration_rule_fkey")
+ currentForRules CarrierRoutingRule[] @relation("RoutingCurrentConfiguration")
+ actorUserId String @db.Uuid
+ companyMembershipId String @db.Uuid
+ tenantMembershipId String @db.Uuid
+ actorCompany CompanyMembership @relation("RoutingConfigurationActor", fields: [companyMembershipId, actorUserId, tenantId, companyId], references: [id, userId, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "RoutingConfiguration_actor_fkey")
+ actorBridge CompanyMembership @relation("RoutingConfigurationBridge", fields: [companyMembershipId, tenantMembershipId, actorUserId, tenantId], references: [id, tenantMembershipId, userId, tenantId], onDelete: Restrict, onUpdate: Restrict, map: "RoutingConfiguration_bridge_fkey")
+ operationId String @db.Uuid
+ intentSha256 String
+ expectedRevision Int
+ revision Int
+ providerId String @db.Uuid
+ providerVersionId String @db.Uuid
+ providerRevision Int
+ providerVersion IntegrationProviderConfigurationVersion @relation("RoutingConfigurationProvider", fields: [providerVersionId, providerId, companyId, providerRevision], references: [id, providerId, companyId, revision], onDelete: Restrict, onUpdate: Restrict, map: "RoutingConfiguration_provider_fkey")
+ fallbackProviderId String? @db.Uuid
+ fallbackVersionId String? @db.Uuid
+ fallbackRevision Int?
+ fallbackVersion IntegrationProviderConfigurationVersion? @relation("RoutingConfigurationFallback", fields: [fallbackVersionId, fallbackProviderId, companyId, fallbackRevision], references: [id, providerId, companyId, revision], onDelete: Restrict, onUpdate: Restrict, map: "RoutingConfiguration_fallback_fkey")
+ routeTemplateId String? @db.Uuid
+ templateVersionId String? @db.Uuid
+ templateRevision Int?
+ templateVersion RouteTemplateConfigurationVersion? @relation("RoutingConfigurationTemplate", fields: [templateVersionId, routeTemplateId, companyId, templateRevision], references: [id, templateId, companyId, revision], onDelete: Restrict, onUpdate: Restrict, map: "RoutingConfiguration_template_fkey")
+ routeTemplateLegId String? @db.Uuid
+ templateLeg RouteTemplateConfigurationLeg? @relation("RoutingConfigurationLeg", fields: [templateVersionId, routeTemplateLegId], references: [versionId, sourceLegId], onDelete: Restrict, onUpdate: Restrict, map: "RoutingConfiguration_leg_fkey")
+ name String
+ code String?
+ isActive Boolean
+ priority Int
+ autoBook Boolean
+ serviceType ServiceType?
+ transportMode TransportMode?
+ originCountryCode String?
+ destinationCountryCode String?
+ minWeightKg Decimal? @db.Decimal(10, 2)
+ maxWeightKg Decimal? @db.Decimal(10, 2)
+ legSequence Int?
+ acceptedAt DateTime @default(now())
+ @@unique([tenantId, operationId], map: "RoutingConfiguration_operation_key")
+ @@unique([ruleId, revision], map: "RoutingConfiguration_revision_key")
+ @@unique([id, ruleId, companyId, revision], map: "RoutingConfiguration_pointer_key")
+ @@index([tenantId, companyId, ruleId, acceptedAt], map: "RoutingConfiguration_owner_idx")
+}
+
 model RouteTemplateConfigurationVersion {
+  routingVersions CarrierRoutingConfigurationVersion[] @relation("RoutingConfigurationTemplate")
   id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   tenantId String @db.Uuid
   companyId String @db.Uuid
@@ -406,6 +462,7 @@ model RouteTemplateConfigurationVersion {
 }
 
 model RouteTemplateConfigurationLeg {
+  routingVersions CarrierRoutingConfigurationVersion[] @relation("RoutingConfigurationLeg")
   versionId String @db.Uuid
   templateId String @db.Uuid
   sourceLegId String @db.Uuid
@@ -423,6 +480,8 @@ model RouteTemplateConfigurationLeg {
 }
 
 model IntegrationProviderConfigurationVersion {
+  primaryRoutingVersions CarrierRoutingConfigurationVersion[] @relation("RoutingConfigurationProvider")
+  fallbackRoutingVersions CarrierRoutingConfigurationVersion[] @relation("RoutingConfigurationFallback")
   id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   tenantId String @db.Uuid
   companyId String @db.Uuid

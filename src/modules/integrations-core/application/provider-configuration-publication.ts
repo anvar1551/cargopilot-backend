@@ -36,7 +36,7 @@ export async function publishIntegrationProviderConfigurationForActor(args: {
     const select = { id: true, companyId: true, domain: true, providerCode: true, environment: true, status: true,
       capabilities: true, retryPolicyId: true, timeoutMs: true, rateLimitRps: true, activeSecretId: true, secretRef: true, configurationRevision: true, currentConfigurationId: true } as const;
     if (!await tx.integrationProvider.findFirst({ where: { ...context, id: providerId }, select: { id: true } })) throw authorityError("Provider not found", 404);
-    await tx.$queryRaw`SELECT "id" FROM "IntegrationProvider" WHERE "id"=${providerId}::uuid FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "IntegrationProvider" WHERE "id"=${providerId}::uuid AND "companyId"=${membership.companyId}::uuid FOR UPDATE`;
     const provider = await tx.integrationProvider.findFirst({ where: { ...context, id: providerId }, select });
     if (!provider) throw authorityError("Provider ownership changed", 403);
     if (provider.domain === "payment") throw authorityError("Financial configuration requires independent approval", 409);
