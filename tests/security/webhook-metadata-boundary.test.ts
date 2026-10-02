@@ -71,7 +71,11 @@ it("rejects a changed signed body before persistence, canonical writes or queue 
   expect(db.integrationWebhookEvent.create).not.toHaveBeenCalled(); expect(db.integrationWebhookCanonicalEvent.create).not.toHaveBeenCalled(); expect(f.enqueue).not.toHaveBeenCalled();
 });
 it("preserves duplicate handling without a new write/enqueue", async () => {
-  const f = gateway(); db.integrationWebhookEvent.findFirst.mockResolvedValue({ id: "existing" });
+  const f = gateway(); db.integrationWebhookEvent.findFirst.mockResolvedValue({ id: "existing", companyId: "company-a", providerId: "provider-a",
+    domain: "carrier", providerCode: "partner", environment: "sandbox", rawBodySha256: createHash("sha256").update(f.request.rawBody).digest("hex"), signatureVerified: true,
+    provider: { companyId: "company-a", domain: "carrier", providerCode: "partner", environment: "sandbox", status: "active",
+      company: { isActive: true, type: "company", tenantId: "tenant-a", tenant: { id: "tenant-a", status: "active" } } },
+    canonicalEvent: { companyId: "company-a", domain: "carrier", providerCode: "partner" }, canonicalEvents: [{ id: "pending" }] });
   await expect(f.service.ingest(f.request)).resolves.toMatchObject({ status: "duplicate" });
   expect(db.integrationWebhookEvent.create).not.toHaveBeenCalled(); expect(f.enqueue).not.toHaveBeenCalled();
 });

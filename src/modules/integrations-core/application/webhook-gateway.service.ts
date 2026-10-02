@@ -1,5 +1,7 @@
 import { webhookHeadersForStorage } from "../../../utils/webhookMetadata";
 import { Prisma } from "@prisma/client";
+import { createHash } from "crypto";
+import { authorityError } from "../../orders-core/domain/creation-authority";
 import type {
   EnqueueIntegrationCanonicalEventInput,
 } from "./canonical-event.types";
@@ -82,10 +84,15 @@ export function createWebhookGatewayService(args: {
         };
       }
 
-      const duplicate = await args.events.hasProcessed({
+      if (!args.canonicalEvents) throw Object.assign(authorityError("Webhook processing persistence unavailable", 503), { code: "WEBHOOK_INGRESS_INCOMPLETE" });
+      const identity = {
         providerId: providerVerifier.providerId,
         providerEventId,
-      });
+        companyId: providerVerifier.companyId, providerCode: providerVerifier.providerCode,
+        domain: providerVerifier.domain, environment: providerVerifier.environment,
+        rawBodySha256: createHash("sha256").update(rawBody).digest("hex"),
+      };
+      const duplicate = await args.events.hasProcessed(identity);
       if (duplicate) {
         return {
           status: "duplicate",
@@ -119,7 +126,7 @@ export function createWebhookGatewayService(args: {
           },
         });
 
-        await args.canonicalEvents?.enqueue({
+        await args.canonicalEvents.enqueue({
           source: "inbound_webhook",
           companyId: providerVerifier.companyId,
           providerId: providerVerifier.providerId,
@@ -134,6 +141,10 @@ export function createWebhookGatewayService(args: {
         });
       } catch (error) {
         if (isDuplicateWebhookError(error)) {
+          // A racing raw insert may commit before normalization/pending persistence.
+          // Never acknowledge that intermediate state as a successfully accepted event.
+          if (!await args.events.hasProcessed(identity))
+            throw Object.assign(authorityError("Webhook processing persistence incomplete", 503), { code: "WEBHOOK_INGRESS_INCOMPLETE" });
           return {
             status: "duplicate",
             eventId: providerEventId,

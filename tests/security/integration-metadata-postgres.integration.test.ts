@@ -7,6 +7,8 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { randomUUID } from "crypto";
 import { createHash } from "crypto";
 import { integrationCanonicalEventRepository as canonicalRepo } from "../../src/modules/integrations-core/infrastructure/canonical-event.repo";
+import { webhookEventRepository as ingressRepo } from "../../src/modules/integrations-core/infrastructure/webhook-events.repo";
+import { createWebhookGatewayService } from "../../src/modules/integrations-core/application/webhook-gateway.service";
 import { createTenantDemoFixture, TENANT_DEMO_IDS as ids } from "../../src/modules/tenancy/demo-fixtures";
 import { persistTenantDemoFixture } from "../tenancy/postgres-fixture.persistence";
 import { listIntegrationOutboxForActor as outboxes, listIntegrationOutboxAttemptsForActor as attempts,
@@ -185,6 +187,50 @@ it("structurally unaccepted legacy event seeded before expansion stays unclaimed
   expect(claimed.length).toBeGreaterThan(0);
   // Claiming changes only leases on eligible metadata; no finance or business events are dispatched here.
   expect(await mockPrisma.financeDomainEventOutbox.count()).toBe(before.finance); expect(await mockPrisma.financeAuditEvent.count()).toBe(before.audit);
+});
+it("ingress duplicate receipt requires all bound durable records and rejects conflicting signed content", async () => {
+  const v = await incoming(), p = providers[0];
+  const identity = { providerId: p.id, providerEventId: v.raw.providerEventId, companyId: p.companyId, domain: p.domain,
+    providerCode: p.providerCode, environment: p.environment, rawBodySha256: v.raw.rawBodySha256 };
+  let before = await snapshot();
+  await expect(ingressRepo.hasProcessed(identity)).rejects.toMatchObject({ statusCode: 503, code: "WEBHOOK_INGRESS_INCOMPLETE" });
+  expect(await snapshot()).toEqual(before);
+  await mockPrisma.integrationWebhookCanonicalEvent.delete({ where: { webhookEventId: v.raw.id } }); before = await snapshot();
+  await expect(ingressRepo.hasProcessed(identity)).rejects.toMatchObject({ statusCode: 503 }); expect(await snapshot()).toEqual(before);
+  await ingressRepo.saveCanonicalEvent({ webhookEventId: v.raw.id, canonical: { providerCode: p.providerCode, eventId: v.raw.providerEventId,
+    eventType: v.input.eventType, occurredAt: v.input.occurredAt, payload: v.input.payloadJson, companyId: p.companyId } as any });
+  await canonicalRepo.enqueue(v.input); before = await snapshot();
+  await expect(ingressRepo.hasProcessed(identity)).resolves.toBe(true);
+  await expect(ingressRepo.hasProcessed({ ...identity, rawBodySha256: "c".repeat(64) })).rejects.toMatchObject({ statusCode: 409 });
+  await expect(ingressRepo.hasProcessed({ ...identity, companyId: providers[1].companyId })).rejects.toMatchObject({ statusCode: 409 });
+  expect(await snapshot()).toEqual(before);
+});
+it("ingress raw-insert race returns retryable incomplete instead of false successful duplicate", async () => {
+  const p = providers[0], eventId = randomUUID(), occurredAt = new Date().toISOString();
+  const rawBody = JSON.stringify({ eventId, eventType: "carrier.status.updated", occurredAt, statusCode: "in_transit" });
+  let openReads!: () => void, openPersistence!: () => void;
+  const reads = new Promise<void>(resolve => { openReads = resolve; }), persistence = new Promise<void>(resolve => { openPersistence = resolve; });
+  let arrivals = 0;
+  const events = { ...ingressRepo,
+    hasProcessed: async (identity: any) => { const existing = await ingressRepo.hasProcessed(identity); if (!existing) { if (++arrivals === 2) openReads(); await reads; } return existing; },
+    saveRawEvent: async (input: any) => { const result = await ingressRepo.saveRawEvent(input); await persistence; return result; },
+  };
+  const service = createWebhookGatewayService({ events, canonicalEvents: canonicalRepo, providerVerifiers: { resolve: async () => ({ providerId: p.id,
+    companyId: p.companyId, providerCode: p.providerCode, domain: p.domain, environment: p.environment, verifier: { verifyAndNormalize: async () => ({ ok: true,
+      data: { providerCode: p.providerCode, eventId, eventType: "carrier.status.updated", occurredAt, payload: JSON.parse(rawBody) } }) } } as any) } });
+  const input = { providerCode: p.providerCode, rawBody, headers: {} }, pending = [service.ingest(input), service.ingest(input)];
+  let timer: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(Error("synthetic-race-deadline")), 10000); });
+  try {
+    const first = await Promise.race([deadline, ...pending.map(promise => promise.then(value => ({ value, error: null })).catch(error => ({ error }))) ]);
+    expect(first.error).toMatchObject({ statusCode: 503, code: "WEBHOOK_INGRESS_INCOMPLETE" });
+    openPersistence(); const final = await Promise.race([deadline, Promise.allSettled(pending)]);
+    expect(final.filter(result => result.status === "fulfilled")).toHaveLength(1);
+    expect(final.filter(result => result.status === "rejected")).toHaveLength(1);
+    await expect(service.ingest(input)).resolves.toMatchObject({ status: "duplicate" });
+    const raw = await mockPrisma.integrationWebhookEvent.findFirstOrThrow({ where: { providerId: p.id, providerEventId: eventId } });
+    expect(await mockPrisma.integrationCanonicalEvent.count({ where: { webhookEventId: raw.id } })).toBe(1);
+  } finally { clearTimeout(timer!); openReads(); openPersistence(); await Promise.allSettled(pending); }
 });
 it("populated order bridge is preserved at read; foreign owner references and partial bridges are rejected by current constraints", async () => {
   const p = providers[0], m = memberships[0], user = actor(m);

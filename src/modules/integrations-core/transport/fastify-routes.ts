@@ -672,14 +672,22 @@ const integrationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         }
 
         const rawBody = typeof request.body === "string" ? request.body : "";
-        const result = await webhookGateway.ingest({
+        let result;
+        try { result = await webhookGateway.ingest({
           providerCode,
           rawBody,
           headers: request.headers as Record<string, string | string[] | undefined>,
           ipAddress: request.ip,
           userAgent: toOptionalHeaderValue(request.headers["user-agent"]),
           companyHintId: toOptionalHeaderValue(request.headers["x-company-id"]),
-        });
+        }); } catch (error) {
+          const candidate = error as { statusCode?: number; code?: string };
+          const status = [403, 409, 503].includes(candidate?.statusCode ?? 0) ? candidate.statusCode! : 500;
+          const codes = ["WEBHOOK_INGRESS_INCOMPLETE", "WEBHOOK_EVENT_ID_CONFLICT", "INTEGRATION_CANONICAL_SOURCE_REQUIRED", "INTEGRATION_CANONICAL_ID_CONFLICT"];
+          return reply.code(status).send({ status: "rejected", message: status === 503 ? "Webhook persistence unavailable; event not acknowledged"
+            : status === 500 ? "Webhook persistence failed; event not acknowledged" : "Webhook request rejected",
+            ...(candidate?.code && codes.includes(candidate.code) ? { code: candidate.code } : {}) });
+        }
 
         if (result.status === "accepted") {
           return reply.code(202).send({

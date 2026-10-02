@@ -21,6 +21,11 @@ export interface WebhookEventRepository {
   hasProcessed(args: {
     providerId: string;
     providerEventId: string;
+    companyId: string;
+    providerCode: string;
+    domain: "carrier" | "sms" | "payment" | "webhook_sink";
+    environment: "sandbox" | "production";
+    rawBodySha256: string;
   }): Promise<boolean>;
   saveRawEvent(args: {
     companyId: string;

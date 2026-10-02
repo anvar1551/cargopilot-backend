@@ -3,7 +3,8 @@ jest.mock("../../src/modules/identity-access/transport/fastify-auth", () => ({ f
 jest.mock("../../src/modules/integrations-core/application/integration-admin.service", () => ({ listIntegrationWebhookEventsForActor: jest.fn(), listIntegrationCanonicalEventsForActor: jest.fn(), listIntegrationOutboxForActor: jest.fn(), listIntegrationOutboxAttemptsForActor: jest.fn(), listIntegrationProvidersForActor: jest.fn(), replayIntegrationOutboxForActor: jest.fn(), retryIntegrationOutboxNowForActor: jest.fn(), upsertIntegrationProviderForActor: jest.fn(), rotateIntegrationProviderSecretForActor: jest.fn(), deleteIntegrationProviderForActor: jest.fn(), updateIntegrationProviderStatusForActor: jest.fn() }));
 jest.mock("../../src/modules/integrations-core/application/carrier-routing.service", () => ({}));
 jest.mock("../../src/modules/integrations-core/application/route-template.service", () => ({}));
-jest.mock("../../src/modules/integrations-core/application/webhook-gateway.service", () => ({ createWebhookGatewayService: () => ({}) }));
+const mockWebhookIngest = jest.fn();
+jest.mock("../../src/modules/integrations-core/application/webhook-gateway.service", () => ({ createWebhookGatewayService: () => ({ ingest: mockWebhookIngest }) }));
 jest.mock("../../src/modules/integrations-core/infrastructure/provider-webhook-verifier.resolver", () => ({}));
 jest.mock("../../src/modules/integrations-core/infrastructure/webhook-events.repo", () => ({}));
 jest.mock("../../src/modules/integrations-core/infrastructure/canonical-event.repo", () => ({}));
@@ -113,5 +114,14 @@ it("event list envelopes and validated transport filters remain supported", asyn
       const response = await app.inject({ method: "GET", url }); expect(response.statusCode).toBe(200); expect(response.json()).toEqual(page);
     }
     expect(listIntegrationCanonicalEventsForActor).toHaveBeenCalledWith(expect.objectContaining({ status: "processed", limit: 2 }));
+  } finally { await app.close(); }
+});
+it.each([403, 409, 503, 500])("ingress persistence error %s never exposes diagnostics or acknowledges acceptance", async statusCode => {
+  const app = Fastify(); try {
+    await app.register(routes); mockWebhookIngest.mockRejectedValue(Object.assign(Error("PRIVATE-CANARY"), { statusCode,
+      ...(statusCode === 503 ? { code: "WEBHOOK_INGRESS_INCOMPLETE" } : {}) }));
+    const response = await app.inject({ method: "POST", url: "/webhooks/synthetic", payload: '{"eventId":"synthetic"}', headers: { "content-type": "application/json" } });
+    expect(response.statusCode).toBe(statusCode); expect(response.json().status).toBe("rejected"); expect(response.body).not.toContain("PRIVATE-CANARY");
+    if (statusCode === 503) expect(response.json().code).toBe("WEBHOOK_INGRESS_INCOMPLETE");
   } finally { await app.close(); }
 });
