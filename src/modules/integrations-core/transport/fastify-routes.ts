@@ -13,6 +13,7 @@ import {
   listIntegrationOutboxAttemptsForActor,
   listIntegrationOutboxForActor,
   listIntegrationProvidersForActor,
+  listIntegrationProviderConfigurationsForActor,
   listIntegrationWebhookEventsForActor,
   replayIntegrationOutboxForActor,
   retryIntegrationOutboxNowForActor,
@@ -295,6 +296,14 @@ const integrationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
       }
     },
   );
+
+  fastify.get("/providers/:id/configurations", { preHandler: fastifyAuth({ permission: "integration.provider.read" }) }, async (request, reply) => {
+    try {
+      const params = z.object({ id: z.string().uuid() }).strict().parse(request.params);
+      const query = z.object({ cursor: z.string().uuid().optional(), limit: z.coerce.number().int().min(1).max(100).optional() }).strict().parse(request.query ?? {});
+      return reply.send(await listIntegrationProviderConfigurationsForActor({ user: request.user!, providerId: params.id, ...query }));
+    } catch (error) { return sendOutboxReadError(reply, error); }
+  });
 
   fastify.post(
     "/providers",

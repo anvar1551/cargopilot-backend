@@ -1,3 +1,4 @@
+import {listIntegrationProviderConfigurationsForActor as readConfigurations} from "../../src/modules/integrations-core/application/provider-configuration-read";
 import {publishIntegrationProviderConfigurationForActor as publishConfiguration} from "../../src/modules/integrations-core/application/provider-configuration-publication";
 import {listCarrierRoutingRulesForActor as routingInventory,resolveCarrierRoutingRuleForOrderLeg as routingSelector} from "../../src/modules/integrations-core/application/carrier-routing.service";
 import {listRouteTemplatesForActor as templateInventory,getRouteTemplateForActor as templateDetail} from "../../src/modules/integrations-core/application/route-template.service";
@@ -677,4 +678,22 @@ it("publication PostgreSQL concurrent shared operation across companies returns 
   expect(settled.filter(r=>r.status==="fulfilled")).toHaveLength(1);expect(settled.find(r=>r.status==="rejected")).toMatchObject({reason:{statusCode:409}});
   expect(await mockPrisma.integrationProviderConfigurationVersion.count({where:{tenantId:memberships[0].tenantId,operationId}})).toBe(1);
   const rows=await mockPrisma.integrationProvider.findMany({where:{id:{in:[own.id,other.id]}}});expect(rows.map(r=>r.configurationRevision).sort()).toEqual([0,1]);
+});
+it("configuration read PostgreSQL owns counts cursors revisions and projections across three selected companies",async()=>{
+  await publicationGrants();const permission=await mockPrisma.permission.upsert({where:{key:"integration.provider.read"},create:{key:"integration.provider.read",resource:"synthetic-config",action:"read"},update:{}});
+  const owned:any[]=[];for(let i=0;i<memberships.length;i++){
+    const roles=await mockPrisma.membershipRole.findMany({where:{membershipId:memberships[i].id}});await mockPrisma.rolePermission.createMany({data:roles.map(r=>({roleId:r.roleId,permissionId:permission.id})),skipDuplicates:true});
+    const p=await credentialProvider(i);await publishConfiguration({user:actor(memberships[i]),providerId:p.id,operationId:randomUUID(),expectedRevision:0});await publishConfiguration({user:actor(memberships[i]),providerId:p.id,operationId:randomUUID(),expectedRevision:1});owned.push(p);
+  }
+  const before=await publicationSnapshot();for(let i=0;i<memberships.length;i++){
+    const user=actor(memberships[i]),first=await readConfigurations({user,providerId:owned[i].id,limit:1});expect(first.total).toBe(2);expect(first.currentRevision).toBe(2);expect(first.data.map(r=>r.revision)).toEqual([2]);expect(first.pageInfo.hasNextPage).toBe(true);
+    const second=await readConfigurations({user,providerId:owned[i].id,limit:1,cursor:first.pageInfo.nextCursor!});expect(second.data.map(r=>r.revision)).toEqual([1]);expect(second.total).toBe(2);expect(second.pageInfo.hasNextPage).toBe(false);
+    for(const key of ["secretId","secretRef","intentSha256","actorUserId","companyMembershipId","capabilities","retryPolicyId"])expect(JSON.stringify(first)).not.toContain(key);
+    for(let j=0;j<memberships.length;j++)if(j!==i){await expect(readConfigurations({user,providerId:owned[j].id})).rejects.toMatchObject({statusCode:404});const foreign=await mockPrisma.integrationProviderConfigurationVersion.findFirstOrThrow({where:{providerId:owned[j].id}});await expect(readConfigurations({user,providerId:owned[i].id,cursor:foreign.id})).rejects.toMatchObject({statusCode:404});}
+  }
+  expect(await publicationSnapshot()).toEqual(before);
+  const plain=await credentialProvider();const zero=await readConfigurations({user:actor(memberships[0]),providerId:plain.id});expect(zero).toMatchObject({currentRevision:0,currentConfigurationId:null,total:0,data:[]});
+  const afterFixture=await publicationSnapshot();const scopes=await mockPrisma.membershipScope.findMany({where:{membershipId:memberships[0].id}});await mockPrisma.membershipScope.deleteMany({where:{membershipId:memberships[0].id}});
+  try{await expect(readConfigurations({user:actor(memberships[0]),providerId:owned[0].id})).rejects.toMatchObject({statusCode:403});expect(await publicationSnapshot()).toEqual(afterFixture);}finally{await mockPrisma.membershipScope.createMany({data:scopes});}
+  expect((await publicationSnapshot()).versions).toEqual(before.versions);
 });

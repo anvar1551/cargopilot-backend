@@ -3,3 +3,4 @@ export { listIntegrationWebhookEventsForActor, listIntegrationCanonicalEventsFor
 export { replayIntegrationOutboxForActor, retryIntegrationOutboxNowForActor } from "./outbox-recovery";
 export { upsertIntegrationProviderForActor, updateIntegrationProviderStatusForActor, deleteIntegrationProviderForActor, rotateIntegrationProviderSecretForActor } from "./provider-mutation";
 export { listIntegrationProvidersForActor } from "./provider-access";
+export { listIntegrationProviderConfigurationsForActor } from "./provider-configuration-read";
