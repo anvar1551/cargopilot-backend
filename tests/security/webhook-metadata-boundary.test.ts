@@ -1,3 +1,4 @@
+jest.mock("../../src/modules/payments-core/application/callback-database", () => ({ getPaymentCallbackDatabase: () => require("./fixtures").database }));
 jest.mock("../../src/config/prismaClient", () => ({ __esModule: true, default: require("./fixtures").database }));
 const mockVerify = jest.fn();
 jest.mock("../../src/modules/payments-core/infrastructure/providers/providerAdapter", () => ({ getPaymentProviderAdapter: () => ({ verifyWebhook: mockVerify }), parsePaymentEnvironment: () => "TEST" }));

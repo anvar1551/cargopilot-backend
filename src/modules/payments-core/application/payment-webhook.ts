@@ -4,8 +4,9 @@ import type { PaymentProviderAdapter, ResolvedProviderConfig } from "../infrastr
 import { authorityError } from "../../orders-core/domain/creation-authority";
 import { invoiceMinorUnits, invoicePaymentAuthorityDigest } from "./payment-creation";
 import { paymentWebhookMetadata } from "../../../utils/webhookMetadata";
+import { withPaymentCallbackAdmission } from "./callback-admission";
 
-type Dependencies = { db: PrismaClient; adapter: (provider: PaymentProvider) => PaymentProviderAdapter;
+type Dependencies = { db: PrismaClient | (() => PrismaClient); adapter: (provider: PaymentProvider) => PaymentProviderAdapter;
   resolve: (config: Prisma.PaymentProviderConfigGetPayload<{}>) => ResolvedProviderConfig };
 type Input = { provider: PaymentProvider; body: unknown; headers: Record<string, unknown>; rawBody?: string | Buffer };
 function reject(code: string, status = 409): never { throw Object.assign(authorityError("Payment callback cannot be applied", status), { code }); }
@@ -38,6 +39,16 @@ async function authority(db: Prisma.TransactionClient | PrismaClient, intent: So
 
 /** A verified event is evidence, never generic service authorization. Only supported exact Stripe confirmations execute. */
 export async function acceptPaymentWebhook(input: Input, deps: Dependencies) {
+  return withPaymentCallbackAdmission(async () => {
+    if (input.provider !== "STRIPE") reject("PAYMENT_PROVIDER_TRANSACTION_BINDING_REQUIRED");
+    const raw = input.rawBody;
+    if (!raw || Buffer.byteLength(raw) > 65536) reject("PAYMENT_RAW_BODY_REQUIRED", 400);
+    const db = typeof deps.db === "function" ? deps.db() : deps.db;
+    return applyPaymentWebhook(input, { ...deps, db });
+  });
+}
+
+async function applyPaymentWebhook(input: Input, deps: Dependencies & { db: PrismaClient }) {
   if (input.provider !== "STRIPE") reject("PAYMENT_PROVIDER_TRANSACTION_BINDING_REQUIRED");
   const raw = typeof input.rawBody === "string" ? Buffer.from(input.rawBody) : input.rawBody;
   if (!raw?.length || raw.length > 65536) reject("PAYMENT_RAW_BODY_REQUIRED", 400);
@@ -49,10 +60,14 @@ export async function acceptPaymentWebhook(input: Input, deps: Dependencies) {
   const session = typeof parsed.type === "string" && parsed.type.startsWith("checkout.session.");
   const payment = typeof parsed.type === "string" && parsed.type.startsWith("payment_intent.");
   if ((!session && !payment) || !boundedId(object.id)) reject("PAYMENT_BOOKING_REQUIRED");
-  const candidates = await deps.db.paymentIntent.findMany({ where: { provider: "STRIPE", ...(session ? { providerInvoiceId: object.id } : { providerPaymentId: object.id }) }, take: 2, select: sourceSelect });
-  if (candidates.length !== 1) reject("PAYMENT_BOOKING_AMBIGUOUS");
-  const candidate = candidates[0];
-  const initial = await authority(deps.db, candidate);
+  const { candidate, initial } = await deps.db.$transaction(async tx => {
+    await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+    await tx.$executeRaw`SET LOCAL statement_timeout = '3s'`;
+    await tx.$executeRaw`SET LOCAL lock_timeout = '1s'`;
+    const candidates = await tx.paymentIntent.findMany({ where: { provider: "STRIPE", ...(session ? { providerInvoiceId: object.id } : { providerPaymentId: object.id }) }, take: 2, select: sourceSelect });
+    if (candidates.length !== 1) reject("PAYMENT_BOOKING_AMBIGUOUS");
+    return { candidate: candidates[0], initial: await authority(tx, candidates[0]) };
+  }, { maxWait: 2000, timeout: 5000 });
   const configVersion = createHash("sha256").update(JSON.stringify(candidate.providerConfig)).digest("hex");
   const verified = await deps.adapter("STRIPE").verifyWebhook({ provider: "STRIPE", environment: candidate.environment,
     body: parsed, rawBody: raw, headers: input.headers as Record<string, string | string[] | undefined>, config: deps.resolve(candidate.providerConfig) });

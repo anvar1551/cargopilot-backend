@@ -1,4 +1,5 @@
 import { collectProviderConfigIssues } from "./payment-settings";
+import { getPaymentCallbackDatabase } from "./callback-database";
 export { getCompanyPaymentPolicyForActor, upsertCompanyPaymentPolicyForActor, listProviderConfigsForActor, listAvailableProvidersForActor, upsertProviderConfigForActor, patchProviderConfigForActor, testProviderConfigForActor } from "./payment-settings";
 import { acceptPaymentWebhook } from "./payment-webhook";
 import { paymentAccess, ownedPaymentIntent, refundOwnership, paymentIntentReadSelect } from "./payment-access";
@@ -262,5 +263,5 @@ export async function listPaymentRefundsForActor(args: { user: AuthUser; payment
 export async function handleProviderWebhook(args: {
   provider: PaymentProvider; body: unknown; headers: Record<string, unknown>; rawBody?: string | Buffer;
 }) {
-  return acceptPaymentWebhook(args, { db: prisma, adapter: getPaymentProviderAdapter, resolve: toResolvedProviderConfig });
+  return acceptPaymentWebhook(args, { db: getPaymentCallbackDatabase, adapter: getPaymentProviderAdapter, resolve: toResolvedProviderConfig });
 }

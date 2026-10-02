@@ -19,5 +19,27 @@ it("matching duplicate still reloads eligibility but never writes a second resul
 it("conflicting event reuse never overwrites the first receipt",async()=>{db.paymentWebhookEvent.findUnique.mockResolvedValue({id:"receipt",companyId:"company",paymentIntentId:"intent",signatureValid:true,processStatus:"PROCESSED",payloadJson:{fingerprint:"different"}});await expect(call()).rejects.toMatchObject({code:"PAYMENT_EVENT_ID_CONFLICT"});noWrites();});
 it("changed configuration after verification rejects before effects",async()=>{db.paymentIntent.findUnique.mockImplementation(async()=>({...source,providerConfig:{...config,serviceId:"changed"}}));await expect(call()).rejects.toMatchObject({code:"PAYMENT_CURRENT_BINDING_CONFLICT"});noWrites();});
 it("database failure never acknowledges uncommitted processing",async()=>{db.$transaction.mockRejectedValue(new Error("synthetic database failure"));await expect(call()).rejects.toThrow("synthetic database failure");noWrites();});
-it("a competing durable event key is a conflict, never immediate replay",async()=>{db.$transaction.mockRejectedValue({code:"P2002"});await expect(call()).rejects.toMatchObject({statusCode:409,code:"PAYMENT_EVENT_ID_CONFLICT"});expect(db.$transaction).toHaveBeenCalledTimes(1);noWrites();});
+it("a competing durable event key is a conflict, never immediate replay",async()=>{db.$transaction.mockImplementationOnce(async(work:any)=>work(db)).mockRejectedValueOnce({code:"P2002"});await expect(call()).rejects.toMatchObject({statusCode:409,code:"PAYMENT_EVENT_ID_CONFLICT"});expect(db.$transaction).toHaveBeenCalledTimes(2);noWrites();});
 it("a terminal failure never regresses into paid without accepted recovery",async()=>{source.status="FAILED";order.paymentState="FAILED";await expect(call()).rejects.toMatchObject({code:"PAYMENT_TRANSITION_CONFLICT"});noWrites();});
+it("capacity is fail-fast before database resolution and retains slots for pending underlying work",async()=>{
+  let release!:()=>void;const pending=new Promise<void>(done=>{release=done;});
+  const lazy=jest.fn(()=>db);
+  db.$transaction.mockImplementation(async()=>{await pending;throw Error("synthetic deferred rejection");});
+  const active=Array.from({length:8},()=>acceptPaymentWebhook(request(),{db:lazy,resolve,adapter:()=>({verifyWebhook:verify})}as any));
+  const settling=Promise.allSettled(active);
+  try{
+    await expect(acceptPaymentWebhook(request(),{db:lazy,resolve,adapter:()=>({verifyWebhook:verify})}as any)).rejects.toMatchObject({statusCode:503,code:"PAYMENT_CALLBACK_CAPACITY"});
+    expect(lazy).toHaveBeenCalledTimes(8);expect(db.$transaction).toHaveBeenCalledTimes(8);
+    await Promise.resolve();
+    await expect(call()).rejects.toMatchObject({code:"PAYMENT_CALLBACK_CAPACITY"});
+    expect(verify).not.toHaveBeenCalled();noWrites();
+  }finally{release();await settling;}
+  db.$transaction.mockImplementation(async(work:any)=>work(db));
+  await expect(call()).resolves.toMatchObject({ok:true});
+});
+it("preflight is read-only with database deadlines before signature work",async()=>{
+  await call();
+  expect(db.$transaction.mock.calls.map((call:any)=>call[1])).toEqual([{maxWait:2000,timeout:5000},{maxWait:2000,timeout:10000}]);
+  const settings=db.$executeRaw.mock.calls.map((call:any)=>call[0].join(""));
+  expect(settings.slice(0,3)).toEqual(["SET TRANSACTION READ ONLY","SET LOCAL statement_timeout = '3s'","SET LOCAL lock_timeout = '1s'"]);
+});

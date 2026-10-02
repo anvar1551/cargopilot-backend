@@ -1,6 +1,6 @@
 import { Pool } from "pg";
-import { PrismaClient } from "@prisma/client";
-import { PrismaPg } from "@prisma/adapter-pg";
+import { createPaymentCallbackDatabase } from "../../src/modules/payments-core/application/callback-database";
+
 import Stripe from "stripe";
 import { randomUUID } from "crypto";
 import { createTenantDemoFixture } from "../../src/modules/tenancy/demo-fixtures";
@@ -12,10 +12,10 @@ const url=process.env.CARGOPILOT_WORKER_TEST_DATABASE_URL,run=process.env.CARGOP
 if(!url||!run||!/^[a-f0-9]{12}$/.test(run))throw Error("Disposable run required");
 const target=new URL(url);if(target.hostname!=="127.0.0.1"||target.username!=="cp_worker_it"||target.pathname!==`/cp_worker_${run}`)throw Error("Refusing existing database");
 const pool=new Pool({connectionString:url,max:2,connectionTimeoutMillis:3000,options:"-c statement_timeout=5000"});
-const db=new PrismaClient({adapter:new PrismaPg({connectionString:url,max:4,connectionTimeoutMillis:3000,options:"-c statement_timeout=5000"})});
+const bounded=createPaymentCallbackDatabase(url),db=bounded.db;
 const fixture=createTenantDemoFixture(),sdk=new Stripe("sk_test_synthetic_not_real"),adapter=new StripeProviderAdapter();
 beforeAll(async()=>{const marker=(await pool.query('SELECT "runId" FROM "_CPDisposableRun"')).rows;if(marker.length!==1||marker[0].runId!==run)throw Error("Disposable ownership mismatch");const client=await pool.connect();try{await client.query("BEGIN");await persistTenantDemoFixture(client,fixture);await client.query("COMMIT");}finally{await client.query("ROLLBACK");client.release();}for(const company of fixture.financeLegalEntities)await db.paymentProviderConfig.create({data:{companyId:company.companyId,provider:"STRIPE",environment:"TEST",serviceId:"whsec_synthetic",secretEncrypted:"synthetic",secretMasked:"synthetic",callbackPath:"/synthetic"}});});
-afterAll(async()=>{await db.$disconnect();await pool.end();});
+afterAll(async()=>{await bounded.close();await pool.end();});
 it("callback lookup indexes preserve non-unique external-reference admission and are planner eligible",async()=>{
   const catalog=await pool.query(`SELECT indexrelid::regclass::text AS name, indisvalid, indisunique,
     pg_get_indexdef(indexrelid) AS definition FROM pg_index WHERE indexrelid IN
@@ -75,4 +75,37 @@ it("forged authentication, money, currency and foreign metadata reject without a
 it("conflicting duplicate event cannot overwrite confirmation or change business state",async()=>{const f=await accepted();await acceptPaymentWebhook(request(f.event),deps());const before=await snapshot();const event={...f.event,data:{object:{...f.event.data.object,payment_intent:"pi_conflict"}}};await expect(acceptPaymentWebhook(request(event),deps())).rejects.toMatchObject({statusCode:409});expect(await snapshot()).toEqual(before);});
 it("current suspended tenant or owner denies a matching retry without mutations",async()=>{const f=await accepted();await acceptPaymentWebhook(request(f.event),deps());await db.tenant.update({where:{id:f.company.tenantId!},data:{status:"suspended"}});const before=await snapshot();try{await expect(acceptPaymentWebhook(request(f.event),deps())).rejects.toMatchObject({statusCode:409});expect(await snapshot()).toEqual(before);}finally{await db.tenant.update({where:{id:f.company.tenantId!},data:{status:"active"}});}});
 it("unsupported cash allocation and failed terminal state remain contained",async()=>{const f=await accepted();for(const data of [{serviceCharge:1},{serviceCharge:null},{serviceCharge:0,paymentState:"FAILED" as const}]){await db.order.update({where:{id:f.order.id},data});const before=await snapshot();await expect(acceptPaymentWebhook(request(f.event),deps())).rejects.toMatchObject({statusCode:409});expect(await snapshot()).toEqual(before);}});
-it("injected failure after receipt and financial work rolls back every durable result",async()=>{const f=await accepted(),before=await snapshot();const failing=new Proxy(db,{get(target,property){if(property==="$transaction")return(work:any,options:any)=>target.$transaction(async tx=>{await work(tx);throw Error("synthetic-post-work-failure");},options);const value=(target as any)[property];return typeof value==="function"?value.bind(target):value;}});await expect(acceptPaymentWebhook(request(f.event),deps(failing))).rejects.toThrow("synthetic-post-work-failure");expect(await snapshot()).toEqual(before);await expect(acceptPaymentWebhook(request(f.event),deps())).resolves.toMatchObject({ok:true});});
+it("injected failure after receipt and financial work rolls back every durable result",async()=>{const f=await accepted(),before=await snapshot();const failing=new Proxy(db,{get(target,property){if(property==="$transaction")return(work:any,options:any)=>target.$transaction(async tx=>{const result=await work(tx);if(options.timeout===10000)throw Error("synthetic-post-work-failure");return result;},options);const value=(target as any)[property];return typeof value==="function"?value.bind(target):value;}});await expect(acceptPaymentWebhook(request(f.event),deps(failing))).rejects.toThrow("synthetic-post-work-failure");expect(await snapshot()).toEqual(before);await expect(acceptPaymentWebhook(request(f.event),deps())).resolves.toMatchObject({ok:true});});
+it("preflight statement deadline cancels server work, leaves no effects and recovers",async()=>{
+  const f=await accepted(),before=await snapshot();
+  const slow=new Proxy(db,{get(target,property){if(property==="$transaction")return(work:any,options:any)=>target.$transaction(async tx=>{
+    const wrapped=new Proxy(tx,{get(t,key){if(key==="paymentIntent")return new Proxy(t.paymentIntent,{get(model,method){if(method==="findMany")return async()=>{await tx.$queryRaw`SELECT pg_sleep(4)`;return[];};return(model as any)[method];}});return(t as any)[key];}});
+    return work(wrapped);
+  },options);const value=(target as any)[property];return typeof value==="function"?value.bind(target):value;}});
+  await expect(acceptPaymentWebhook(request(f.event),deps(slow))).rejects.toThrow(/statement timeout/);
+  expect(await snapshot()).toEqual(before);expect(bounded.pool.waitingCount).toBe(0);
+  const active=await pool.query("SELECT count(*)::int AS count FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND state='active' AND query LIKE '%pg_sleep%'");
+  expect(active.rows[0].count).toBe(0);
+  await expect(acceptPaymentWebhook(request(f.event),deps())).resolves.toMatchObject({ok:true});
+});
+it("preflight lock deadline rejects without business effects and permits recovery",async()=>{
+  const f=await accepted(),before=await snapshot(),locker=await pool.connect();
+  try{
+    await locker.query("BEGIN");await locker.query('LOCK TABLE "PaymentIntent" IN ACCESS EXCLUSIVE MODE');
+    await expect(acceptPaymentWebhook(request(f.event),deps())).rejects.toThrow(/lock timeout/);
+  }finally{await locker.query("ROLLBACK");locker.release();}
+  expect(await snapshot()).toEqual(before);expect(bounded.pool.waitingCount).toBe(0);
+  await expect(acceptPaymentWebhook(request(f.event),deps())).resolves.toMatchObject({ok:true});
+});
+it("bounded driver acquisition expires queued work without posting after capacity returns",async()=>{
+  const f=await accepted(),before=await snapshot();
+  const held=[];
+  try{
+    for(let i=0;i<8;i++)held.push(await bounded.pool.connect());
+    await expect(acceptPaymentWebhook(request(f.event),deps())).rejects.toThrow();
+    expect(bounded.pool.waitingCount).toBe(0);
+  }finally{held.forEach(client=>client.release());}
+  expect(await snapshot()).toEqual(before);
+  await expect(acceptPaymentWebhook(request(f.event),deps())).resolves.toMatchObject({ok:true});
+  expect(await db.paymentLedgerEntry.count({where:{paymentIntentId:f.intent.id}})).toBe(1);
+});

@@ -35,6 +35,7 @@ import {
   upsertProviderConfigSchema,
 } from "../shared/validation";
 import { PaymentProvider } from "@prisma/client";
+import { closePaymentCallbackDatabase } from "../application/callback-database";
 
 function sendError(reply: any, error: unknown, fallback: string) {
   if (error instanceof ZodError) {
@@ -61,6 +62,7 @@ function sendSettingsError(reply: any, error: unknown) {
 }
 
 const paymentsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.addHook("onClose", async () => { await closePaymentCallbackDatabase(); });
   fastify.get(
     "/settings/payments/policy",
     { preHandler: fastifyAuth({ permission: "payments.providers.read" }) },
