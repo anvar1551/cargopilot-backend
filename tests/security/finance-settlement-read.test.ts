@@ -26,4 +26,12 @@ it("provider configuration overflow denies without querying documents",async()=>
 it("owned keyset and foreign cursor deny preserve provider/status predicates",async()=>{database.financeProviderSettlement.findFirst.mockResolvedValueOnce(null);await expect(repo.listProviderSettlements(actor,{limit:1,cursor:id})).rejects.toMatchObject({statusCode:404});expect(database.financeProviderSettlement.findMany).not.toHaveBeenCalled();await repo.listProviderSettlements(actor,{limit:1,cursor:id,status:"submitted"});const q=database.financeProviderSettlement.findMany.mock.calls[0][0];expect(q.where.AND[0].status).toBe("submitted");expect(q.where.AND[1]).toEqual({OR:[{periodEnd:{lt:row.periodEnd}},{periodEnd:row.periodEnd,id:{lt:id}}]});});
 it.each([{limit:0},{limit:101},{limit:10,cursor:"bad"},{limit:10,status:"bad"},{limit:10,companyId:"foreign"}])("invalid input denies",async page=>{await expect(repo.listProviderSettlements(actor,page as any)).rejects.toMatchObject({statusCode:400});});
 it("detail overflow denies",async()=>{database.financeProviderSettlement.findFirst.mockResolvedValue({...row,lines:Array(5001).fill({})});await expect(repo.getProviderSettlement(actor,id)).rejects.toMatchObject({code:"FINANCE_SETTLEMENT_DETAIL_LIMIT"});});
+it("list, cursor and detail require the complete configured child source graph",async()=>{
+ await repo.listProviderSettlements(actor,{limit:1,cursor:id});await repo.getProviderSettlement(actor,id);
+ for(const call of [...database.financeProviderSettlement.findMany.mock.calls,...database.financeProviderSettlement.findFirst.mock.calls]){
+  const where=call[0].where.AND[0].OR[0].lines.every;
+  expect(where).toMatchObject({legalEntityId:"entity",tenantId:"t",companyId:"c",providerConfigId:"config",currency:{not:null},ownedHeader:{is:{companyId:"c",legalEntityId:"entity",providerConfigId:"config"}}});
+  expect(where.AND[0].OR).toContainEqual({type:"payment",paymentIntentId:{not:null},paymentRefundId:null});
+ }
+});
 it("HTTP read consumers send selected context and preserve envelopes",async()=>{const app=Fastify();await app.register(routes);try{expect((await app.inject({method:"GET",url:"/provider-settlements?companyId=foreign"})).statusCode).toBe(400);expect((await app.inject({method:"GET",url:"/provider-settlements?limit=10"})).json().items[0].id).toBe(id);expect((await app.inject({method:"GET",url:"/provider-settlements/"+id})).json().netAmount).toBe("10000000000000.0001");}finally{await app.close();}},15000);

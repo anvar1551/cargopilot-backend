@@ -16,7 +16,17 @@ async function ownership(actor:AppUser) {
   const configs=await prisma.paymentProviderConfig.findMany({where:{companyId:context.companyId,company:{is:{tenantId:context.tenantId,isActive:true}}},select:{id:true,provider:true,environment:true},take:33});
   if(configs.length>32)throw financeConflict("Provider configuration exceeds supported read size","FINANCE_SETTLEMENT_PROVIDER_LIMIT");
   if(!configs.length)return null;
-  return {companyId:context.companyId,legalEntityId:entity.id,legalEntity:{is:owner},OR:configs.map(config=>({providerConfigId:config.id,providerCode:config.provider,environment:config.environment}))} satisfies Prisma.FinanceProviderSettlementWhereInput;
+  const order={tenantId:context.tenantId,ownerOrgId:context.companyId};
+  return {companyId:context.companyId,legalEntityId:entity.id,legalEntity:{is:owner},OR:configs.map(config=>({providerConfigId:config.id,providerCode:config.provider,environment:config.environment,
+    lines:{every:{legalEntityId:entity.id,tenantId:context.tenantId,companyId:context.companyId,providerConfigId:config.id,currency:{not:null},
+      ownedEntity:{is:owner},ownedHeader:{is:{companyId:context.companyId,legalEntityId:entity.id,providerConfigId:config.id}},AND:[
+        {OR:[{type:{notIn:["payment","refund"]}},{type:"payment",paymentIntentId:{not:null},paymentRefundId:null},{type:"refund",paymentIntentId:{not:null},paymentRefundId:{not:null},orderId:{not:null}}]},
+        {OR:[{orderId:null},{ownedOrder:{is:order}}]},
+        {OR:[{paymentIntentId:null},{ownedIntent:{is:{companyId:context.companyId,providerConfigId:config.id,provider:config.provider,environment:config.environment,order:{is:order}}}}]},
+        {OR:[{paymentRefundId:null},{ownedRefund:{is:{companyId:context.companyId,provider:config.provider,environment:config.environment}}}]},
+        {OR:[{paymentIntentId:null},{orderId:{not:null}}]},
+        {OR:[{paymentRefundId:null},{paymentIntentId:{not:null},orderId:{not:null}}]},
+      ]}}}))} satisfies Prisma.FinanceProviderSettlementWhereInput;
 }
 export async function listOwnedProviderSettlements(actor:AppUser,page:FinanceDocumentPage) {
   const owned=await ownership(actor);

@@ -128,6 +128,7 @@ enum RecipientUnavailableAction {
 }
 
 model Order {
+  financeSettlementLines FinanceProviderSettlementLine[] @relation("SettlementLineOrder")
   financeCarrierBillLines FinanceCarrierBillLine[] @relation("CarrierLineOrder")
   tenantSupportTickets SupportTicket[] @relation("SupportTenantOrder")
   proofSubmissions ProofSubmission[]

@@ -1,5 +1,6 @@
 import { listOwnedCarrierBills, getOwnedCarrierBill } from "./carrier-bill-read";
 import { listOwnedProviderSettlements, getOwnedProviderSettlement } from "./settlement-read";
+import { resolveSettlementLines } from "./settlement-line-references";
 import type { AppUser } from "../../../types/app-user";
 import { requireCarrierBillMutation, requireSettlementMutation } from "../application/legal-entity-access";
 import { Prisma } from "@prisma/client";
@@ -82,6 +83,8 @@ export class PrismaFinanceDocumentsRepository implements FinanceDocumentsReposit
     await requireSettlementMutation(actor,command,"create");
     return prisma.$transaction(async (tx) => {
       const entity = await requireEntity(tx, command.companyId);
+      if (!entity.tenantId || entity.tenantId!==actor.tenantId || entity.companyId!==actor.companyId) throw financeConflict("Settlement owner is unbound","FINANCE_SETTLEMENT_SOURCE_INVALID");
+      const resolvedLines=await resolveSettlementLines(tx,{...entity,tenantId:entity.tenantId},command.settlement);
       assertFxSnapshot(entity, command.settlement);
       await lockDocumentKey(tx, `${entity.id}:provider-settlement:${command.idempotencyKey}`);
       const existing = await tx.financeProviderSettlement.findUnique({
@@ -127,7 +130,8 @@ export class PrismaFinanceDocumentsRepository implements FinanceDocumentsReposit
           metadataJson: json(command.settlement.metadata),
           createdByUserId: command.actorUserId,
           lines: {
-            create: command.settlement.lines.map((line) => ({
+            create: resolvedLines.map((line) => ({
+              legalEntityId:line.legalEntityId,tenantId:line.tenantId,companyId:line.companyId,providerConfigId:line.providerConfigId,currency:line.currency,
               sequence: line.sequence,
               type: line.type,
               reconciliationStatus: line.reconciliationStatus,

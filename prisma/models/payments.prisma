@@ -99,6 +99,8 @@ model PaymentProviderConfig {
 }
 
 model PaymentIntent {
+  settlementLines FinanceProviderSettlementLine[] @relation("SettlementLineIntent")
+  @@unique([id, companyId, orderId, providerConfigId, currency], map: "PaymentIntent_settlement_owner_key")
   id                  String                @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   companyId           String                @db.Uuid
   company             Organization          @relation(fields: [companyId], references: [id], onDelete: Cascade)
@@ -129,6 +131,8 @@ model PaymentIntent {
 }
 
 model PaymentRefund {
+  settlementLines FinanceProviderSettlementLine[] @relation("SettlementLineRefund")
+  @@unique([id, companyId, orderId, paymentIntentId, currency], map: "PaymentRefund_settlement_owner_key")
   id                   String              @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   companyId            String              @db.Uuid
   company              Organization        @relation(fields: [companyId], references: [id], onDelete: Restrict)
