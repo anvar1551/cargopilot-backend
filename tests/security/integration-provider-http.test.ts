@@ -1,6 +1,6 @@
 import { replayIntegrationOutboxForActor, retryIntegrationOutboxNowForActor } from "../../src/modules/integrations-core/application/integration-admin.service";
 jest.mock("../../src/modules/identity-access/transport/fastify-auth", () => ({ fastifyAuth: () => async () => undefined }));
-jest.mock("../../src/modules/integrations-core/application/integration-admin.service", () => ({ listIntegrationProvidersForActor: jest.fn(), replayIntegrationOutboxForActor: jest.fn(), retryIntegrationOutboxNowForActor: jest.fn(), upsertIntegrationProviderForActor: jest.fn(), rotateIntegrationProviderSecretForActor: jest.fn(), deleteIntegrationProviderForActor: jest.fn(), updateIntegrationProviderStatusForActor: jest.fn() }));
+jest.mock("../../src/modules/integrations-core/application/integration-admin.service", () => ({ listIntegrationOutboxForActor: jest.fn(), listIntegrationOutboxAttemptsForActor: jest.fn(), listIntegrationProvidersForActor: jest.fn(), replayIntegrationOutboxForActor: jest.fn(), retryIntegrationOutboxNowForActor: jest.fn(), upsertIntegrationProviderForActor: jest.fn(), rotateIntegrationProviderSecretForActor: jest.fn(), deleteIntegrationProviderForActor: jest.fn(), updateIntegrationProviderStatusForActor: jest.fn() }));
 jest.mock("../../src/modules/integrations-core/application/carrier-routing.service", () => ({}));
 jest.mock("../../src/modules/integrations-core/application/route-template.service", () => ({}));
 jest.mock("../../src/modules/integrations-core/application/webhook-gateway.service", () => ({ createWebhookGatewayService: () => ({}) }));
@@ -10,6 +10,7 @@ jest.mock("../../src/modules/integrations-core/infrastructure/canonical-event.re
 import Fastify from "fastify";
 import routes from "../../src/modules/integrations-core/transport/fastify-routes";
 import { listIntegrationProvidersForActor } from "../../src/modules/integrations-core/application/integration-admin.service";
+import { listIntegrationOutboxForActor, listIntegrationOutboxAttemptsForActor } from "../../src/modules/integrations-core/application/integration-admin.service";
 import { upsertIntegrationProviderForActor, rotateIntegrationProviderSecretForActor, deleteIntegrationProviderForActor, updateIntegrationProviderStatusForActor } from "../../src/modules/integrations-core/application/integration-admin.service";
 beforeEach(() => jest.clearAllMocks());
 it.each([400, 403, 404, 500])("provider list error %s exposes no database or credential detail", async statusCode => {
@@ -58,4 +59,36 @@ it.each([["replay",replayIntegrationOutboxForActor],["retry-now",retryIntegratio
     const response=await app.inject({method:"POST",url:`/outbox/10000000-0000-4000-8000-000000000001/${action}`});
     expect(response.statusCode).toBe(409);expect(response.json().code).toBe("INTEGRATION_OUTBOX_RECOVERY_REQUIRED");expect(response.body).not.toContain("PRIVATE-CANARY");expect(handler).toHaveBeenCalledTimes(1);
   }finally{await app.close();}
+});
+
+it.each([400, 403, 404, 500])("outbox and attempt read errors %s expose no private diagnostics", async statusCode => {
+  const app = Fastify(); try {
+    await app.register(routes);
+    for (const [url, handler] of [["/outbox", listIntegrationOutboxForActor],
+      ["/outbox/10000000-0000-4000-8000-000000000001/attempts", listIntegrationOutboxAttemptsForActor]] as const) {
+      jest.mocked(handler).mockRejectedValue(Object.assign(Error("PRIVATE-CANARY"), { statusCode }));
+      const response = await app.inject({ method: "GET", url });
+      expect(response.statusCode).toBe(statusCode); expect(response.body).not.toContain("PRIVATE-CANARY");
+    }
+  } finally { await app.close(); }
+});
+it("outbox capacity has a safe narrowing response, not partial totals", async () => {
+  const app = Fastify(); try {
+    await app.register(routes); jest.mocked(listIntegrationOutboxForActor).mockRejectedValue(Object.assign(Error("PRIVATE-CANARY"), {
+      statusCode: 409, code: "INTEGRATION_READ_CAPACITY" }));
+    const response = await app.inject({ method: "GET", url: "/outbox" });
+    expect(response.statusCode).toBe(409); expect(response.json().code).toBe("INTEGRATION_READ_CAPACITY"); expect(response.body).not.toContain("PRIVATE-CANARY");
+  } finally { await app.close(); }
+});
+it("outbox metadata list and attempt array retain response envelopes", async () => {
+  const app = Fastify(); try {
+    await app.register(routes); const page = { items: [], total: 0, page: 2, limit: 3 };
+    jest.mocked(listIntegrationOutboxForActor).mockResolvedValue(page);
+    jest.mocked(listIntegrationOutboxAttemptsForActor).mockResolvedValue([]);
+    const response = await app.inject({ method: "GET", url: "/outbox?page=2&limit=3&domain=carrier" });
+    expect(response.statusCode).toBe(200); expect(response.json()).toEqual(page);
+    expect(listIntegrationOutboxForActor).toHaveBeenCalledWith(expect.objectContaining({ page: 2, limit: 3, domain: "carrier" }));
+    const details = await app.inject({ method: "GET", url: "/outbox/10000000-0000-4000-8000-000000000001/attempts?limit=2" });
+    expect(details.statusCode).toBe(200); expect(details.json()).toEqual([]);
+  } finally { await app.close(); }
 });

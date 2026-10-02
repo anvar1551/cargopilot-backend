@@ -230,6 +230,16 @@ function sendProviderMutationError(reply: any, error: unknown) {
     : safe === 404 ? "Integration provider not found" : safe === 400 ? "Invalid provider request" : "Provider request failed" });
 }
 
+function sendOutboxReadError(reply: any, error: unknown) {
+  const candidate = error as { statusCode?: number; code?: string };
+  if (candidate?.statusCode === 409 && candidate.code === "INTEGRATION_READ_CAPACITY")
+    return reply.code(409).send({ error: "Narrow the integration provider filters", code: candidate.code });
+  const status = error instanceof ZodError ? 400 : candidate?.statusCode;
+  const safe = status === 400 || status === 403 || status === 404 ? status : 500;
+  return reply.code(safe).send({ error: safe === 400 ? "Invalid integration read request"
+    : safe === 403 ? "Integration read denied" : safe === 404 ? "Integration record not found" : "Integration read failed" });
+}
+
 function toOptionalHeaderValue(value: string | string[] | undefined) {
   if (Array.isArray(value)) {
     const first = value.find((item) => String(item || "").trim().length > 0);
@@ -539,7 +549,7 @@ const integrationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         });
         return reply.send(result);
       } catch (error) {
-        return sendError(reply, error, "Failed to list integration outbox");
+        return sendOutboxReadError(reply, error);
       }
     },
   );
@@ -558,7 +568,7 @@ const integrationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         });
         return reply.send(result);
       } catch (error) {
-        return sendError(reply, error, "Failed to list outbox attempts");
+        return sendOutboxReadError(reply, error);
       }
     },
   );
