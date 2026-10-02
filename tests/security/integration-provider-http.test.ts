@@ -1,5 +1,6 @@
+import { replayIntegrationOutboxForActor, retryIntegrationOutboxNowForActor } from "../../src/modules/integrations-core/application/integration-admin.service";
 jest.mock("../../src/modules/identity-access/transport/fastify-auth", () => ({ fastifyAuth: () => async () => undefined }));
-jest.mock("../../src/modules/integrations-core/application/integration-admin.service", () => ({ listIntegrationProvidersForActor: jest.fn(), upsertIntegrationProviderForActor: jest.fn(), rotateIntegrationProviderSecretForActor: jest.fn(), deleteIntegrationProviderForActor: jest.fn(), updateIntegrationProviderStatusForActor: jest.fn() }));
+jest.mock("../../src/modules/integrations-core/application/integration-admin.service", () => ({ listIntegrationProvidersForActor: jest.fn(), replayIntegrationOutboxForActor: jest.fn(), retryIntegrationOutboxNowForActor: jest.fn(), upsertIntegrationProviderForActor: jest.fn(), rotateIntegrationProviderSecretForActor: jest.fn(), deleteIntegrationProviderForActor: jest.fn(), updateIntegrationProviderStatusForActor: jest.fn() }));
 jest.mock("../../src/modules/integrations-core/application/carrier-routing.service", () => ({}));
 jest.mock("../../src/modules/integrations-core/application/route-template.service", () => ({}));
 jest.mock("../../src/modules/integrations-core/application/webhook-gateway.service", () => ({ createWebhookGatewayService: () => ({}) }));
@@ -49,5 +50,12 @@ it.each([
     await app.register(routes);jest.mocked(handler).mockRejectedValue(Object.assign(Error("PRIVATE-CANARY"),{statusCode:409,code}));
     const response=await app.inject({method,url,payload});expect(response.statusCode).toBe(409);expect(response.json().code).toBe(code);expect(response.body).not.toContain("PRIVATE-CANARY");
     expect(handler).toHaveBeenCalledTimes(1);
+  }finally{await app.close();}
+});
+it.each([["replay",replayIntegrationOutboxForActor],["retry-now",retryIntegrationOutboxNowForActor]] as const)("manual %s exposes a safe unavailable contract",async(action,handler)=>{
+  const app=Fastify();try{
+    await app.register(routes);jest.mocked(handler).mockRejectedValue(Object.assign(Error("PRIVATE-CANARY"),{statusCode:409,code:"INTEGRATION_OUTBOX_RECOVERY_REQUIRED"}));
+    const response=await app.inject({method:"POST",url:`/outbox/10000000-0000-4000-8000-000000000001/${action}`});
+    expect(response.statusCode).toBe(409);expect(response.json().code).toBe("INTEGRATION_OUTBOX_RECOVERY_REQUIRED");expect(response.body).not.toContain("PRIVATE-CANARY");expect(handler).toHaveBeenCalledTimes(1);
   }finally{await app.close();}
 });
