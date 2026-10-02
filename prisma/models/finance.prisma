@@ -200,7 +200,7 @@ model FinanceSourceEvent {
   company   Organization @relation(fields: [companyId], references: [id], onDelete: Restrict)
 
   legalEntityId String?             @db.Uuid
-  legalEntity   FinanceLegalEntity? @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
+  legalEntity   FinanceLegalEntity? @relation(fields: [legalEntityId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceSourceEvent_entity_company_fkey")
 
   sourceEventId String
   sourceType    String
@@ -214,11 +214,11 @@ model FinanceSourceEvent {
   payloadJson   Json
 
   resolvedRuleId        String?              @db.Uuid
-  resolvedRule          FinancePostingRule?  @relation(fields: [resolvedRuleId], references: [id], onDelete: Restrict)
+  resolvedRule          FinancePostingRule?  @relation(fields: [resolvedRuleId, legalEntityId], references: [id, legalEntityId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceSourceEvent_rule_entity_fkey")
   financeDocumentId     String?              @db.Uuid
-  financeDocument       FinanceDocument?     @relation(fields: [financeDocumentId], references: [id], onDelete: Restrict)
+  financeDocument       FinanceDocument?     @relation(fields: [financeDocumentId, legalEntityId], references: [id, legalEntityId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceSourceEvent_document_entity_fkey")
   financeJournalEntryId String?              @db.Uuid
-  financeJournalEntry   FinanceJournalEntry? @relation(fields: [financeJournalEntryId], references: [id], onDelete: Restrict)
+  financeJournalEntry   FinanceJournalEntry? @relation(fields: [financeJournalEntryId, legalEntityId], references: [id, legalEntityId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceSourceEvent_journal_entity_fkey")
   attempts              Int                  @default(0)
   claimedAt             DateTime?
   claimedBy             String?
@@ -229,6 +229,7 @@ model FinanceSourceEvent {
   createdAt             DateTime             @default(now())
   updatedAt             DateTime             @updatedAt
 
+  ownedResult FinanceJournalEntry? @relation("SourceResultPair", fields: [financeJournalEntryId, financeDocumentId, legalEntityId], references: [id, documentId, legalEntityId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceSourceEvent_result_pair_fkey")
   @@unique([companyId, sourceEventId])
   @@index([status, nextAttemptAt, claimedAt, createdAt])
   @@index([companyId, status, createdAt])
@@ -440,6 +441,8 @@ model FinanceJournalEntry {
 
   @@unique([id, legalEntityId], map: "FinanceJournalEntry_id_legalEntityId_key")
   @@unique([documentId, legalEntityId], map: "FinanceJournalEntry_documentId_legalEntityId_key")
+  ownedSourceResults FinanceSourceEvent[] @relation("SourceResultPair")
+  @@unique([id, documentId, legalEntityId], map: "FinanceJournalEntry_source_result_key")
   @@unique([legalEntityId, journalNumber])
   @@index([legalEntityId, status, postingDate])
   @@index([reversalOfId])

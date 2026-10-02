@@ -1,0 +1,8 @@
+-- Expand reference protection; retained old simple FKs and historical rows.
+CREATE UNIQUE INDEX "FinanceJournalEntry_source_result_key" ON "FinanceJournalEntry" ("id", "documentId", "legalEntityId");
+ALTER TABLE "FinanceSourceEvent" ADD CONSTRAINT "FinanceSourceEvent_entity_company_fkey" FOREIGN KEY ("legalEntityId", "companyId") REFERENCES "FinanceLegalEntity" ("id", "companyId") ON DELETE RESTRICT ON UPDATE RESTRICT NOT VALID;
+ALTER TABLE "FinanceSourceEvent" ADD CONSTRAINT "FinanceSourceEvent_rule_entity_fkey" FOREIGN KEY ("resolvedRuleId", "legalEntityId") REFERENCES "FinancePostingRule" ("id", "legalEntityId") ON DELETE RESTRICT ON UPDATE RESTRICT NOT VALID;
+ALTER TABLE "FinanceSourceEvent" ADD CONSTRAINT "FinanceSourceEvent_document_entity_fkey" FOREIGN KEY ("financeDocumentId", "legalEntityId") REFERENCES "FinanceDocument" ("id", "legalEntityId") ON DELETE RESTRICT ON UPDATE RESTRICT NOT VALID;
+ALTER TABLE "FinanceSourceEvent" ADD CONSTRAINT "FinanceSourceEvent_journal_entity_fkey" FOREIGN KEY ("financeJournalEntryId", "legalEntityId") REFERENCES "FinanceJournalEntry" ("id", "legalEntityId") ON DELETE RESTRICT ON UPDATE RESTRICT NOT VALID;
+ALTER TABLE "FinanceSourceEvent" ADD CONSTRAINT "FinanceSourceEvent_result_pair_fkey" FOREIGN KEY ("financeJournalEntryId", "financeDocumentId", "legalEntityId") REFERENCES "FinanceJournalEntry" ("id", "documentId", "legalEntityId") ON DELETE RESTRICT ON UPDATE RESTRICT NOT VALID;
+ALTER TABLE "FinanceSourceEvent" ADD CONSTRAINT "FinanceSourceEvent_result_entity_check" CHECK ("legalEntityId" IS NOT NULL OR ("resolvedRuleId" IS NULL AND "financeDocumentId" IS NULL AND "financeJournalEntryId" IS NULL)) NOT VALID;

@@ -176,15 +176,28 @@ it("source event selected contexts isolate two tenants and same-tenant companies
 it("source event foreign and status-ineligible cursors deny; selected cursor paginates without writes",async()=>{
   const before=await sourceRecords();for(const company of [ids.organizations.transAsiaDe,ids.organizations.unrelated])await expect(repo.listSourceEvents(actor(owned),{limit:1,cursor:sourceRows.get(company)![0]})).rejects.toMatchObject({statusCode:404});await expect(repo.listSourceEvents(actor(owned),{limit:1,cursor:sourceRows.get(owned.companyId)![0]},"exception")).rejects.toMatchObject({statusCode:404});const first:any=await repo.listSourceEvents(actor(owned),{limit:1}),next:any=await repo.listSourceEvents(actor(owned),{limit:1,cursor:first.pageInfo.nextCursor});expect(next.items.map((r:any)=>r.id)).toEqual([sourceRows.get(owned.companyId)![0]]);expect(await sourceRecords()).toEqual(before);
 });
-it("source event null and conflicting entity/rule/document/journal references remain hidden",async()=>{
-  const id=sourceRows.get(owned.companyId)![0];for(const company of [ids.organizations.transAsiaDe,ids.organizations.unrelated]){const foreignJournal=await mockPrisma.financeJournalEntry.findUniqueOrThrow({where:{id:journals.get(company)![0]}}),rule=await mockPrisma.financePostingRule.create({data:{legalEntityId:entity(company).id,code:randomUUID(),name:"Synthetic reference",sourceType:"payment",eventType:"synthetic"}});
-    for(const data of [{legalEntityId:null},{legalEntityId:entity(company).id},{resolvedRuleId:rule.id},{financeDocumentId:foreignJournal.documentId},{financeJournalEntryId:foreignJournal.id}]){await mockPrisma.financeSourceEvent.update({where:{id},data});const before=await sourceRecords();try{expect((await repo.listSourceEvents(actor(owned),{limit:10})as any).items.map((r:any)=>r.id)).not.toContain(id);await expect(repo.listSourceEvents(actor(owned),{limit:1,cursor:id})).rejects.toMatchObject({statusCode:404});expect(await sourceRecords()).toEqual(before);}finally{await mockPrisma.financeSourceEvent.update({where:{id},data:{legalEntityId:entity().id,resolvedRuleId:null,financeDocumentId:null,financeJournalEntryId:null}});}}
-    await mockPrisma.financePostingRule.delete({where:{id:rule.id}});
+
+it("source event compound foreign entity/rule/document/journal insert/update rejects atomically",async()=>{
+ const id=sourceRows.get(owned.companyId)![0];
+ await mockPrisma.financeSourceEvent.update({where:{id},data:{legalEntityId:null}});const unbound=await sourceRecords();
+ try{expect((await repo.listSourceEvents(actor(owned),{limit:10})as any).items.map((r:any)=>r.id)).not.toContain(id);expect(await sourceRecords()).toEqual(unbound);}finally{await mockPrisma.financeSourceEvent.update({where:{id},data:{legalEntityId:entity().id}});}
+ for(const company of [ids.organizations.transAsiaDe,ids.organizations.unrelated]){
+  const j=await mockPrisma.financeJournalEntry.findUniqueOrThrow({where:{id:journals.get(company)![0]}}),rule=await mockPrisma.financePostingRule.create({data:{legalEntityId:entity(company).id,code:randomUUID(),name:"Synthetic reference",sourceType:"payment",eventType:"synthetic"}}),before=await sourceRecords();
+  for(const [field,value,constraint] of [["legalEntityId",entity(company).id,"FinanceSourceEvent_entity_company_fkey"],["resolvedRuleId",rule.id,"FinanceSourceEvent_rule_entity_fkey"],["financeDocumentId",j.documentId,"FinanceSourceEvent_document_entity_fkey"],["financeJournalEntryId",j.id,"FinanceSourceEvent_journal_entity_fkey"]]){
+   await rejected('UPDATE "FinanceSourceEvent" SET "'+field+'"=$2 WHERE id=$1',[id,value],constraint);
+   await rejected('INSERT INTO "FinanceSourceEvent" ("companyId","legalEntityId","sourceEventId","sourceType","eventType","sourceId","occurredAt","postingDate","payloadHash","payloadJson","updatedAt"'+(field==="legalEntityId"?'':',"'+field+'"')+') VALUES ($1,$2,$3,$4,$5,$3,NOW(),NOW(),$6,$7,NOW()'+(field==="legalEntityId"?'':',$8')+')',[owned.companyId,field==="legalEntityId"?value:entity().id,randomUUID(),"payment","synthetic","synthetic",{},...(field==="legalEntityId"?[]:[value])],constraint);
   }
+  expect(await sourceRecords()).toEqual(before);await mockPrisma.financePostingRule.delete({where:{id:rule.id}});
+ }
 });
-it("source event same-entity result pairing is checked and conflicting graph rejects without reads causing writes",async()=>{
-  const id=sourceRows.get(owned.companyId)![0],j=await mockPrisma.financeJournalEntry.findUniqueOrThrow({where:{id:journals.get(owned.companyId)![0]}}),other=await mockPrisma.financeJournalEntry.findUniqueOrThrow({where:{id:journals.get(owned.companyId)![1]}});
-  for(const doc of [j.documentId,other.documentId]){await mockPrisma.financeSourceEvent.update({where:{id},data:{financeDocumentId:doc,financeJournalEntryId:j.id}});const before=await sourceRecords();try{if(doc===j.documentId){const list:any=await repo.listSourceEvents(actor(owned),{limit:10});const row=list.items.find((r:any)=>r.id===id);expect(row.financeJournalEntry.id).toBe(j.id);expect(row.financeJournalEntry).not.toHaveProperty("documentId");}else{await expect(repo.listSourceEvents(actor(owned),{limit:10})).rejects.toMatchObject({code:"FINANCE_SOURCE_RESULT_CONFLICT"});await expect(repo.listSourceEvents(actor(owned),{limit:10,cursor:id})).rejects.toMatchObject({code:"FINANCE_SOURCE_RESULT_CONFLICT"});}expect(await sourceRecords()).toEqual(before);}finally{await mockPrisma.financeSourceEvent.update({where:{id},data:{financeDocumentId:null,financeJournalEntryId:null}});}}
+it("source event exact journal/document pairing and partial-null bridge reject without effects",async()=>{
+ const id=sourceRows.get(owned.companyId)![0],j=await mockPrisma.financeJournalEntry.findUniqueOrThrow({where:{id:journals.get(owned.companyId)![0]}}),other=await mockPrisma.financeJournalEntry.findUniqueOrThrow({where:{id:journals.get(owned.companyId)![1]}});
+ await mockPrisma.financeSourceEvent.update({where:{id},data:{financeDocumentId:j.documentId,financeJournalEntryId:j.id}});const before=await sourceRecords();
+ try{const list:any=await repo.listSourceEvents(actor(owned),{limit:10}),row=list.items.find((r:any)=>r.id===id);expect(row.financeJournalEntry.id).toBe(j.id);expect(row.financeJournalEntry).not.toHaveProperty("documentId");
+  await rejected('UPDATE "FinanceSourceEvent" SET "financeDocumentId"=$2 WHERE id=$1',[id,other.documentId],"FinanceSourceEvent_result_pair_fkey");
+  await rejected('UPDATE "FinanceSourceEvent" SET "legalEntityId"=NULL WHERE id=$1',[id],"FinanceSourceEvent_result_entity_check","23514");
+  expect(await sourceRecords()).toEqual(before);
+ }finally{await mockPrisma.financeSourceEvent.update({where:{id},data:{financeDocumentId:null,financeJournalEntryId:null}});}
 });
 it("source event current membership/scope removal and inactive ownership fail closed without configuration",async()=>{
   for(const data of [{tenantId:null},{isActive:false}]){await mockPrisma.financeLegalEntity.update({where:{id:entity().id},data});const before=await sourceRecords();try{expect((await repo.listSourceEvents(actor(owned),{limit:10})as any).items).toEqual([]);expect(await sourceRecords()).toEqual(before);}finally{await mockPrisma.financeLegalEntity.update({where:{id:entity().id},data:{tenantId:owned.tenantId,isActive:true}});}}
@@ -358,4 +371,17 @@ it("provider header integrity concurrent referenced-provider retarget waits for 
   }finally{await child.query("ROLLBACK");await parent.query("ROLLBACK");child.release();parent.release();}
   expect(await snapshot()).toEqual(before);
  }
+});
+
+it("source event compound rule retarget waits for concurrent binding and rejects with rollback",async()=>{
+ const id=sourceRows.get(owned.companyId)![0],rule=await mockPrisma.financePostingRule.create({data:{legalEntityId:entity().id,code:randomUUID(),name:"Synthetic race",sourceType:"payment",eventType:"synthetic"}}),before=await sourceRecords(),child=await pool.connect(),parent=await pool.connect();
+ try{await child.query("BEGIN");await parent.query("BEGIN");await child.query('UPDATE "FinanceSourceEvent" SET "resolvedRuleId"=$2 WHERE id=$1',[id,rule.id]);
+  await parent.query('INSERT INTO "FinanceAuditEvent" ("legalEntityId",action) VALUES ($1,$2)',[entity().id,"synthetic-source-race"]);
+  await parent.query('INSERT INTO "FinanceDomainEventOutbox" ("legalEntityId","aggregateType","aggregateId","eventType","occurredAt","payloadJson","updatedAt") VALUES ($1,$2,$3,$4,NOW(),$5,NOW())',[entity().id,"synthetic-source",id,"synthetic.competing",{}]);
+  const pid=(await parent.query('SELECT pg_backend_pid() AS pid')).rows[0].pid,pending=parent.query('UPDATE "FinancePostingRule" SET "legalEntityId"=$2 WHERE id=$1',[rule.id,entity(ids.organizations.unrelated).id]).then(()=>({accepted:true}),error=>({error}));
+  let blocked=false;for(let i=0;i<40;i++){const rows:any[]=await mockPrisma.$queryRaw`SELECT wait_event_type FROM pg_stat_activity WHERE pid = ${pid}`;if(rows[0]?.wait_event_type==="Lock"){blocked=true;break;}await new Promise(resolve=>setTimeout(resolve,25));}expect(blocked).toBe(true);await child.query("COMMIT");const result:any=await pending;expect(result.error?.code).toBe("23503");expect(result.error?.constraint).toBe("FinanceSourceEvent_rule_entity_fkey");await parent.query("ROLLBACK");
+ }finally{await child.query("ROLLBACK");await parent.query("ROLLBACK");child.release();parent.release();await pool.query('UPDATE "FinanceSourceEvent" SET "resolvedRuleId"=NULL WHERE id=$1',[id]);}
+ expect(await sourceRecords()).toEqual(before);await mockPrisma.financePostingRule.delete({where:{id:rule.id}});
+ const names=["FinanceSourceEvent_entity_company_fkey","FinanceSourceEvent_rule_entity_fkey","FinanceSourceEvent_document_entity_fkey","FinanceSourceEvent_journal_entity_fkey","FinanceSourceEvent_result_pair_fkey","FinanceSourceEvent_result_entity_check"];
+ const catalog=await pool.query('SELECT conname,convalidated FROM pg_constraint WHERE conname=ANY($1)',[names]);expect(catalog.rows).toHaveLength(6);expect(catalog.rows.every((r:any)=>!r.convalidated)).toBe(true);
 });
