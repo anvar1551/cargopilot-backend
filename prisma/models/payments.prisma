@@ -136,6 +136,10 @@ model PaymentIntent {
   @@unique([companyId, idempotencyKey], map: "uniq_intent_idempotency_per_company")
   @@index([companyId, orderId])
   @@index([companyId, status])
+  // Ingress has only the external booking reference before deriving its owner.
+  // Non-unique: ambiguity remains a rejection, never an inferred owner.
+  @@index([provider, providerInvoiceId], map: "PaymentIntent_provider_booking_idx")
+  @@index([provider, providerPaymentId], map: "PaymentIntent_provider_payment_idx")
 }
 
 model PaymentRefund {

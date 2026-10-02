@@ -16,6 +16,46 @@ const db=new PrismaClient({adapter:new PrismaPg({connectionString:url,max:4,conn
 const fixture=createTenantDemoFixture(),sdk=new Stripe("sk_test_synthetic_not_real"),adapter=new StripeProviderAdapter();
 beforeAll(async()=>{const marker=(await pool.query('SELECT "runId" FROM "_CPDisposableRun"')).rows;if(marker.length!==1||marker[0].runId!==run)throw Error("Disposable ownership mismatch");const client=await pool.connect();try{await client.query("BEGIN");await persistTenantDemoFixture(client,fixture);await client.query("COMMIT");}finally{await client.query("ROLLBACK");client.release();}for(const company of fixture.financeLegalEntities)await db.paymentProviderConfig.create({data:{companyId:company.companyId,provider:"STRIPE",environment:"TEST",serviceId:"whsec_synthetic",secretEncrypted:"synthetic",secretMasked:"synthetic",callbackPath:"/synthetic"}});});
 afterAll(async()=>{await db.$disconnect();await pool.end();});
+it("callback lookup indexes preserve non-unique external-reference admission and are planner eligible",async()=>{
+  const catalog=await pool.query(`SELECT indexrelid::regclass::text AS name, indisvalid, indisunique,
+    pg_get_indexdef(indexrelid) AS definition FROM pg_index WHERE indexrelid IN
+    ('"PaymentIntent_provider_booking_idx"'::regclass,'"PaymentIntent_provider_payment_idx"'::regclass)`);
+  expect(catalog.rows).toHaveLength(2);
+  const source=await accepted();
+  const client=await pool.connect();
+  try {
+    await client.query("BEGIN");
+    // A bounded synthetic distribution makes the complete reference selective.
+    // Empty-table planner ties do not establish usefulness of either full predicate.
+    await client.query(`INSERT INTO "PaymentIntent" (id,"companyId","orderId",provider,"providerConfigId",environment,
+      "amountMinor",currency,status,"providerInvoiceId","providerPaymentId","idempotencyKey","updatedAt")
+      SELECT public.uuid_generate_v7(),$1,$2,'STRIPE',$3,'TEST',120025,'USD','PENDING',
+        'cs_index_'||n,'pi_index_'||n,'index_fixture_'||n,now() FROM generate_series(1,2000) AS n`,
+      [source.company.companyId,source.order.id,source.config.id]);
+    await client.query('ANALYZE "PaymentIntent"');
+    // Forced planner setting proves eligibility only, not a production cost/latency claim.
+    await client.query("SET LOCAL enable_seqscan = off");
+    for(const [field,index] of [["providerInvoiceId","PaymentIntent_provider_booking_idx"],["providerPaymentId","PaymentIntent_provider_payment_idx"]]){
+      const row=catalog.rows.find(row=>row.name.includes(index));
+      expect(row).toMatchObject({indisvalid:true,indisunique:false});
+      expect(row.definition).toContain(`USING btree (provider, "${field}")`);
+      const plan=await client.query(`EXPLAIN (FORMAT JSON) SELECT id FROM "PaymentIntent" WHERE provider='STRIPE' AND "${field}"=$1 LIMIT 2`,["synthetic-booking"]);
+      expect(JSON.stringify(plan.rows)).toContain(index);
+      expect(JSON.stringify(plan.rows)).toContain(field);
+    }
+  }finally{await client.query("ROLLBACK");client.release();}
+});
+it("callback lookup indexes do not authorize ambiguous shared external references",async()=>{
+  const first=await accepted(),second=await accepted();
+  await db.paymentIntent.update({where:{id:second.intent.id},data:{providerInvoiceId:first.intent.providerInvoiceId,
+    providerPaymentId:"pi_shared_index_fixture"}});
+  await db.paymentIntent.update({where:{id:first.intent.id},data:{providerPaymentId:"pi_shared_index_fixture"}});
+  const before=await snapshot();
+  await expect(acceptPaymentWebhook(request(first.event),deps())).rejects.toMatchObject({code:"PAYMENT_BOOKING_AMBIGUOUS"});
+  const event={...first.event,type:"payment_intent.succeeded",data:{object:{id:"pi_shared_index_fixture"}}};
+  await expect(acceptPaymentWebhook(request(event),deps())).rejects.toMatchObject({code:"PAYMENT_BOOKING_AMBIGUOUS"});
+  expect(await snapshot()).toEqual(before);
+});
 async function accepted(company=fixture.financeLegalEntities[0]){
   const order=await db.order.create({data:{tenantId:company.tenantId,ownerOrgId:company.companyId,orderNumber:randomUUID(),customerId:fixture.users[0].id,pickupAddress:"Synthetic",dropoffAddress:"Synthetic",paymentType:"CARD",paymentState:"PENDING",serviceCharge:0}});
   const invoice=await db.invoice.create({data:{tenantId:company.tenantId,companyId:company.companyId,orderId:order.id,customerId:order.customerId,invoiceNumber:randomUUID(),amount:"1200.25",currency:"USD",status:"issued",issuedAt:new Date("2026-01-01"),issuedByUserId:fixture.users[0].id}});
