@@ -69,6 +69,8 @@ enum OrderDocumentFormat {
 }
 
 model OrderLeg {
+  financeCarrierBillLines FinanceCarrierBillLine[] @relation("CarrierLineLeg")
+  @@unique([id, orderId], map: "OrderLeg_id_order_key")
   id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   orderId String @db.Uuid

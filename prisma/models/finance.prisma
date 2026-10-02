@@ -191,6 +191,7 @@ model FinanceLegalEntity {
   @@index([tenantId, isActive])
   ownedProviderHeaders FinanceProviderSettlement[] @relation("SettlementCompanyEntity")
   ownedCarrierHeaders FinanceCarrierBill[] @relation("CarrierCompanyEntity")
+  ownedCarrierLines FinanceCarrierBillLine[] @relation("CarrierLineEntity")
   @@unique([id, companyId], map: "FinanceLegalEntity_id_companyId_key")
 }
 
@@ -655,6 +656,9 @@ model FinanceCarrierBill {
   updatedAt         DateTime  @updatedAt
 
   lines FinanceCarrierBillLine[]
+  ownedLines FinanceCarrierBillLine[] @relation("CarrierLineHeader")
+
+  @@unique([id, legalEntityId, companyId], map: "FinanceCarrierBill_line_owner_key")
 
   @@unique([legalEntityId, billNumber])
   @@unique([legalEntityId, carrierProviderId, supplierInvoiceNumber])
@@ -671,9 +675,16 @@ model FinanceCarrierBillLine {
   id           String             @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   billId       String             @db.Uuid
   bill         FinanceCarrierBill @relation(fields: [billId], references: [id], onDelete: Cascade)
+  legalEntityId String? @db.Uuid
+  tenantId String? @db.Uuid
+  companyId String? @db.Uuid
+  ownedBill FinanceCarrierBill? @relation("CarrierLineHeader", fields: [billId, legalEntityId, companyId], references: [id, legalEntityId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceCarrierBillLine_header_owner_fkey")
+  ownedEntity FinanceLegalEntity? @relation("CarrierLineEntity", fields: [legalEntityId, tenantId, companyId], references: [id, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceCarrierBillLine_entity_owner_fkey")
   sequence     Int
   orderId      String             @db.Uuid
   orderLegId   String             @db.Uuid
+  ownedOrder Order? @relation("CarrierLineOrder", fields: [tenantId, orderId, companyId], references: [tenantId, id, ownerOrgId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceCarrierBillLine_order_owner_fkey")
+  ownedLeg OrderLeg @relation("CarrierLineLeg", fields: [orderLegId, orderId], references: [id, orderId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceCarrierBillLine_leg_order_fkey")
   description  String
   quantity     Decimal            @default(1) @db.Decimal(20, 4)
   unitPrice    Decimal            @db.Decimal(20, 4)
@@ -683,6 +694,7 @@ model FinanceCarrierBillLine {
   createdAt    DateTime           @default(now())
 
   @@unique([billId, sequence])
+  @@index([tenantId, companyId, billId], map: "FinanceCarrierBillLine_tenant_company_bill_idx")
   @@index([orderId])
   @@index([orderLegId])
 }

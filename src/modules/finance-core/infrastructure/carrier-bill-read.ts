@@ -16,7 +16,11 @@ async function ownership(actor:AppUser) {
   const configs=await prisma.integrationProvider.findMany({where:{companyId:context.companyId,domain:"carrier",company:{is:{tenantId:context.tenantId,isActive:true}}},select:{id:true,providerCode:true},take:33});
   if(configs.length>32)throw financeConflict("Provider configuration exceeds supported read size","FINANCE_CARRIER_BILL_PROVIDER_LIMIT");
   if(!configs.length)return null;
-  return {companyId:context.companyId,legalEntityId:entity.id,legalEntity:{is:owner},OR:configs.map(config=>({carrierProviderId:config.id,carrierCode:config.providerCode}))} satisfies Prisma.FinanceCarrierBillWhereInput;
+  // Relation joins include every compound column, including leg -> exact line order.
+  const order={tenantId:context.tenantId,ownerOrgId:context.companyId};
+  const lines={every:{legalEntityId:entity.id,tenantId:context.tenantId,companyId:context.companyId,
+    ownedEntity:{is:owner},ownedOrder:{is:order},ownedLeg:{is:{order:{is:order}}}}};
+  return {companyId:context.companyId,legalEntityId:entity.id,legalEntity:{is:owner},lines,OR:configs.map(config=>({carrierProviderId:config.id,carrierCode:config.providerCode}))} satisfies Prisma.FinanceCarrierBillWhereInput;
 }
 export async function listOwnedCarrierBills(actor:AppUser,page:FinanceDocumentPage) {
   const owned=await ownership(actor);

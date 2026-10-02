@@ -367,6 +367,14 @@ export class PrismaFinanceDocumentsRepository implements FinanceDocumentsReposit
     await requireCarrierBillMutation(actor,command,"create");
     return prisma.$transaction(async (tx) => {
       const entity = await requireEntity(tx, command.companyId);
+      if (!entity.tenantId || entity.tenantId !== actor.tenantId || entity.companyId !== actor.companyId) {
+        throw financeConflict("Carrier bill owner is unbound", "FINANCE_CARRIER_BILL_OWNER_INVALID");
+      }
+      const legs = await tx.orderLeg.findMany({where:{id:{in:command.bill.lines.map(line=>line.orderLegId)},
+        order:{is:{tenantId:entity.tenantId,ownerOrgId:entity.companyId}}},select:{id:true,orderId:true}});
+      if (command.bill.lines.some(line=>!legs.some(leg=>leg.id===line.orderLegId && leg.orderId===line.orderId))) {
+        throw financeConflict("Carrier bill order/leg references are inconsistent", "FINANCE_CARRIER_BILL_OWNER_INVALID");
+      }
       assertFxSnapshot(entity, command.bill);
       await lockDocumentKey(tx, `${entity.id}:carrier-bill:${command.idempotencyKey}`);
       const existing = await tx.financeCarrierBill.findUnique({
@@ -410,6 +418,9 @@ export class PrismaFinanceDocumentsRepository implements FinanceDocumentsReposit
           createdByUserId: command.actorUserId,
           lines: {
             create: command.bill.lines.map((line) => ({
+              legalEntityId: entity.id,
+              tenantId: entity.tenantId,
+              companyId: entity.companyId,
               sequence: line.sequence,
               orderId: line.orderId,
               orderLegId: line.orderLegId,
