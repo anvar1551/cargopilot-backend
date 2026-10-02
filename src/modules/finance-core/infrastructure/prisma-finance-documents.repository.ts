@@ -1,3 +1,4 @@
+import { listOwnedProviderSettlements, getOwnedProviderSettlement } from "./settlement-read";
 import type { AppUser } from "../../../types/app-user";
 import { requireSettlementMutation } from "../application/legal-entity-access";
 import { Prisma } from "@prisma/client";
@@ -154,25 +155,8 @@ export class PrismaFinanceDocumentsRepository implements FinanceDocumentsReposit
     });
   }
 
-  async listProviderSettlements(companyId: string, page: FinanceDocumentPage) {
-    const rows = await prisma.financeProviderSettlement.findMany({
-      where: { legalEntity: { companyId }, ...(page.status ? { status: page.status } : {}) },
-      orderBy: [{ periodEnd: "desc" }, { id: "desc" }],
-      take: page.limit + 1,
-      ...(page.cursor ? { cursor: { id: page.cursor }, skip: 1 } : {}),
-      include: settlementListInclude,
-    });
-    return pageResult(rows, page.limit);
-  }
-
-  async getProviderSettlement(companyId: string, settlementId: string) {
-    const row = await prisma.financeProviderSettlement.findFirst({
-      where: { id: settlementId, legalEntity: { companyId } },
-      include: settlementInclude,
-    });
-    if (!row) throw financeNotFound("Provider settlement not found", "FINANCE_SETTLEMENT_NOT_FOUND");
-    return row;
-  }
+  async listProviderSettlements(actor: AppUser,page:FinanceDocumentPage) {return listOwnedProviderSettlements(actor,page);}
+  async getProviderSettlement(actor:AppUser,id:string) {return getOwnedProviderSettlement(actor,id);}
 
   async submitProviderSettlement(companyId: string, settlementId: string, actorUserId: string,actor:AppUser) {
     await requireSettlementMutation(actor,{companyId,actorUserId},"submit");

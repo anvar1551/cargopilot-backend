@@ -1,5 +1,5 @@
 import type { AppUser } from "../../../types/app-user";
-import { requireSettlementMutation } from "./legal-entity-access";
+import { requireLegalEntityContext, requireSettlementMutation } from "./legal-entity-access";
 import {
   authoritativeDocumentHash,
   prepareCarrierBill,
@@ -78,12 +78,14 @@ export class FinanceDocumentsService {
     },actor);
   }
 
-  listProviderSettlements(companyId: string, page: FinanceDocumentPage) {
-    return this.repository.listProviderSettlements(companyId, page);
+  async listProviderSettlements(actor: AppUser, page: FinanceDocumentPage) {
+    await requireLegalEntityContext(actor,"finance.settlements.read");
+    return this.repository.listProviderSettlements(actor, page);
   }
 
-  getProviderSettlement(companyId: string, settlementId: string) {
-    return this.repository.getProviderSettlement(companyId, settlementId);
+  async getProviderSettlement(actor: AppUser, settlementId: string) {
+    await requireLegalEntityContext(actor,"finance.settlements.read");
+    return this.repository.getProviderSettlement(actor, settlementId);
   }
 
   async submitProviderSettlement(companyId: string, settlementId: string, actorUserId: string, actor: AppUser) {
@@ -101,7 +103,7 @@ export class FinanceDocumentsService {
   }, actor: AppUser) {
     await requireSettlementMutation(actor,input,"reconcile");
     const settlement = await this.repository.getProviderSettlement(
-      input.companyId,
+      actor,
       input.settlementId,
     );
     if (settlement.status !== "draft" && settlement.status !== "submitted") {

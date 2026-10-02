@@ -461,9 +461,9 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     { preHandler: fastifyAuth({ permission: "finance.settlements.read" }) },
     async (request, reply) => {
       try {
-        const page = financeDocumentPageSchema.parse(request.query);
+        const page = financeDocumentPageSchema.strict().parse(request.query);
         return reply.send(await financeDocumentsService.listProviderSettlements(
-          request.user!.companyId,
+          request.user!,
           page,
         ));
       } catch (error) {
@@ -504,7 +504,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
       try {
         const { id } = financeIdParamSchema.parse(request.params);
         return reply.send(await financeDocumentsService.getProviderSettlement(
-          request.user!.companyId,
+          request.user!,
           id,
         ));
       } catch (error) {

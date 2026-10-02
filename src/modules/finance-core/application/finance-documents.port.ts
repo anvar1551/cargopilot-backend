@@ -20,8 +20,8 @@ export interface FinanceDocumentsRepositoryPort {
     idempotencyKey: string;
     settlement: PreparedProviderSettlement;
   }, actor: AppUser): Promise<any>;
-  listProviderSettlements(companyId: string, page: FinanceDocumentPage): Promise<any>;
-  getProviderSettlement(companyId: string, settlementId: string): Promise<any>;
+  listProviderSettlements(actor: AppUser, page: FinanceDocumentPage): Promise<any>;
+  getProviderSettlement(actor: AppUser, settlementId: string): Promise<any>;
   submitProviderSettlement(companyId: string, settlementId: string, actorUserId: string, actor: AppUser): Promise<any>;
   reconcileProviderSettlementLine(command: {
     companyId: string;
