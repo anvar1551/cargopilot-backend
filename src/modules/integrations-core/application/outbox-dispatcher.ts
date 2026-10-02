@@ -73,9 +73,14 @@ function parseSecretPayload(raw: string): unknown {
 async function loadProviderSecretConfig(
   provider: IntegrationProviderRef | null,
 ): Promise<ProviderSecretConfig | null> {
-  if (!provider?.secretRef) return null;
+  if (!provider) return null;
+  if (!provider.secretRef && !provider.activeSecretId) return null;
+  if (!provider.secretRef || !provider.activeSecretId ||
+      provider.secretRef.toLowerCase() !== provider.activeSecretId.toLowerCase()) {
+    throw new Error("Integration credential ownership is incomplete");
+  }
   const row = await (prisma as any).integrationProviderSecret.findUnique({
-    where: { id: provider.secretRef },
+    where: { id: provider.activeSecretId },
     select: { encryptedSecretJson: true, providerId: true },
   });
   // Registry DTOs use providerId; accepted carrier execution reloads the DB row's id.

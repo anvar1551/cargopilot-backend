@@ -28,6 +28,7 @@ function mapProvider(row: any): IntegrationProviderRef {
     timeoutMs: Number(row.timeoutMs ?? 10000),
     retryPolicyId: row.retryPolicyId ?? null,
     secretRef: row.secretRef ?? null,
+    activeSecretId: row.activeSecretId ?? null,
     createdAt: toIso(row.createdAt),
     updatedAt: toIso(row.updatedAt),
   };

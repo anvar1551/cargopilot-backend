@@ -568,3 +568,45 @@ it("order leg template PostgreSQL competing template relocation and child insert
   const stored=await mockPrisma.orderLeg.findFirst({where:{orderId:order.id,sequence:730}}),template=await mockPrisma.routeTemplate.findUniqueOrThrow({where:{id:g.template.id}});
   if(stored){expect(template.companyId).toBe(stored.templateCompanyId);expect(stored.templateCompanyId).toBe(order.ownerOrgId);}else expect(template.companyId).toBe(memberships[1].companyId);
 });
+async function credentialSnapshot(){return {business:await snapshot(),providers:await mockPrisma.integrationProvider.findMany({orderBy:{id:"asc"}}),secrets:await mockPrisma.integrationProviderSecret.findMany({orderBy:{id:"asc"}})};}
+async function credentialProvider(i=0){return mockPrisma.integrationProvider.create({data:{companyId:memberships[i].companyId,domain:"carrier",providerCode:randomUUID(),environment:"sandbox"}});}
+it("secret pointer PostgreSQL valid optional and owned references use the exact secret provider target",async()=>{
+  for(let i=0;i<memberships.length;i++){
+    const p=await credentialProvider(i);expect(p.activeSecretId).toBeNull();
+    const secret=await mockPrisma.integrationProviderSecret.create({data:{providerId:p.id,keyVersion:1,encryptedSecretJson:"synthetic-opaque-not-a-live-credential"}});
+    await expect(mockPrisma.integrationProvider.update({where:{id:p.id},data:{secretRef:secret.id.toUpperCase(),activeSecretId:secret.id}})).resolves.toMatchObject({activeSecretId:secret.id});
+    const before=await credentialSnapshot();await expect(mockPrisma.integrationProviderSecret.delete({where:{id:secret.id}})).rejects.toMatchObject({code:"P2003"});expect(await credentialSnapshot()).toEqual(before);
+  }
+  const catalog=await pool.query("SELECT conname,convalidated,pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conname=ANY($1::text[])",[["IntegrationProvider_active_secret_owner_fkey","IntegrationProvider_active_secret_complete_check"]]);
+  expect(catalog.rows).toHaveLength(2);expect(catalog.rows.every(r=>!r.convalidated)).toBe(true);expect(catalog.rows.find(r=>r.conname==="IntegrationProvider_active_secret_owner_fkey").definition).toContain('REFERENCES "IntegrationProviderSecret"(id, "providerId")');
+});
+it("secret pointer PostgreSQL foreign and partial inserts updates and rollback have no business effects",async()=>{
+  const own=await credentialProvider(),secret=await mockPrisma.integrationProviderSecret.create({data:{providerId:own.id,encryptedSecretJson:"synthetic-opaque"}});
+  for(const index of [0,1,2]){
+    const foreign=await credentialProvider(index),before=await credentialSnapshot();
+    await expect(mockPrisma.integrationProvider.update({where:{id:foreign.id},data:{secretRef:secret.id,activeSecretId:secret.id}})).rejects.toMatchObject({code:"P2003"});
+    await expect(mockPrisma.integrationProvider.create({data:{id:randomUUID(),companyId:memberships[index].companyId,providerCode:randomUUID(),domain:"carrier",secretRef:secret.id,activeSecretId:secret.id}})).rejects.toMatchObject({code:"P2003"});expect(await credentialSnapshot()).toEqual(before);
+  }
+  for(const data of [{secretRef:secret.id},{activeSecretId:secret.id},{secretRef:randomUUID(),activeSecretId:secret.id}]){
+    const before=await credentialSnapshot();await expect(mockPrisma.integrationProvider.update({where:{id:own.id},data})).rejects.toThrow();expect(await credentialSnapshot()).toEqual(before);
+  }
+  let reached=false;const before=await credentialSnapshot();await expect(mockPrisma.$transaction(async tx=>{
+    await tx.integrationOutbox.create({data:{companyId:own.companyId,providerId:own.id,domain:"carrier",providerCode:own.providerCode,environment:"sandbox",eventType:"synthetic-pointer-rollback",payload:{},idempotencyKey:randomUUID()}});
+    reached=true;await tx.integrationProvider.update({where:{id:own.id},data:{secretRef:secret.id}});
+  },{maxWait:2000,timeout:5000})).rejects.toThrow();expect(reached).toBe(true);expect(await credentialSnapshot()).toEqual(before);
+});
+it("secret pointer PostgreSQL concurrent pointer acceptance versus secret reassignment cannot commit foreign ownership",async()=>{
+  const own=await credentialProvider(),other=await credentialProvider(1),secret=await mockPrisma.integrationProviderSecret.create({data:{providerId:own.id,encryptedSecretJson:"synthetic-opaque"}});
+  const settled=await Promise.allSettled([
+    mockPrisma.integrationProvider.update({where:{id:own.id},data:{secretRef:secret.id,activeSecretId:secret.id}}),
+    mockPrisma.integrationProviderSecret.update({where:{id:secret.id},data:{providerId:other.id}}),
+  ]);
+  expect(settled.filter(r=>r.status==="fulfilled")).toHaveLength(1);
+  const p=await mockPrisma.integrationProvider.findUniqueOrThrow({where:{id:own.id}}),s=await mockPrisma.integrationProviderSecret.findUniqueOrThrow({where:{id:secret.id}});
+  if(p.activeSecretId){expect(s.providerId).toBe(p.id);expect(p.secretRef).toBe(s.id);}else expect(s.providerId).toBe(other.id);
+});
+it("secret pointer PostgreSQL existing version uniqueness prevents concurrent duplicate version insertion",async()=>{
+  const p=await credentialProvider(),before=await snapshot();
+  const settled=await Promise.allSettled([1,2].map(()=>mockPrisma.integrationProviderSecret.create({data:{providerId:p.id,keyVersion:10,encryptedSecretJson:"synthetic-opaque"}})));
+  expect(settled.filter(r=>r.status==="fulfilled")).toHaveLength(1);expect(await mockPrisma.integrationProviderSecret.count({where:{providerId:p.id,keyVersion:10}})).toBe(1);expect(await snapshot()).toEqual(before);
+});

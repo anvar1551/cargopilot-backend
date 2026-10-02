@@ -78,13 +78,16 @@ export const providerWebhookVerifierResolver: WebhookProviderVerifierResolver = 
         providerCode: true,
         environment: true,
         secretRef: true,
+        activeSecretId: true,
       },
     });
     if (providers.length !== 1) return null;
     const provider = providers[0];
     if (args.companyHintId && args.companyHintId !== provider.companyId) return null;
+    if (!provider.activeSecretId || !provider.secretRef ||
+        provider.secretRef.toLowerCase() !== provider.activeSecretId.toLowerCase()) return null;
 
-    const secretConfig = await loadSecretConfig(provider.secretRef, provider.id);
+    const secretConfig = await loadSecretConfig(provider.activeSecretId, provider.id);
     const secret =
       pickString(secretConfig, [
         "webhookSecret",

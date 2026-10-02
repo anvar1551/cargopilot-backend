@@ -20,6 +20,8 @@ export type IntegrationProviderRef = {
   timeoutMs: number;
   retryPolicyId: string | null;
   secretRef: string | null;
+  /** Absent in legacy DTOs; configured credentials require this bridge at execution. */
+  activeSecretId?: string | null;
   createdAt: string;
   updatedAt: string;
 };

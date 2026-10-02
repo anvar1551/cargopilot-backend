@@ -16,7 +16,7 @@ function synchronize() {
 }
 beforeEach(() => {
   jest.clearAllMocks();
-  provider = { id: "provider-a", companyId: "company-a", providerCode: "fake_carrier", environment: "sandbox", domain: "carrier", status: "active", secretRef: "secret-a" };
+  provider = { id: "provider-a", companyId: "company-a", providerCode: "fake_carrier", environment: "sandbox", domain: "carrier", status: "active", secretRef: "secret-a", activeSecretId: "secret-a" };
   order = { id: "order-a", tenantId: "tenant-a", ownerOrgId: "company-a", tenant: { id: "tenant-a", status: "active" }, ownerOrg: { id: "company-a", tenantId: "tenant-a", type: "company", isActive: true } };
   leg = { id: "leg-a", orderId: "order-a", order, status: "booked", carrierProviderId: "provider-a", carrierCode: "fake_carrier", carrierRef: "booking-a", carrierBookingStatus: "booked" };
   booking = { id: "outbox-a", acceptedAt: new Date(), ownershipTenantId: "tenant-a", ownershipOrderId: "order-a", companyId: "company-a", domain: "carrier", providerId: "provider-a", providerCode: "fake_carrier", environment: "sandbox", aggregateType: "shipment", aggregateId: "leg-a", operation: "create_shipment", status: "sent", attemptCount: 1,
@@ -103,3 +103,5 @@ it("resolves UUID v7 integrations without selecting a first provider and rejects
   db.integrationProviderSecret.findUnique.mockResolvedValue({ providerId: "other", encryptedSecretJson: "synthetic-encrypted" });
   await expect(providerWebhookVerifierResolver.resolve({ providerIdentifier: provider.id })).resolves.toBeNull();
 });
+
+it.each([null,"other-secret"])("unbound or conflicting inbound secret bridge produces no verifier or decryption",async activeSecretId=>{provider.id="019b3000-0000-7000-8b00-000000000001";provider.activeSecretId=activeSecretId;await expect(providerWebhookVerifierResolver.resolve({providerIdentifier:provider.id})).resolves.toBeNull();expect(db.integrationProviderSecret.findUnique).not.toHaveBeenCalled();expect(require("../../src/modules/integrations-core/application/integration-secret.crypto").decryptIntegrationSecret).not.toHaveBeenCalled();expect(db.orderLeg.update).not.toHaveBeenCalled();expect(db.integrationOutbox.create).not.toHaveBeenCalled();});

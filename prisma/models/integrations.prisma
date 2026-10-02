@@ -61,6 +61,8 @@ model IntegrationProvider {
   timeoutMs       Int                       @default(10000)
   retryPolicyId   String?
   secretRef       String?
+  activeSecretId  String?                   @db.Uuid
+  activeSecret    IntegrationProviderSecret? @relation("IntegrationActiveSecret", fields: [activeSecretId, id], references: [id, providerId], onDelete: Restrict, onUpdate: Restrict, map: "IntegrationProvider_active_secret_owner_fkey")
   createdByUserId String?                   @db.Uuid
   updatedByUserId String?                   @db.Uuid
   createdAt       DateTime                  @default(now())
@@ -199,7 +201,9 @@ model IntegrationProviderSecret {
   rotatedAt           DateTime?
   createdByUserId     String?             @db.Uuid
   createdAt           DateTime            @default(now())
+  activeForProviders  IntegrationProvider[] @relation("IntegrationActiveSecret")
 
+  @@unique([id, providerId], map: "IntegrationProviderSecret_identity_owner_key")
   @@unique([providerId, keyVersion], map: "uniq_integration_provider_secret_version")
   @@index([providerId, createdAt])
 }
