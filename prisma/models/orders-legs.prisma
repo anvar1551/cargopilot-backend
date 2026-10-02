@@ -140,7 +140,7 @@ model PricingComponent {
   order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
   orderLegId String?   @db.Uuid
-  orderLeg   OrderLeg? @relation(fields: [orderLegId], references: [id], onDelete: SetNull)
+  orderLeg   OrderLeg? @relation(fields: [orderLegId, orderId], references: [id, orderId], onDelete: Restrict, onUpdate: Restrict, map: "PricingComponent_order_leg_fkey")
 
   componentType PricingComponentType
   source        PricingComponentSource @default(manual)

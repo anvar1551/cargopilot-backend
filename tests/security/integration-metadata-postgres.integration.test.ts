@@ -1,5 +1,6 @@
 import {listCarrierRoutingRulesForActor as routingInventory,resolveCarrierRoutingRuleForOrderLeg as routingSelector} from "../../src/modules/integrations-core/application/carrier-routing.service";
 import {listRouteTemplatesForActor as templateInventory,getRouteTemplateForActor as templateDetail} from "../../src/modules/integrations-core/application/route-template.service";
+import {seedInitialServiceChargePricing as pricingSeed,listPricingComponents as componentList,createPricingComponent as manualPricing} from "../../src/modules/orders-legs/pricing";
 jest.mock("../../src/modules/integrations-core/application/webhook-database", () => ({ getIntegrationWebhookDatabase: () => new Proxy({}, { get: (_target, name) => { const value = (mockPrisma as any)[name]; return typeof value === "function" ? value.bind(mockPrisma) : value; } }) }));
 jest.mock("../../src/config/prismaClient", () => ({ __esModule: true, default: new Proxy({}, { get: (_target, name) => {
   const value = (mockPrisma as any)[name]; return typeof value === "function" ? value.bind(mockPrisma) : value;
@@ -60,6 +61,9 @@ beforeAll(async () => {
     options: "-c statement_timeout=5000 -c lock_timeout=2000 -c idle_in_transaction_session_timeout=5000" }) });
   const routingPermission=await mockPrisma.permission.create({data:{key:"integration.routing.read",resource:"synthetic-routing",action:"read"}});
   const bookingPermission=await mockPrisma.permission.create({data:{key:"shipment.bookCarrier",resource:"synthetic-carrier",action:"book"}});
+  const seedPermission=await mockPrisma.permission.create({data:{key:"shipment.create",resource:"synthetic-seed",action:"create"}});
+  const componentPermission=await mockPrisma.permission.create({data:{key:"shipment.view",resource:"synthetic-seed",action:"view"}});
+  const mutationPermission=await mockPrisma.permission.create({data:{key:"shipment.update",resource:"synthetic-seed",action:"update"}});
   const permission = await mockPrisma.permission.create({ data: { key: "integration.outbox.read", resource: "synthetic-integration", action: "read" } });
   expect(memberships).toHaveLength(3);
   for (const m of memberships) {
@@ -67,6 +71,7 @@ beforeAll(async () => {
     await mockPrisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
     await mockPrisma.rolePermission.create({ data: { roleId: role.id, permissionId: routingPermission.id } });
     await mockPrisma.rolePermission.create({ data: { roleId: role.id, permissionId: bookingPermission.id } });
+    for(const permissionId of [seedPermission.id,componentPermission.id,mutationPermission.id]) await mockPrisma.rolePermission.create({data:{roleId:role.id,permissionId}});
     await mockPrisma.membershipRole.create({ data: { membershipId: m.id, roleId: role.id } });
     await mockPrisma.membershipScope.create({ data: { membershipId: m.id, scopeType: "company", scopeRefId: m.companyId } });
     const p = await mockPrisma.integrationProvider.create({ data: { companyId: m.companyId, domain: "carrier", providerCode: "sandbox", environment: "sandbox" } });
@@ -467,4 +472,53 @@ it("routing selector PostgreSQL current parent permission and owner graph constr
   await mockPrisma.tenant.update({where:{id:m.tenantId},data:{status:"suspended"}});
   try{await expect(routingSelector({actor:user,orderId:order.id,legId:leg.id})).rejects.toMatchObject({statusCode:403});}finally{await mockPrisma.tenant.update({where:{id:m.tenantId},data:{status:"active"}});}
   expect(await routingSnapshot()).toEqual(before);
+});
+
+async function seedSnapshot() {
+  return {business:await routingSnapshot(),components:await mockPrisma.pricingComponent.findMany({orderBy:{id:"asc"}}),
+    orderLegs:await mockPrisma.orderLeg.findMany({orderBy:{id:"asc"}}),analytics:await mockPrisma.analyticsDomainEventOutbox.findMany({orderBy:{id:"asc"}})};
+}
+it("pricing source PostgreSQL accepted operational seed is owner scoped and concurrent reseeding has no duplicate components",async()=>{
+  const m=memberships[0],order=fixture.orders.find(o=>o.ownerOrgId===m.companyId)!,g=await routingGraph();
+  const input={serviceCharge:10,currency:"USD",routeTemplateId:g.template.id},user=actor(m);
+  const results=await Promise.all([pricingSeed(order.id,input,user),pricingSeed(order.id,input,user)]);
+  expect(results.every(r=>r?.length===1)).toBe(true);
+  const components=await mockPrisma.pricingComponent.findMany({where:{orderId:order.id}}),legs=await mockPrisma.orderLeg.findMany({where:{orderId:order.id}});
+  expect(components).toHaveLength(1);expect(legs).toHaveLength(1);expect(components[0].orderLegId).toBe(legs[0].id);expect(components[0].amount.toString()).toBe("10");
+  expect((await componentList(order.id,user))[0].amount).toBe("10");
+  const before=await seedSnapshot();
+  for(const foreign of memberships.slice(1))await expect(pricingSeed(order.id,input,actor(foreign))).rejects.toMatchObject({statusCode:404});
+  const foreignTemplate=await mockPrisma.routeTemplate.create({data:{companyId:providers[1].companyId,name:"Synthetic foreign pricing"}});
+  const afterFixture=await seedSnapshot();await expect(pricingSeed(order.id,{...input,routeTemplateId:foreignTemplate.id},user)).rejects.toThrow();expect(await seedSnapshot()).toEqual(afterFixture);
+  await expect(manualPricing(order.id,{amount:999,currency:"USD",source:"rule",fxRateSnapshot:1} as any,user)).rejects.toMatchObject({statusCode:409,code:"ORDER_PRICING_ACCEPTANCE_REQUIRED"});
+  expect(await mockPrisma.pricingComponent.findMany({where:{orderId:order.id}})).toEqual(components);
+  expect((await seedSnapshot()).analytics).toEqual(before.analytics);
+  // Estimates remain unaccepted financial basis; repeated seeds intentionally retain existing event behavior.
+  expect(await mockPrisma.financeDomainEventOutbox.count()).toBe(before.business.business.finance);
+});
+it("pricing source PostgreSQL compound child/order rejects inserts updates and rolls back related writes",async()=>{
+  const ownOrder=fixture.orders.find(o=>o.ownerOrgId===memberships[0].companyId)!,own=await mockPrisma.pricingComponent.findFirstOrThrow({where:{orderId:ownOrder.id}});
+  for(const membership of memberships.slice(1)) {
+    const order=fixture.orders.find(o=>o.ownerOrgId===membership.companyId)!;
+    const leg=await mockPrisma.orderLeg.create({data:{orderId:order.id,sequence:400,mode:"road"}}),before=await seedSnapshot();
+    await expect(mockPrisma.pricingComponent.create({data:{orderId:ownOrder.id,orderLegId:leg.id,componentType:own.componentType,amount:"10",currency:"USD"}})).rejects.toMatchObject({code:"P2003"});
+    await expect(mockPrisma.pricingComponent.update({where:{id:own.id},data:{orderLegId:leg.id}})).rejects.toMatchObject({code:"P2003"});
+    await expect(mockPrisma.$transaction(async tx=>{
+      await tx.pricingComponent.update({where:{id:own.id},data:{description:"Must roll back"}});
+      await tx.pricingComponent.create({data:{orderId:ownOrder.id,orderLegId:leg.id,componentType:own.componentType,amount:"10",currency:"USD"}});
+    },{maxWait:2000,timeout:5000})).rejects.toMatchObject({code:"P2003"});
+    expect(await seedSnapshot()).toEqual(before);
+  }
+  const sameOrderLeg=await mockPrisma.orderLeg.findUniqueOrThrow({where:{id:own.orderLegId!}}),before=await seedSnapshot();
+  await expect(mockPrisma.orderLeg.update({where:{id:sameOrderLeg.id},data:{orderId:fixture.orders.find(o=>o.id!==ownOrder.id)!.id,sequence:499}})).rejects.toMatchObject({code:"P2003"});
+  expect(await seedSnapshot()).toEqual(before);
+  const catalog=await pool.query("SELECT convalidated FROM pg_constraint WHERE conname='PricingComponent_order_leg_fkey'");expect(catalog.rows).toEqual([{convalidated:false}]);
+});
+it("pricing source PostgreSQL injected seed failure rolls back component leg and analytics state",async()=>{
+  const m=memberships[1],order=fixture.orders.find(o=>o.ownerOrgId===m.companyId)!,g=await routingGraph(1);
+  await mockPrisma.routeTemplateLeg.update({where:{id:g.leg.id},data:{sequence:400}});
+  const before=await seedSnapshot(),original=mockPrisma;
+  mockPrisma=new Proxy(original,{get(target,key){if(key==="$transaction")return(work:any,options:any)=>target.$transaction(async tx=>{await work(tx);throw Error("synthetic-seed-rollback");},options);const value=(target as any)[key];return typeof value==="function"?value.bind(target):value;}});
+  try{await expect(pricingSeed(order.id,{serviceCharge:10,currency:"USD",routeTemplateId:g.template.id},actor(m))).rejects.toThrow("synthetic-seed-rollback");}finally{mockPrisma=original;}
+  expect(await seedSnapshot()).toEqual(before);
 });

@@ -10,7 +10,6 @@ import prisma from "../../config/prismaClient";
 import { enqueueCargoPilotDomainEventsTx } from "../analytics-core/infrastructure/analyticsOutbox";
 import { orderError } from "../orders-core/shared";
 import {
-  ensureOrderExists,
   resolveActorTenantScope,
   type Actor,
   type CreatePricingComponentInput,
@@ -35,92 +34,26 @@ type SystemLegTemplate = {
   description: string;
 };
 
-export async function listPricingComponents(orderId: string, actor?: Actor) {
-  await requireAuthorizedOrder(actor, orderId, "shipment.view");
-  return prisma.pricingComponent.findMany({
-    where: { orderId },
-    orderBy: [{ createdAt: "desc" }],
-  });
+export async function listPricingComponents(orderId:string,actor?:Actor) {
+  const order=await requireAuthorizedOrder(actor,orderId,"shipment.view");
+  return prisma.$transaction(async tx=>{
+    await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+    await tx.$executeRaw`SET LOCAL statement_timeout = '3000ms'`;
+    await tx.$executeRaw`SET LOCAL lock_timeout = '1000ms'`;
+    const rows=await tx.pricingComponent.findMany({where:{orderId,order:{is:{id:orderId,tenantId:order.tenantId}},OR:[{orderLegId:null},{orderLeg:{is:{orderId}}}]},take:101,
+      orderBy:[{createdAt:"desc"},{id:"asc"}],select:{id:true,orderId:true,orderLegId:true,componentType:true,source:true,description:true,amount:true,currency:true,
+        fxRateSnapshot:true,baseCurrency:true,baseAmount:true,referenceKey:true,createdAt:true,updatedAt:true}});
+    if(rows.length>100)throw Object.assign(orderError("Narrow pricing component request",409),{code:"ORDER_PRICING_READ_CAPACITY"});
+    return rows.map(row=>({...row,amount:row.amount.toString(),fxRateSnapshot:row.fxRateSnapshot?.toString()??null,baseAmount:row.baseAmount?.toString()??null}));
+  },{isolationLevel:"RepeatableRead",maxWait:2000,timeout:5000});
 }
 
-export async function createPricingComponent(
-  orderId: string,
-  input: CreatePricingComponentInput,
-  actor?: Actor,
-) {
-  await requireAuthorizedOrder(actor, orderId, "shipment.update");
-  if (!Number.isFinite(input.amount)) {
-    throw orderError("amount must be a finite number", 400);
-  }
-  if (!input.currency || !input.currency.trim()) {
-    throw orderError("currency is required", 400);
-  }
-  const normalizedCurrency = input.currency.trim().toUpperCase();
-  if (!SUPPORTED_CURRENCY_CODES.has(normalizedCurrency)) {
-    throw orderError("currency must be one of: UZS, USD, CNY", 400);
-  }
-
-  return prisma.$transaction(async (tx) => {
-    if (input.orderLegId) {
-      const leg = await tx.orderLeg.findFirst({
-        where: { id: input.orderLegId, orderId },
-        select: { id: true },
-      });
-      if (!leg) {
-        throw orderError("orderLegId is invalid for this order", 400);
-      }
-    }
-
-    const created = await tx.pricingComponent.create({
-      data: {
-        orderId,
-        orderLegId: input.orderLegId ?? null,
-        componentType: input.componentType,
-        source: input.source ?? PricingComponentSource.manual,
-        description: input.description ?? null,
-        amount: input.amount,
-        currency: normalizedCurrency,
-        fxRateSnapshot: input.fxRateSnapshot ?? null,
-        baseCurrency: input.baseCurrency?.trim().toUpperCase() ?? null,
-        baseAmount: input.baseAmount ?? null,
-        referenceKey: input.referenceKey ?? null,
-      },
-    });
-
-    await enqueueCargoPilotDomainEventsTx(tx, [
-      {
-        type: "order_status_changed",
-        tenantScope: resolveActorTenantScope(actor),
-        entityId: orderId,
-        payload: {
-          source: "pricing_component_create",
-          pricingComponentId: created.id,
-          componentType: created.componentType,
-          currency: created.currency,
-          amount: String(created.amount),
-          actorId: actor?.id ?? null,
-          actorRole: null,
-        },
-      },
-    ]);
-
-    return created;
-  });
+function pricingAcceptanceRequired():never {
+  throw Object.assign(orderError("Approved pricing and FX acceptance workflow required",409),{code:"ORDER_PRICING_ACCEPTANCE_REQUIRED"});
 }
-
-function decimalToNumber(value: unknown): number {
-  if (value == null) return 0;
-  if (typeof value === "number") return value;
-  if (typeof value === "string") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : 0;
-  }
-  const asString =
-    typeof (value as { toString?: () => string }).toString === "function"
-      ? (value as { toString: () => string }).toString()
-      : "";
-  const parsed = Number(asString);
-  return Number.isFinite(parsed) ? parsed : 0;
+export async function createPricingComponent(orderId:string,_input:CreatePricingComponentInput,actor?:Actor) {
+  await requireAuthorizedOrder(actor,orderId,"shipment.update");
+  pricingAcceptanceRequired();
 }
 
 function roundTo2(value: number): number {
@@ -197,23 +130,28 @@ function componentTypeForRouteTemplateLeg(leg: { legCode?: string | null; label?
 
 async function loadRouteTemplateLegTemplates(
   tx: any,
-  routeTemplateId?: string | null,
+  routeTemplateId: string | null | undefined,
+  companyId: string,
+  tenantId: string,
 ): Promise<SystemLegTemplate[] | null> {
   if (!routeTemplateId) return null;
   const routeTemplate = await tx.routeTemplate.findFirst({
     where: {
       id: routeTemplateId,
+      companyId,
+      company:{is:{id:companyId,tenantId,type:"company",isActive:true,tenant:{is:{status:"active"}}}},
       isActive: true,
     },
-    include: {
-      legs: {
-        orderBy: [{ sequence: "asc" }, { createdAt: "asc" }],
-      },
+    select: {
+      id:true,companyId:true,
+      legs: {take:101,orderBy:[{sequence:"asc"},{id:"asc"}],select:{id:true,routeTemplateId:true,sequence:true,legCode:true,label:true,mode:true,originCountryCode:true,destinationCountryCode:true}},
     },
   });
   if (!routeTemplate) {
     throw orderError("routeTemplateId not found or inactive", 400);
   }
+  if(routeTemplate.companyId!==companyId || routeTemplate.legs.length>100 || routeTemplate.legs.some((leg:any)=>leg.routeTemplateId!==routeTemplate.id))
+    throw orderError("Route template ownership or resource limit is invalid",409);
   if (!Array.isArray(routeTemplate.legs) || routeTemplate.legs.length === 0) {
     throw orderError("route template has no legs", 400);
   }
@@ -278,7 +216,9 @@ export async function seedInitialServiceChargePricing(
   },
   actor?: Actor,
 ) {
-  await requireAuthorizedOrder(actor, orderId, "shipment.create");
+  const authorized=await requireAuthorizedOrder(actor,orderId,"shipment.create");
+  if(!actor?.companyId || authorized.ownerOrgId!==actor.companyId)throw orderError("Selected owning company required for pricing seed",403);
+  const companyId=actor.companyId,tenantId=authorized.tenantId!;
 
   const amount = Number(input.serviceCharge ?? 0);
   if (!Number.isFinite(amount) || amount <= 0) return null;
@@ -291,18 +231,29 @@ export async function seedInitialServiceChargePricing(
   }
 
   return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SET LOCAL statement_timeout = '3000ms'`;
+    await tx.$executeRaw`SET LOCAL lock_timeout = '1000ms'`;
+    await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id"=${orderId}::uuid FOR UPDATE`;
+    if(!await tx.order.findFirst({where:{id:orderId,tenantId,ownerOrgId:companyId,ownerOrg:{is:{id:companyId,tenantId,type:"company",isActive:true,tenant:{is:{status:"active"}}}}},select:{id:true}}))throw orderError("Order pricing ownership is inactive or inconsistent",403);
     let legs = await tx.orderLeg.findMany({
       where: { orderId },
+      take:101,
       orderBy: [{ sequence: "asc" }, { createdAt: "asc" }],
       select: {
         id: true,
         sequence: true,
         metadata: true,
+        routeTemplateId:true,routeTemplateLegId:true,
+        routeTemplate:{select:{companyId:true,company:{select:{tenantId:true,isActive:true}}}},
+        routeTemplateLeg:{select:{routeTemplateId:true}},
       },
     });
 
+    if(legs.length>100 || legs.some(leg=>
+      (leg.routeTemplateId && (leg.routeTemplateId!==input.routeTemplateId || leg.routeTemplate?.companyId!==companyId || leg.routeTemplate.company.tenantId!==tenantId || !leg.routeTemplate.company.isActive)) ||
+      (leg.routeTemplateLegId && (!leg.routeTemplateId || leg.routeTemplateLeg?.routeTemplateId!==leg.routeTemplateId))))throw orderError("Existing order leg pricing references are inconsistent",409);
     const templates =
-      (await loadRouteTemplateLegTemplates(tx, input.routeTemplateId ?? null)) ??
+      (await loadRouteTemplateLegTemplates(tx,input.routeTemplateId??null,companyId,tenantId)) ??
       buildSystemLegTemplates(input.serviceType, {
         originCountryCode: input.originCountryCode ?? null,
         destinationCountryCode: input.destinationCountryCode ?? null,
@@ -338,7 +289,7 @@ export async function seedInitialServiceChargePricing(
                 ...(template.legCode ? { legCode: template.legCode } : {}),
               },
             },
-            select: { id: true, sequence: true, metadata: true },
+            select: {id:true,sequence:true,metadata:true,routeTemplateId:true,routeTemplateLegId:true,routeTemplate:{select:{companyId:true,company:{select:{tenantId:true,isActive:true}}}},routeTemplateLeg:{select:{routeTemplateId:true}}},
           }),
         ),
       );
@@ -390,7 +341,7 @@ export async function seedInitialServiceChargePricing(
 
       const component = existing
         ? await tx.pricingComponent.update({
-            where: { id: existing.id },
+            where: { id: existing.id, orderId },
             data: {
               orderLegId: entry.leg.id,
               componentType: entry.template.componentType,
@@ -431,117 +382,11 @@ export async function seedInitialServiceChargePricing(
     ]);
 
     return pricingComponents;
-  });
+  },{maxWait:2000,timeout:5000});
 }
 
-export async function resolvePayableTotalFromPricing(orderId: string) {
-  await ensureOrderExists(orderId);
-
-  const items = await prisma.pricingComponent.findMany({
-    where: { orderId },
-    select: {
-      amount: true,
-      currency: true,
-      fxRateSnapshot: true,
-      baseAmount: true,
-      baseCurrency: true,
-      createdAt: true,
-    },
-  });
-
-  if (items.length === 0) {
-    return null;
-  }
-
-  const originalCurrencies = new Set<string>();
-  const baseCurrencies = new Set<string>();
-  let originalTotal = 0;
-  let baseTotal = 0;
-  let hasBaseForAll = true;
-
-  for (const item of items) {
-    const originalCurrency = String(item.currency ?? "")
-      .trim()
-      .toUpperCase();
-    if (!SUPPORTED_CURRENCY_CODES.has(originalCurrency)) {
-      throw orderError("Pricing component currency is not supported", 400);
-    }
-    originalCurrencies.add(originalCurrency);
-    originalTotal += decimalToNumber(item.amount);
-
-    const baseCurrency = String(item.baseCurrency ?? "")
-      .trim()
-      .toUpperCase();
-    if (!item.baseAmount || !baseCurrency) {
-      hasBaseForAll = false;
-      continue;
-    }
-    if (!SUPPORTED_CURRENCY_CODES.has(baseCurrency)) {
-      throw orderError("Pricing component baseCurrency is not supported", 400);
-    }
-    baseCurrencies.add(baseCurrency);
-    baseTotal += decimalToNumber(item.baseAmount);
-  }
-
-  if (originalCurrencies.size === 1) {
-    const currency = Array.from(originalCurrencies)[0];
-    const amountMajor = roundTo2(originalTotal);
-    if (amountMajor <= 0) {
-      throw orderError("Calculated payable amount must be greater than zero", 400);
-    }
-    const matchingSnapshots = items.filter(
-      (item) =>
-        String(item.currency).trim().toUpperCase() === currency &&
-        item.fxRateSnapshot != null,
-    );
-    const fxRates = new Set(matchingSnapshots.map((item) => item.fxRateSnapshot!.toString()));
-    const snapshotBaseCurrencies = new Set(
-      matchingSnapshots
-        .map((item) => String(item.baseCurrency ?? "").trim().toUpperCase())
-        .filter(Boolean),
-    );
-    const baseCurrency = snapshotBaseCurrencies.size === 1
-      ? Array.from(snapshotBaseCurrencies)[0]
-      : null;
-    const hasCompleteFxSnapshot = matchingSnapshots.length === items.length && fxRates.size === 1;
-    const fxRate = hasCompleteFxSnapshot
-      ? Array.from(fxRates)[0]
-      : baseCurrency === currency
-        ? "1"
-        : null;
-    const fxRateAsOf = hasCompleteFxSnapshot
-      ? new Date(Math.max(...matchingSnapshots.map((item) => item.createdAt.getTime())))
-      : null;
-    return {
-      amountMajor,
-      currency,
-      source: "original" as const,
-      componentCount: items.length,
-      fxRate,
-      fxRateAsOf,
-      baseCurrency,
-    };
-  }
-
-  if (hasBaseForAll && baseCurrencies.size === 1) {
-    const currency = Array.from(baseCurrencies)[0];
-    const amountMajor = roundTo2(baseTotal);
-    if (amountMajor <= 0) {
-      throw orderError("Calculated payable amount must be greater than zero", 400);
-    }
-    return {
-      amountMajor,
-      currency,
-      source: "base" as const,
-      componentCount: items.length,
-      fxRate: "1",
-      fxRateAsOf: new Date(Math.max(...items.map((item) => item.createdAt.getTime()))),
-      baseCurrency: currency,
-    };
-  }
-
-  throw orderError(
-    "Pricing components use mixed currencies without a single base currency snapshot",
-    400,
-  );
+/** Legacy estimates are not an accepted exact-money/FX financial obligation. No current source caller. */
+export async function resolvePayableTotalFromPricing(orderId:string,actor?:Actor) {
+  await requireAuthorizedOrder(actor,orderId,"shipment.view");
+  pricingAcceptanceRequired();
 }
