@@ -710,6 +710,7 @@ model FinanceReceivableItem {
   allocations      FinanceReceivableAllocation[]
   cashApplications FinanceUnappliedCashApplication[]
 
+  @@unique([id, legalEntityId], map: "FinanceReceivableItem_id_entity_key")
   @@unique([legalEntityId, sourceEventId])
   @@unique([legalEntityId, sourceInvoiceId])
   @@index([legalEntityId, status, dueDate, id])
@@ -719,8 +720,9 @@ model FinanceReceivableItem {
 
 model FinanceReceivableAllocation {
   id           String                @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  legalEntityId String?               @db.Uuid
   receivableId String                @db.Uuid
-  receivable   FinanceReceivableItem @relation(fields: [receivableId], references: [id], onDelete: Restrict)
+  receivable   FinanceReceivableItem? @relation(fields: [receivableId, legalEntityId], references: [id, legalEntityId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceReceivableAllocation_parent_entity_fkey")
 
   sourceEventId   String
   type            FinanceReceivableAllocationType
@@ -733,6 +735,7 @@ model FinanceReceivableAllocation {
   createdAt       DateTime                        @default(now())
 
   @@unique([receivableId, sourceEventId])
+  @@index([legalEntityId, receivableId], map: "FinanceReceivableAllocation_entity_parent_idx")
   @@index([sourceEventId])
   @@index([paymentIntentId])
   @@index([paymentRefundId])
@@ -759,6 +762,7 @@ model FinanceUnappliedCash {
 
   applications FinanceUnappliedCashApplication[]
 
+  @@unique([id, legalEntityId], map: "FinanceUnappliedCash_id_entity_key")
   @@unique([legalEntityId, sourceEventId, type])
   @@index([legalEntityId, status, occurredAt, id])
   @@index([legalEntityId, orderId, currency, type, status])
@@ -767,10 +771,11 @@ model FinanceUnappliedCash {
 
 model FinanceUnappliedCashApplication {
   id              String                 @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  legalEntityId   String?                @db.Uuid
   unappliedCashId String                 @db.Uuid
-  unappliedCash   FinanceUnappliedCash   @relation(fields: [unappliedCashId], references: [id], onDelete: Restrict)
+  unappliedCash   FinanceUnappliedCash?  @relation(fields: [unappliedCashId, legalEntityId], references: [id, legalEntityId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceUnappliedCashApplication_parent_entity_fkey")
   receivableId    String?                @db.Uuid
-  receivable      FinanceReceivableItem? @relation(fields: [receivableId], references: [id], onDelete: Restrict)
+  receivable      FinanceReceivableItem? @relation(fields: [receivableId, legalEntityId], references: [id, legalEntityId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceUnappliedCashApplication_receivable_entity_fkey")
 
   idempotencyKey String                              @unique
   sourceEventId  String
@@ -782,6 +787,7 @@ model FinanceUnappliedCashApplication {
   createdAt      DateTime                            @default(now())
 
   @@index([unappliedCashId, occurredAt])
+  @@index([legalEntityId, unappliedCashId], map: "FinanceUnappliedCashApplication_entity_parent_idx")
   @@index([receivableId])
   @@index([sourceEventId])
 }

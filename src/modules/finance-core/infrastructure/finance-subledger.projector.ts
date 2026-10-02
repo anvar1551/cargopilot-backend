@@ -59,6 +59,7 @@ async function applyReceiptToReceivables(
     const outstanding = receivable.outstandingAmount.minus(allocated);
     await tx.financeReceivableAllocation.create({
       data: {
+        legalEntityId,
         receivableId: receivable.id,
         sourceEventId: event.sourceEventId,
         type: "payment",
@@ -128,6 +129,7 @@ async function consumeUnappliedReceipts(
     outstanding = outstanding.minus(allocated);
     await tx.financeReceivableAllocation.create({
       data: {
+        legalEntityId,
         receivableId: receivable.id,
         sourceEventId: receipt.sourceEventId,
         type: "unapplied_receipt",
@@ -142,6 +144,7 @@ async function consumeUnappliedReceipts(
     });
     await tx.financeUnappliedCashApplication.create({
       data: {
+        legalEntityId,
         unappliedCashId: receipt.id,
         receivableId: receivable.id,
         idempotencyKey: `${receipt.id}:receivable:${receivable.id}`,
@@ -224,6 +227,7 @@ async function projectRefund(tx: Tx, legalEntityId: string, event: CanonicalFina
     });
     await tx.financeUnappliedCashApplication.create({
       data: {
+        legalEntityId,
         unappliedCashId: receipt.id,
         idempotencyKey: `${receipt.id}:refund:${event.sourceEventId}`,
         sourceEventId: event.sourceEventId,
@@ -252,6 +256,7 @@ async function projectRefund(tx: Tx, legalEntityId: string, event: CanonicalFina
     const outstanding = receivable.outstandingAmount.plus(reopened);
     await tx.financeReceivableAllocation.create({
       data: {
+        legalEntityId,
         receivableId: receivable.id,
         sourceEventId: event.sourceEventId,
         type: "refund",
@@ -391,6 +396,19 @@ export async function projectFinanceSubledgerEvent(
   legalEntityId: string,
   event: CanonicalFinanceSourceEvent,
 ) {
+  // Private projection receives server-resolved authority; it is not source acceptance.
+  if (["invoice.issued", "payment.succeeded", "payment.refunded"].includes(event.eventType)) {
+    const owner = await tx.financeLegalEntity.findFirst({
+      where: { id: legalEntityId, companyId: event.companyId, isActive: true,
+        tenantId: { not: null }, tenant: { is: { status: "active" } },
+        company: { is: { isActive: true, tenantId: { not: null } } } },
+      select: { tenantId: true, company: { select: { tenantId: true } } },
+    });
+    if (!owner?.tenantId || owner.company.tenantId !== owner.tenantId || !await tx.financeSourceEvent.findFirst({
+      where: { sourceEventId: event.sourceEventId, legalEntityId, companyId: event.companyId,
+        sourceId: event.sourceId, eventType: event.eventType }, select: { id: true },
+    })) throw financeConflict("Subledger owner/source is inconsistent", "FINANCE_SUBLEDGER_OWNER_INVALID");
+  }
   const orderId = event.dimensions.orderId;
   const payableItemId = metadataString(event, "payableItemId");
   await tx.$queryRaw(Prisma.sql`
