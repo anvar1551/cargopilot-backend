@@ -30,3 +30,10 @@ export function rejectUnapprovedManualJournalExecution(): never {
   throw financeConflict("Manual journal posting and reversal require independent durable approval",
     "FINANCE_MANUAL_APPROVAL_REQUIRED");
 }
+
+export async function requirePostingRuleMutation(actor: AppUser, intent: { companyId: string; actorUserId: string }): Promise<never> {
+  const context = await requireLegalEntityContext(actor, "finance.postingRules.manage");
+  if (!intent || intent.companyId !== context.companyId || intent.actorUserId !== context.userId)
+    throw new FinanceError("Posting rule actor context mismatch", 403, "FINANCE_POSTING_RULE_CONTEXT_REJECTED");
+  throw financeConflict("Posting rule configuration requires independent durable approval", "FINANCE_POSTING_RULE_APPROVAL_REQUIRED");
+}

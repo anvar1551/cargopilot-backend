@@ -118,15 +118,16 @@ export interface FinanceRepositoryPort {
   postJournal(actor: AppUser, journalId: string): Promise<unknown>;
   reverseJournal(command: ReverseJournalCommand, actor: AppUser): Promise<unknown>;
   getTrialBalance(actor: AppUser, from: Date, to: Date): Promise<unknown>;
-  listPostingRules(companyId: string, page: CursorPage): Promise<unknown>;
-  getPostingRule(companyId: string, ruleId: string): Promise<unknown>;
-  createPostingRule(command: CreatePostingRuleCommand): Promise<unknown>;
-  createPostingRuleVersion(command: CreatePostingRuleVersionCommand): Promise<unknown>;
+  listPostingRules(actor: AppUser, page: CursorPage): Promise<unknown>;
+  getPostingRule(actor: AppUser, ruleId: string): Promise<unknown>;
+  createPostingRule(command: CreatePostingRuleCommand, actor: AppUser): Promise<unknown>;
+  createPostingRuleVersion(command: CreatePostingRuleVersionCommand, actor: AppUser): Promise<unknown>;
   changePostingRuleStatus(
     companyId: string,
     ruleId: string,
     actorUserId: string,
     status: "active" | "inactive",
+    actor: AppUser,
   ): Promise<unknown>;
   ingestSourceEvent(command: IngestFinanceSourceEventCommand): Promise<unknown>;
   processSourceEvent(sourceEventRecordId: string): Promise<unknown>;

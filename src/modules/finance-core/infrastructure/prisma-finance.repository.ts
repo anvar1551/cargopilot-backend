@@ -1,3 +1,4 @@
+import { listOwnedPostingRules, getOwnedPostingRule } from "./posting-rule-read";
 import { readOwnedTrialBalance } from "./trial-balance-read";
 import { buildDraftIntent, assertDraftRetry, projectDraftResult } from "../domain/draft-intent";
 import { requireJournalEntity, assertJournalBindings, assertReversalRetry } from "./journal-integrity";
@@ -5,7 +6,7 @@ import { listOwnedJournals, getOwnedJournal } from "./journal-read";
 import { rejectUnacceptedInvoiceExecution } from "../domain/invoice-execution-containment";
 import { financeBadRequest } from "../domain/finance.errors";
 import type { AppUser } from "../../../types/app-user";
-import { requireLegalEntityContext, rejectUnapprovedLegalEntityConfiguration, rejectUnapprovedPeriodConfiguration, rejectUnapprovedManualJournalExecution } from "../application/legal-entity-access";
+import { requirePostingRuleMutation, requireLegalEntityContext, rejectUnapprovedLegalEntityConfiguration, rejectUnapprovedPeriodConfiguration, rejectUnapprovedManualJournalExecution } from "../application/legal-entity-access";
 import { loadAcceptedCashFinance, assertAcceptedCashSource } from "./cash-finance-authority";
 import { Prisma } from "@prisma/client";
 import prisma from "../../../config/prismaClient";
@@ -1007,29 +1008,12 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
 
   getTrialBalance(actor: AppUser, from: Date, to: Date) { return readOwnedTrialBalance(actor, from, to); }
 
-  async listPostingRules(companyId: string, page: CursorPage) {
-    const rows = await prisma.financePostingRule.findMany({
-      where: { legalEntity: { companyId } },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      take: page.limit + 1,
-      ...(page.cursor ? { cursor: { id: page.cursor }, skip: 1 } : {}),
-      include: postingRuleInclude,
-    });
-    return pageResult(rows, page.limit);
-  }
+  listPostingRules(actor: AppUser, page: CursorPage) { return listOwnedPostingRules(actor, page); }
 
-  async getPostingRule(companyId: string, ruleId: string) {
-    const rule = await prisma.financePostingRule.findFirst({
-      where: { id: ruleId, legalEntity: { companyId } },
-      include: postingRuleInclude,
-    });
-    if (!rule) {
-      throw financeNotFound("Finance posting rule not found", "FINANCE_POSTING_RULE_NOT_FOUND");
-    }
-    return rule;
-  }
+  getPostingRule(actor: AppUser, ruleId: string) { return getOwnedPostingRule(actor, ruleId); }
 
-  async createPostingRule(command: CreatePostingRuleCommand) {
+  async createPostingRule(command: CreatePostingRuleCommand, actor: AppUser) {
+    await requirePostingRuleMutation(actor, command);
     return prisma.$transaction(async (tx) => {
       const entity = await requireLegalEntity(tx, command.companyId);
       const existing = await tx.financePostingRule.findFirst({
@@ -1063,7 +1047,8 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
     });
   }
 
-  async createPostingRuleVersion(command: CreatePostingRuleVersionCommand) {
+  async createPostingRuleVersion(command: CreatePostingRuleVersionCommand, actor: AppUser) {
+    await requirePostingRuleMutation(actor, command);
     return prisma.$transaction(async (tx) => {
       const entity = await requireLegalEntity(tx, command.companyId);
       const baseRule = await tx.financePostingRule.findFirst({
@@ -1114,7 +1099,9 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
     ruleId: string,
     actorUserId: string,
     status: "active" | "inactive",
+    actor: AppUser,
   ) {
+    await requirePostingRuleMutation(actor, { companyId, actorUserId });
     return prisma.$transaction(async (tx) => {
       const entity = await requireLegalEntity(tx, companyId);
       const rule = await tx.financePostingRule.findFirst({

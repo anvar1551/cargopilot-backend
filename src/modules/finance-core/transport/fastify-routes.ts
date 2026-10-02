@@ -793,7 +793,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const page = cursorPageSchema.parse(request.query);
-        return reply.send(await financeService.listPostingRules(request.user!.companyId, page));
+        return reply.send(await financeService.listPostingRules(request.user!, page));
       } catch (error) {
         return sendError(reply, error, "Failed to load finance posting rules");
       }
@@ -812,7 +812,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           validTo: input.validTo ? new Date(input.validTo) : null,
           companyId: request.user!.companyId,
           actorUserId: request.user!.id,
-        });
+        }, request.user!);
         return reply.code(201).send(rule);
       } catch (error) {
         return sendError(reply, error, "Failed to create finance posting rule");
@@ -826,7 +826,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       try {
         const { id } = financeIdParamSchema.parse(request.params);
-        return reply.send(await financeService.getPostingRule(request.user!.companyId, id));
+        return reply.send(await financeService.getPostingRule(request.user!, id));
       } catch (error) {
         return sendError(reply, error, "Failed to load finance posting rule");
       }
@@ -847,7 +847,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           validTo: input.validTo ? new Date(input.validTo) : null,
           companyId: request.user!.companyId,
           actorUserId: request.user!.id,
-        });
+        }, request.user!);
         return reply.code(201).send(rule);
       } catch (error) {
         return sendError(reply, error, "Failed to version finance posting rule");
@@ -867,7 +867,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           status: input.status,
           companyId: request.user!.companyId,
           actorUserId: request.user!.id,
-        }));
+        }, request.user!));
       } catch (error) {
         return sendError(reply, error, "Failed to change finance posting rule status");
       }

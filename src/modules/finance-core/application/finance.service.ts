@@ -19,7 +19,7 @@ import {
   type CanonicalFinanceSourceEventInput,
 } from "../domain/source-event";
 import type { AppUser } from "../../../types/app-user";
-import { requireLegalEntityContext, rejectUnapprovedLegalEntityConfiguration, rejectUnapprovedPeriodConfiguration, rejectUnapprovedManualJournalExecution } from "./legal-entity-access";
+import { requirePostingRuleMutation, requireLegalEntityContext, rejectUnapprovedLegalEntityConfiguration, rejectUnapprovedPeriodConfiguration, rejectUnapprovedManualJournalExecution } from "./legal-entity-access";
 
 export class FinanceService {
   constructor(private readonly repository: FinanceRepositoryPort) {}
@@ -170,15 +170,17 @@ export class FinanceService {
     return this.repository.getTrialBalance(actor, from, to);
   }
 
-  listPostingRules(companyId: string, page: { cursor?: string; limit: number }) {
-    return this.repository.listPostingRules(companyId, page);
+  async listPostingRules(actor: AppUser, page: { cursor?: string; limit: number }) {
+    await requireLegalEntityContext(actor, "finance.postingRules.read");
+    return this.repository.listPostingRules(actor, page);
   }
 
-  getPostingRule(companyId: string, ruleId: string) {
-    return this.repository.getPostingRule(companyId, ruleId);
+  async getPostingRule(actor: AppUser, ruleId: string) {
+    await requireLegalEntityContext(actor, "finance.postingRules.read");
+    return this.repository.getPostingRule(actor, ruleId);
   }
 
-  createPostingRule(input: {
+  async createPostingRule(input: {
     companyId: string;
     actorUserId: string;
     code: string;
@@ -190,16 +192,17 @@ export class FinanceService {
     validFrom?: Date | null;
     validTo?: Date | null;
     lines: PostingRuleLineInput[];
-  }) {
+  }, actor: AppUser) {
+    await requirePostingRuleMutation(actor, input);
     assertPostingEvent(input.sourceType, input.eventType);
     assertPostingRuleLines(input.lines);
     if (input.validFrom && input.validTo && input.validFrom > input.validTo) {
       throw financeBadRequest("validFrom must be on or before validTo", "FINANCE_RULE_DATE_RANGE_INVALID");
     }
-    return this.repository.createPostingRule(input);
+    return this.repository.createPostingRule(input, actor);
   }
 
-  createPostingRuleVersion(input: {
+  async createPostingRuleVersion(input: {
     companyId: string;
     actorUserId: string;
     ruleId: string;
@@ -212,26 +215,29 @@ export class FinanceService {
     validFrom?: Date | null;
     validTo?: Date | null;
     lines: PostingRuleLineInput[];
-  }) {
+  }, actor: AppUser) {
+    await requirePostingRuleMutation(actor, input);
     assertPostingEvent(input.sourceType, input.eventType);
     assertPostingRuleLines(input.lines);
     if (input.validFrom && input.validTo && input.validFrom > input.validTo) {
       throw financeBadRequest("validFrom must be on or before validTo", "FINANCE_RULE_DATE_RANGE_INVALID");
     }
-    return this.repository.createPostingRuleVersion(input);
+    return this.repository.createPostingRuleVersion(input, actor);
   }
 
-  changePostingRuleStatus(input: {
+  async changePostingRuleStatus(input: {
     companyId: string;
     actorUserId: string;
     ruleId: string;
     status: "active" | "inactive";
-  }) {
+  }, actor: AppUser) {
+    await requirePostingRuleMutation(actor, input);
     return this.repository.changePostingRuleStatus(
       input.companyId,
       input.ruleId,
       input.actorUserId,
       input.status,
+      actor,
     );
   }
 
