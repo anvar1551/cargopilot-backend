@@ -214,13 +214,35 @@ describe("tenant-bound authentication sessions (mocked database evidence)", () =
       companyId: ids.companyA, tenantId: ids.tenantA, tenantMembershipId: ids.tenantMembershipA });
     expect(database.userRefreshSession.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({ companyMembershipId: ids.membershipA,
-        tenantId: ids.tenantA, tenantMembershipId: ids.tenantMembershipA, revokedAt: null }),
+        tenantId: ids.tenantA, tenantMembershipId: ids.tenantMembershipA, revokedAt: null,
+        expiresAt: { gt: expect.any(Date) },
+        tenant: { is: { id: ids.tenantA, status: "active" } },
+        companyMembership: { is: {
+          id: ids.membershipA, userId: ids.user, tenantId: ids.tenantA,
+          tenantMembershipId: ids.tenantMembershipA, companyId: ids.companyA,
+          status: "active",
+          company: { is: { id: ids.companyA, tenantId: ids.tenantA, type: "company", isActive: true } },
+          tenantMembership: { is: { id: ids.tenantMembershipA, userId: ids.user, tenantId: ids.tenantA, status: "active" } },
+        } },
+      }),
     }));
     expect(database.userRefreshSession.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
       companyMembershipId: ids.membershipA, tenantId: ids.tenantA,
       tenantMembershipId: ids.tenantMembershipA,
     }) }));
     expect(database.$transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects failed consumption after eligible prechecks without issuing a replacement", async () => {
+    database.companyMembership.findMany.mockResolvedValue([membership()]);
+    database.companyMembership.findFirst.mockResolvedValue(membership());
+    const login = await loginUser({ email: "user@example.test", password: "correct-password" });
+    const saved = database.userRefreshSession.create.mock.calls[0][0].data;
+    database.userRefreshSession.create.mockClear();
+    database.userRefreshSession.findUnique.mockResolvedValue({ ...saved, user: { id: ids.user }, revokedAt: null });
+    database.userRefreshSession.updateMany.mockResolvedValue({ count: 0 });
+    await expect(refreshUserSession({ refreshToken: login.refreshToken })).rejects.toThrow("revoked");
+    expect(database.userRefreshSession.create).not.toHaveBeenCalled();
   });
 
   it("rejects revoked, legacy-unbound and mismatched refresh contexts without rotation", async () => {

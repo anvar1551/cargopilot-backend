@@ -22,6 +22,45 @@ const context={id:ids.users.maker,tenantId:ids.tenants.transAsia,tenantMembershi
 const secret="synthetic-disposable-refresh-only-signing";
 async function accepted(){const sid=randomUUID();const token=jwt.sign({...context,sid,tokenType:"refresh"},secret,{expiresIn:"1h"});await mockPrisma.userRefreshSession.create({data:{id:sid,userId:context.id,tenantId:context.tenantId,tenantMembershipId:context.tenantMembershipId,companyMembershipId:context.companyMembershipId,tokenHash:createHash("sha256").update(token).digest("hex"),expiresAt:new Date(Date.now()+3600000)}});return {sid,token};}
 const rows=()=>mockPrisma.userRefreshSession.findMany({where:{userId:context.id},orderBy:{id:"asc"}});
+it.each(["expiry", "company membership", "tenant membership", "tenant", "company"])(
+  "%s becoming ineligible after precheck prevents actual consumption and replacement",
+  async (condition) => {
+    const original = await accepted();
+    const originalTransaction = mockPrisma.$transaction.bind(mockPrisma);
+    let before: Awaited<ReturnType<typeof rows>> | undefined;
+    let arrivals = 0;
+    const change = async (restore: boolean) => {
+      if (condition === "expiry") {
+        if (!restore) await mockPrisma.userRefreshSession.update({ where: { id: original.sid }, data: { expiresAt: new Date(Date.now() - 1000) } });
+      } else if (condition === "company membership") {
+        await mockPrisma.companyMembership.update({ where: { id: context.companyMembershipId }, data: { status: restore ? "active" : "suspended" } });
+      } else if (condition === "tenant membership") {
+        await mockPrisma.tenantMembership.update({ where: { id: context.tenantMembershipId }, data: { status: restore ? "active" : "suspended" } });
+      } else if (condition === "tenant") {
+        await mockPrisma.tenant.update({ where: { id: context.tenantId }, data: { status: restore ? "active" : "suspended" } });
+      } else {
+        await mockPrisma.organization.update({ where: { id: context.companyId }, data: { isActive: restore } });
+      }
+    };
+    // This test barrier changes committed eligibility only after every real precheck.
+    const spy = jest.spyOn(mockPrisma, "$transaction").mockImplementation(async (fn: any, opts: any) => {
+      arrivals++;
+      await change(false);
+      before = await rows();
+      return originalTransaction(fn, opts);
+    });
+    try {
+      await expect(refreshUserSession({ refreshToken: original.token })).rejects.toThrow("revoked");
+      expect(arrivals).toBe(1);
+      expect(before).toBeDefined();
+      expect(await rows()).toEqual(before);
+      expect((await rows()).find(row => row.id === original.sid)!.revokedAt).toBeNull();
+    } finally {
+      spy.mockRestore();
+      await change(true);
+    }
+  },
+);
 beforeAll(async()=>{const marker=await pool.query('SELECT "runId" FROM "_CPDisposableRun"');if(marker.rows.length!==1||marker.rows[0].runId!==runId)throw Error("Disposable ownership mismatch");const client=await pool.connect();try{await client.query("BEGIN");await persistTenantDemoFixture(client,fixture);await client.query("COMMIT");}finally{client.release();}mockPrisma=new PrismaClient({adapter:new PrismaPg({connectionString:url,max:6,connectionTimeoutMillis:3000,options:"-c statement_timeout=5000"})});process.env.JWT_SECRET=secret;process.env.REFRESH_TOKEN_SECRET=secret;});
 afterAll(async()=>{await mockPrisma?.$disconnect();await pool.end();delete process.env.JWT_SECRET;delete process.env.REFRESH_TOKEN_SECRET;});
 it("three simultaneous actual refresh requests consume one token and create one exact-context replacement",async()=>{const original=await accepted();const before=await rows();const originalTransaction=mockPrisma.$transaction.bind(mockPrisma);let arrivals=0;let release!:()=>void;let fail!:(e:Error)=>void;const gate=new Promise<void>((resolve,reject)=>{release=resolve;fail=reject;});const deadline=setTimeout(()=>fail(Error("synthetic refresh barrier deadline")),5000);const spy=jest.spyOn(mockPrisma,"$transaction").mockImplementation(async(fn:any,opts:any)=>{arrivals++;if(arrivals===3)release();await gate;return originalTransaction(fn,opts);});let outcomes:PromiseSettledResult<any>[];try{outcomes=await Promise.allSettled([1,2,3].map(()=>refreshUserSession({refreshToken:original.token})));expect(arrivals).toBe(3);}finally{clearTimeout(deadline);spy.mockRestore();}const success=outcomes.filter((r):r is PromiseFulfilledResult<any>=>r.status==="fulfilled");expect(success).toHaveLength(1);expect(outcomes.filter(r=>r.status==="rejected")).toHaveLength(2);const after=await rows();expect(after.length-before.length).toBe(1);expect(after.find(r=>r.id===original.sid)!.revokedAt).not.toBeNull();const payload=jwt.verify(success[0].value.refreshToken,secret) as any;expect(payload).toMatchObject(context);const replacement=after.find(r=>r.id===payload.sid)!;expect(replacement).toMatchObject({userId:context.id,tenantId:context.tenantId,tenantMembershipId:context.tenantMembershipId,companyMembershipId:context.companyMembershipId,revokedAt:null});await expect(refreshUserSession({refreshToken:original.token})).rejects.toThrow("revoked");expect(await rows()).toEqual(after);});

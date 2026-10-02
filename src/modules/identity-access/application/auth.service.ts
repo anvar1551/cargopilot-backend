@@ -348,6 +348,7 @@ export async function refreshUserSession(args: {
   });
   if (!access) throw new Error("Refresh membership is no longer eligible");
   const next = await prisma.$transaction(async (tx) => {
+    const consumedAt = new Date();
     const revoked = await tx.userRefreshSession.updateMany({
       where: {
         id: session.id,
@@ -357,8 +358,26 @@ export async function refreshUserSession(args: {
         companyMembershipId: context.companyMembershipId,
         tokenHash: hashToken(rawToken),
         revokedAt: null,
+        expiresAt: { gt: consumedAt },
+        tenant: { is: { id: context.tenantId, status: "active" } },
+        companyMembership: { is: {
+          id: context.companyMembershipId,
+          userId: decoded.id,
+          tenantId: context.tenantId,
+          tenantMembershipId: context.tenantMembershipId,
+          companyId: context.companyId,
+          status: "active",
+          company: { is: {
+            id: context.companyId, tenantId: context.tenantId,
+            type: "company", isActive: true,
+          } },
+          tenantMembership: { is: {
+            id: context.tenantMembershipId, userId: decoded.id,
+            tenantId: context.tenantId, status: "active",
+          } },
+        } },
       },
-      data: { revokedAt: new Date() },
+      data: { revokedAt: consumedAt },
     });
     if (revoked.count !== 1) throw new Error("Refresh token revoked");
     return issueAuthSession({

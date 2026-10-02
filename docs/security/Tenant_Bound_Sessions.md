@@ -98,9 +98,11 @@ no access to other companies in the tenant. Refresh rotation uses a conditional
 single-row update and creates the replacement in one transaction, but concurrent
 reuse behavior has now been validated for the focused disposable PostgreSQL schedules recorded below. It still does not
 implement refresh-token-family reuse detection or revoke descendant sessions.
-A membership-status change between the pre-transaction eligibility read and
-rotation can issue a replacement session, although subsequent HTTP authentication
-reloads the membership and rejects that token. Concurrent logout and refresh can
+A membership-status change committed before the consuming UPDATE now prevents
+rotation: that statement repeats expiry, selected-company membership, tenant
+membership, tenant and company eligibility. This does not lock all membership
+rows or demonstrate revocation after the statement snapshot; subsequent HTTP
+authentication still reloads the membership. Concurrent logout and refresh can
 also leave the newly rotated session active because logout targets only the
 presented session identifier.
 
@@ -111,3 +113,35 @@ Application source unchanged at cd4a275 (session implementation originates in th
 A PostgreSQL BEFORE INSERT trigger injects the specific replacement failure; the old session row and session count remain unchanged, then a confirmed retry succeeds after removing the test-only trigger. A suspended membership rejects without consuming or creating sessions. This is actual database evidence for these schedules, not a token-family design or proof of all revocation races. No auth source or client behavior changed; unchanged mocked suites were not rerun. node node_modules/typescript/bin/tsc --noEmit passed for the added integration test.
 
 The reused runner created only cp-refresh-rotation-6bc6406eac88 with cached image (--pull never), synthetic credentials, an allowlisted environment, run-marker/URL guards, loopback port, 512 MiB memory, one CPU, 128 PIDs and 256 MiB owned tmpfs. All 72 committed migrations applied. Cleanup checked container name/run label/tmpfs/no volume or bind mounts and removed only that resource. Existing databases/containers were untouched. Three cases are counted once. Expiry/eligibility are checked before the transaction; changes during rotation and concurrent logout remain timing gaps. Token families/descendant revocation, distributed cache/socket revocation and real transport remain release blockers.
+
+## Consumption-time eligibility correction
+
+The preceding 72-migration evidence is historical, not a claim that atomic
+rotation was missing. The current correction adds eligibility at the actual
+single-use UPDATE without changing the login/refresh response, selecting another
+membership, adding schema, or granting receipt access. The exact stored user,
+tenant, tenant membership, company membership and company must match active
+server-side relationships. Session expiry must be later than the server's
+transaction-consumption time. A zero-row consume rejects before replacement
+creation, and replacement INSERT failure still rolls back the old-token update.
+
+Focused evidence and owned-instance cleanup are recorded in the backlog. The
+new database cases change expiry or one of the four active ownership conditions
+after real credential/session/context prechecks and before the real transaction.
+They assert every session row is unchanged by the rejection. Existing actual
+duplicate/rollback schedules are rerun because their consuming SQL changed.
+These tests do not demonstrate token-family reuse detection, successor logout,
+distributed invalidation or all concurrent revocation schedules. Status changes
+after the UPDATE snapshot and expiry while the transaction completes remain
+timing boundaries; access authorization must continue to fail closed independently.
+
+Exact current validation: `node node_modules/jest/bin/jest.js --runInBand
+--runTestsByPath tests/security/tenant-session-auth.test.ts --testNamePattern='refresh|failed consumption'`
+passed4 (18unchanged skipped). Its delayed-exit warning was investigated by the
+same affected-only command with `--detectOpenHandles`:4passed, clean exit and
+no open-handle report, not4additional cases. `node node_modules/typescript/bin/tsc
+--noEmit` passed. `node "$env:TEMP/cp-refresh-predicate-run.cjs"` applied95migrations
+and passed8native cases (5new/3affected) in cp-refresh-predicate-890f7b9135a5.
+The reused guarded runner used cached-image `--pull never`, synthetic credentials,
+loopback,512MiB/oneCPU/128PIDs/256MiB owned tmpfs; exact identity/storage checks,
+removal and label-filtered absence verified. No existing services were accessed.
