@@ -39,6 +39,10 @@ export function invoiceMinorUnits(amount: Prisma.Decimal, currency: string): big
   return BigInt(minor.toFixed(0));
 }
 
+export function invoicePaymentAuthorityDigest(input: { companyId: string; orderId: string; invoiceId: string; legalEntityId: string; amountMinor: bigint; currency: string; issuedAt: Date }) {
+  return digest({ ...input, amountMinor: input.amountMinor.toString(), issuedAt: input.issuedAt.toISOString() });
+}
+
 function result(intent: PaymentIntent, reused: boolean) {
   return {
     paymentIntentId: intent.id, status: toCanonicalStatus(intent.status),
@@ -64,7 +68,7 @@ export async function createAuthorizedPayment(
     if (locked.length !== 1) throw authorityError("Order not accessible", 404);
     const order = await tx.order.findUnique({
       where: { id: input.orderId },
-      select: { id: true, tenantId: true, ownerOrgId: true, currentWarehouseId: true, customerEntityId: true, paymentType: true, paymentState: true, status: true },
+      select: { id: true, tenantId: true, ownerOrgId: true, currentWarehouseId: true, customerEntityId: true, paymentType: true, paymentState: true, status: true, serviceCharge: true, _count: { select: { cashCollections: true } } },
     });
     if (!order || order.tenantId !== membership.tenantId || order.ownerOrgId !== companyId || (!hasCompanyScope(membership) &&
         !membership.scopes.some((scope) => scope.scopeType === "warehouse" && !!order.currentWarehouseId && scope.scopeRefId === order.currentWarehouseId))) {
@@ -85,10 +89,13 @@ export async function createAuthorizedPayment(
     if (order.status === "cancelled" || order.status === "returned" || !["CARD", "TRANSFER"].includes(order.paymentType ?? "")) {
       throw authorityError("Order is not eligible for online payment", 409);
     }
-    const authorityDigest = digest({ companyId, orderId: order.id, invoiceId: invoice.id,
-      legalEntityId: legalEntity.id, amountMinor: amountMinor.toString(), currency, issuedAt: invoice.issuedAt.toISOString() });
+    const authorityDigest = invoicePaymentAuthorityDigest({ companyId, orderId: order.id, invoiceId: invoice.id,
+      legalEntityId: legalEntity.id, amountMinor, currency, issuedAt: invoice.issuedAt });
     const existing = await tx.paymentIntent.findUnique({ where: { companyId_idempotencyKey: { companyId, idempotencyKey: input.idempotencyKey } } });
     if (existing) {
+      if (existing.provider !== "STRIPE" || order.serviceCharge !== 0 || order._count.cashCollections !== 0) {
+        throw Object.assign(authorityError("Existing payment requires reconciliation", 409), { code: "PAYMENT_RECONCILIATION_REQUIRED" });
+      }
       // NOT VALID expansion does not certify historical sources. Every retry
       // must still prove the currently configured provider tuple before exposing checkout.
       const currentConfig = await tx.paymentProviderConfig.findFirst({ where: {
@@ -105,6 +112,11 @@ export async function createAuthorizedPayment(
     if (invoice.status !== "issued" || !["UNPAID", "FAILED"].includes(order.paymentState)) {
       throw authorityError("Order is not eligible for a new online payment", 409);
     }
+    // Do not initiate an external charge whose later cash allocation cannot be
+    // authorized exactly. Existing reservations remain recovery-bound, never replayed.
+    if (order.serviceCharge !== 0 || order._count.cashCollections !== 0) {
+      throw Object.assign(authorityError("Online cash allocation authority required", 409), { code: "PAYMENT_CASH_ALLOCATION_REQUIRED" });
+    }
     // Same-order requests with different keys also serialize on the order row.
     // Legacy failed attempts can have an unknown external outcome; never infer safe recharging.
     const prior = await tx.paymentIntent.findFirst({ where: { orderId: order.id } });
@@ -113,13 +125,13 @@ export async function createAuthorizedPayment(
     if (process.env.PAYMENTS_ENABLED !== "true" || !policy?.onlinePaymentsEnabled) throw authorityError("Online payments are disabled for this company", 409);
     const provider = input.provider ?? policy.defaultProvider;
     if (!provider || (input.provider && !policy.allowProviderOverride && input.provider !== policy.defaultProvider)) throw authorityError("Payment provider is not permitted", 409);
+    if (provider !== "STRIPE") throw Object.assign(authorityError("Durable provider transaction binding required", 409), { code: "PAYMENT_PROVIDER_TRANSACTION_BINDING_REQUIRED" });
     const environment = process.env.PAYMENTS_ENVIRONMENT;
     if (environment !== "TEST" && environment !== "PRODUCTION") throw authorityError("Explicit payment environment configuration required", 409);
     const config = await deps.resolveConfig({ companyId, provider, environment }, tx);
     if (!config.isEnabled || config.companyId !== companyId || config.provider !== provider || config.environment !== environment) throw authorityError("Payment provider context mismatch", 409);
     // These adapters do not transmit a currency field; do not silently reinterpret FX amounts.
     if (provider !== "STRIPE" && currency !== "UZS") throw authorityError("Provider requires a UZS invoice", 409);
-    if (provider === "CLICK" && environment !== "PRODUCTION") throw authorityError("CLICK test endpoint is not established by the current adapter", 409);
     if (provider === "STRIPE" && !config.secretPlain.startsWith(environment === "TEST" ? "sk_test_" : "sk_live_") &&
         !config.secretPlain.startsWith(environment === "TEST" ? "rk_test_" : "rk_live_")) throw authorityError("Stripe credential environment mismatch", 409);
     if (provider === "STRIPE" && amountMinor > BigInt(Number.MAX_SAFE_INTEGER)) throw authorityError("Amount exceeds provider exact integer range", 409);

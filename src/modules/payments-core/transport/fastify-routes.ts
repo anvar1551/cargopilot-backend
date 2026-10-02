@@ -326,7 +326,11 @@ const paymentsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
       });
       return reply.send(result);
     } catch (error) {
-      return sendError(reply, error, "Failed to process webhook");
+      const failure = error as { statusCode?: number; code?: string };
+      const status = failure.statusCode && failure.statusCode >= 400 && failure.statusCode < 600 ? failure.statusCode : 500;
+      const code = typeof failure.code === "string" && /^PAYMENT_[A-Z_]{1,80}$/.test(failure.code) ? failure.code : "PAYMENT_CALLBACK_FAILED";
+      // Never return provider/decryption/database exception details to ingress callers.
+      return reply.code(status).send({ error: status >= 500 ? "Payment callback unavailable" : "Payment callback rejected", code });
     }
   }
 
@@ -348,7 +352,7 @@ const paymentsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
       (_request, body, done) => done(null, body),
     );
 
-    stripeWebhookScope.post("/payments/stripe/callback", async (request, reply) =>
+    stripeWebhookScope.post("/payments/stripe/callback", { bodyLimit: 65536 }, async (request, reply) =>
       handleWebhookByProvider(PaymentProvider.STRIPE, request, reply),
     );
   });

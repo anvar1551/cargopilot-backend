@@ -30,7 +30,7 @@ beforeAll(async()=>{
 });
 afterAll(async()=>{await db.$disconnect();await pool.end();if(oldEnabled===undefined)delete process.env.PAYMENTS_ENABLED;else process.env.PAYMENTS_ENABLED=oldEnabled;if(oldEnvironment===undefined)delete process.env.PAYMENTS_ENVIRONMENT;else process.env.PAYMENTS_ENVIRONMENT=oldEnvironment;});
 async function document(){
-  const order=await db.order.create({data:{tenantId:selected.tenantId,ownerOrgId:selected.companyId,orderNumber:randomUUID(),customerId:selected.userId,pickupAddress:"Synthetic",dropoffAddress:"Synthetic",paymentType:"CARD",paymentState:"UNPAID"}});
+  const order=await db.order.create({data:{tenantId:selected.tenantId,ownerOrgId:selected.companyId,orderNumber:randomUUID(),customerId:selected.userId,pickupAddress:"Synthetic",dropoffAddress:"Synthetic",paymentType:"CARD",paymentState:"UNPAID",serviceCharge:0}});
   // Synthetic accepted historical-invoice example only: issuance policy remains contained.
   await db.invoice.create({data:{tenantId:selected.tenantId,companyId:selected.companyId,orderId:order.id,customerId:selected.userId,invoiceNumber:randomUUID(),amount:"1200.25",currency:"USD",status:"issued",issuedAt:new Date("2026-01-01"),issuedByUserId:selected.userId}});
   return order;

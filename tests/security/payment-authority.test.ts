@@ -17,12 +17,12 @@ function fixture() {
     roles: [{ role: { companyId: companyA, isSystem: false, rolePermissions: [{ permission: { key: "payments.intents.create" } }] } }],
   };
   const order: any = { id: orderId, tenantId:"tenant-a", ownerOrgId: companyA, currentWarehouseId: warehouseA,
-    customerEntityId: null, paymentType: "CARD", paymentState: "UNPAID", status: "pending" };
+    customerEntityId: null, paymentType: "CARD", paymentState: "UNPAID", status: "pending", serviceCharge: 0, _count: { cashCollections: 0 } };
   const invoice: any = { id: "invoice-a", tenantId:"tenant-a", orderId, companyId: companyA, customerEntityId: null,
-    status: "issued", issuedAt: new Date("2026-09-01T12:00:00Z"), issuedByUserId: "issuer-a", amount: new Prisma.Decimal("1200.25"), currency: "UZS" };
+    status: "issued", issuedAt: new Date("2026-09-01T12:00:00Z"), issuedByUserId: "issuer-a", amount: new Prisma.Decimal("1200.25"), currency: "USD" };
   const legalEntity: any = { id: "legal-a", tenantId:"tenant-a", companyId: companyA, isActive: true };
-  const policy: any = { onlinePaymentsEnabled: true, defaultProvider: "PAYME", allowProviderOverride: false };
-  const config: any = { id: "config-a", companyId: companyA, provider: "PAYME", environment: "TEST", isEnabled: true, secretPlain: "fixture-only" };
+  const policy: any = { onlinePaymentsEnabled: true, defaultProvider: "STRIPE", allowProviderOverride: false };
+  const config: any = { id: "config-a", companyId: companyA, provider: "STRIPE", environment: "TEST", isEnabled: true, secretPlain: "sk_test_synthetic" };
   const intents: any[] = [];
   const db: any = {
     companyMembership: { findFirst: jest.fn(async () => membership) },
@@ -73,10 +73,10 @@ afterAll(() => {
 it("creates a company-owned invoice payment using exact amount and authoritative legal entity", async () => {
   const f = fixture(); const result = await f.call();
   expect(result).toMatchObject({ paymentIntentId: "intent-a", reused: false, status: "requires_action" });
-  expect(f.intents[0]).toMatchObject({ amountMinor: 120025n, currency: "UZS", companyId: companyA,
+  expect(f.intents[0]).toMatchObject({ amountMinor: 120025n, currency: "USD", companyId: companyA,
     metadataJson: { invoiceId: "invoice-a", legalEntityId: "legal-a" } });
   expect(f.db.companyMembership.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ userId: "user-a", status: "active", companyId: companyA }) }));
-  expect(f.resolveConfig).toHaveBeenCalledWith({ companyId: companyA, provider: "PAYME", environment: "TEST" }, f.db);
+  expect(f.resolveConfig).toHaveBeenCalledWith({ companyId: companyA, provider: "STRIPE", environment: "TEST" }, f.db);
   expect(f.createPayment).toHaveBeenCalledTimes(1);
 });
 
@@ -85,7 +85,16 @@ it("permits a matching warehouse scope only within the owning company", async ()
   await expect(f.call()).resolves.toMatchObject({ reused: false });
 });
 
+it.each(["PAYME", "CLICK", "UZUM"])("does not initiate %s before durable callback binding exists", async provider => {
+  const f=fixture(); f.policy.defaultProvider=provider;
+  await expect(f.call()).rejects.toMatchObject({statusCode:409,code:"PAYMENT_PROVIDER_TRANSACTION_BINDING_REQUIRED"});
+  f.noEffects(); expect(f.resolveConfig).not.toHaveBeenCalled();
+});
+
 it.each([
+  ["nonzero online cash allocation", (f: ReturnType<typeof fixture>) => { f.order.serviceCharge = 1; }],
+  ["unknown online cash allocation", (f: ReturnType<typeof fixture>) => { f.order.serviceCharge = null; }],
+  ["existing cash custody", (f: ReturnType<typeof fixture>) => { f.order._count.cashCollections = 1; }],
   ["missing tenant bridge", (f: ReturnType<typeof fixture>) => { f.user.tenantMembershipId = null; }],
   ["conflicting selected membership", (f: ReturnType<typeof fixture>) => { f.user.companyMembershipId = "other"; }],
   ["tenant-null order", (f: ReturnType<typeof fixture>) => { f.order.tenantId = null; }],
@@ -121,8 +130,8 @@ it.each([
   const f = fixture(); change(f); await expect(f.call()).rejects.toBeDefined(); f.noEffects();
 });
 
-it.each([{ companyId: companyB }, { amountMinor: 1n }, { currency: "USD" }, { status: "SUCCEEDED" },
-  { paid: true }, { legalEntityId: "other" }, { amountMinor: 120025 }, { provider: "STRIPE" }])(
+it.each([{ companyId: companyB }, { amountMinor: 1n }, { currency: "UZS" }, { status: "SUCCEEDED" },
+  { paid: true }, { legalEntityId: "other" }, { amountMinor: 120025 }, { provider: "PAYME" }])(
   "rejects manipulated input %p without writes/effects", async (input) => {
     const f = fixture(); await expect(f.call(input)).rejects.toBeDefined(); f.noEffects();
   },
@@ -131,8 +140,14 @@ it.each([{ companyId: companyB }, { amountMinor: 1n }, { currency: "USD" }, { st
 it("matching retries return the persisted result without writes or repeat provider operations", async () => {
   const f = fixture(); await f.call({ metadata: { a: 1, b: 2 } });
   f.db.paymentIntent.create.mockClear(); f.db.paymentIntent.updateMany.mockClear(); f.db.paymentAttempt.create.mockClear(); f.createPayment.mockClear();
-  await expect(f.call({ amountMinor: 120025n, currency: "UZS", companyId: companyA, metadata: { b: 2, a: 1 } })).resolves.toMatchObject({ reused: true, paymentIntentId: "intent-a" });
+  await expect(f.call({ amountMinor: 120025n, currency: "USD", companyId: companyA, metadata: { b: 2, a: 1 } })).resolves.toMatchObject({ reused: true, paymentIntentId: "intent-a" });
   f.noEffects();
+});
+
+it.each(["provider","cash"])("does not re-expose unsupported %s reservations for automatic completion",async kind=>{
+  const f=fixture();await f.call();if(kind==="provider"){f.intents[0].provider="PAYME";f.config.provider="PAYME";}else f.order.serviceCharge=1;
+  f.db.paymentIntent.create.mockClear();f.db.paymentIntent.updateMany.mockClear();f.db.paymentAttempt.create.mockClear();f.createPayment.mockClear();
+  await expect(f.call()).rejects.toMatchObject({statusCode:409,code:"PAYMENT_RECONCILIATION_REQUIRED"});f.noEffects();
 });
 
 it("matching retries of a settled invoice return existing state without resetting the order", async () => {

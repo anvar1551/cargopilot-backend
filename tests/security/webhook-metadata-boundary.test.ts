@@ -12,6 +12,8 @@ import { webhookHeadersForStorage, paymentWebhookMetadata } from "../../src/util
 import { createWebhookGatewayService } from "../../src/modules/integrations-core/application/webhook-gateway.service";
 import { webhookEventRepository } from "../../src/modules/integrations-core/infrastructure/webhook-events.repo";
 import { createHmacWebhookVerifier } from "../../src/modules/integrations-core/infrastructure/verifiers/hmac-webhook.verifier";
+import { Prisma } from "@prisma/client";
+import { invoicePaymentAuthorityDigest } from "../../src/modules/payments-core/application/payment-creation";
 import { handleProviderWebhook } from "../../src/modules/payments-core/application/paymentsService";
 
 const uuid = "00000000-0000-4000-8000-000000000001";
@@ -76,15 +78,20 @@ it("does not acknowledge an unpersisted integration event", async () => {
   const f = gateway(); db.integrationWebhookEvent.create.mockRejectedValueOnce(new Error("persistence unavailable"));
   await expect(f.service.ingest(f.request)).rejects.toThrow("persistence unavailable"); expect(f.enqueue).not.toHaveBeenCalled();
 });
-it.each([true, false])("preserves payment verifier inputs/results and minimizes both upsert branches (verified=%s)", async (valid) => {
-  const original = headers(); const rawBody = Buffer.from('{ "paymentIntentId": "intent-a" }\n');
-  mockVerify.mockResolvedValue({ isValid: valid, idempotencyKey: "event-a", externalEventId: "event-a", responsePayload: { accepted: valid } });
-  await expect(handleProviderWebhook({ provider: "STRIPE", body: { paymentIntentId: "intent-a" }, headers: original, rawBody })).resolves.toEqual({ accepted: valid });
-  expect(mockVerify.mock.calls[0][0].headers).toBe(original); expect(mockVerify.mock.calls[0][0].rawBody).toBe(rawBody);
-  const write = db.paymentWebhookEvent.upsert.mock.calls[0][0];
-  for (const branch of [write.create, write.update]) {
-    expect(branch.headersJson).toMatchObject({ payloadSha256: createHash("sha256").update(rawBody).digest("hex"), digestSource: "raw_body", signatureVerified: valid });
-    expect(JSON.stringify(branch.headersJson)).not.toContain("SENSITIVE-CANARY");
-  }
-  expect(db.order.update).not.toHaveBeenCalled(); expect(db.paymentIntent.update).not.toHaveBeenCalled();
+it.each([true, false])("payment verification keeps raw input and minimizes confirmed metadata (verified=%s)", async valid => {
+  const original=headers(), issuedAt=new Date("2026-01-01");
+  const event={id:"evt_a",type:"checkout.session.completed",livemode:false,data:{object:{id:"cs_a",status:"complete",payment_status:"paid",payment_intent:"pi_a",amount_total:100,currency:"usd"}}};
+  const rawBody=Buffer.from(JSON.stringify(event));
+  const source={id:"intent-a",companyId:"company-a",orderId:"order-a",provider:"STRIPE",environment:"TEST",providerInvoiceId:"cs_a",providerPaymentId:null,providerConfigId:"provider-a",providerConfig:{id:"provider-a",companyId:"company-a",provider:"STRIPE",environment:"TEST",isEnabled:true,secretEncrypted:"fixture",accountId:null},amountMinor:100n,currency:"USD",status:"PENDING",metadataJson:{invoiceId:"invoice-a",legalEntityId:"entity-a",phase0bAuthorityDigest:invoicePaymentAuthorityDigest({companyId:"company-a",orderId:"order-a",invoiceId:"invoice-a",legalEntityId:"entity-a",amountMinor:100n,currency:"USD",issuedAt})}};
+  db.paymentIntent.findMany.mockResolvedValue([source]);db.paymentIntent.findUnique.mockResolvedValue(source);
+  db.organization.findFirst.mockResolvedValue({tenantId:"tenant-a"});
+  db.order.findFirst.mockResolvedValue({id:"order-a",tenantId:"tenant-a",ownerOrgId:"company-a",customerEntityId:null,status:"pending",paymentType:"CARD",paymentState:"PENDING",serviceCharge:0,_count:{cashCollections:0}});
+  db.invoice.findUnique.mockResolvedValue({id:"invoice-a",tenantId:"tenant-a",companyId:"company-a",orderId:"order-a",customerEntityId:null,amount:new Prisma.Decimal(1),currency:"USD",issuedAt,issuedByUserId:"issuer",status:"issued"});
+  db.financeLegalEntity.findUnique.mockResolvedValue({id:"entity-a",companyId:"company-a",tenantId:"tenant-a",isActive:true});
+  db.$executeRaw.mockResolvedValue(0);db.$queryRaw.mockResolvedValue([]);db.paymentWebhookEvent.findUnique.mockResolvedValue(null);db.paymentWebhookEvent.create.mockResolvedValue({id:"receipt"});db.paymentIntent.update.mockResolvedValue({});db.order.updateMany.mockResolvedValue({count:1});db.paymentAttempt.create.mockResolvedValue({});db.paymentLedgerEntry.create.mockResolvedValue({});
+  mockVerify.mockResolvedValue({isValid:valid,rawEvent:event});
+  const result=handleProviderWebhook({provider:"STRIPE",body:{paymentIntentId:"caller-ignored"},headers:original,rawBody});
+  if(valid){await expect(result).resolves.toMatchObject({ok:true});const write=db.paymentWebhookEvent.create.mock.calls[0][0].data;expect(write.headersJson).toMatchObject({payloadSha256:createHash("sha256").update(rawBody).digest("hex"),digestSource:"raw_body",signatureVerified:true});expect(JSON.stringify(write.headersJson)).not.toContain("SENSITIVE-CANARY");expect(write.payloadJson).not.toHaveProperty("data");}
+  else{await expect(result).rejects.toMatchObject({statusCode:403});expect(db.paymentWebhookEvent.create).not.toHaveBeenCalled();expect(db.paymentIntent.update).not.toHaveBeenCalled();expect(db.order.updateMany).not.toHaveBeenCalled();}
+  expect(mockVerify.mock.calls[0][0].headers).toBe(original);expect(mockVerify.mock.calls[0][0].rawBody).toEqual(rawBody);expect(db.paymentWebhookEvent.upsert).not.toHaveBeenCalled();
 });
