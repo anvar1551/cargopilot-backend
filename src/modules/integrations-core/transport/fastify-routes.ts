@@ -590,7 +590,7 @@ const integrationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         });
         return reply.send(result);
       } catch (error) {
-        return sendError(reply, error, "Failed to list webhook events");
+        return sendOutboxReadError(reply, error);
       }
     },
   );
@@ -613,7 +613,7 @@ const integrationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         });
         return reply.send(result);
       } catch (error) {
-        return sendError(reply, error, "Failed to list canonical events");
+        return sendOutboxReadError(reply, error);
       }
     },
   );

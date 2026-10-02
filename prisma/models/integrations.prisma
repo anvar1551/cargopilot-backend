@@ -231,6 +231,7 @@ model IntegrationOutbox {
   updatedAt      DateTime                @updatedAt
 
   attempts IntegrationDeliveryAttempt[]
+  canonicalEvent IntegrationCanonicalEvent? @relation("CanonicalOutboxSource")
 
   @@unique([companyId, providerCode, idempotencyKey], map: "uniq_integration_outbox_company_provider_idempotency")
   @@index([status, nextAttemptAt, createdAt])
@@ -319,6 +320,7 @@ model IntegrationCanonicalEvent {
   webhookEventId String?                  @db.Uuid
   webhookEvent   IntegrationWebhookEvent? @relation(fields: [webhookEventId], references: [id], onDelete: SetNull)
   outboxId       String?                  @db.Uuid
+  outbox         IntegrationOutbox?       @relation("CanonicalOutboxSource", fields: [outboxId], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "IntegrationCanonicalEvent_outbox_source_fkey")
 
   domain        IntegrationDomain
   providerCode  String

@@ -2,17 +2,11 @@ import { Prisma } from "@prisma/client";
 import prisma from "../../../config/prismaClient";
 import type { AppUser } from "../../../types/app-user";
 import { authorityError } from "../../orders-core/domain/creation-authority";
-import { integrationProviderContext } from "./provider-access";
+import { integrationMetadataScope, metadataPage as bounded } from "./metadata-scope";
 
 type Domain = "carrier" | "sms" | "payment" | "webhook_sink";
 type Status = "pending" | "processing" | "sent" | "failed" | "dead_letter";
-const domains: Domain[] = ["carrier", "sms", "payment", "webhook_sink"];
 const statuses: Status[] = ["pending", "processing", "sent", "failed", "dead_letter"];
-function bounded(value: number | undefined, fallback: number, max: number) {
-  if (value !== undefined && (!Number.isSafeInteger(value) || value < 1 || value > max))
-    throw authorityError("Invalid integration pagination", 400);
-  return value ?? fallback;
-}
 const iso = (value: Date | null) => value?.toISOString() ?? null;
 const attemptSelect = {
   id: true, outboxId: true, attemptNo: true, outcome: true, statusCode: true,
@@ -26,15 +20,7 @@ function attempt(row: Prisma.IntegrationDeliveryAttemptGetPayload<{ select: type
 
 /** Bound the tuple expansion; repeat each tuple at the actual read to close configuration-change races. */
 async function ownership(user: AppUser, companyId?: string, domain?: Domain, providerCode?: string) {
-  const context = await integrationProviderContext(user, "integration.outbox.read", companyId);
-  if (domain !== undefined && !domains.includes(domain)) throw authorityError("Invalid integration domain", 400);
-  if (providerCode !== undefined && (typeof providerCode !== "string" || !/^[a-z0-9_-]{1,64}$/i.test(providerCode.trim())))
-    throw authorityError("Invalid integration provider code", 400);
-  const providers = await prisma.integrationProvider.findMany({
-    where: { ...context, ...(domain ? { domain } : {}), ...(providerCode ? { providerCode: providerCode.trim().toLowerCase() } : {}) },
-    select: { id: true, domain: true, providerCode: true, environment: true }, orderBy: { id: "asc" }, take: 101,
-  });
-  if (providers.length > 100) throw Object.assign(authorityError("Integration read capacity exceeded", 409), { code: "INTEGRATION_READ_CAPACITY" });
+  const { context, providers } = await integrationMetadataScope(user, companyId, domain, providerCode);
   // An empty tuple set is explicitly false; it never becomes an unfiltered query.
   const where: Prisma.IntegrationOutboxWhereInput = { ...context, AND: [
     { OR: providers.map(provider => ({ providerId: provider.id, domain: provider.domain,
