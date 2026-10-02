@@ -133,9 +133,10 @@ it("same-tenant foreign account in a cash rule is rejected", async () => {
   const row = await source(); const foreign = await mockPrisma.financeLegalEntity.findUniqueOrThrow({ where: { companyId: ids.organizations.transAsiaDe } });
   const account = await mockPrisma.financeAccount.create({ data: { legalEntityId: foreign.id, code: randomUUID(), name: "SYNTHETIC FOREIGN", type: "asset" } });
   const line = await mockPrisma.financePostingRuleLine.findFirstOrThrow({ where: { postingRuleId: ruleId, lineNumber: 1 } });
-  await mockPrisma.financePostingRuleLine.update({ where: { id: line.id }, data: { accountId: account.id } });
-  try { const before = await ledgerSnapshot(); const result: any = await prismaFinanceRepository.processSourceEvent(row.id); expect(result.exception).toBe(true); expect(await ledgerSnapshot()).toEqual(before); }
-  finally { await mockPrisma.financePostingRuleLine.update({ where: { id: line.id }, data: { accountId: accountIds[0] } }); }
+  const before = await ledgerSnapshot();
+  await expect(mockPrisma.financePostingRuleLine.update({ where: { id: line.id }, data: { accountId: account.id } })).rejects.toMatchObject({code:"P2003"});
+  expect((await mockPrisma.financePostingRuleLine.findUniqueOrThrow({where:{id:line.id}})).accountId).toBe(line.accountId);
+  expect(await ledgerSnapshot()).toEqual(before);
 });
 
 it("validated historical cash posting receipt is immutable and does not authorize new execution",async()=>{const row=await source();const doc=await mockPrisma.financeDocument.create({data:{legalEntityId,documentNumber:randomUUID(),type:"cash_movement",status:"posted",documentDate:new Date(),postingDate:new Date(),currency:"USD",totalAmount:"100.25",baseAmount:"200.5",fxRate:"2",sourceEventId,sourceType:"cash_custody",sourceId:row.sourceId,idempotencyKey:randomUUID(),createdByUserId:maker.id}});const journal=await mockPrisma.financeJournalEntry.create({data:{legalEntityId,documentId:doc.id,journalNumber:randomUUID(),status:"posted",postingDate:new Date(),totalDebitBase:"200.5",totalCreditBase:"200.5",lines:{create:[{legalEntityId,lineNumber:1,accountId:accountIds[0],currency:"USD",fxRate:"2",debitAmount:"100.25",debitBase:"200.5"},{legalEntityId,lineNumber:2,accountId:accountIds[1],currency:"USD",fxRate:"2",creditAmount:"100.25",creditBase:"200.5"}]}}});await mockPrisma.financeSourceEvent.update({where:{id:row.id},data:{status:"posted",financeDocumentId:doc.id,financeJournalEntryId:journal.id}});const before=await ledgerSnapshot();for(const result of await Promise.all([1,2].map(()=>prismaFinanceRepository.processSourceEvent(row.id))))expect(result).toMatchObject({idempotent:true});expect(await ledgerSnapshot()).toEqual(before);});

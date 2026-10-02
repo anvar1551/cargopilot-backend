@@ -198,6 +198,7 @@ async function createPostingRuleTx(
       validTo: command.validTo,
       lines: {
         create: command.lines.map((line, index) => ({
+          // Compound parent relation supplies its authoritative legalEntityId.
           lineNumber: index + 1,
           side: line.side,
           accountId: line.accountId,
@@ -1289,6 +1290,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
         const rule = highest[0];
         const invalidAccount = rule.lines.find(
           (line) =>
+            line.legalEntityId !== entity.id || !line.account ||
             line.account.legalEntityId !== entity.id ||
             line.account.status !== "active" ||
             !line.account.allowPosting ||
@@ -1296,7 +1298,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
         );
         if (invalidAccount) {
           throw financeConflict(
-            `Account ${invalidAccount.account.code} is not available for automatic posting`,
+            "Rule account ownership or eligibility is invalid for automatic posting",
             "FINANCE_ACCOUNT_NOT_POSTABLE",
           );
         }

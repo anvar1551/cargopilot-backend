@@ -18,7 +18,7 @@ async function ownership(actor: AppUser) {
   const entity = await prisma.financeLegalEntity.findFirst({ where: legalEntity, select: { id: true } });
   if (!entity) return null;
   return { legalEntityId: entity.id, legalEntity: { is: legalEntity },
-    lines: { every: { account: { is: { legalEntityId: entity.id, OR: [{ parentId: null }, { parent: { is: { legalEntityId: entity.id } } }] } } } },
+    lines: { every: { legalEntityId: entity.id, account: { is: { legalEntityId: entity.id, OR: [{ parentId: null }, { parent: { is: { legalEntityId: entity.id } } }] } } } },
   } satisfies Prisma.FinancePostingRuleWhereInput;
 }
 function missing(): never { throw financeNotFound("Finance posting rule not found", "FINANCE_POSTING_RULE_NOT_FOUND"); }

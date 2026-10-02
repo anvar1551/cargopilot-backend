@@ -323,6 +323,7 @@ model FinancePostingRule {
   lines        FinancePostingRuleLine[]
   sourceEvents FinanceSourceEvent[]
 
+  @@unique([id, legalEntityId])
   @@unique([legalEntityId, code, version])
   @@index([legalEntityId, sourceType, eventType, status, priority])
 }
@@ -330,17 +331,19 @@ model FinancePostingRule {
 model FinancePostingRuleLine {
   id                  String             @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   postingRuleId       String             @db.Uuid
-  postingRule         FinancePostingRule @relation(fields: [postingRuleId], references: [id], onDelete: Cascade)
+  legalEntityId       String? @db.Uuid
+  postingRule         FinancePostingRule? @relation(fields: [postingRuleId, legalEntityId], references: [id, legalEntityId], onDelete: Cascade, onUpdate: Restrict, map: "FinancePostingRuleLine_rule_entity_fkey")
   lineNumber          Int
   side                FinanceEntrySide
   accountId           String             @db.Uuid
-  account             FinanceAccount     @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  account             FinanceAccount? @relation(fields: [accountId, legalEntityId], references: [id, legalEntityId], onDelete: Restrict, onUpdate: Restrict, map: "FinancePostingRuleLine_account_entity_fkey")
   amountExpression    String             @default("amount")
   descriptionTemplate String?
   dimensionsJson      Json?
   createdAt           DateTime           @default(now())
   updatedAt           DateTime           @updatedAt
 
+  @@index([legalEntityId, postingRuleId])
   @@unique([postingRuleId, lineNumber])
   @@index([accountId])
 }
