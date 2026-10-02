@@ -16,7 +16,7 @@ async function ownership(actor:AppUser) {
   const configs=await prisma.integrationProvider.findMany({where:{companyId:context.companyId,domain:"carrier",company:{is:{tenantId:context.tenantId,isActive:true}}},select:{id:true,providerCode:true},take:33});
   if(configs.length>32)throw financeConflict("Provider configuration exceeds supported read size","FINANCE_CARRIER_BILL_PROVIDER_LIMIT");
   if(!configs.length)return null;
-  return {legalEntityId:entity.id,legalEntity:{is:owner},OR:configs.map(config=>({carrierProviderId:config.id,carrierCode:config.providerCode}))} satisfies Prisma.FinanceCarrierBillWhereInput;
+  return {companyId:context.companyId,legalEntityId:entity.id,legalEntity:{is:owner},OR:configs.map(config=>({carrierProviderId:config.id,carrierCode:config.providerCode}))} satisfies Prisma.FinanceCarrierBillWhereInput;
 }
 export async function listOwnedCarrierBills(actor:AppUser,page:FinanceDocumentPage) {
   const owned=await ownership(actor);

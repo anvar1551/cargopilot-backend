@@ -189,6 +189,9 @@ model FinanceLegalEntity {
   @@unique([id, tenantId, companyId], map: "FinanceLegalEntity_draft_owner_key")
   @@unique([tenantId, companyId], map: "FinanceLegalEntity_tenant_company_key")
   @@index([tenantId, isActive])
+  ownedProviderHeaders FinanceProviderSettlement[] @relation("SettlementCompanyEntity")
+  ownedCarrierHeaders FinanceCarrierBill[] @relation("CarrierCompanyEntity")
+  @@unique([id, companyId], map: "FinanceLegalEntity_id_companyId_key")
 }
 
 model FinanceSourceEvent {
@@ -582,6 +585,10 @@ model FinanceProviderSettlement {
   @@index([providerConfigId, periodStart, periodEnd])
   ownedBankStatementLine FinanceBankStatementLine? @relation("StatementSettlementOwnership")
   @@unique([id, legalEntityId])
+  companyId String? @db.Uuid
+  ownedEntity FinanceLegalEntity? @relation("SettlementCompanyEntity", fields: [legalEntityId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceProviderSettlement_entity_company_fkey")
+  ownedProvider PaymentProviderConfig? @relation("SettlementCompanyProvider", fields: [providerConfigId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceProviderSettlement_provider_company_fkey")
+  @@index([companyId, legalEntityId])
 }
 
 model FinanceProviderSettlementLine {
@@ -651,6 +658,10 @@ model FinanceCarrierBill {
   @@unique([legalEntityId, idempotencyKey])
   @@index([legalEntityId, status, invoiceDate])
   @@index([carrierProviderId, invoiceDate])
+  companyId String? @db.Uuid
+  ownedEntity FinanceLegalEntity? @relation("CarrierCompanyEntity", fields: [legalEntityId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceCarrierBill_entity_company_fkey")
+  ownedProvider IntegrationProvider? @relation("CarrierCompanyProvider", fields: [carrierProviderId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceCarrierBill_provider_company_fkey")
+  @@index([companyId, legalEntityId])
 }
 
 model FinanceCarrierBillLine {

@@ -106,6 +106,7 @@ export class PrismaFinanceDocumentsRepository implements FinanceDocumentsReposit
       const settlement = await tx.financeProviderSettlement.create({
         data: {
           legalEntityId: entity.id,
+          companyId: entity.companyId,
           settlementNumber,
           providerConfigId: command.settlement.providerConfigId,
           providerCode: command.settlement.providerCode,
@@ -390,6 +391,7 @@ export class PrismaFinanceDocumentsRepository implements FinanceDocumentsReposit
       const bill = await tx.financeCarrierBill.create({
         data: {
           legalEntityId: entity.id,
+          companyId: entity.companyId,
           billNumber,
           carrierProviderId: command.bill.carrierProviderId,
           carrierCode: command.bill.carrierCode,

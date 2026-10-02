@@ -94,6 +94,8 @@ model PaymentProviderConfig {
 
   @@unique([companyId, provider, environment], map: "uniq_provider_per_company_env")
   @@index([companyId, isEnabled])
+  ownedFinanceHeaders FinanceProviderSettlement[] @relation("SettlementCompanyProvider")
+  @@unique([id, companyId])
 }
 
 model PaymentIntent {

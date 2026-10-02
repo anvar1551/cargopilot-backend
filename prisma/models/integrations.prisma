@@ -75,6 +75,8 @@ model IntegrationProvider {
   @@unique([companyId, domain, providerCode, environment], map: "uniq_integration_provider_company_domain_code_env")
   @@index([companyId, domain, status])
   @@index([providerCode, environment, status])
+  ownedFinanceHeaders FinanceCarrierBill[] @relation("CarrierCompanyProvider")
+  @@unique([id, companyId])
 }
 
 model RouteTemplate {

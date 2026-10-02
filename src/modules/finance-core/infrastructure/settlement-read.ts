@@ -16,7 +16,7 @@ async function ownership(actor:AppUser) {
   const configs=await prisma.paymentProviderConfig.findMany({where:{companyId:context.companyId,company:{is:{tenantId:context.tenantId,isActive:true}}},select:{id:true,provider:true,environment:true},take:33});
   if(configs.length>32)throw financeConflict("Provider configuration exceeds supported read size","FINANCE_SETTLEMENT_PROVIDER_LIMIT");
   if(!configs.length)return null;
-  return {legalEntityId:entity.id,legalEntity:{is:owner},OR:configs.map(config=>({providerConfigId:config.id,providerCode:config.provider,environment:config.environment}))} satisfies Prisma.FinanceProviderSettlementWhereInput;
+  return {companyId:context.companyId,legalEntityId:entity.id,legalEntity:{is:owner},OR:configs.map(config=>({providerConfigId:config.id,providerCode:config.provider,environment:config.environment}))} satisfies Prisma.FinanceProviderSettlementWhereInput;
 }
 export async function listOwnedProviderSettlements(actor:AppUser,page:FinanceDocumentPage) {
   const owned=await ownership(actor);
