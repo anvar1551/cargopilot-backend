@@ -791,9 +791,12 @@ model FinancePayableItem {
   createdAt             DateTime              @default(now())
   updatedAt             DateTime              @updatedAt
 
+  ownedPaymentRunLines FinancePaymentRunLine[] @relation("PaymentRunPayableOwnership")
+  ownedAllocations FinancePayableAllocation[] @relation("PayableAllocationOwnership")
   paymentRunLines FinancePaymentRunLine[]
   allocations     FinancePayableAllocation[]
 
+  @@unique([id, legalEntityId])
   @@unique([legalEntityId, sourceEventId])
   @@unique([legalEntityId, sourceCarrierBillId])
   @@index([legalEntityId, status, dueDate, id])
@@ -819,10 +822,12 @@ model FinanceBankAccount {
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
 
+  ownedPaymentRuns FinancePaymentRun[] @relation("PaymentRunBankOwnership")
   paymentRuns    FinancePaymentRun[]
   bankStatements FinanceBankStatement[]
   statementLines FinanceBankStatementLine[]
 
+  @@unique([id, legalEntityId])
   @@unique([legalEntityId, code])
   @@unique([legalEntityId, accountIdentifierHash])
   @@unique([legalEntityId, idempotencyKey])
@@ -835,6 +840,7 @@ model FinancePaymentRun {
   legalEntity   FinanceLegalEntity @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
   bankAccountId String             @db.Uuid
   bankAccount   FinanceBankAccount @relation(fields: [bankAccountId], references: [id], onDelete: Restrict)
+  ownedBankAccount FinanceBankAccount @relation("PaymentRunBankOwnership", fields: [bankAccountId, legalEntityId], references: [id, legalEntityId], onDelete: Restrict, onUpdate: Restrict, map: "FinancePaymentRun_bank_entity_fkey")
 
   runNumber      String
   paymentDate    DateTime                @db.Date
@@ -861,9 +867,11 @@ model FinancePaymentRun {
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
+  ownedLines FinancePaymentRunLine[] @relation("PaymentRunLineOwnership")
   lines              FinancePaymentRunLine[]
   bankStatementLines FinanceBankStatementLine[]
 
+  @@unique([id, legalEntityId])
   @@unique([legalEntityId, runNumber])
   @@unique([legalEntityId, idempotencyKey])
   @@unique([legalEntityId, bankReference])
@@ -875,6 +883,9 @@ model FinancePaymentRunLine {
   id            String             @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   paymentRunId  String             @db.Uuid
   paymentRun    FinancePaymentRun  @relation(fields: [paymentRunId], references: [id], onDelete: Cascade)
+  legalEntityId String? @db.Uuid
+  ownedPaymentRun FinancePaymentRun? @relation("PaymentRunLineOwnership", fields: [paymentRunId, legalEntityId], references: [id, legalEntityId], onDelete: Cascade, onUpdate: Restrict, map: "FinancePaymentRunLine_run_entity_fkey")
+  ownedPayableItem FinancePayableItem? @relation("PaymentRunPayableOwnership", fields: [payableItemId, legalEntityId], references: [id, legalEntityId], onDelete: Restrict, onUpdate: Restrict, map: "FinancePaymentRunLine_payable_entity_fkey")
   sequence      Int
   payableItemId String             @db.Uuid
   payableItem   FinancePayableItem @relation(fields: [payableItemId], references: [id], onDelete: Restrict)
@@ -888,8 +899,11 @@ model FinancePaymentRunLine {
   createdAt               DateTime                    @default(now())
   updatedAt               DateTime                    @updatedAt
 
+  ownedAllocation FinancePayableAllocation? @relation("PaymentRunAllocationOwnership")
   allocation FinancePayableAllocation?
 
+  @@unique([id, payableItemId, legalEntityId])
+  @@index([legalEntityId, paymentRunId])
   @@unique([paymentRunId, sequence])
   @@unique([paymentRunId, payableItemId])
   @@index([payableItemId, status])
@@ -903,6 +917,9 @@ model FinancePayableAllocation {
   paymentRunLineId String                @unique @db.Uuid
   paymentRunLine   FinancePaymentRunLine @relation(fields: [paymentRunLineId], references: [id], onDelete: Restrict)
 
+  legalEntityId String? @db.Uuid
+  ownedPayableItem FinancePayableItem? @relation("PayableAllocationOwnership", fields: [payableItemId, legalEntityId], references: [id, legalEntityId], onDelete: Restrict, onUpdate: Restrict, map: "FinancePayableAllocation_payable_entity_fkey")
+  ownedPaymentRunLine FinancePaymentRunLine? @relation("PaymentRunAllocationOwnership", fields: [paymentRunLineId, payableItemId, legalEntityId], references: [id, payableItemId, legalEntityId], onDelete: Restrict, onUpdate: Restrict, map: "FinancePayableAllocation_line_payable_entity_fkey")
   sourceEventId String
   amount        Decimal  @db.Decimal(20, 4)
   currency      String   @db.VarChar(3)
@@ -910,6 +927,8 @@ model FinancePayableAllocation {
   metadataJson  Json?
   createdAt     DateTime @default(now())
 
+  @@unique([paymentRunLineId, payableItemId, legalEntityId], map: "FinancePayableAllocation_line_payable_entity_key")
+  @@index([legalEntityId, paymentRunLineId])
   @@unique([payableItemId, sourceEventId])
   @@index([payableItemId, occurredAt])
   @@index([sourceEventId])

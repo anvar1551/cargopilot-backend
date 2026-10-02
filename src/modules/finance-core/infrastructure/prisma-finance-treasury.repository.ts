@@ -281,6 +281,7 @@ export class PrismaFinanceTreasuryRepository implements FinanceTreasuryRepositor
             create: command.paymentRun.lines.map((line) => {
               const payable = payableById.get(line.payableItemId)!;
               return {
+                legalEntityId: entity.id,
                 sequence: line.sequence,
                 payableItemId: payable.id,
                 carrierProviderId: payable.carrierProviderId,

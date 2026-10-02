@@ -25,8 +25,8 @@ async function ownership(actor: AppUser) {
   const entity = await prisma.financeLegalEntity.findFirst({ where: owner, select: { id: true } });
   if (!entity) return null;
   return { legalEntityId: entity.id, legalEntity: { is: owner }, bankAccount: { is: { legalEntityId: entity.id } },
-    lines: { every: { payableItem: { is: { legalEntityId: entity.id } }, OR: [{ allocation: { is: null } },
-      { allocation: { is: { payableItem: { is: { legalEntityId: entity.id } } } } }] } },
+    lines: { every: { legalEntityId: entity.id, payableItem: { is: { legalEntityId: entity.id } }, OR: [{ allocation: { is: null } },
+      { allocation: { is: { legalEntityId: entity.id, payableItem: { is: { legalEntityId: entity.id } } } } }] } },
   } satisfies Prisma.FinancePaymentRunWhereInput;
 }
 export async function listOwnedPaymentRuns(actor: AppUser, page: TreasuryPage) {

@@ -324,11 +324,15 @@ async function projectPayablePayment(tx: Tx, legalEntityId: string, event: Canon
       "FINANCE_PAYABLE_ALLOCATION_REFERENCE_REQUIRED",
     );
   }
+  const entity = await tx.financeLegalEntity.findFirst({where:{id:legalEntityId,companyId:event.companyId,isActive:true,tenantId:{not:null},tenant:{is:{status:"active"}}},select:{tenantId:true}});
+  if (!entity?.tenantId) throw financeConflict("Payable allocation owner is unbound", "FINANCE_PAYABLE_ALLOCATION_REFERENCE_INVALID");
   const [payable, runLine] = await Promise.all([
     tx.financePayableItem.findFirst({ where: { id: payableItemId, legalEntityId } }),
     tx.financePaymentRunLine.findFirst({
       where: {
         id: paymentRunLineId,
+        legalEntityId,
+        paymentRun:{is:{legalEntityId,status:"executed",currency:event.currency,fxRate:event.fxRate,bankAccount:{is:{legalEntityId,currency:event.currency}},legalEntity:{is:{companyId:event.companyId,tenantId:entity.tenantId,isActive:true,company:{is:{tenantId:entity.tenantId,isActive:true}}}}}},
         payableItemId,
         accountingSourceEventId: event.sourceEventId,
         status: "executed",
@@ -359,6 +363,7 @@ async function projectPayablePayment(tx: Tx, legalEntityId: string, event: Canon
     data: {
       payableItemId: payable.id,
       paymentRunLineId: runLine.id,
+      legalEntityId,
       sourceEventId: event.sourceEventId,
       amount,
       currency: event.currency,
