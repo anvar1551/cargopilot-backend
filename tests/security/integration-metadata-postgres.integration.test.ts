@@ -575,7 +575,7 @@ it("secret pointer PostgreSQL valid optional and owned references use the exact 
     const p=await credentialProvider(i);expect(p.activeSecretId).toBeNull();
     const secret=await mockPrisma.integrationProviderSecret.create({data:{providerId:p.id,keyVersion:1,encryptedSecretJson:"synthetic-opaque-not-a-live-credential"}});
     await expect(mockPrisma.integrationProvider.update({where:{id:p.id},data:{secretRef:secret.id.toUpperCase(),activeSecretId:secret.id}})).resolves.toMatchObject({activeSecretId:secret.id});
-    const before=await credentialSnapshot();await expect(mockPrisma.integrationProviderSecret.delete({where:{id:secret.id}})).rejects.toMatchObject({code:"P2003"});expect(await credentialSnapshot()).toEqual(before);
+    const before=await credentialSnapshot();await expect(mockPrisma.integrationProviderSecret.delete({where:{id:secret.id}})).rejects.toThrow("Integration secret versions are immutable");expect(await credentialSnapshot()).toEqual(before);
   }
   const catalog=await pool.query("SELECT conname,convalidated,pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conname=ANY($1::text[])",[["IntegrationProvider_active_secret_owner_fkey","IntegrationProvider_active_secret_complete_check"]]);
   expect(catalog.rows).toHaveLength(2);expect(catalog.rows.every(r=>!r.convalidated)).toBe(true);expect(catalog.rows.find(r=>r.conname==="IntegrationProvider_active_secret_owner_fkey").definition).toContain('REFERENCES "IntegrationProviderSecret"(id, "providerId")');
@@ -609,4 +609,22 @@ it("secret pointer PostgreSQL existing version uniqueness prevents concurrent du
   const p=await credentialProvider(),before=await snapshot();
   const settled=await Promise.allSettled([1,2].map(()=>mockPrisma.integrationProviderSecret.create({data:{providerId:p.id,keyVersion:10,encryptedSecretJson:"synthetic-opaque"}})));
   expect(settled.filter(r=>r.status==="fulfilled")).toHaveLength(1);expect(await mockPrisma.integrationProviderSecret.count({where:{providerId:p.id,keyVersion:10}})).toBe(1);expect(await snapshot()).toEqual(before);
+});
+it("secret immutable PostgreSQL rejects every version rewrite delete cascade and truncate without changes",async()=>{
+  const p=await credentialProvider(),other=await credentialProvider(1),secret=await mockPrisma.integrationProviderSecret.create({data:{providerId:p.id,keyVersion:1,encryptedSecretJson:"synthetic-immutable-cipher"}});
+  for(const data of [{encryptedSecretJson:"synthetic-replacement"},{providerId:other.id},{keyVersion:2},{secretMasked:"synthetic-replacement"},{rotatedAt:new Date()},{id:randomUUID()}]){
+    const before=await credentialSnapshot();await expect(mockPrisma.integrationProviderSecret.update({where:{id:secret.id},data})).rejects.toThrow("Integration secret versions are immutable");expect(await credentialSnapshot()).toEqual(before);
+  }
+  const before=await credentialSnapshot();await expect(mockPrisma.integrationProviderSecret.delete({where:{id:secret.id}})).rejects.toThrow("Integration secret versions are immutable");
+  await expect(mockPrisma.integrationProvider.delete({where:{id:p.id}})).rejects.toThrow("Integration secret versions are immutable");
+  // This guarded pool targets only this run's disposable DB; rejection must preserve every version.
+  await expect(pool.query('TRUNCATE "IntegrationProviderSecret" CASCADE')).rejects.toMatchObject({code:"23514",constraint:"IntegrationProviderSecret_immutable"});expect(await credentialSnapshot()).toEqual(before);
+});
+it("secret immutable PostgreSQL new version insertion succeeds and failed rewrite rolls back related outbox",async()=>{
+  const p=await credentialProvider(),first=await mockPrisma.integrationProviderSecret.create({data:{providerId:p.id,keyVersion:1,encryptedSecretJson:"synthetic-first"}});
+  await expect(mockPrisma.integrationProviderSecret.create({data:{providerId:p.id,keyVersion:2,encryptedSecretJson:"synthetic-second"}})).resolves.toMatchObject({keyVersion:2});
+  let reached=false;const before=await credentialSnapshot();await expect(mockPrisma.$transaction(async tx=>{
+    await tx.integrationOutbox.create({data:{companyId:p.companyId,providerId:p.id,domain:"carrier",providerCode:p.providerCode,environment:"sandbox",eventType:"synthetic-immutable-rollback",payload:{},idempotencyKey:randomUUID()}});
+    reached=true;await tx.integrationProviderSecret.update({where:{id:first.id},data:{encryptedSecretJson:"synthetic-must-rollback"}});
+  },{maxWait:2000,timeout:5000})).rejects.toThrow("Integration secret versions are immutable");expect(reached).toBe(true);expect(await credentialSnapshot()).toEqual(before);
 });
