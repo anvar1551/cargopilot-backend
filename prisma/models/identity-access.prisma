@@ -68,6 +68,8 @@ model RolePermission {
 }
 
 model CompanyMembership {
+  providerConfigurationActions IntegrationProviderConfigurationVersion[] @relation("ProviderConfigurationActor")
+  providerConfigurationBridges IntegrationProviderConfigurationVersion[] @relation("ProviderConfigurationBridge")
   draftDocuments FinanceDocument[] @relation("DraftCompany")
   bridgedDraftDocuments FinanceDocument[] @relation("DraftBridge")
   assignedSupportTickets SupportTicket[] @relation("SupportOwnerMembership")

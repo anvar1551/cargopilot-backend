@@ -1,3 +1,4 @@
+import {publishIntegrationProviderConfigurationForActor as publishConfiguration} from "../../src/modules/integrations-core/application/provider-configuration-publication";
 import {listCarrierRoutingRulesForActor as routingInventory,resolveCarrierRoutingRuleForOrderLeg as routingSelector} from "../../src/modules/integrations-core/application/carrier-routing.service";
 import {listRouteTemplatesForActor as templateInventory,getRouteTemplateForActor as templateDetail} from "../../src/modules/integrations-core/application/route-template.service";
 import {seedInitialServiceChargePricing as pricingSeed,listPricingComponents as componentList,createPricingComponent as manualPricing} from "../../src/modules/orders-legs/pricing";
@@ -627,4 +628,53 @@ it("secret immutable PostgreSQL new version insertion succeeds and failed rewrit
     await tx.integrationOutbox.create({data:{companyId:p.companyId,providerId:p.id,domain:"carrier",providerCode:p.providerCode,environment:"sandbox",eventType:"synthetic-immutable-rollback",payload:{},idempotencyKey:randomUUID()}});
     reached=true;await tx.integrationProviderSecret.update({where:{id:first.id},data:{encryptedSecretJson:"synthetic-must-rollback"}});
   },{maxWait:2000,timeout:5000})).rejects.toThrow("Integration secret versions are immutable");expect(reached).toBe(true);expect(await credentialSnapshot()).toEqual(before);
+});
+async function publicationGrants(){
+  for(const key of ["integration.provider.manage","integration.provider.rotateSecret"]){const permission=await mockPrisma.permission.upsert({where:{key},create:{key,resource:"synthetic-config",action:"publish"},update:{}});for(const m of memberships){const roles=await mockPrisma.membershipRole.findMany({where:{membershipId:m.id}});await mockPrisma.rolePermission.createMany({data:roles.map(r=>({roleId:r.roleId,permissionId:permission.id})),skipDuplicates:true});}}
+}
+async function publicationSnapshot(){return {...await credentialSnapshot(),versions:await mockPrisma.integrationProviderConfigurationVersion.findMany({orderBy:{id:"asc"}})};}
+it("publication PostgreSQL concurrent matching retries return one immutable journal and atomic pointer",async()=>{
+  await publicationGrants();const p=await credentialProvider(),secret=await mockPrisma.integrationProviderSecret.create({data:{providerId:p.id,encryptedSecretJson:"synthetic-opaque"}}),operationId=randomUUID(),user=actor(memberships[0]);
+  const intent={user,providerId:p.id,operationId,expectedRevision:0,secretId:secret.id};const results=await Promise.all([publishConfiguration(intent),publishConfiguration(intent)]);expect(results[0]).toEqual(results[1]);
+  expect(await mockPrisma.integrationProviderConfigurationVersion.count({where:{providerId:p.id}})).toBe(1);
+  expect(await mockPrisma.integrationProvider.findUniqueOrThrow({where:{id:p.id}})).toMatchObject({currentConfigurationId:results[0].id,configurationRevision:1,activeSecretId:secret.id,secretRef:secret.id});
+  expect(Object.keys(results[0]).sort()).toEqual(["acceptedAt","id","operationId","providerId","revision"]);
+  const before=await publicationSnapshot();await expect(publishConfiguration({...intent,expectedRevision:1})).rejects.toMatchObject({statusCode:409});expect(await publicationSnapshot()).toEqual(before);
+  const scopes=await mockPrisma.membershipScope.findMany({where:{membershipId:memberships[0].id}});await mockPrisma.membershipScope.deleteMany({where:{membershipId:memberships[0].id}});
+  try{await expect(publishConfiguration(intent)).rejects.toMatchObject({statusCode:403});expect(await publicationSnapshot()).toEqual(before);}finally{await mockPrisma.membershipScope.createMany({data:scopes});}
+});
+it("publication PostgreSQL competing revisions and cross-company operation reuse cannot publish twice",async()=>{
+  await publicationGrants();const p=await credentialProvider(),user=actor(memberships[0]);const settled=await Promise.allSettled([randomUUID(),randomUUID()].map(operationId=>publishConfiguration({user,providerId:p.id,operationId,expectedRevision:0})));
+  expect(settled.filter(r=>r.status==="fulfilled")).toHaveLength(1);expect(settled.find(r=>r.status==="rejected")).toMatchObject({reason:{statusCode:409}});expect(await mockPrisma.integrationProviderConfigurationVersion.count({where:{providerId:p.id}})).toBe(1);
+  const accepted=await mockPrisma.integrationProviderConfigurationVersion.findFirstOrThrow({where:{providerId:p.id}}),other=await credentialProvider(1),before=await publicationSnapshot();
+  await expect(publishConfiguration({user:actor(memberships[1]),providerId:other.id,operationId:accepted.operationId,expectedRevision:0})).rejects.toMatchObject({statusCode:409});expect(await publicationSnapshot()).toEqual(before);
+});
+it("publication PostgreSQL foreign providers secrets financial domain and suspended context cause no writes",async()=>{
+  await publicationGrants();const p=await credentialProvider(),foreign=await credentialProvider(2),secret=await mockPrisma.integrationProviderSecret.create({data:{providerId:foreign.id,encryptedSecretJson:"synthetic-opaque"}}),user=actor(memberships[0]);
+  for(const m of memberships.slice(1)){const before=await publicationSnapshot();await expect(publishConfiguration({user:actor(m),providerId:p.id,operationId:randomUUID(),expectedRevision:0})).rejects.toMatchObject({statusCode:404});expect(await publicationSnapshot()).toEqual(before);}
+  let before=await publicationSnapshot();await expect(publishConfiguration({user,providerId:p.id,operationId:randomUUID(),expectedRevision:0,secretId:secret.id})).rejects.toMatchObject({statusCode:404});expect(await publicationSnapshot()).toEqual(before);
+  await mockPrisma.integrationProvider.update({where:{id:p.id},data:{domain:"payment"}});before=await publicationSnapshot();await expect(publishConfiguration({user,providerId:p.id,operationId:randomUUID(),expectedRevision:0})).rejects.toMatchObject({statusCode:409});expect(await publicationSnapshot()).toEqual(before);
+  await mockPrisma.tenant.update({where:{id:memberships[0].tenantId},data:{status:"suspended"}});before=await publicationSnapshot();try{await expect(publishConfiguration({user,providerId:p.id,operationId:randomUUID(),expectedRevision:0})).rejects.toMatchObject({statusCode:403});expect(await publicationSnapshot()).toEqual(before);}finally{await mockPrisma.tenant.update({where:{id:memberships[0].tenantId},data:{status:"active"}});}
+});
+it("publication PostgreSQL direct journal reference forgery and unjournaled snapshot changes are rejected",async()=>{
+  await publicationGrants();const p=await credentialProvider(),result=await publishConfiguration({user:actor(memberships[0]),providerId:p.id,operationId:randomUUID(),expectedRevision:0});const stored=await mockPrisma.integrationProviderConfigurationVersion.findUniqueOrThrow({where:{id:result.id}});
+  for(const data of [{timeoutMs:1234},{currentConfigurationId:null,configurationRevision:0},{capabilities:["changed"]}]){const before=await publicationSnapshot();await expect(mockPrisma.integrationProvider.update({where:{id:p.id},data})).rejects.toThrow();expect(await publicationSnapshot()).toEqual(before);}
+  const before=await publicationSnapshot();await expect(mockPrisma.integrationProviderConfigurationVersion.update({where:{id:result.id},data:{intentSha256:"b".repeat(64)}})).rejects.toThrow("Integration configuration versions are immutable");await expect(mockPrisma.integrationProviderConfigurationVersion.delete({where:{id:result.id}})).rejects.toThrow("Integration configuration versions are immutable");expect(await publicationSnapshot()).toEqual(before);
+  const fresh=await credentialProvider(),{id,acceptedAt,...base}=stored;
+  const unpublishedBefore=await publicationSnapshot();await expect(mockPrisma.integrationProviderConfigurationVersion.create({data:{...base,providerId:fresh.id,providerCode:fresh.providerCode,operationId:randomUUID()}})).rejects.toThrow("Integration configuration receipt was not published");expect(await publicationSnapshot()).toEqual(unpublishedBefore);
+  for(const refs of [{companyMembershipId:memberships[1].id},{tenantMembershipId:memberships[2].tenantMembershipId},{tenantId:memberships[2].tenantId}]){const before=await publicationSnapshot();await expect(mockPrisma.integrationProviderConfigurationVersion.create({data:{...base,providerId:fresh.id,providerCode:fresh.providerCode,operationId:randomUUID(),...refs}})).rejects.toMatchObject({code:"P2003"});expect(await publicationSnapshot()).toEqual(before);}
+});
+it("publication PostgreSQL injected failure rolls back journal pointer and any related outbox",async()=>{
+  await publicationGrants();const p=await credentialProvider(),original=mockPrisma,before=await publicationSnapshot();let reached=false;
+  mockPrisma=new Proxy(original,{get(target,key){if(key==="$transaction")return(work:any,options:any)=>target.$transaction(async tx=>{await work(tx);reached=true;await tx.integrationOutbox.create({data:{companyId:p.companyId,providerId:p.id,domain:"carrier",providerCode:p.providerCode,environment:"sandbox",eventType:"synthetic-publication-rollback",payload:{},idempotencyKey:randomUUID()}});throw Error("synthetic-publication-rollback");},options);const value=(target as any)[key];return typeof value==="function"?value.bind(target):value;}});
+  try{await expect(publishConfiguration({user:actor(memberships[0]),providerId:p.id,operationId:randomUUID(),expectedRevision:0})).rejects.toThrow("synthetic-publication-rollback");}finally{mockPrisma=original;}
+  expect(reached).toBe(true);expect(await publicationSnapshot()).toEqual(before);
+});
+
+it("publication PostgreSQL concurrent shared operation across companies returns one result and one conflict",async()=>{
+  await publicationGrants();const own=await credentialProvider(),other=await credentialProvider(1),operationId=randomUUID();
+  const settled=await Promise.allSettled([publishConfiguration({user:actor(memberships[0]),providerId:own.id,operationId,expectedRevision:0}),publishConfiguration({user:actor(memberships[1]),providerId:other.id,operationId,expectedRevision:0})]);
+  expect(settled.filter(r=>r.status==="fulfilled")).toHaveLength(1);expect(settled.find(r=>r.status==="rejected")).toMatchObject({reason:{statusCode:409}});
+  expect(await mockPrisma.integrationProviderConfigurationVersion.count({where:{tenantId:memberships[0].tenantId,operationId}})).toBe(1);
+  const rows=await mockPrisma.integrationProvider.findMany({where:{id:{in:[own.id,other.id]}}});expect(rows.map(r=>r.configurationRevision).sort()).toEqual([0,1]);
 });

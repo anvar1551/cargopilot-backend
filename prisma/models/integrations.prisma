@@ -60,6 +60,10 @@ model IntegrationProvider {
   rateLimitRps    Int?
   timeoutMs       Int                       @default(10000)
   retryPolicyId   String?
+  configurationRevision Int @default(0)
+  currentConfigurationId String? @db.Uuid
+  currentConfiguration IntegrationProviderConfigurationVersion? @relation("ProviderCurrentConfiguration", fields: [currentConfigurationId, id, companyId, configurationRevision], references: [id, providerId, companyId, revision], onDelete: Restrict, onUpdate: Restrict, map: "IntegrationProvider_current_configuration_fkey")
+  configurationVersions IntegrationProviderConfigurationVersion[] @relation("ProviderConfigurationOwner")
   secretRef       String?
   activeSecretId  String?                   @db.Uuid
   activeSecret    IntegrationProviderSecret? @relation("IntegrationActiveSecret", fields: [activeSecretId, id], references: [id, providerId], onDelete: Restrict, onUpdate: Restrict, map: "IntegrationProvider_active_secret_owner_fkey")
@@ -201,6 +205,7 @@ model IntegrationProviderSecret {
   rotatedAt           DateTime?
   createdByUserId     String?             @db.Uuid
   createdAt           DateTime            @default(now())
+  configurationVersions IntegrationProviderConfigurationVersion[] @relation("ProviderConfigurationSecret")
   activeForProviders  IntegrationProvider[] @relation("IntegrationActiveSecret")
 
   @@unique([id, providerId], map: "IntegrationProviderSecret_identity_owner_key")
@@ -356,4 +361,39 @@ model IntegrationCanonicalEvent {
   @@index([companyId, domain, status])
   @@index([providerId, status, occurredAt])
   @@index([aggregateType, aggregateId, eventType])
+}
+
+// A published immutable snapshot is also the durable action receipt. No secret values.
+model IntegrationProviderConfigurationVersion {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  company Organization @relation("ProviderConfigurationCompany", fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "ProviderConfiguration_company_fkey")
+  providerId String @db.Uuid
+  domain IntegrationDomain
+  providerCode String
+  environment IntegrationEnvironment
+  provider IntegrationProvider @relation("ProviderConfigurationOwner", fields: [providerId, companyId, domain, providerCode, environment], references: [id, companyId, domain, providerCode, environment], onDelete: Restrict, onUpdate: Restrict, map: "ProviderConfiguration_provider_fkey")
+  currentForProviders IntegrationProvider[] @relation("ProviderCurrentConfiguration")
+  actorUserId String @db.Uuid
+  companyMembershipId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  actorCompany CompanyMembership @relation("ProviderConfigurationActor", fields: [companyMembershipId, actorUserId, tenantId, companyId], references: [id, userId, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "ProviderConfiguration_actor_fkey")
+  actorBridge CompanyMembership @relation("ProviderConfigurationBridge", fields: [companyMembershipId, tenantMembershipId, actorUserId, tenantId], references: [id, tenantMembershipId, userId, tenantId], onDelete: Restrict, onUpdate: Restrict, map: "ProviderConfiguration_bridge_fkey")
+  operationId String @db.Uuid
+  intentSha256 String
+  expectedRevision Int
+  revision Int
+  status IntegrationProviderStatus
+  capabilities String[]
+  retryPolicyId String?
+  timeoutMs Int
+  rateLimitRps Int?
+  secretId String? @db.Uuid
+  secret IntegrationProviderSecret? @relation("ProviderConfigurationSecret", fields: [secretId, providerId], references: [id, providerId], onDelete: Restrict, onUpdate: Restrict, map: "ProviderConfiguration_secret_fkey")
+  acceptedAt DateTime @default(now())
+  @@unique([tenantId, operationId], map: "ProviderConfiguration_operation_key")
+  @@unique([providerId, revision], map: "ProviderConfiguration_revision_key")
+  @@unique([id, providerId, companyId, revision], map: "IntegrationProviderConfiguration_pointer_key")
+  @@index([tenantId, companyId, providerId, acceptedAt], map: "ProviderConfiguration_owner_idx")
 }
