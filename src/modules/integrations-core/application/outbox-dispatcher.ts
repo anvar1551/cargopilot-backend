@@ -76,9 +76,14 @@ async function loadProviderSecretConfig(
   if (!provider?.secretRef) return null;
   const row = await (prisma as any).integrationProviderSecret.findUnique({
     where: { id: provider.secretRef },
-    select: { encryptedSecretJson: true },
+    select: { encryptedSecretJson: true, providerId: true },
   });
-  if (!row?.encryptedSecretJson) return null;
+  // Registry DTOs use providerId; accepted carrier execution reloads the DB row's id.
+  const providerId = provider.providerId ?? (provider as IntegrationProviderRef & { id?: string }).id;
+  if (!providerId || !row?.encryptedSecretJson || row.providerId !== providerId) {
+    // A configured but invalid pointer must not fall back to environment credentials.
+    throw new Error("Integration credential ownership is invalid");
+  }
   const raw = decryptIntegrationSecret(row.encryptedSecretJson);
   return toProviderSecretConfig(parseSecretPayload(raw));
 }
@@ -297,11 +302,14 @@ type IntegrationResultLike = {
 
 const carrierDispatcher: IntegrationOutboxDispatcher = {
   async dispatch(context) {
+    let secretConfig: ProviderSecretConfig | null;
     try {
       const { row, provider } = await loadAcceptedCarrierOperation(prisma, context.record.id);
       if (row.status !== "processing" || row.attemptCount >= row.maxAttempts) {
         throw new Error("Carrier operation is not leased or is exhausted");
       }
+      // Verify credential ownership before consuming mutation admission or contacting a provider.
+      secretConfig = await loadProviderSecretConfig(provider);
       if (row.operation !== "track") {
         // Persist admission BEFORE network work. Never replay a possibly sent mutation.
         // Pre-network failures conservatively remain held for explicit recovery too.
@@ -331,7 +339,7 @@ const carrierDispatcher: IntegrationOutboxDispatcher = {
       domain: "carrier",
       providerCode: context.provider.providerCode,
       timeoutMs: context.timeoutMs,
-      secretConfig: await loadProviderSecretConfig(context.provider),
+      secretConfig,
     });
     if (!config) {
       return {
