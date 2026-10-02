@@ -224,7 +224,7 @@ function sendProviderMutationError(reply: any, error: unknown) {
   if (error instanceof ZodError) return sendError(reply, error, "Invalid provider request");
   const candidate = error as { statusCode?: number; status?: number; code?: string };
   const status = candidate?.statusCode ?? candidate?.status;
-  const codes = ["INTEGRATION_PROVIDER_HISTORY_REQUIRED", "INTEGRATION_FINANCE_CONFIGURATION_APPROVAL_REQUIRED", "INTEGRATION_CONFIGURATION_WORKFLOW_REQUIRED", "INTEGRATION_OUTBOX_RECOVERY_REQUIRED"];
+  const codes = ["INTEGRATION_ROUTING_CONFIGURATION_WORKFLOW_REQUIRED", "INTEGRATION_PROVIDER_HISTORY_REQUIRED", "INTEGRATION_FINANCE_CONFIGURATION_APPROVAL_REQUIRED", "INTEGRATION_CONFIGURATION_WORKFLOW_REQUIRED", "INTEGRATION_OUTBOX_RECOVERY_REQUIRED"];
   if (status === 409 && candidate.code && codes.includes(candidate.code))
     return reply.code(409).send({ error: "Integration mutation is unavailable pending its controlled workflow", code: candidate.code });
   const safe = status === 400 || status === 403 || status === 404 ? status : 500;
@@ -493,7 +493,7 @@ const integrationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         });
         return reply.code(201).send(result);
       } catch (error) {
-        return sendError(reply, error, "Failed to create carrier routing rule");
+        return sendProviderMutationError(reply, error);
       }
     },
   );
@@ -512,7 +512,7 @@ const integrationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         });
         return reply.send(result);
       } catch (error) {
-        return sendError(reply, error, "Failed to update carrier routing rule");
+        return sendProviderMutationError(reply, error);
       }
     },
   );
@@ -529,7 +529,7 @@ const integrationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         });
         return reply.send(result);
       } catch (error) {
-        return sendError(reply, error, "Failed to delete carrier routing rule");
+        return sendProviderMutationError(reply, error);
       }
     },
   );
