@@ -1,3 +1,4 @@
+jest.mock("../../src/modules/integrations-core/application/webhook-database", () => ({ getIntegrationWebhookDatabase: () => require("./fixtures").database }));
 jest.mock("../../src/config/prismaClient", () => ({ __esModule: true, default: require("./fixtures").database }));
 jest.mock("../../src/modules/support-core/application/autoTriage", () => ({ createCarrierFailureSupportTicket: jest.fn() }));
 jest.mock("../../src/modules/integrations-core/application/integration-secret.crypto", () => ({ decryptIntegrationSecret: jest.fn(() => JSON.stringify({ webhookSecret: "synthetic-unit-secret" })) }));

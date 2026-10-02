@@ -1,9 +1,8 @@
-import prisma from "../../../config/prismaClient";
+import { getIntegrationWebhookDatabase } from "../application/webhook-database";
 import type { WebhookProviderVerifierResolver } from "../application/webhook-gateway.types";
 import { decryptIntegrationSecret } from "../application/integration-secret.crypto";
 import { createHmacWebhookVerifier } from "./verifiers/hmac-webhook.verifier";
 
-const db = prisma as any;
 
 function isUuid(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
@@ -44,7 +43,7 @@ function pickNumber(source: unknown, keys: string[]) {
 
 async function loadSecretConfig(secretRef: string | null, providerId: string) {
   if (!secretRef) return null;
-  const row = await db.integrationProviderSecret.findUnique({
+  const row = await getIntegrationWebhookDatabase().integrationProviderSecret.findUnique({
     where: { id: secretRef },
     select: { encryptedSecretJson: true, providerId: true },
   });
@@ -60,7 +59,7 @@ export const providerWebhookVerifierResolver: WebhookProviderVerifierResolver = 
       return null;
     }
 
-    const providers = await db.integrationProvider.findMany({
+    const providers = await getIntegrationWebhookDatabase().integrationProvider.findMany({
       where: isUuid(providerIdentifier)
         ? {
             id: providerIdentifier,

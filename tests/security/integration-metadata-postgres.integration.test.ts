@@ -1,8 +1,10 @@
+jest.mock("../../src/modules/integrations-core/application/webhook-database", () => ({ getIntegrationWebhookDatabase: () => new Proxy({}, { get: (_target, name) => { const value = (mockPrisma as any)[name]; return typeof value === "function" ? value.bind(mockPrisma) : value; } }) }));
 jest.mock("../../src/config/prismaClient", () => ({ __esModule: true, default: new Proxy({}, { get: (_target, name) => {
   const value = (mockPrisma as any)[name]; return typeof value === "function" ? value.bind(mockPrisma) : value;
 } }) }));
 import { Pool } from "pg";
 import { PrismaClient } from "@prisma/client";
+const { createIntegrationWebhookDatabase, integrationWebhookDatabaseLimits } = jest.requireActual<typeof import("../../src/modules/integrations-core/application/webhook-database")>("../../src/modules/integrations-core/application/webhook-database");
 import { PrismaPg } from "@prisma/adapter-pg";
 import { randomUUID } from "crypto";
 import { createHash } from "crypto";
@@ -292,4 +294,30 @@ it("new NOT VALID source foreign key protects inserts/updates and rolls back rel
   await expect(mockPrisma.integrationCanonicalEvent.update({ where: { id: existing.id }, data: { outboxId: randomUUID() } })).rejects.toThrow();
   await expect(mockPrisma.integrationOutbox.delete({ where: { id: sources[0].outbox.id } })).rejects.toThrow();
   expect(await snapshot()).toEqual(before);
+});
+
+it("webhook native pool statement timeout cancels work rolls back and recovers without active sleep", async () => {
+  const resource = createIntegrationWebhookDatabase(url!);
+  try {
+    expect(resource.pool.options.max).toBe(integrationWebhookDatabaseLimits.max);
+    const before = await snapshot();
+    await expect(resource.db.$transaction(async tx => {
+      await tx.integrationWebhookEvent.update({ where: { id: sources[0].webhook.id }, data: { processedAt: new Date() } });
+      await tx.$queryRaw`SELECT 1 AS result FROM pg_sleep(4)`;
+    }, { maxWait: 2000, timeout: 5000 })).rejects.toThrow();
+    expect(await snapshot()).toEqual(before);
+    const running = await pool.query("SELECT count(*)::int AS count FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND state='active' AND query LIKE '%pg_sleep%'");
+    expect(running.rows[0].count).toBe(0);
+    await expect(resource.db.integrationProvider.count()).resolves.toBe(providers.length);
+  } finally { await resource.close(); }
+});
+it("webhook native pool lock deadline releases the transaction and permits subsequent writes", async () => {
+  const resource = createIntegrationWebhookDatabase(url!), holder = await pool.connect();
+  try {
+    await holder.query("BEGIN"); await holder.query('SELECT id FROM "IntegrationWebhookEvent" WHERE id=$1 FOR UPDATE',[sources[0].webhook.id]);
+    const before = await snapshot();
+    await expect(resource.db.integrationWebhookEvent.update({where:{id:sources[0].webhook.id},data:{processedAt:new Date()}})).rejects.toThrow();
+    await holder.query("ROLLBACK"); expect(await snapshot()).toEqual(before);
+    await expect(resource.db.integrationProvider.count()).resolves.toBe(providers.length);
+  } finally { await holder.query("ROLLBACK"); holder.release(); await resource.close(); }
 });

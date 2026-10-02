@@ -1,3 +1,4 @@
+jest.mock("../../src/modules/integrations-core/application/webhook-database", () => ({ getIntegrationWebhookDatabase: () => require("./fixtures").database }));
 jest.mock("../../src/config/prismaClient", () => ({ __esModule: true, default: require("./fixtures").database }));
 import { database as db } from "./fixtures";
 import { webhookEventRepository as repo } from "../../src/modules/integrations-core/infrastructure/webhook-events.repo";

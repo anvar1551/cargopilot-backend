@@ -1,13 +1,12 @@
 import { webhookHeadersForStorage } from "../../../utils/webhookMetadata";
 import { createHash } from "crypto";
-import prisma from "../../../config/prismaClient";
+import { getIntegrationWebhookDatabase } from "../application/webhook-database";
 import { authorityError } from "../../orders-core/domain/creation-authority";
 import { Prisma } from "@prisma/client";
 import { readVerifiedWebhookIngress } from "../application/webhook-gateway.service";
 import { deriveCanonicalSource } from "../application/canonical-source";
 import type { WebhookEventRepository } from "../application/webhook-gateway.types";
 
-const db = prisma as any;
 
 function sha256(input: string) {
   return createHash("sha256").update(input).digest("hex");
@@ -50,7 +49,7 @@ async function hasProcessed(db: any, args: Parameters<WebhookEventRepository["ha
 }
 
 export const webhookEventRepository: WebhookEventRepository = {
-  hasProcessed: args => hasProcessed(db, args),
+  hasProcessed: args => hasProcessed(getIntegrationWebhookDatabase(), args),
   async persistVerified(evidence) {
     const data = readVerifiedWebhookIngress(evidence); // Before any database work.
     const { provider: identity, canonical } = data;
@@ -60,7 +59,7 @@ export const webhookEventRepository: WebhookEventRepository = {
       throw authorityError("Verified webhook context required", 403);
     const receipt = { ...identity, providerEventId: canonical.eventId, rawBodySha256: sha256(data.rawBody) };
     try {
-      return await prisma.$transaction(async tx => {
+      return await getIntegrationWebhookDatabase().$transaction(async tx => {
         await tx.$executeRaw`SET LOCAL lock_timeout = '1000ms'`;
         await tx.$executeRaw`SET LOCAL statement_timeout = '3000ms'`;
         // Serialize this source identity, not caller-supplied aggregate IDs.

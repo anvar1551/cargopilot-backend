@@ -1,3 +1,5 @@
+const mockWebhookClose = jest.fn(async () => undefined);
+jest.mock("../../src/modules/integrations-core/application/webhook-database", () => ({ closeIntegrationWebhookDatabase: () => mockWebhookClose() }));
 import { replayIntegrationOutboxForActor, retryIntegrationOutboxNowForActor } from "../../src/modules/integrations-core/application/integration-admin.service";
 jest.mock("../../src/modules/identity-access/transport/fastify-auth", () => ({ fastifyAuth: () => async () => undefined }));
 jest.mock("../../src/modules/integrations-core/application/integration-admin.service", () => ({ listIntegrationWebhookEventsForActor: jest.fn(), listIntegrationCanonicalEventsForActor: jest.fn(), listIntegrationOutboxForActor: jest.fn(), listIntegrationOutboxAttemptsForActor: jest.fn(), listIntegrationProvidersForActor: jest.fn(), replayIntegrationOutboxForActor: jest.fn(), retryIntegrationOutboxNowForActor: jest.fn(), upsertIntegrationProviderForActor: jest.fn(), rotateIntegrationProviderSecretForActor: jest.fn(), deleteIntegrationProviderForActor: jest.fn(), updateIntegrationProviderStatusForActor: jest.fn() }));
@@ -124,4 +126,18 @@ it.each([403, 409, 503, 500])("ingress persistence error %s never exposes diagno
     expect(response.statusCode).toBe(statusCode); expect(response.json().status).toBe("rejected"); expect(response.body).not.toContain("PRIVATE-CANARY");
     if (statusCode === 503) expect(response.json().code).toBe("WEBHOOK_INGRESS_INCOMPLETE");
   } finally { await app.close(); }
+});
+
+it.each(["WEBHOOK_INGRESS_CAPACITY","WEBHOOK_INGRESS_DATABASE_UNAVAILABLE"])("webhook retryable limit %s is sanitized and never acknowledged", async code => {
+  const app=Fastify();try {
+    await app.register(routes); mockWebhookIngest.mockRejectedValue(Object.assign(Error("PRIVATE-CANARY"),{statusCode:503,code}));
+    const response=await app.inject({method:"POST",url:"/webhooks/synthetic",payload:"{}",headers:{"content-type":"application/json"}});
+    expect(response.statusCode).toBe(503);expect(response.json()).toMatchObject({status:"rejected",code});expect(response.body).not.toContain("PRIVATE-CANARY");
+  }finally{await app.close();expect(mockWebhookClose).toHaveBeenCalledTimes(1);}
+});
+it("HTTP raw-body bound rejects before gateway work", async () => {
+  const app=Fastify();try {
+    await app.register(routes);const response=await app.inject({method:"POST",url:"/webhooks/synthetic",payload:"x".repeat(1024*1024+1),headers:{"content-type":"application/json"}});
+    expect(response.statusCode).toBe(413);expect(mockWebhookIngest).not.toHaveBeenCalled();
+  }finally{await app.close();}
 });

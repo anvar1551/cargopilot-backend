@@ -1,3 +1,5 @@
+import { closeIntegrationWebhookDatabase } from "../application/webhook-database";
+import { integrationWebhookBodyLimit } from "../application/webhook-admission";
 import type { FastifyPluginAsync } from "fastify";
 import { ServiceType, TransportMode } from "@prisma/client";
 import { ZodError, z } from "zod";
@@ -250,6 +252,7 @@ function toOptionalHeaderValue(value: string | string[] | undefined) {
 }
 
 const integrationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.addHook("onClose", async () => { await closeIntegrationWebhookDatabase(); });
   const webhookGateway = createWebhookGatewayService({
     events: webhookEventRepository,
     providerVerifiers: providerWebhookVerifierResolver,
@@ -661,6 +664,7 @@ const integrationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
 
     webhookScope.post<{ Params: WebhookRouteParams }>(
       "/webhooks/:providerCode",
+      { bodyLimit: integrationWebhookBodyLimit },
       async (request, reply) => {
         const providerCode = String(request.params?.providerCode || "").trim();
         if (!providerCode) {
@@ -681,8 +685,8 @@ const integrationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           companyHintId: toOptionalHeaderValue(request.headers["x-company-id"]),
         }); } catch (error) {
           const candidate = error as { statusCode?: number; code?: string };
-          const status = [403, 409, 503].includes(candidate?.statusCode ?? 0) ? candidate.statusCode! : 500;
-          const codes = ["WEBHOOK_INGRESS_INCOMPLETE", "WEBHOOK_EVENT_ID_CONFLICT", "INTEGRATION_CANONICAL_SOURCE_REQUIRED", "INTEGRATION_CANONICAL_ID_CONFLICT"];
+          const status = [403, 409, 413, 503].includes(candidate?.statusCode ?? 0) ? candidate.statusCode! : 500;
+          const codes = ["WEBHOOK_INGRESS_CAPACITY", "WEBHOOK_INGRESS_DATABASE_UNAVAILABLE", "WEBHOOK_BODY_TOO_LARGE", "WEBHOOK_INGRESS_INCOMPLETE", "WEBHOOK_EVENT_ID_CONFLICT", "INTEGRATION_CANONICAL_SOURCE_REQUIRED", "INTEGRATION_CANONICAL_ID_CONFLICT"];
           return reply.code(status).send({ status: "rejected", message: status === 503 ? "Webhook persistence unavailable; event not acknowledged"
             : status === 500 ? "Webhook persistence failed; event not acknowledged" : "Webhook request rejected",
             ...(candidate?.code && codes.includes(candidate.code) ? { code: candidate.code } : {}) });

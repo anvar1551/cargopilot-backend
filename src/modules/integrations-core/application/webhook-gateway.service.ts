@@ -1,3 +1,4 @@
+import { withIntegrationWebhookAdmission, integrationWebhookBodyLimit } from "./webhook-admission";
 import { webhookHeadersForStorage } from "../../../utils/webhookMetadata";
 import { createHash } from "crypto";
 import { authorityError } from "../../orders-core/domain/creation-authority";
@@ -35,6 +36,7 @@ export function createWebhookGatewayService(args: {
 }): WebhookGatewayService {
   return {
     async ingest(input: WebhookIngressInput): Promise<WebhookIngressResult> {
+      return withIntegrationWebhookAdmission(async () => {
       const providerIdentifier = normalizeProviderCode(input.providerCode);
       if (!providerIdentifier) {
         return {
@@ -44,6 +46,8 @@ export function createWebhookGatewayService(args: {
       }
 
       const rawBody = String(input.rawBody || "");
+      if (Buffer.byteLength(rawBody, "utf8") > integrationWebhookBodyLimit)
+        throw Object.assign(authorityError("Webhook body too large", 413), { code: "WEBHOOK_BODY_TOO_LARGE" });
       if (!rawBody.trim()) {
         return {
           status: "rejected",
@@ -95,6 +99,7 @@ export function createWebhookGatewayService(args: {
       })));
       const status = await args.events.persistVerified(evidence);
       return { status, eventId: providerEventId };
+      });
     },
   };
 }
