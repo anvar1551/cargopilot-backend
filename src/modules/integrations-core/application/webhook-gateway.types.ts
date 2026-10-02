@@ -1,5 +1,16 @@
 import type { CanonicalWebhookEvent, WebhookVerifier } from "../domain/ports";
 
+/** Opaque process-local verification evidence; only the gateway can issue it. */
+export type VerifiedWebhookIngress = { readonly verifiedIngress: unique symbol };
+export type VerifiedWebhookData = {
+  provider: Omit<ResolvedWebhookProviderVerifier, "verifier">;
+  canonical: CanonicalWebhookEvent;
+  rawBody: string;
+  headersJson: Record<string, string | string[] | undefined>;
+  ipAddress: string | null;
+  receivedAt: string;
+};
+
 export type WebhookProcessStatus = "accepted" | "duplicate" | "rejected";
 
 export type WebhookIngressInput = {
@@ -27,24 +38,7 @@ export interface WebhookEventRepository {
     environment: "sandbox" | "production";
     rawBodySha256: string;
   }): Promise<boolean>;
-  saveRawEvent(args: {
-    companyId: string;
-    providerId: string;
-    providerCode: string;
-    domain: "carrier" | "sms" | "payment" | "webhook_sink";
-    environment: "sandbox" | "production";
-    providerEventId: string;
-    rawBody: string;
-    headersJson: Record<string, string | string[] | undefined>;
-    ipAddress?: string | null;
-    userAgent?: string | null;
-    receivedAt: string;
-    signatureVerified: boolean;
-  }): Promise<{ webhookEventId: string }>;
-  saveCanonicalEvent(args: {
-    webhookEventId: string;
-    canonical: CanonicalWebhookEvent;
-  }): Promise<void>;
+  persistVerified(evidence: VerifiedWebhookIngress): Promise<"accepted" | "duplicate">;
 }
 
 export interface WebhookVerifierRegistry {

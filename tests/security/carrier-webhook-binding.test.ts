@@ -5,7 +5,7 @@ import { createHash, createHmac } from "crypto";
 import { database as db } from "./fixtures";
 import { applyCarrierIntegrationEvent } from "../../src/modules/orders-legs/carrier-events";
 import { createHmacWebhookVerifier } from "../../src/modules/integrations-core/infrastructure/verifiers/hmac-webhook.verifier";
-import { createWebhookGatewayService } from "../../src/modules/integrations-core/application/webhook-gateway.service";
+import { readVerifiedWebhookIngress, createWebhookGatewayService } from "../../src/modules/integrations-core/application/webhook-gateway.service";
 import { providerWebhookVerifierResolver } from "../../src/modules/integrations-core/infrastructure/provider-webhook-verifier.resolver";
 import { createCarrierFailureSupportTicket } from "../../src/modules/support-core/application/autoTriage";
 let payload: any, raw: any, event: any, order: any, provider: any, booking: any, leg: any, attempt: any;
@@ -75,22 +75,22 @@ it.each(["unverified", "digest", "unbound", "ambiguous-leg", "ambiguous-booking"
   await expect(applyCarrierIntegrationEvent({ id: "event-a" } as any)).rejects.toBeDefined(); noEffects();
 });
 it("rejects an invalid HMAC before any persisted event or business write", async () => {
-  const events = { hasProcessed: jest.fn(), saveRawEvent: jest.fn(), saveCanonicalEvent: jest.fn() };
+  const events = { hasProcessed: jest.fn(), persistVerified: jest.fn() };
   const verifier = createHmacWebhookVerifier({ providerCode: "fake_carrier", secret: "synthetic-unit-secret" });
   const gateway = createWebhookGatewayService({ events, providerVerifiers: { resolve: async () => ({ ...provider, providerId: provider.id, verifier }) } });
   await expect(gateway.ingest({ providerCode: "fake_carrier", rawBody: JSON.stringify(payload), headers: { "x-signature": "invalid" } })).resolves.toMatchObject({ status: "rejected" });
-  expect(events.hasProcessed).not.toHaveBeenCalled(); expect(events.saveRawEvent).not.toHaveBeenCalled(); noEffects();
+  expect(events.hasProcessed).not.toHaveBeenCalled(); expect(events.persistVerified).not.toHaveBeenCalled(); noEffects();
 });
 it("persists configured company identity after real HMAC verification, retaining hostile payload claims for binding rejection", async () => {
   payload.companyId = "company-b"; const rawBody = JSON.stringify(payload);
   const timestamp = String(Math.floor(Date.now() / 1000));
-  const events = { hasProcessed: jest.fn(async () => false), saveRawEvent: jest.fn(async () => ({ webhookEventId: "raw-a" })), saveCanonicalEvent: jest.fn() };
-  const enqueue = jest.fn(); const verifier = createHmacWebhookVerifier({ providerCode: "fake_carrier", secret: "synthetic-unit-secret" });
-  const gateway = createWebhookGatewayService({ events, canonicalEvents: { enqueue }, providerVerifiers: { resolve: async () => ({ ...provider, providerId: provider.id, verifier }) } });
+  const events = { hasProcessed: jest.fn(async () => false), persistVerified: jest.fn(async (_evidence: any) => "accepted" as const) };
+  const verifier = createHmacWebhookVerifier({ providerCode: "fake_carrier", secret: "synthetic-unit-secret" });
+  const gateway = createWebhookGatewayService({ events, providerVerifiers: { resolve: async () => ({ ...provider, providerId: provider.id, verifier }) } });
   await expect(gateway.ingest({ providerCode: "fake_carrier", companyHintId: "company-b", rawBody, headers: {
     "x-signature-timestamp": timestamp, "x-signature": createHmac("sha256", "synthetic-unit-secret").update(`${timestamp}.${rawBody}`).digest("hex"),
   } })).resolves.toMatchObject({ status: "accepted" });
-  expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ companyId: "company-a", payloadJson: expect.objectContaining({ companyId: "company-b" }) }));
+  expect(readVerifiedWebhookIngress(events.persistVerified.mock.calls[0][0])).toMatchObject({ provider: { companyId: "company-a" }, canonical: { companyId: "company-a", payload: { companyId: "company-b" } } });
 });
 it("resolves UUID v7 integrations without selecting a first provider and rejects secret ownership mismatch", async () => {
   provider.id = "019b3000-0000-7000-8b00-000000000001";

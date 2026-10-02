@@ -28,6 +28,7 @@ const actor = (m: any): any => ({ id: m.userId, companyId: m.companyId, tenantId
 async function snapshot() {
   return { outbox: await mockPrisma.integrationOutbox.findMany({ orderBy: { id: "asc" } }),
     webhook: await mockPrisma.integrationWebhookEvent.findMany({ orderBy: { id: "asc" } }),
+    normalized: await mockPrisma.integrationWebhookCanonicalEvent.findMany({ orderBy: { id: "asc" } }),
     canonical: await mockPrisma.integrationCanonicalEvent.findMany({ orderBy: { id: "asc" } }),
     attempts: await mockPrisma.integrationDeliveryAttempt.count(), finance: await mockPrisma.financeDomainEventOutbox.count(), audit: await mockPrisma.financeAuditEvent.count() };
 }
@@ -197,40 +198,65 @@ it("ingress duplicate receipt requires all bound durable records and rejects con
   expect(await snapshot()).toEqual(before);
   await mockPrisma.integrationWebhookCanonicalEvent.delete({ where: { webhookEventId: v.raw.id } }); before = await snapshot();
   await expect(ingressRepo.hasProcessed(identity)).rejects.toMatchObject({ statusCode: 503 }); expect(await snapshot()).toEqual(before);
-  await ingressRepo.saveCanonicalEvent({ webhookEventId: v.raw.id, canonical: { providerCode: p.providerCode, eventId: v.raw.providerEventId,
-    eventType: v.input.eventType, occurredAt: v.input.occurredAt, payload: v.input.payloadJson, companyId: p.companyId } as any });
+  await mockPrisma.integrationWebhookCanonicalEvent.create({ data: { webhookEventId: v.raw.id, providerCode: p.providerCode, domain: p.domain,
+    eventType: v.input.eventType, occurredAt: new Date(v.input.occurredAt), payloadJson: v.input.payloadJson, companyId: p.companyId } });
   await canonicalRepo.enqueue(v.input); before = await snapshot();
   await expect(ingressRepo.hasProcessed(identity)).resolves.toBe(true);
   await expect(ingressRepo.hasProcessed({ ...identity, rawBodySha256: "c".repeat(64) })).rejects.toMatchObject({ statusCode: 409 });
   await expect(ingressRepo.hasProcessed({ ...identity, companyId: providers[1].companyId })).rejects.toMatchObject({ statusCode: 409 });
   expect(await snapshot()).toEqual(before);
 });
-it("ingress raw-insert race returns retryable incomplete instead of false successful duplicate", async () => {
-  const p = providers[0], eventId = randomUUID(), occurredAt = new Date().toISOString();
-  const rawBody = JSON.stringify({ eventId, eventType: "carrier.status.updated", occurredAt, statusCode: "in_transit" });
-  let openReads!: () => void, openPersistence!: () => void;
-  const reads = new Promise<void>(resolve => { openReads = resolve; }), persistence = new Promise<void>(resolve => { openPersistence = resolve; });
-  let arrivals = 0;
-  const events = { ...ingressRepo,
-    hasProcessed: async (identity: any) => { const existing = await ingressRepo.hasProcessed(identity); if (!existing) { if (++arrivals === 2) openReads(); await reads; } return existing; },
-    saveRawEvent: async (input: any) => { const result = await ingressRepo.saveRawEvent(input); await persistence; return result; },
-  };
-  const service = createWebhookGatewayService({ events, canonicalEvents: canonicalRepo, providerVerifiers: { resolve: async () => ({ providerId: p.id,
+function atomicGateway(p: any, eventId: string, events: any = ingressRepo, occurredAt?: string) {
+  const rawBody = JSON.stringify({ eventId, eventType: "unclassified.event", ...(occurredAt ? { occurredAt } : {}) });
+  const service = createWebhookGatewayService({ events, providerVerifiers: { resolve: async () => ({ providerId: p.id,
     companyId: p.companyId, providerCode: p.providerCode, domain: p.domain, environment: p.environment, verifier: { verifyAndNormalize: async () => ({ ok: true,
-      data: { providerCode: p.providerCode, eventId, eventType: "carrier.status.updated", occurredAt, payload: JSON.parse(rawBody) } }) } } as any) } });
-  const input = { providerCode: p.providerCode, rawBody, headers: {} }, pending = [service.ingest(input), service.ingest(input)];
-  let timer: ReturnType<typeof setTimeout>;
-  const deadline = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(Error("synthetic-race-deadline")), 10000); });
-  try {
-    const first = await Promise.race([deadline, ...pending.map(promise => promise.then(value => ({ value, error: null })).catch(error => ({ error }))) ]);
-    expect(first.error).toMatchObject({ statusCode: 503, code: "WEBHOOK_INGRESS_INCOMPLETE" });
-    openPersistence(); const final = await Promise.race([deadline, Promise.allSettled(pending)]);
-    expect(final.filter(result => result.status === "fulfilled")).toHaveLength(1);
-    expect(final.filter(result => result.status === "rejected")).toHaveLength(1);
-    await expect(service.ingest(input)).resolves.toMatchObject({ status: "duplicate" });
-    const raw = await mockPrisma.integrationWebhookEvent.findFirstOrThrow({ where: { providerId: p.id, providerEventId: eventId } });
-    expect(await mockPrisma.integrationCanonicalEvent.count({ where: { webhookEventId: raw.id } })).toBe(1);
-  } finally { clearTimeout(timer!); openReads(); openPersistence(); await Promise.allSettled(pending); }
+      data: { providerCode: p.providerCode, eventId, eventType: "unclassified.event", occurredAt: occurredAt ?? new Date().toISOString(), payload: JSON.parse(rawBody) } }) } } as any) } });
+  return { service, input: { providerCode: p.providerCode, rawBody, headers: {} } };
+}
+it("atomic ingress concurrent retries create one complete receipt and preserve first fallback time", async () => {
+  const p = providers[0], eventId = randomUUID(), f = atomicGateway(p, eventId);
+  const results = await Promise.all([f.service.ingest(f.input), f.service.ingest(f.input)]);
+  expect(results.map(r => r.status).sort()).toEqual(["accepted", "duplicate"]);
+  const raw = await mockPrisma.integrationWebhookEvent.findFirstOrThrow({ where: { providerId: p.id, providerEventId: eventId }, include: { canonicalEvent: true } });
+  expect(raw.canonicalEvent?.domain).toBe(p.domain); expect(raw.processedAt).toBeNull();
+  expect(await mockPrisma.integrationCanonicalEvent.count({ where: { webhookEventId: raw.id } })).toBe(1);
+  const before = await snapshot(); await expect(f.service.ingest(f.input)).resolves.toMatchObject({ status: "duplicate" });
+  expect(await snapshot()).toEqual(before);
+});
+it("atomic ingress injected failure after pending write rolls back raw normalized and pending state", async () => {
+  const f = atomicGateway(providers[0], randomUUID()), before = await snapshot(), original = mockPrisma;
+  mockPrisma = new Proxy(original, { get(target, key) {
+    if (key === "$transaction") return (work: any, options: any) => target.$transaction(async tx => { await work(tx); throw Error("synthetic-ingress-rollback"); }, options);
+    const value = (target as any)[key]; return typeof value === "function" ? value.bind(target) : value;
+  } });
+  try { await expect(f.service.ingest(f.input)).rejects.toThrow("synthetic-ingress-rollback"); } finally { mockPrisma = original; }
+  expect(await snapshot()).toEqual(before); await expect(f.service.ingest(f.input)).resolves.toMatchObject({ status: "accepted" });
+});
+it("normalized compound context rejects foreign inserts updates and null ownership without effects", async () => {
+  const v = await incoming(), before = await snapshot();
+  for (const change of [{ companyId: providers[1].companyId }, { domain: "sms" }, { providerCode: "foreign" }, { companyId: null }]) {
+    await expect(mockPrisma.integrationWebhookCanonicalEvent.update({ where: { webhookEventId: v.raw.id }, data: change as any })).rejects.toThrow();
+    const raw = sources[0].webhook;
+    await expect(mockPrisma.integrationWebhookCanonicalEvent.create({ data: { webhookEventId: raw.id, companyId: raw.companyId,
+      domain: raw.domain, providerCode: raw.providerCode, eventType: "synthetic", occurredAt: new Date(), payloadJson: {}, ...change as any } })).rejects.toThrow();
+    expect(await snapshot()).toEqual(before);
+  }
+  const catalog = await pool.query("SELECT convalidated FROM pg_constraint WHERE conname IN ('IntegrationWebhookCanonicalEvent_context_fkey','IntegrationWebhookCanonicalEvent_context_complete_check')");
+  expect(catalog.rows).toHaveLength(2); expect(catalog.rows.every(r => !r.convalidated)).toBe(true);
+});
+it("atomic ingress conflicting raw content inactive ownership and global identity collision have no writes", async () => {
+  const p = providers[0], eventId = randomUUID(), f = atomicGateway(p, eventId);
+  await f.service.ingest(f.input); let before = await snapshot();
+  await expect(f.service.ingest({ ...f.input, rawBody: f.input.rawBody + " " })).rejects.toMatchObject({ statusCode: 409 }); expect(await snapshot()).toEqual(before);
+  await mockPrisma.tenant.update({ where: { id: memberships[0].tenantId }, data: { status: "suspended" } });
+  try { before = await snapshot(); await expect(f.service.ingest(f.input)).rejects.toMatchObject({ statusCode: 403 }); expect(await snapshot()).toEqual(before); }
+  finally { await mockPrisma.tenant.update({ where: { id: memberships[0].tenantId }, data: { status: "active" } }); }
+  // Fixed source time and nonnull aggregate fields force the existing global natural key collision.
+  const time = new Date().toISOString();
+  const left = await incoming(p), right = await incoming(providers[1]);
+  const common = { aggregateType: "synthetic", aggregateId: randomUUID(), occurredAt: new Date(time) };
+  for (const v of [left,right]) { await mockPrisma.integrationWebhookCanonicalEvent.update({ where: { webhookEventId: v.raw.id }, data: common }); Object.assign(v.input,common,{occurredAt:time}); }
+  await canonicalRepo.enqueue(left.input); before = await snapshot(); await expect(canonicalRepo.enqueue(right.input)).rejects.toMatchObject({statusCode:409}); expect(await snapshot()).toEqual(before);
 });
 it("populated order bridge is preserved at read; foreign owner references and partial bridges are rejected by current constraints", async () => {
   const p = providers[0], m = memberships[0], user = actor(m);

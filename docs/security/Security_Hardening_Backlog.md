@@ -1,6 +1,42 @@
 # CargoPilot security hardening backlog
 
 ## Current state / resume
+Saved session-capacity handoff2026-10-02: actual HEAD a75d1be26153190f3474a82297adc3be2c88b472, branch cargopilot/erp-foundation. Coherent local checkpoints from reported f94f9b83: cdd5c506f21caeae1c0126ba1e47323274ee97fa(callback admission/native pending-work bounds),9d2bfaebcaf66aed588c003f44395cacfa840a97(provider mutation containment),a21d42f6ee0f6313d21e6e26a6108b1090a691ed(manual outbox recovery containment),a81872b(whitespace/evidence correction with explicit native exit guards),7a787d638a32974182e038c6937102c3be8643fe(scoped outbox metadata),a8838b4ad7d5e7120eec35633f5bb783addb6e43(scoped event metadata/source relation),6fbf588bb55721f76aa43cf4cba6ec54abff8fc2(compound source integrity/durable enqueue),a75d1be26153190f3474a82297adc3be2c88b472(complete ingress duplicate acknowledgement). Exact staged scopes/manual review/whitespace/credential-pattern checks completed; the a21 whitespace failure and correction are explicitly recorded, not silently called a pass. None pushed. All implementation/tests/migrations/reports committed. Index empty; only this new resume note and the preserved pre-existing dist scope remain dirty. No next implementation edits started.
+
+Latest evidence:53current affected mocked/HTTP cases for ingress (17new +32affected, failed id-only fixture corrected and1affected+4newHTTP rerun),2new actual PostgreSQL ingress cases at88migrations. Prior12distinct source/metadata PostgreSQL cases reused where exercised files/schema/dependencies unchanged; do not add overlapping9/12runs. Earlier125affected mocked +1new terminal failure,131integration milestone, callback44mocked/12PostgreSQL remain scoped to reported exercised code. Offline schema validation/ignored generation and final no-emit passed; no build/dist rewrite. All owned disposable runs, including failed setup run, removed after name/label/tmpfs/no-existing-storage checks and label-filtered absence. No real provider/Redis/S3/device or historical-data certification. Current financial issuance/config/execution/recovery remains unavailable pending independent acceptance/accounting/FX/checker/cancellation policy; unavailable is not restored.
+
+Exact next ready task: normalized source compound ownership + atomic ingress persistence. Read only webhook-events.repo.ts/saveCanonicalEvent, webhook-gateway.service.ts/types, canonical-source.ts/repo, gateway HMAC normalizer and direct route/publisher/test consumers. Scope source ownership derives from locked verified raw records; update normalized tuple relation/constraint with a new additive NOT VALID migration, no historical inference. Replace separate raw/normalized/pending writes with an authoritative transaction/durable intent and conflict-safe source uniqueness. Do not acknowledge missing pending records, overwrite an uncertain receipt or replay providers. Account for normalizer server-time fallback on matching raw-body retries without inventing event-time policy. Fresh verified provenance must not be forgeable by caller/queue fields. Combine compatible focused PostgreSQL cases in one new labeled cached-image tmpfs instance, preserve native deadlines and ownership-verified cleanup. Then generic HMAC callback admission/deadlines, immutable non-financial configuration version/action auditing, secret pointer/concurrency and routing remain independently ready. No all-task policy blocker or mission completion; this is a session-capacity boundary. Continue under standing authorization without renewal, client changes or repeated audits/unchanged suites.
+
+Exact pre-handoff git status --short --untracked-files=normal (after writing this note additionally M docs/security/Security_Hardening_Backlog.md):
+```text
+ M dist/src/config/redis.js
+ M dist/src/index.js
+ M dist/src/modules/identity-access/permission-registry.js
+ M dist/src/modules/invoice-core/application/invoiceRepo.js
+ M dist/src/modules/invoice-core/transport/fastify-routes.js
+ M dist/src/modules/orders-core/cash/collection.service.js
+ M dist/src/modules/orders-core/write/create-order.js
+ M dist/src/modules/orders-core/write/delete-order.js
+ M dist/src/modules/orders-legs/pricing.js
+ M dist/src/modules/payments-core/application/paymentsService.js
+ M dist/src/modules/payments-core/infrastructure/providers/clickAdapter.js
+ M dist/src/modules/payments-core/infrastructure/providers/stripeAdapter.js
+ M dist/src/modules/payments-core/shared/money.js
+ M dist/src/modules/payments-core/transport/fastify-routes.js
+ M dist/src/modules/support-core/application/supportService.js
+?? dist/src/modules/finance-core/
+?? dist/src/modules/integrations-core/application/finance-reference.service.js
+?? dist/src/modules/invoice-core/transport/validation.js
+?? dist/src/modules/orders-core/application/
+?? dist/src/modules/payments-core/application/finance-reference.service.js
+?? dist/src/modules/payments-core/domain/refunds.js
+?? dist/src/workers/finance-outbox.worker.js
+?? dist/src/workers/finance-posting.worker.js
+?? dist/tests/finance/
+?? dist/tests/payments/
+```
+
+
 Current continuation2026-10-02: canonical source checkpoint6fbf588bb55721f76aa43cf4cba6ec54abff8fc2 reviewed/committed in8files. Independent ingress duplicate-acknowledgement correction now verified: matching signed raw identity/current ownership plus normalized/pending presence required; partial state503 and conflicting reuse409; unique-insert race rechecks full persistence; missing pending port cannot accept; HTTP exceptions sanitized. This contains incomplete persistence, does not make three ingress writes atomic or repair historical receipts. No source/schema/dependency change to prior12native cases, skipped. See Integration_Webhook_Acknowledgement.md.
 
 Evidence:17new acceptance mocked cases plus affected9offline HMAC/metadata and23carrier-binding cases; initial49 had48passes and1old id-only duplicate fixture failure. Corrected fixture to complete source, kept no-write assertion, reran only that1case +4newHTTP exception cases (5passed/31skipped).53distinct covered current mocked/HTTP cases across these runs, not49+5newcases. Two new actual PostgreSQL ingress cases with88fullmigrations in owned2c91a8c3efc4: incomplete/matching/conflicting receipts and forced raw-insert race yield1accepted/1retryable incomplete, later1complete duplicate and1canonical record. Signature normalization mocked in native race; actual HMAC remains separate offline evidence.12unchanged native source cases skipped, total14distinct metadata/source/ingress native cases across slices, not additional reruns. Owned identity/tmpfs/no-bind/no-volume cleanup and label-filtered absence verified. Final no-emit passed. No new schema validation/generation needed. Commands: node node_modules/jest/bin/jest.js --runInBand --runTestsByPath tests/security/integration-webhook-acceptance.test.ts tests/security/webhook-metadata-boundary.test.ts tests/security/carrier-webhook-binding.test.ts; affected rerun tests/security/webhook-metadata-boundary.test.ts tests/security/integration-provider-http.test.ts --testNamePattern=preserves duplicate handling|ingress persistence error; node %TEMP%/cp-integration-ingress-run.cjs (allowlisted env/cached --pull never resource, full88chain, nativefile --testNamePattern=ingress --testTimeout=60000); node node_modules/typescript/bin/tsc --noEmit.
@@ -104,7 +140,7 @@ This is the current mission checklist; older next-task/handoff prose below is hi
 | Canonical event compound source writer integrity | implemented/tested / historical verification outstanding | Derived persisted source/terminal output, current ownership, exact source retries; compound provider/source FKs and completeness checks protect new/changed references.28new source mocks and12distinct actual PostgreSQL at88migrations. Historical/simple retained constraints not certified. See Integration_Canonical_Source_Integrity.md. |
 | Integration ingress duplicate acknowledgement | implemented/tested containment | Verified exact raw/current tuple and complete normalized/pending presence;17newmocked/4newHTTP/2new PostgreSQL at88migrations. Partial persistence503 is contained, not atomic recovery/restoration. |
 | Generic integration webhook admission / deadlines | technically unfinished | The Stripe callback limiter/pool is separate; HMAC gateway needs bounded native pending work, resource controls and recovery evidence without false success. |
-| Normalized webhook ownership / atomic ingress persistence | technically unfinished | Scalar normalized ownership and separate raw/normalized/pending writes remain. False raw-only duplicate ACK now contained; derive locked normalized source and make persistence/dedup atomic without inventing provider recovery contracts. |
+| Normalized webhook ownership / atomic ingress persistence | implemented/tested / historical verification outstanding | Gateway-only evidence, locked current configured ownership, atomic raw/normalized/pending transaction and source serialization; new/changed normalized compound references constrained.17distinct native cases at89migrations across affected runs. Historical incomplete receipts remain503 without repair/replay; real-provider execution/recovery not restored. See Integration_Atomic_Webhook_Ingress.md. |
 | Manual outbox replay / retry-now | implemented/tested containment | Fresh selected permission/scope/id-only lookup;409 accepted recovery requirement before random key/lease/write/effect.17mocked/2newHTTP cases; manual recovery remains unavailable, not restored. Automatic retry unchanged. |
 | Dispatch / analytics / live-map / caches / remaining workers | technically unfinished | One finite inventory of actual entry points and source-owned context needed; scoped queries/events/jobs/files and no generic worker bypass. Existing covered workers remain complete only for their reported capabilities. |
 | Durable order/import identity/recovery | technically unfinished | Server-normalized immutable selected intent, unique receipt/atomic retries and conflict/no-effects; preserve partial import success and uncertain external recovery containment. |

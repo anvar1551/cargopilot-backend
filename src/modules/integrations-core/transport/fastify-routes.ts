@@ -253,7 +253,6 @@ const integrationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
   const webhookGateway = createWebhookGatewayService({
     events: webhookEventRepository,
     providerVerifiers: providerWebhookVerifierResolver,
-    canonicalEvents: integrationCanonicalEventRepository,
   });
 
   fastify.get("/health", async (_request, reply) =>

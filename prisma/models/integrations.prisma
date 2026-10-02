@@ -292,12 +292,13 @@ model IntegrationWebhookEvent {
   @@index([providerId, receivedAt])
   @@index([domain, providerCode, receivedAt])
   @@unique([id, companyId, providerId, domain, providerCode], map: "IntegrationWebhookEvent_context_key")
+  @@unique([id, companyId, domain, providerCode], map: "IntegrationWebhookEvent_normalized_context_key")
 }
 
 model IntegrationWebhookCanonicalEvent {
   id             String                  @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   webhookEventId String                  @unique @db.Uuid
-  webhookEvent   IntegrationWebhookEvent @relation(fields: [webhookEventId], references: [id], onDelete: Cascade)
+  webhookEvent   IntegrationWebhookEvent? @relation(fields: [webhookEventId, companyId, domain, providerCode], references: [id, companyId, domain, providerCode], onDelete: Restrict, onUpdate: Restrict, map: "IntegrationWebhookCanonicalEvent_context_fkey")
   providerCode   String
   domain         IntegrationDomain
   eventType      String
@@ -308,6 +309,7 @@ model IntegrationWebhookCanonicalEvent {
   payloadJson    Json
   createdAt      DateTime                @default(now())
 
+  @@unique([webhookEventId, companyId, domain, providerCode], map: "IntegrationWebhookCanonicalEvent_context_key")
   @@index([providerCode, eventType, occurredAt])
   @@index([companyId, occurredAt])
   @@index([aggregateType, aggregateId, occurredAt])

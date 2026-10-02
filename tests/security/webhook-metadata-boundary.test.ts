@@ -24,7 +24,11 @@ const headers = () => ({ Authorization: "Bearer SENSITIVE-CANARY", Cookie: "sess
 beforeEach(() => {
   jest.clearAllMocks();
   db.integrationWebhookEvent.findFirst.mockResolvedValue(null);
-  db.integrationWebhookEvent.create.mockResolvedValue({ id: "webhook-a" });
+  db.integrationWebhookEvent.create.mockResolvedValue({ id: "webhook-a", companyId: "company-a", providerId: "provider-a", domain: "carrier", providerCode: "partner", environment: "sandbox" });
+  db.$queryRaw.mockResolvedValue([]); db.$executeRaw.mockResolvedValue(0);
+  const owner = { companyId: "company-a", domain: "carrier", providerCode: "partner", environment: "sandbox", status: "active", company: { id: "company-a", isActive: true, type: "company", tenantId: "tenant-a", tenant: { id: "tenant-a", status: "active" } } };
+  db.integrationProvider.findUnique.mockResolvedValue(owner);
+  db.integrationCanonicalEvent.create.mockResolvedValue({ id: "pending" });
   db.integrationWebhookEvent.update.mockResolvedValue({});
   db.integrationWebhookCanonicalEvent.create.mockResolvedValue({});
   db.paymentIntent.findUnique.mockResolvedValue({ id: "intent-a", companyId: "company-a", providerConfig: { id: "provider-a", companyId: "company-a", provider: "STRIPE", environment: "TEST", isEnabled: true, secretEncrypted: "fixture" } });
@@ -52,8 +56,9 @@ it("distinguishes exact raw body digests from parsed-JSON fallback", () => {
 function gateway() {
   const enqueue = jest.fn(async () => undefined);
   const verifier = createHmacWebhookVerifier({ providerCode: "partner", secret: "fixture-hmac", maxSkewSeconds: 300 });
-  const service = createWebhookGatewayService({ events: webhookEventRepository, canonicalEvents: { enqueue }, providerVerifiers: { resolve: async () => ({ providerId: "provider-a", companyId: "company-a", providerCode: "partner", domain: "carrier", environment: "sandbox", verifier }) } });
+  const service = createWebhookGatewayService({ events: webhookEventRepository, providerVerifiers: { resolve: async () => ({ providerId: "provider-a", companyId: "company-a", providerCode: "partner", domain: "carrier", environment: "sandbox", verifier }) } });
   const rawBody = '{ "eventId": "event-a", "eventType": "carrier.status.updated" }\n';
+  db.integrationWebhookEvent.findUnique.mockImplementation(async () => { const data = db.integrationWebhookCanonicalEvent.create.mock.calls[0][0].data; return { companyId: "company-a", providerId: "provider-a", domain: "carrier", providerCode: "partner", environment: "sandbox", signatureVerified: true, rawBody, rawBodySha256: createHash("sha256").update(rawBody).digest("hex"), canonicalEvent: data }; });
   const timestamp = String(Math.floor(Date.now() / 1000));
   const signature = createHmac("sha256", "fixture-hmac").update(`${timestamp}.${rawBody}`).digest("hex");
   const request = { providerCode: "partner", rawBody, userAgent: "SENSITIVE-CANARY", headers: { ...headers(), "x-signature": signature, "x-signature-timestamp": timestamp } };
@@ -64,7 +69,7 @@ it("keeps original raw-body verification and accepted processing while storing m
   const data = db.integrationWebhookEvent.create.mock.calls[0][0].data;
   expect(data).toMatchObject({ rawBody: f.request.rawBody, rawBodySha256: createHash("sha256").update(f.request.rawBody).digest("hex"), signatureVerified: true, userAgent: null, providerEventId: "event-a" });
   expect(JSON.stringify(data.headersJson)).not.toContain("SENSITIVE-CANARY"); expect(JSON.stringify(data.headersJson)).not.toContain(f.signature);
-  expect(f.enqueue).toHaveBeenCalledTimes(1);
+  expect(db.integrationCanonicalEvent.create).toHaveBeenCalledTimes(1);
 });
 it("rejects a changed signed body before persistence, canonical writes or queue effects", async () => {
   const f = gateway(); await expect(f.service.ingest({ ...f.request, rawBody: f.request.rawBody.replace("event-a", "event-b") })).resolves.toMatchObject({ status: "rejected" });

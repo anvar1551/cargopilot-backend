@@ -1,12 +1,10 @@
 import { webhookHeadersForStorage } from "../../../utils/webhookMetadata";
-import { Prisma } from "@prisma/client";
 import { createHash } from "crypto";
 import { authorityError } from "../../orders-core/domain/creation-authority";
 import type {
-  EnqueueIntegrationCanonicalEventInput,
-} from "./canonical-event.types";
-import type {
   WebhookEventRepository,
+  VerifiedWebhookIngress,
+  VerifiedWebhookData,
   WebhookGatewayService,
   WebhookIngressInput,
   WebhookIngressResult,
@@ -22,16 +20,18 @@ function normalizeString(value: string | null | undefined) {
   return normalized.length > 0 ? normalized : null;
 }
 
-function isDuplicateWebhookError(error: unknown) {
-  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
+const verified = new WeakMap<VerifiedWebhookIngress, VerifiedWebhookData>();
+/** Does not issue evidence. Forged fields, copies and queue payloads cannot mint it. */
+export function readVerifiedWebhookIngress(evidence: VerifiedWebhookIngress): VerifiedWebhookData {
+  const data = evidence && verified.get(evidence);
+  if (!data) throw authorityError("Verified webhook ingress required", 403);
+  // Return a detached copy so a persistence consumer cannot change later retries.
+  return JSON.parse(JSON.stringify(data)) as VerifiedWebhookData;
 }
 
 export function createWebhookGatewayService(args: {
   events: WebhookEventRepository;
   providerVerifiers: WebhookProviderVerifierResolver;
-  canonicalEvents?: {
-    enqueue(input: EnqueueIntegrationCanonicalEventInput): Promise<unknown>;
-  };
 }): WebhookGatewayService {
   return {
     async ingest(input: WebhookIngressInput): Promise<WebhookIngressResult> {
@@ -84,79 +84,17 @@ export function createWebhookGatewayService(args: {
         };
       }
 
-      if (!args.canonicalEvents) throw Object.assign(authorityError("Webhook processing persistence unavailable", 503), { code: "WEBHOOK_INGRESS_INCOMPLETE" });
-      const identity = {
-        providerId: providerVerifier.providerId,
-        providerEventId,
-        companyId: providerVerifier.companyId, providerCode: providerVerifier.providerCode,
-        domain: providerVerifier.domain, environment: providerVerifier.environment,
-        rawBodySha256: createHash("sha256").update(rawBody).digest("hex"),
-      };
-      const duplicate = await args.events.hasProcessed(identity);
-      if (duplicate) {
-        return {
-          status: "duplicate",
-          eventId: providerEventId,
-        };
-      }
-
-      try {
-        const rawRecord = await args.events.saveRawEvent({
-          companyId: providerVerifier.companyId,
-          providerId: providerVerifier.providerId,
-          providerCode: providerVerifier.providerCode,
-          domain: providerVerifier.domain,
-          environment: providerVerifier.environment,
-          providerEventId,
-          rawBody,
-          headersJson: webhookHeadersForStorage(input.headers),
-          ipAddress: normalizeString(input.ipAddress),
-          userAgent: null,
-          receivedAt: new Date().toISOString(),
-          signatureVerified: true,
-        });
-
-        await args.events.saveCanonicalEvent({
-          webhookEventId: rawRecord.webhookEventId,
-          canonical: {
-            ...canonical,
-            providerCode: providerVerifier.providerCode,
-            eventId: providerEventId,
-            companyId: providerVerifier.companyId,
-          },
-        });
-
-        await args.canonicalEvents.enqueue({
-          source: "inbound_webhook",
-          companyId: providerVerifier.companyId,
-          providerId: providerVerifier.providerId,
-          webhookEventId: rawRecord.webhookEventId,
-          domain: providerVerifier.domain,
-          providerCode: providerVerifier.providerCode,
-          eventType: canonical.eventType,
-          aggregateType: canonical.aggregateType ?? null,
-          aggregateId: canonical.aggregateId ?? null,
-          payloadJson: canonical.payload,
-          occurredAt: canonical.occurredAt,
-        });
-      } catch (error) {
-        if (isDuplicateWebhookError(error)) {
-          // A racing raw insert may commit before normalization/pending persistence.
-          // Never acknowledge that intermediate state as a successfully accepted event.
-          if (!await args.events.hasProcessed(identity))
-            throw Object.assign(authorityError("Webhook processing persistence incomplete", 503), { code: "WEBHOOK_INGRESS_INCOMPLETE" });
-          return {
-            status: "duplicate",
-            eventId: providerEventId,
-          };
-        }
-        throw error;
-      }
-
-      return {
-        status: "accepted",
-        eventId: providerEventId,
-      };
+      const evidence = Object.freeze({}) as VerifiedWebhookIngress;
+      verified.set(evidence, JSON.parse(JSON.stringify({
+        provider: { providerId: providerVerifier.providerId, companyId: providerVerifier.companyId,
+          providerCode: providerVerifier.providerCode, domain: providerVerifier.domain, environment: providerVerifier.environment },
+        canonical: { ...canonical, companyId: providerVerifier.companyId, providerCode: providerVerifier.providerCode,
+          eventId: providerEventId, signatureVerified: true, rawBodySha256: createHash("sha256").update(rawBody).digest("hex") },
+        rawBody, headersJson: webhookHeadersForStorage(input.headers), ipAddress: normalizeString(input.ipAddress),
+        receivedAt: new Date().toISOString(),
+      })));
+      const status = await args.events.persistVerified(evidence);
+      return { status, eventId: providerEventId };
     },
   };
 }

@@ -2,7 +2,7 @@ jest.mock("../../src/config/prismaClient", () => ({ __esModule: true, default: r
 import { database as db } from "./fixtures";
 import { webhookEventRepository as repo } from "../../src/modules/integrations-core/infrastructure/webhook-events.repo";
 import { createWebhookGatewayService } from "../../src/modules/integrations-core/application/webhook-gateway.service";
-import { Prisma } from "@prisma/client";
+import { readVerifiedWebhookIngress } from "../../src/modules/integrations-core/application/webhook-gateway.service";
 import { createHash } from "crypto";
 const rawBody = '{"eventId":"synthetic"}', hash = createHash("sha256").update(rawBody).digest("hex");
 const identity: any = { providerId: "pa", providerEventId: "synthetic", companyId: "ca", domain: "carrier", providerCode: "sandbox", environment: "sandbox", rawBodySha256: hash };
@@ -35,20 +35,21 @@ it("missing verified context fails before any lookup", async () => {
   await expect(repo.hasProcessed({ ...identity, companyId: null })).rejects.toMatchObject({ statusCode: 403 }); expect(db.integrationWebhookEvent.findFirst).not.toHaveBeenCalled();
 });
 const canonical: any = { eventId: "synthetic", providerCode: "sandbox", eventType: "carrier.status.updated", occurredAt: new Date().toISOString(), payload: {} };
-function gateway(events: any, enqueue: any = jest.fn()) {
-  return createWebhookGatewayService({ events, canonicalEvents: enqueue ? { enqueue } : undefined, providerVerifiers: {
+function gateway(events: any) {
+  return createWebhookGatewayService({ events, providerVerifiers: {
     resolve: async () => ({ ...identity, verifier: { verifyAndNormalize: async () => ({ ok: true, data: canonical }) } } as any) } });
 }
-it.each([true, false])("racing unique raw insert requires complete persistence (complete=%s)", async complete => {
-  const unique = new Prisma.PrismaClientKnownRequestError("synthetic", { code: "P2002", clientVersion: "7.2.0" });
-  const events = { hasProcessed: jest.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(complete), saveRawEvent: jest.fn().mockRejectedValue(unique), saveCanonicalEvent: jest.fn() };
-  const service = gateway(events), result = service.ingest({ providerCode: "sandbox", rawBody, headers: {} });
-  if (complete) await expect(result).resolves.toMatchObject({ status: "duplicate" });
-  else await expect(result).rejects.toMatchObject({ statusCode: 503, code: "WEBHOOK_INGRESS_INCOMPLETE" });
-  expect(events.hasProcessed).toHaveBeenCalledTimes(2); expect(events.hasProcessed).toHaveBeenCalledWith(identity); expect(events.saveCanonicalEvent).not.toHaveBeenCalled();
+it.each(["accepted", "duplicate"])("gateway delegates complete persistence with unforgeable evidence (%s)", async status => {
+  const events = { persistVerified: jest.fn(async evidence => {
+    const data = readVerifiedWebhookIngress(evidence);
+    expect(data.provider).toMatchObject({ companyId: "ca", domain: "carrier" });
+    expect(data.rawBody).toBe(rawBody); expect(Object.keys(evidence)).toEqual([]);
+    return status;
+  }) };
+  await expect(gateway(events).ingest({ providerCode: "sandbox", rawBody, headers: {} })).resolves.toMatchObject({ status });
+  expect(events.persistVerified).toHaveBeenCalledTimes(1);
 });
-it("missing pending persistence cannot accept valid verified ingress", async () => {
-  const events = { hasProcessed: jest.fn(), saveRawEvent: jest.fn(), saveCanonicalEvent: jest.fn() };
-  await expect(gateway(events, null).ingest({ providerCode: "sandbox", rawBody, headers: {} })).rejects.toMatchObject({ statusCode: 503 });
-  expect(events.hasProcessed).not.toHaveBeenCalled(); expect(events.saveRawEvent).not.toHaveBeenCalled();
+it("forged verification fields or copied evidence fail before database work", async () => {
+  await expect(repo.persistVerified({ ...identity, signatureVerified: true } as any)).rejects.toMatchObject({ statusCode: 403 });
+  expect(db.$transaction).not.toHaveBeenCalled();
 });
