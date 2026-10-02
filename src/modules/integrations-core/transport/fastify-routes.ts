@@ -389,7 +389,7 @@ const integrationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         });
         return reply.send(result);
       } catch (error) {
-        return sendError(reply, error, "Failed to list route templates");
+        return sendOutboxReadError(reply, error);
       }
     },
   );
@@ -406,7 +406,7 @@ const integrationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         });
         return reply.send(result);
       } catch (error) {
-        return sendError(reply, error, "Failed to fetch route template");
+        return sendOutboxReadError(reply, error);
       }
     },
   );
@@ -423,7 +423,7 @@ const integrationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         });
         return reply.code(201).send(result);
       } catch (error) {
-        return sendError(reply, error, "Failed to create route template");
+        return sendProviderMutationError(reply, error);
       }
     },
   );
@@ -442,7 +442,7 @@ const integrationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         });
         return reply.send(result);
       } catch (error) {
-        return sendError(reply, error, "Failed to update route template");
+        return sendProviderMutationError(reply, error);
       }
     },
   );
@@ -459,7 +459,7 @@ const integrationsFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         });
         return reply.send(result);
       } catch (error) {
-        return sendError(reply, error, "Failed to delete route template");
+        return sendProviderMutationError(reply, error);
       }
     },
   );

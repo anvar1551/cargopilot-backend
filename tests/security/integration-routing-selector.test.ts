@@ -1,0 +1,23 @@
+jest.mock("../../src/config/prismaClient",()=>({__esModule:true,default:require("./fixtures").database}));
+jest.mock("../../src/modules/orders-core/domain/order-access",()=>({requireAuthorizedOrder:jest.fn()}));
+import {database as db} from "./fixtures";
+import {requireAuthorizedOrder} from "../../src/modules/orders-core/domain/order-access";
+import {resolveCarrierRoutingRuleForOrderLeg as select} from "../../src/modules/integrations-core/application/carrier-routing.service";
+const actor:any={id:"user",tenantId:"ta",companyId:"ca",membershipId:"ma",companyMembershipId:"ma",tenantMembershipId:"tm"};
+const leg:any={id:"leg",orderId:"order",mode:"road",sequence:1,order:{id:"order",tenantId:"ta",ownerOrgId:"ca",serviceType:"standard",weightKg:"2"},routeTemplateId:"template",routeTemplateLegId:"tl",routeTemplateLeg:{routeTemplateId:"template"}};
+const rule:any={id:"rule",companyId:"ca",providerId:"provider",provider:{id:"provider",companyId:"ca",providerCode:"sandbox",environment:"sandbox"},name:"Synthetic",priority:5,autoBook:true};
+beforeEach(()=>{jest.clearAllMocks();jest.mocked(requireAuthorizedOrder).mockResolvedValue({id:"order",tenantId:"ta",ownerOrgId:"ca"} as any);db.$transaction.mockImplementation(async(work:any)=>work(db));db.$executeRaw.mockResolvedValue(0);db.orderLeg.findFirst.mockReset().mockResolvedValue(leg);db.carrierRoutingRule.findMany.mockReset().mockResolvedValue([rule]);});
+afterEach(()=>{for(const m of ["integrationOutbox","integrationCanonicalEvent","orderLeg","carrierRoutingRule","routeTemplate","financeDomainEventOutbox"])for(const op of ["create","update","upsert","delete","updateMany"])expect(db[m][op]).not.toHaveBeenCalled();});
+it("authorized selected-owner match uses bounded read snapshot and preserves result",async()=>{
+ await expect(select({actor,orderId:"order",legId:"leg"})).resolves.toMatchObject({id:rule.id,providerId:rule.providerId,autoBook:true});
+ expect(requireAuthorizedOrder).toHaveBeenCalledWith(actor,"order","shipment.bookCarrier");
+ expect(db.orderLeg.findFirst.mock.calls[0][0].where).toMatchObject({id:"leg",orderId:"order",order:{is:{tenantId:"ta",ownerOrgId:"ca",ownerOrg:{is:{tenantId:"ta",isActive:true}}}}});
+ const query=db.carrierRoutingRule.findMany.mock.calls[0][0];expect(query).toMatchObject({where:{companyId:"ca",provider:{is:{companyId:"ca",domain:"carrier",status:"active"}}},take:1});
+ expect(query.where.AND).toEqual(expect.arrayContaining([expect.objectContaining({OR:expect.arrayContaining([{fallbackProviderId:null},expect.objectContaining({fallbackProvider:expect.objectContaining({is:expect.objectContaining({companyId:"ca",status:"active"})})})])})]));
+ expect(query.select).not.toHaveProperty("conditionsJson");expect(db.$transaction.mock.calls[0][1]).toMatchObject({isolationLevel:"RepeatableRead",timeout:5000});
+});
+it.each([403,404])("parent rejection %s precedes any leg/configuration read",async statusCode=>{jest.mocked(requireAuthorizedOrder).mockRejectedValue(Object.assign(Error("denied"),{statusCode}));await expect(select({actor,orderId:"foreign",legId:"leg"})).rejects.toMatchObject({statusCode});expect(db.orderLeg.findFirst).not.toHaveBeenCalled();expect(db.$transaction).not.toHaveBeenCalled();});
+it.each([null,"other-company"])("null or different owner cannot use selected/assigned company",async ownerOrgId=>{jest.mocked(requireAuthorizedOrder).mockResolvedValue({id:"order",tenantId:"ta",ownerOrgId} as any);await expect(select({actor,orderId:"order",legId:"leg"})).rejects.toMatchObject({statusCode:403});expect(db.orderLeg.findFirst).not.toHaveBeenCalled();});
+it.each([null,{...leg,orderId:"other"},{...leg,order:{...leg.order,tenantId:"tb"}},{...leg,routeTemplateId:null},{...leg,routeTemplateLeg:{routeTemplateId:"other"}}])("missing/foreign/conflicting child cannot select a rule",async child=>{db.orderLeg.findFirst.mockResolvedValue(child);await expect(select({actor,orderId:"order",legId:"leg"})).resolves.toBeNull();expect(db.carrierRoutingRule.findMany).not.toHaveBeenCalled();});
+it.each([{...rule,companyId:"cb"},{...rule,provider:{...rule.provider,companyId:"cb"}},{...rule,routeTemplateLegId:"tl",routeTemplateId:null},{...rule,routeTemplateLegId:"tl",routeTemplateId:"one",routeTemplateLeg:{routeTemplateId:"two"}}])("legacy conflicting rule cannot become a booking decision",async row=>{db.carrierRoutingRule.findMany.mockResolvedValue([row]);await expect(select({actor,orderId:"order",legId:"leg"})).resolves.toBeNull();});
+it("no rule match does not substitute a provider or fallback",async()=>{db.carrierRoutingRule.findMany.mockResolvedValue([]);await expect(select({actor,orderId:"order",legId:"leg"})).resolves.toBeNull();expect(db.integrationProvider.findFirst).not.toHaveBeenCalled();});

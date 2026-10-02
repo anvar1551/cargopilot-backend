@@ -1,4 +1,5 @@
-import {listCarrierRoutingRulesForActor as routingInventory} from "../../src/modules/integrations-core/application/carrier-routing.service";
+import {listCarrierRoutingRulesForActor as routingInventory,resolveCarrierRoutingRuleForOrderLeg as routingSelector} from "../../src/modules/integrations-core/application/carrier-routing.service";
+import {listRouteTemplatesForActor as templateInventory,getRouteTemplateForActor as templateDetail} from "../../src/modules/integrations-core/application/route-template.service";
 jest.mock("../../src/modules/integrations-core/application/webhook-database", () => ({ getIntegrationWebhookDatabase: () => new Proxy({}, { get: (_target, name) => { const value = (mockPrisma as any)[name]; return typeof value === "function" ? value.bind(mockPrisma) : value; } }) }));
 jest.mock("../../src/config/prismaClient", () => ({ __esModule: true, default: new Proxy({}, { get: (_target, name) => {
   const value = (mockPrisma as any)[name]; return typeof value === "function" ? value.bind(mockPrisma) : value;
@@ -58,12 +59,14 @@ beforeAll(async () => {
   mockPrisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 4, connectionTimeoutMillis: 3000,
     options: "-c statement_timeout=5000 -c lock_timeout=2000 -c idle_in_transaction_session_timeout=5000" }) });
   const routingPermission=await mockPrisma.permission.create({data:{key:"integration.routing.read",resource:"synthetic-routing",action:"read"}});
+  const bookingPermission=await mockPrisma.permission.create({data:{key:"shipment.bookCarrier",resource:"synthetic-carrier",action:"book"}});
   const permission = await mockPrisma.permission.create({ data: { key: "integration.outbox.read", resource: "synthetic-integration", action: "read" } });
   expect(memberships).toHaveLength(3);
   for (const m of memberships) {
     const role = await mockPrisma.role.create({ data: { companyId: m.companyId, code: randomUUID(), name: "Synthetic integration reader" } });
     await mockPrisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
     await mockPrisma.rolePermission.create({ data: { roleId: role.id, permissionId: routingPermission.id } });
+    await mockPrisma.rolePermission.create({ data: { roleId: role.id, permissionId: bookingPermission.id } });
     await mockPrisma.membershipRole.create({ data: { membershipId: m.id, roleId: role.id } });
     await mockPrisma.membershipScope.create({ data: { membershipId: m.id, scopeType: "company", scopeRefId: m.companyId } });
     const p = await mockPrisma.integrationProvider.create({ data: { companyId: m.companyId, domain: "carrier", providerCode: "sandbox", environment: "sandbox" } });
@@ -426,4 +429,42 @@ it("routing compound catalog preserves expansion status and reuses pre-existing 
   expect(result.rows.find(r=>r.conname==="CarrierRoutingRule_template_leg_fkey").definition).toMatch(/FOREIGN KEY \("routeTemplateId", "routeTemplateLegId"\).*REFERENCES "RouteTemplateLeg"\("routeTemplateId", id\)/);
   const targets=await pool.query("SELECT indexname FROM pg_indexes WHERE indexname=ANY($1::text[])",[["IntegrationProvider_id_companyId_key","RouteTemplate_company_identity_key","RouteTemplateLeg_template_identity_key"]]);
   expect(targets.rows).toHaveLength(3);
+});
+
+it("template scoped PostgreSQL list detail cursor and counts separate three selected companies without writes",async()=>{
+  const templates=[];
+  for(const p of providers) {
+    const template=await mockPrisma.routeTemplate.create({data:{companyId:p.companyId,name:"Synthetic scoped template",metadata:{private:"SENSITIVE-CANARY"}}});
+    await mockPrisma.routeTemplateLeg.create({data:{routeTemplateId:template.id,sequence:1,legCode:"synthetic",metadata:{private:"SENSITIVE-CANARY"}}});templates.push(template);
+  }
+  const before=await routingSnapshot();
+  for(let i=0;i<memberships.length;i++) {
+    const user=actor(memberships[i]),result:any=await templateInventory({user,filters:{limit:1}});
+    expect(result.total).toBe(1);expect(result.data.map((r:any)=>r.id)).toEqual([templates[i].id]);expect(JSON.stringify(result)).not.toContain("SENSITIVE-CANARY");
+    const detail=await templateDetail({user,routeTemplateId:templates[i].id});expect(detail.legCount).toBe(1);expect(detail.metadata).toBeNull();expect(detail.legs![0].metadata).toBeNull();
+    for(let j=0;j<templates.length;j++) if(j!==i) {
+      await expect(templateDetail({user,routeTemplateId:templates[j].id})).rejects.toMatchObject({statusCode:404});
+      await expect(templateInventory({user,filters:{limit:1,cursor:templates[j].id}})).rejects.toMatchObject({statusCode:404});
+    }
+  }
+  expect(await routingSnapshot()).toEqual(before);
+  const scopes=await mockPrisma.membershipScope.findMany({where:{membershipId:memberships[0].id}});await mockPrisma.membershipScope.deleteMany({where:{membershipId:memberships[0].id}});
+  try{await expect(templateDetail({user:actor(memberships[0]),routeTemplateId:templates[0].id})).rejects.toMatchObject({statusCode:403});}finally{await mockPrisma.membershipScope.createMany({data:scopes});}
+  expect(await routingSnapshot()).toEqual(before);
+});
+
+it("routing selector PostgreSQL current parent permission and owner graph constrain the actual rule query",async()=>{
+  const m=memberships[0],order=fixture.orders.find(o=>o.ownerOrgId===m.companyId)!,user=actor(m),g=await routingGraph();
+  const leg=await mockPrisma.orderLeg.create({data:{orderId:order.id,sequence:300,mode:"road",routeTemplateId:g.template.id,routeTemplateLegId:g.leg.id}});
+  const own=await mockPrisma.carrierRoutingRule.create({data:{companyId:m.companyId,providerId:providers[0].id,name:"Synthetic selector",priority:100,routeTemplateId:g.template.id,routeTemplateLegId:g.leg.id}});
+  const before=await routingSnapshot();
+  await expect(routingSelector({actor:user,orderId:order.id,legId:leg.id})).resolves.toMatchObject({id:own.id,providerId:providers[0].id});
+  for(const foreign of memberships.slice(1)) await expect(routingSelector({actor:actor(foreign),orderId:order.id,legId:leg.id})).rejects.toMatchObject({statusCode:404});
+  await expect(routingSelector({actor:user,orderId:order.id,legId:randomUUID()})).resolves.toBeNull();
+  expect(await routingSnapshot()).toEqual(before);
+  await mockPrisma.integrationProvider.update({where:{id:providers[0].id},data:{status:"disabled"}});
+  try{await expect(routingSelector({actor:user,orderId:order.id,legId:leg.id})).resolves.toBeNull();}finally{await mockPrisma.integrationProvider.update({where:{id:providers[0].id},data:{status:"active"}});}
+  await mockPrisma.tenant.update({where:{id:m.tenantId},data:{status:"suspended"}});
+  try{await expect(routingSelector({actor:user,orderId:order.id,legId:leg.id})).rejects.toMatchObject({statusCode:403});}finally{await mockPrisma.tenant.update({where:{id:m.tenantId},data:{status:"active"}});}
+  expect(await routingSnapshot()).toEqual(before);
 });

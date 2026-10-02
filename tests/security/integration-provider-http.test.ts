@@ -1,3 +1,4 @@
+import {listRouteTemplatesForActor,getRouteTemplateForActor,createRouteTemplateForActor,updateRouteTemplateForActor,deleteRouteTemplateForActor} from "../../src/modules/integrations-core/application/route-template.service";
 import {createCarrierRoutingRuleForActor,updateCarrierRoutingRuleForActor,deleteCarrierRoutingRuleForActor,listCarrierRoutingRulesForActor} from "../../src/modules/integrations-core/application/carrier-routing.service";
 const mockWebhookClose = jest.fn(async () => undefined);
 jest.mock("../../src/modules/integrations-core/application/webhook-database", () => ({ closeIntegrationWebhookDatabase: () => mockWebhookClose() }));
@@ -5,7 +6,7 @@ import { replayIntegrationOutboxForActor, retryIntegrationOutboxNowForActor } fr
 jest.mock("../../src/modules/identity-access/transport/fastify-auth", () => ({ fastifyAuth: () => async () => undefined }));
 jest.mock("../../src/modules/integrations-core/application/integration-admin.service", () => ({ listIntegrationWebhookEventsForActor: jest.fn(), listIntegrationCanonicalEventsForActor: jest.fn(), listIntegrationOutboxForActor: jest.fn(), listIntegrationOutboxAttemptsForActor: jest.fn(), listIntegrationProvidersForActor: jest.fn(), replayIntegrationOutboxForActor: jest.fn(), retryIntegrationOutboxNowForActor: jest.fn(), upsertIntegrationProviderForActor: jest.fn(), rotateIntegrationProviderSecretForActor: jest.fn(), deleteIntegrationProviderForActor: jest.fn(), updateIntegrationProviderStatusForActor: jest.fn() }));
 jest.mock("../../src/modules/integrations-core/application/carrier-routing.service", () => ({createCarrierRoutingRuleForActor:jest.fn(),updateCarrierRoutingRuleForActor:jest.fn(),deleteCarrierRoutingRuleForActor:jest.fn(),listCarrierRoutingRulesForActor:jest.fn()}));
-jest.mock("../../src/modules/integrations-core/application/route-template.service", () => ({}));
+jest.mock("../../src/modules/integrations-core/application/route-template.service", () => ({listRouteTemplatesForActor:jest.fn(),getRouteTemplateForActor:jest.fn(),createRouteTemplateForActor:jest.fn(),updateRouteTemplateForActor:jest.fn(),deleteRouteTemplateForActor:jest.fn()}));
 const mockWebhookIngest = jest.fn();
 jest.mock("../../src/modules/integrations-core/application/webhook-gateway.service", () => ({ createWebhookGatewayService: () => ({ ingest: mockWebhookIngest }) }));
 jest.mock("../../src/modules/integrations-core/infrastructure/provider-webhook-verifier.resolver", () => ({}));
@@ -152,4 +153,14 @@ it.each([403,404,500,409])("routing mutation errors %s use a sanitized controlle
  jest.mocked(handler).mockRejectedValue(Object.assign(Error("PRIVATE-CANARY"),{statusCode,...(statusCode===409?{code:"INTEGRATION_ROUTING_CONFIGURATION_WORKFLOW_REQUIRED"}:{})}));
  const response=await app.inject({method,url,payload});expect(response.statusCode).toBe(statusCode);expect(response.body).not.toContain("PRIVATE-CANARY");if(statusCode===409)expect(response.json().code).toBe("INTEGRATION_ROUTING_CONFIGURATION_WORKFLOW_REQUIRED");}
  }finally{await app.close();}
+});
+
+it.each([listRouteTemplatesForActor,getRouteTemplateForActor])("template read exceptions do not expose private details",async operation=>{
+ const app=Fastify();try{await app.register(routes);jest.mocked(operation).mockRejectedValue(Object.assign(Error("PRIVATE-CANARY"),{statusCode:403}));const response=await app.inject({method:"GET",url:operation===listRouteTemplatesForActor?"/route-templates":"/route-templates/00000000-0000-4000-8000-000000000001"});expect(response.statusCode).toBe(403);expect(response.body).not.toContain("PRIVATE-CANARY");}finally{await app.close();}
+});
+it.each([createRouteTemplateForActor,updateRouteTemplateForActor,deleteRouteTemplateForActor])("template mutation communicates workflow containment without diagnostics",async operation=>{
+ const app=Fastify();try{await app.register(routes);jest.mocked(operation).mockRejectedValue(Object.assign(Error("PRIVATE-CANARY"),{statusCode:409,code:"INTEGRATION_ROUTING_CONFIGURATION_WORKFLOW_REQUIRED"}));
+ const create=operation===createRouteTemplateForActor,remove=operation===deleteRouteTemplateForActor;
+ const response=await app.inject({method:create?"POST":remove?"DELETE":"PATCH",url:create?"/route-templates":"/route-templates/00000000-0000-4000-8000-000000000001",...(!remove?{payload:create?{companyId:"00000000-0000-4000-8000-000000000001",name:"Synthetic",legs:[{sequence:1,legCode:"synthetic",mode:"road"}]}:{name:"Synthetic"}}:{})});
+ expect(response.statusCode).toBe(409);expect(response.json().code).toBe("INTEGRATION_ROUTING_CONFIGURATION_WORKFLOW_REQUIRED");expect(response.body).not.toContain("PRIVATE-CANARY");}finally{await app.close();}
 });

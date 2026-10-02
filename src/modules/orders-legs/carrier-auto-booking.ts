@@ -67,7 +67,7 @@ export async function autoBookCarrierForOrderLeg(args: {
   }
 
   const rule = await resolveCarrierRoutingRuleForOrderLeg({
-    companyId,
+    actor,
     orderId: args.orderId,
     legId: args.legId,
   });

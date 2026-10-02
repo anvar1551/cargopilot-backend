@@ -1,3 +1,5 @@
+import { requireAuthorizedOrder } from "../../orders-core/domain/order-access";
+import type { OrderActor } from "../../orders-core/shared/actor";
 import { integrationProviderContext } from "./provider-access";
 import { authorityError } from "../../orders-core/domain/creation-authority";
 import { Prisma, ServiceType, TransportMode } from "@prisma/client";
@@ -198,19 +200,31 @@ function resolveLegDestinationCountry(leg: any) {
 }
 
 export async function resolveCarrierRoutingRuleForOrderLeg(args: {
-  companyId: string;
+  actor: OrderActor | null | undefined;
   orderId: string;
   legId: string;
 }): Promise<ResolvedCarrierRoutingRule | null> {
-  const companyId = String(args.companyId || "").trim();
-  if (!companyId) return null;
+  const authorized = await requireAuthorizedOrder(args.actor,args.orderId,"shipment.bookCarrier");
+  const companyId=args.actor!.companyId!,tenantId=authorized.tenantId;
+  if(!authorized.ownerOrgId || authorized.ownerOrgId!==companyId) throw authorityError("Selected owning company required",403);
+  return prisma.$transaction(async tx=>{
+  await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+  await tx.$executeRaw`SET LOCAL statement_timeout = '3000ms'`;
+  await tx.$executeRaw`SET LOCAL lock_timeout = '1000ms'`;
+  const company={is:{id:companyId,tenantId,type:"company" as const,isActive:true,tenant:{is:{status:"active" as const}}}};
+  const template={is:{companyId,company,isActive:true}};
 
-  const leg = await db.orderLeg.findFirst({
-    where: { id: args.legId, orderId: args.orderId },
-    include: {
+  const leg = await tx.orderLeg.findFirst({
+    where: {id:args.legId,orderId:args.orderId,order:{is:{id:args.orderId,tenantId,ownerOrgId:companyId,ownerOrg:company,
+      AND:[{OR:[{senderAddressId:null},{senderAddressObj:{is:{tenantId}}}]},{OR:[{receiverAddressId:null},{receiverAddressObj:{is:{tenantId}}}]}]}},
+      AND:[{OR:[{routeTemplateId:null},{routeTemplate:template}]},{OR:[{routeTemplateLegId:null},{routeTemplateLeg:{is:{routeTemplate:template}}}]}]},
+    select: {
+      id:true,orderId:true,mode:true,sequence:true,fromCountry:true,toCountry:true,routeTemplateId:true,routeTemplateLegId:true,
+      routeTemplateLeg:{select:{routeTemplateId:true}},
       order: {
         select: {
           id: true,
+          tenantId: true,
           serviceType: true,
           weightKg: true,
           ownerOrgId: true,
@@ -222,24 +236,27 @@ export async function resolveCarrierRoutingRuleForOrderLeg(args: {
     },
   });
   if (!leg) return null;
-  const orderOrgIds = [leg.order.ownerOrgId, leg.order.assignedOrgId].filter(Boolean);
-  if (orderOrgIds.length > 0 && !orderOrgIds.includes(companyId)) return null;
+  if(leg.order.tenantId!==tenantId || leg.order.ownerOrgId!==companyId || leg.orderId!==args.orderId) return null;
+  if(leg.routeTemplateLegId && (!leg.routeTemplateId || leg.routeTemplateLeg?.routeTemplateId!==leg.routeTemplateId)) return null;
 
   const originCountryCode = resolveLegOriginCountry(leg);
   const destinationCountryCode = resolveLegDestinationCountry(leg);
   const weightKg = Number(leg.order.weightKg ?? NaN);
   const hasWeight = Number.isFinite(weightKg) && weightKg > 0;
 
-  const rows = await db.carrierRoutingRule.findMany({
+  const rows = await tx.carrierRoutingRule.findMany({
     where: {
       companyId,
+      company,
       isActive: true,
       provider: {
-        domain: "carrier",
-        status: "active",
+        is:{companyId,company,domain:"carrier",status:"active"},
       },
       OR: [{ serviceType: null }, { serviceType: leg.order.serviceType }],
       AND: [
+        {OR:[{fallbackProviderId:null},{fallbackProvider:{is:{companyId,company,domain:"carrier",status:"active"}}}]},
+        {OR:[{routeTemplateId:null},{routeTemplate:template}]},
+        {OR:[{routeTemplateLegId:null},{routeTemplateLeg:{is:{routeTemplate:template}}}]},
         { OR: [{ transportMode: null }, { transportMode: leg.mode }] },
         { OR: [{ legSequence: null }, { legSequence: leg.sequence }] },
         {
@@ -270,21 +287,25 @@ export async function resolveCarrierRoutingRuleForOrderLeg(args: {
         hasWeight ? { OR: [{ maxWeightKg: null }, { maxWeightKg: { gte: weightKg } }] } : { maxWeightKg: null },
       ],
     },
-    include: {
+    select: {
+      id:true,companyId:true,providerId:true,fallbackProviderId:true,name:true,code:true,priority:true,autoBook:true,routeTemplateId:true,routeTemplateLegId:true,
+      routeTemplateLeg:{select:{routeTemplateId:true}},
       provider: {
         select: {
           id: true,
+          companyId:true,
           providerCode: true,
           environment: true,
         },
       },
     },
-    orderBy: [{ priority: "desc" }, { createdAt: "asc" }],
+    orderBy: [{ priority: "desc" }, { createdAt: "asc" }, { id:"asc" }],
     take: 1,
   });
 
   const row = rows[0];
   if (!row) return null;
+  if(row.companyId!==companyId || row.provider.companyId!==companyId || (row.routeTemplateLegId && (!row.routeTemplateId || row.routeTemplateLeg?.routeTemplateId!==row.routeTemplateId))) return null;
   return {
     id: row.id,
     companyId: row.companyId,
@@ -297,4 +318,5 @@ export async function resolveCarrierRoutingRuleForOrderLeg(args: {
     priority: Number(row.priority ?? 0),
     autoBook: Boolean(row.autoBook),
   };
+  },{isolationLevel:Prisma.TransactionIsolationLevel.RepeatableRead,maxWait:2000,timeout:5000});
 }
