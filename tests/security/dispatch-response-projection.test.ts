@@ -10,6 +10,8 @@ const summary = { id: "synthetic-order", orderNumber: "synthetic-number", status
 const summarySelect = { id: true, orderNumber: true, status: true, assignedDriverId: true, currentWarehouseId: true, updatedAt: true };
 beforeEach(() => {
   jest.clearAllMocks();
+  db.$executeRawUnsafe.mockResolvedValue(0);
+  db.$queryRaw.mockResolvedValue([{id:"synthetic-order"}]);
   (loadAccessSnapshot as jest.Mock).mockResolvedValue({...actor,userId:actor.id,permissionCodes:["shipment.assignCourier","shipment.changeStatus"],roleCodes:[],warehouseId:null});
   (buildMembershipOrderScopeWhere as jest.Mock).mockResolvedValue({tenantId:actor.tenantId,ownerOrgId:actor.companyId});
   db.$transaction.mockImplementation(async (fn: any) => fn(db));
@@ -36,11 +38,28 @@ it.each([false, true])("bulk status includeFull=%s uses the same minimized respo
 it("driver mutation retains its authorized summary contract", async () => {
   const driverActor = { ...actor, id: summary.assignedDriverId };
   (loadAccessSnapshot as jest.Mock).mockResolvedValue({...driverActor,userId:driverActor.id,permissionCodes:["shipment.changeStatus"],roleCodes:[],warehouseId:null});
-  db.order.findFirst.mockResolvedValueOnce({ ...summary, cashCollections: [], codAmount: null, serviceCharge: null }).mockImplementation(async (query: any) => { assertResponseQuery(query); return summary; });
+  db.order.findFirst.mockResolvedValueOnce({ ...summary, cashCollections: [], codAmount: null, serviceCharge: null }).mockResolvedValueOnce({ ...summary, cashCollections: [], codAmount: null, serviceCharge: null }).mockImplementation(async (query: any) => { assertResponseQuery(query); return summary; });
   expect(await updateDriverOrderStatus({ orderId: summary.id, status: "pickup_in_progress", actor: driverActor })).toEqual(summary);
 });
 it("out-of-scope mutation never reads a response or writes business events", async () => {
   db.order.findMany.mockResolvedValue([]);
   await expect(updateOrdersStatusBulk({ orderIds: [summary.id], status: "exception", reasonCode: "NO_CAPACITY_PICKUP", actor, includeFull: true })).rejects.toMatchObject({ statusCode: 403 });
   expect(db.order.findMany).toHaveBeenCalledTimes(1); expect(db.order.updateMany).not.toHaveBeenCalled(); expect(db.tracking.createMany).not.toHaveBeenCalled(); expect(enqueueCargoPilotDomainEventsTx).not.toHaveBeenCalled();
+});
+it.each([
+  {name:"assignment",state:{...summary,assignedDriverId:"synthetic-other-driver"},status:"pickup_in_progress",message:"not assigned"},
+  {name:"status",state:{...summary,status:"cancelled"},status:"pickup_in_progress",message:"final state"},
+  {name:"cash",state:{...summary,status:"pickup_in_progress",deliveryChargePaidBy:"SENDER",cashCollections:[{kind:"service_charge",status:"expected",expectedAmount:5}]},status:"picked_up",message:"Collect cash first"},
+])("driver rechecks $name after the lock before any write",async({state,status,message})=>{
+  (loadAccessSnapshot as jest.Mock).mockResolvedValue({...actor,userId:summary.assignedDriverId,permissionCodes:["shipment.changeStatus"],roleCodes:[],warehouseId:null});
+  db.order.findFirst.mockResolvedValueOnce(summary).mockResolvedValueOnce(state);
+  await expect(updateDriverOrderStatus({actor:{...actor,id:summary.assignedDriverId},orderId:summary.id,status:status as any})).rejects.toThrow(message);
+  expect(db.$queryRaw).toHaveBeenCalledTimes(1);expect(db.order.updateMany).not.toHaveBeenCalled();expect(db.tracking.create).not.toHaveBeenCalled();expect(enqueueCargoPilotDomainEventsTx).not.toHaveBeenCalled();
+  expect(db.$transaction.mock.calls[0][1]).toEqual({isolationLevel:"ReadCommitted",maxWait:2000,timeout:10000});
+});
+it("missing lock target rejects without writes or a protected response",async()=>{
+  (loadAccessSnapshot as jest.Mock).mockResolvedValue({...actor,userId:summary.assignedDriverId,permissionCodes:["shipment.changeStatus"],roleCodes:[],warehouseId:null});
+  db.order.findFirst.mockResolvedValue(summary);db.$queryRaw.mockResolvedValueOnce([]);
+  await expect(updateDriverOrderStatus({actor:{...actor,id:summary.assignedDriverId},orderId:summary.id,status:"pickup_in_progress"})).rejects.toMatchObject({statusCode:409});
+  expect(db.order.findFirst).toHaveBeenCalledTimes(1);expect(db.order.updateMany).not.toHaveBeenCalled();expect(db.tracking.create).not.toHaveBeenCalled();expect(enqueueCargoPilotDomainEventsTx).not.toHaveBeenCalled();
 });

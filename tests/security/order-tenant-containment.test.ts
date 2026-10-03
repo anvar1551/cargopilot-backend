@@ -95,6 +95,8 @@ function accessRecord(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  database.$executeRawUnsafe.mockResolvedValue(0);
+  database.$queryRaw.mockResolvedValue([{id:"synthetic-order"}]);
   clearIdentityAccessCacheForUser(ids.user);
   database.companyMembership.findFirst.mockResolvedValue(accessRecord());
   database.order.findMany.mockResolvedValue([]);

@@ -621,79 +621,88 @@ export async function updateDriverOrderStatus(args: {
     throw orderError("orderId is required", 400);
   }
 
-  const order = await prisma.order.findFirst({
-    where: dispatchOrderWhere(authority, [orderId]),
-    select: {
-      id: true,
-      status: true,
-      lastExceptionReason: true,
-      assignedDriverId: true,
-      currentWarehouseId: true,
-      codAmount: true,
-      codPaidStatus: true,
-      serviceCharge: true,
-      serviceChargePaidStatus: true,
-      deliveryChargePaidBy: true,
-      cashCollections: {
-        select: {
-          kind: true,
-          status: true,
-          expectedAmount: true,
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe("SET LOCAL lock_timeout = '2s'");
+    await tx.$executeRawUnsafe("SET LOCAL statement_timeout = '5s'");
+    const stateQuery = {
+      where: dispatchOrderWhere(authority, [orderId]),
+      select: {
+        id: true,
+        status: true,
+        lastExceptionReason: true,
+        assignedDriverId: true,
+        currentWarehouseId: true,
+        codAmount: true,
+        codPaidStatus: true,
+        serviceCharge: true,
+        serviceChargePaidStatus: true,
+        deliveryChargePaidBy: true,
+        cashCollections: {
+          select: {
+            kind: true,
+            status: true,
+            expectedAmount: true,
+          },
         },
       },
-    },
-  });
-  if (!order) {
-    throw orderError("Order not found", 404);
-  }
-  if (order.assignedDriverId !== actor.id) {
-    throw orderError("You are not assigned to this order", 403);
-  }
-  if (FINAL_ORDER_STATUSES.includes(order.status)) {
-    throw orderError("Order is already in final state", 400);
-  }
+    } as const;
+    const initial = await tx.order.findFirst(stateQuery);
+    if (!initial) throw orderError("Order not found", 404);
+    const locked = await tx.$queryRaw<Array<{ id: string }>>`SELECT "id" FROM "Order"
+      WHERE "id" = ${orderId}::uuid AND "tenantId" = ${actor.tenantId}::uuid
+        AND ("ownerOrgId" = ${actor.companyId}::uuid OR "assignedOrgId" = ${actor.companyId}::uuid) FOR UPDATE`;
+    if (locked.length !== 1) throw orderError("Order is no longer in scope", 409);
+    const order = await tx.order.findFirst(stateQuery);
+    if (!order) {
+      throw orderError("Order not found", 404);
+    }
+    if (order.assignedDriverId !== actor.id) {
+      throw orderError("You are not assigned to this order", 403);
+    }
+    if (FINAL_ORDER_STATUSES.includes(order.status)) {
+      throw orderError("Order is already in final state", 400);
+    }
 
-  const allowedNext = getDriverAllowedTransitionsForOrder(order);
-  if (!allowedNext.includes(status)) {
-    const currentStage = formatStatus(order.status);
-    const targetStage = formatStatus(status);
-    const allowedStages = allowedNext.map(formatStatus).join(", ");
-    throw orderError(
-      `Driver cannot move order from ${currentStage} to ${targetStage}. Allowed next stages: ${allowedStages || "none"}.`,
-      400,
-    );
-  }
+    const allowedNext = getDriverAllowedTransitionsForOrder(order);
+    if (!allowedNext.includes(status)) {
+      const currentStage = formatStatus(order.status);
+      const targetStage = formatStatus(status);
+      const allowedStages = allowedNext.map(formatStatus).join(", ");
+      throw orderError(
+        `Driver cannot move order from ${currentStage} to ${targetStage}. Allowed next stages: ${allowedStages || "none"}.`,
+        400,
+      );
+    }
 
-  if (REASON_REQUIRED_STATUSES.has(status) && !reasonCode) {
-    throw orderError(`reasonCode is required when status is ${status}`, 400);
-  }
+    if (REASON_REQUIRED_STATUSES.has(status) && !reasonCode) {
+      throw orderError(`reasonCode is required when status is ${status}`, 400);
+    }
 
-  const { hasPickupCashDue, hasDeliveryCashDue } = hasCashDueForStage(order);
+    const { hasPickupCashDue, hasDeliveryCashDue } = hasCashDueForStage(order);
 
-  if (status === OrderStatus.picked_up && hasPickupCashDue) {
-    throw orderError(
-      "Cannot complete pickup while sender-side service charge is still expected. Collect cash first.",
-      400,
-    );
-  }
+    if (status === OrderStatus.picked_up && hasPickupCashDue) {
+      throw orderError(
+        "Cannot complete pickup while sender-side service charge is still expected. Collect cash first.",
+        400,
+      );
+    }
 
-  if (status === OrderStatus.delivered && hasDeliveryCashDue) {
-    throw orderError(
-      "Cannot complete delivery while COD/service charge is still expected. Collect cash first.",
-      400,
-    );
-  }
+    if (status === OrderStatus.delivered && hasDeliveryCashDue) {
+      throw orderError(
+        "Cannot complete delivery while COD/service charge is still expected. Collect cash first.",
+        400,
+      );
+    }
 
-  const updateData: any = { status };
-  if (status === OrderStatus.at_warehouse) {
-    updateData.assignedDriverId = null;
-  }
-  if (status === OrderStatus.exception) {
-    updateData.lastExceptionReason = reasonCode ?? null;
-    updateData.lastExceptionAt = new Date();
-  }
+    const updateData: any = { status };
+    if (status === OrderStatus.at_warehouse) {
+      updateData.assignedDriverId = null;
+    }
+    if (status === OrderStatus.exception) {
+      updateData.lastExceptionReason = reasonCode ?? null;
+      updateData.lastExceptionAt = new Date();
+    }
 
-  await prisma.$transaction(async (tx) => {
     const updated = await tx.order.updateMany({
       where: dispatchOrderWhere(authority, [orderId]),
       data: updateData,
@@ -730,7 +739,7 @@ export async function updateDriverOrderStatus(args: {
         },
       },
     ]);
-  });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, maxWait: 2000, timeout: 10000 });
 
   return prisma.order.findFirst({
     where: dispatchOrderWhere(authority, [orderId]),
