@@ -47,6 +47,11 @@ const bulkOrderIdsSchema = z.union([
   z.string().trim().min(1),
 ]);
 
+const expectedDispatchStatesSchema = z.array(z.object({
+  orderId: z.string().trim().min(1), updatedAt: z.iso.datetime({ precision: 3 }), status: enumSchema(OrderStatus),
+  assignedDriverId: z.string().trim().min(1).nullable(), currentWarehouseId: z.string().trim().min(1).nullable(),
+}).strict()).min(1).max(100);
+
 const assignTasksBulkBodySchema = z.object({
   driverId: z.string().trim().min(1),
   type: z.enum(["pickup", "delivery", "linehaul"]).optional(),
@@ -54,6 +59,7 @@ const assignTasksBulkBodySchema = z.object({
   note: z.string().nullable().optional(),
   region: z.string().nullable().optional(),
   orderIds: bulkOrderIdsSchema,
+  expectedStates: expectedDispatchStatesSchema,
 });
 
 const statusBulkBodySchema = z.object({
@@ -63,6 +69,7 @@ const statusBulkBodySchema = z.object({
   note: z.string().nullable().optional(),
   region: z.string().nullable().optional(),
   orderIds: bulkOrderIdsSchema,
+  expectedStates: expectedDispatchStatesSchema,
 });
 
 const driverStatusBodySchema = z.object({

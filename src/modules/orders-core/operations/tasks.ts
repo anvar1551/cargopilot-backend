@@ -1,3 +1,4 @@
+import { committedDispatchChanges } from "../domain/dispatch-batch";
 import { OrderStatus, ReasonCode } from "@prisma/client";
 import {
   emitDriverNotification,
@@ -20,6 +21,7 @@ type AssignTaskInput = {
     note?: string | null;
     region?: string | null;
     orderIds?: unknown;
+    expectedStates?: unknown;
   };
   includeFull: boolean;
 };
@@ -33,6 +35,7 @@ type UpdateStatusBulkInput = {
     note?: string | null;
     region?: string | null;
     orderIds?: unknown;
+    expectedStates?: unknown;
   };
   includeFull: boolean;
 };
@@ -68,6 +71,7 @@ export async function assignTasksBulkForActor(input: AssignTaskInput) {
 
   const orders = await assignDriversBulkDomain({
     orderIds,
+    expectedStates: body.expectedStates,
     driverId,
     type,
     warehouseId: warehouseId ?? null,
@@ -77,7 +81,7 @@ export async function assignTasksBulkForActor(input: AssignTaskInput) {
     includeFull,
   });
 
-  for (const order of orders as any[]) {
+  for (const order of committedDispatchChanges(orders) as any[]) {
     const assignedDriverId = String(order?.assignedDriverId ?? driverId).trim();
     if (!assignedDriverId) continue;
     const eventOrderId = String(order?.id ?? "").trim();
@@ -88,7 +92,7 @@ export async function assignTasksBulkForActor(input: AssignTaskInput) {
       orderId: eventOrderId,
       orderNumber: orderNumber || null,
       status: nextStatus,
-      updatedAt: new Date().toISOString(),
+      updatedAt: new Date(order.updatedAt).toISOString(),
     }).catch(() => undefined);
 
     void emitDriverNotification(assignedDriverId, {
@@ -122,6 +126,7 @@ export async function updateStatusBulkForActor(input: UpdateStatusBulkInput) {
 
   const orders = await updateOrdersStatusBulk({
     orderIds,
+    expectedStates: body.expectedStates,
     status,
     reasonCode: reasonCode ?? null,
     warehouseId: warehouseId ?? null,
@@ -131,7 +136,7 @@ export async function updateStatusBulkForActor(input: UpdateStatusBulkInput) {
     includeFull,
   });
 
-  for (const order of orders as any[]) {
+  for (const order of committedDispatchChanges(orders) as any[]) {
     const assignedDriverId = String(order?.assignedDriverId ?? "").trim();
     if (!assignedDriverId) continue;
     const orderId = String(order?.id ?? "").trim();
@@ -142,7 +147,7 @@ export async function updateStatusBulkForActor(input: UpdateStatusBulkInput) {
       orderId,
       orderNumber: orderNumber || null,
       status: nextStatus,
-      updatedAt: new Date().toISOString(),
+      updatedAt: new Date(order.updatedAt).toISOString(),
     }).catch(() => undefined);
 
     void emitDriverNotification(assignedDriverId, {

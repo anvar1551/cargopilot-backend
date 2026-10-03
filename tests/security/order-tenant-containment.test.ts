@@ -187,8 +187,9 @@ it("rejects a foreign or legacy-unowned delete before business or storage effect
 });
 
 it("rejects an unscoped warehouse reference without changing the order", async () => {
+  database.$queryRaw.mockResolvedValue([{id:ids.order}]);
   database.order.findMany.mockResolvedValue([{
-    id: ids.order,
+    updatedAt:new Date("2026-10-03T00:00:00.000Z"), assignedDriverId:null, id: ids.order,
     status: "pending",
     currentWarehouseId: null,
     codAmount: null,
@@ -200,7 +201,7 @@ it("rejects an unscoped warehouse reference without changing the order", async (
   }]);
 
   await expect(updateOrdersStatusBulk({
-    orderIds: [ids.order],
+    orderIds: [ids.order], expectedStates:[{orderId:ids.order,updatedAt:"2026-10-03T00:00:00.000Z",status:"pending",assignedDriverId:null,currentWarehouseId:null}],
     status: "in_transit" as any,
     warehouseId: ids.warehouse,
     actor,
@@ -210,11 +211,13 @@ it("rejects an unscoped warehouse reference without changing the order", async (
 });
 
 it("rejects a driver without an active membership in the selected company", async () => {
+  database.$queryRaw.mockResolvedValue([{id:ids.order}]);
+  database.order.findMany.mockResolvedValue([{id:ids.order,status:"pending",assignedDriverId:null,currentWarehouseId:null,updatedAt:new Date("2026-10-03T00:00:00.000Z")}]);
   database.user.findUnique.mockResolvedValue({ id: "driver-b", driverType: "local" });
-  database.companyMembership.findFirst.mockResolvedValueOnce(accessRecord()).mockResolvedValueOnce(accessRecord()).mockResolvedValueOnce(null);
+  database.companyMembership.findFirst.mockResolvedValueOnce(accessRecord()).mockResolvedValueOnce(accessRecord()).mockResolvedValueOnce(accessRecord()).mockResolvedValueOnce(accessRecord()).mockResolvedValueOnce(null);
 
   await expect(assignDriversBulk({
-    orderIds: [ids.order],
+    orderIds: [ids.order], expectedStates:[{orderId:ids.order,updatedAt:"2026-10-03T00:00:00.000Z",status:"pending",assignedDriverId:null,currentWarehouseId:null}],
     driverId: "driver-b",
     actor,
   })).rejects.toMatchObject({ statusCode: 403 });

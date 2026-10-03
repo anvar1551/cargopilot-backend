@@ -5,7 +5,9 @@ import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import {createTenantDemoFixture,TENANT_DEMO_IDS as ids} from "../../src/modules/tenancy/demo-fixtures";
 import {persistTenantDemoFixture} from "../tenancy/postgres-fixture.persistence";
-import {updateDriverOrderStatus} from "../../src/modules/orders-core/operations/order-status";
+import {assignDriversBulk,updateOrdersStatusBulk,updateDriverOrderStatus} from "../../src/modules/orders-core/operations/order-status";
+import {randomUUID} from "crypto";
+const bulkSecond=randomUUID();
 const url=process.env.CARGOPILOT_WORKER_TEST_DATABASE_URL,runId=process.env.CARGOPILOT_WORKER_RUN_ID;
 if(!url||!runId||!/^[a-f0-9]{12}$/.test(runId))throw Error("Disposable driver lifecycle identity required");
 const target=new URL(url);if(target.hostname!=="127.0.0.1"||target.username!=="cp_worker_it"||target.pathname!==`/cp_worker_${runId}`)throw Error("Refusing existing PostgreSQL target");
@@ -31,4 +33,66 @@ it("driver lifecycle PostgreSQL observed Order lock wait serializes a competing 
     let observed=false;for(let n=0;n<20;n++){const waiting=await pool.query(`SELECT count(*)::int AS count FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%FOR UPDATE%' AND query LIKE '%"Order"%'`);if(waiting.rows[0].count>0){observed=true;break;}await new Promise(resolve=>setTimeout(resolve,50));}expect(observed).toBe(true);
     await held.query("COMMIT");release=true;await pending;const after=await snapshot();expect(after.orders.find(o=>o.id===orderId)!.status).toBe("pickup_in_progress");expect(after.tracking.length-before.tracking.length).toBe(1);expect(after.outbox.length-before.outbox.length).toBe(1);expect(after.cash).toEqual(before.cash);expect(after.finance).toEqual(before.finance);
   }finally{if(!release)await held.query("ROLLBACK");held.release();if(pending)await Promise.allSettled([pending]);}
+});
+
+beforeAll(async()=>{
+  const role=await mockPrisma.role.findFirstOrThrow({where:{code:"synthetic_lifecycle_driver",companyId:actor.companyId}});
+  for(const key of ["shipment.assignCourier","drivers.telemetry"]){const permission=await mockPrisma.permission.create({data:{key,resource:"orders",action:"update",description:"Synthetic bulk test"}});await mockPrisma.rolePermission.create({data:{roleId:role.id,permissionId:permission.id}});}
+  for(const [userId,membershipId] of [[ids.users.maker,ids.companyMemberships.makerTransAsiaUz],[ids.users.checker,ids.companyMemberships.checkerTransAsiaUz]]){
+    await mockPrisma.user.update({where:{id:userId},data:{driverType:"local"}});if(userId!==actor.id)await mockPrisma.membershipRole.create({data:{membershipId,roleId:role.id}});
+  }
+  const data=await mockPrisma.order.findUniqueOrThrow({where:{id:orderId}});
+  await mockPrisma.order.create({data:{...data,id:bulkSecond,orderNumber:"synthetic-bulk-"+runId} as any});
+});
+beforeEach(async()=>{await mockPrisma.order.update({where:{id:bulkSecond},data:{status:"assigned",assignedDriverId:actor.id,serviceCharge:0,codAmount:0,deliveryChargePaidBy:"SENDER"}});});
+const batchIds:string[]=[orderId,bulkSecond];
+async function expectations(list=batchIds){const rows=await mockPrisma.order.findMany({where:{id:{in:list}},select:{id:true,updatedAt:true,status:true,assignedDriverId:true,currentWarehouseId:true}});return rows.map(({id,updatedAt,...rest})=>({orderId:id,updatedAt:updatedAt.toISOString(),...rest}));}
+it("bulk PostgreSQL valid two-order assignment commits exact history/outbox; equal assignment is no-op",async()=>{
+  const before=await snapshot();const result=await assignDriversBulk({actor,orderIds:batchIds,expectedStates:await expectations(),driverId:ids.users.checker});expect(result).toHaveLength(2);
+  let after=await snapshot();expect(after.orders.filter(o=>batchIds.includes(o.id)).every(o=>o.assignedDriverId===ids.users.checker)).toBe(true);expect(after.tracking.length-before.tracking.length).toBe(2);expect(after.outbox.length-before.outbox.length).toBe(2);expect(after.cash).toEqual(before.cash);expect(after.finance).toEqual(before.finance);
+  const committed=after;await assignDriversBulk({actor,orderIds:batchIds,expectedStates:await expectations(),driverId:ids.users.checker,note:"no note-only action"});after=await snapshot();expect(after).toEqual(committed);
+});
+it.each(["assignment","status"])("bulk PostgreSQL concurrent duplicate %s yields one accepted batch and no duplicate effects",async kind=>{
+  const expectedStates=await expectations(),before=await snapshot();const results=await Promise.allSettled(Array.from({length:3},()=>kind==="assignment"?assignDriversBulk({actor,orderIds:batchIds,expectedStates,driverId:ids.users.checker}):updateOrdersStatusBulk({actor,orderIds:batchIds,expectedStates,status:"pickup_in_progress"})));
+  expect(results.filter(r=>r.status==="fulfilled")).toHaveLength(1);expect(results.filter(r=>r.status==="rejected")).toHaveLength(2);const after=await snapshot();expect(after.tracking.length-before.tracking.length).toBe(2);expect(after.outbox.length-before.outbox.length).toBe(2);expect(after.cash).toEqual(before.cash);expect(after.finance).toEqual(before.finance);
+  expect(after.orders.filter(o=>batchIds.includes(o.id)).every(o=>kind==="assignment"?o.assignedDriverId===ids.users.checker:o.status==="pickup_in_progress")).toBe(true);
+});
+it("bulk PostgreSQL opposing assignments with reversed input order have one winner without deadlock or split ownership",async()=>{
+  await mockPrisma.order.updateMany({where:{id:{in:batchIds}},data:{status:"pending",assignedDriverId:null}});const expectedStates=await expectations(),before=await snapshot();
+  const results=await Promise.allSettled([assignDriversBulk({actor,orderIds:batchIds,expectedStates,driverId:actor.id}),assignDriversBulk({actor,orderIds:[...batchIds].reverse(),expectedStates,driverId:ids.users.checker})]);expect(results.filter(r=>r.status==="fulfilled")).toHaveLength(1);
+  const after=await snapshot(),owners=new Set(after.orders.filter(o=>batchIds.includes(o.id)).map(o=>o.assignedDriverId));expect(owners.size).toBe(1);expect([actor.id,ids.users.checker]).toContain([...owners][0]);expect(after.tracking.length-before.tracking.length).toBe(2);expect(after.outbox.length-before.outbox.length).toBe(2);expect(after.cash).toEqual(before.cash);
+});
+it.each(["status","assignment"])("bulk PostgreSQL competing single-driver mutation and bulk %s preserve one coherent result",async kind=>{
+  const expectedStates=await expectations(),before=await snapshot();const results=await Promise.allSettled([updateDriverOrderStatus({actor,orderId,status:"pickup_in_progress"}),kind==="status"?updateOrdersStatusBulk({actor,orderIds:batchIds,expectedStates,status:"pickup_in_progress"}):assignDriversBulk({actor,orderIds:batchIds,expectedStates,driverId:ids.users.checker})]);expect(results.filter(r=>r.status==="fulfilled")).toHaveLength(1);
+  const bulkWon=results[1].status==="fulfilled",after=await snapshot();expect(after.tracking.length-before.tracking.length).toBe(bulkWon?2:1);expect(after.outbox.length-before.outbox.length).toBe(bulkWon?2:1);expect(after.cash).toEqual(before.cash);expect(after.finance).toEqual(before.finance);
+  const first=after.orders.find(o=>o.id===orderId)!,second=after.orders.find(o=>o.id===bulkSecond)!;
+  if(bulkWon&&kind==="assignment"){expect(first.assignedDriverId).toBe(ids.users.checker);expect(second.assignedDriverId).toBe(ids.users.checker);expect(first.status).toBe("assigned");}else{expect(first.status).toBe("pickup_in_progress");expect(second.status).toBe(bulkWon?"pickup_in_progress":"assigned");}
+});
+it.each(["stale","foreign","invalid-stage","wrong-assignee","cash"])("bulk PostgreSQL mixed batch %s rejects all members with exact unchanged records",async kind=>{
+  let list=batchIds;if(kind==="foreign")list=[orderId,ids.orders.unrelated];
+  if(kind==="invalid-stage")await mockPrisma.order.update({where:{id:bulkSecond},data:{status:"cancelled"}});
+  if(kind==="wrong-assignee")await mockPrisma.order.update({where:{id:bulkSecond},data:{assignedDriverId:ids.users.checker}});
+  if(kind==="cash"){await mockPrisma.order.updateMany({where:{id:{in:batchIds}},data:{status:"pickup_in_progress"}});await mockPrisma.cashCollection.create({data:{orderId:bulkSecond,kind:"service_charge",status:"expected",expectedAmount:5}});}
+  const expectedStates=await expectations(list);if(kind==="stale")expectedStates.find(x=>x.orderId===bulkSecond)!.updatedAt="2020-01-01T00:00:00.000Z";const before=await snapshot();
+  try{await expect(kind==="invalid-stage"?assignDriversBulk({actor,orderIds:list,expectedStates,driverId:ids.users.checker}):updateOrdersStatusBulk({actor,orderIds:list,expectedStates,status:kind==="cash"?"picked_up":"pickup_in_progress"})).rejects.toThrow();expect(await snapshot()).toEqual(before);}finally{if(kind==="cash")await mockPrisma.cashCollection.deleteMany({where:{orderId:bulkSecond}});}
+});
+it.each(["assignment","status"])("bulk PostgreSQL second-row outbox failure rolls back complete %s batch",async kind=>{
+  const expectedStates=await expectations(),before=await snapshot();await pool.query(`CREATE FUNCTION cp_bulk_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW."entityId"='${bulkSecond}' THEN RAISE EXCEPTION 'synthetic bulk outbox failure'; END IF; RETURN NEW; END $$;CREATE TRIGGER cp_bulk_fail BEFORE INSERT ON "AnalyticsDomainEventOutbox" FOR EACH ROW EXECUTE FUNCTION cp_bulk_fail();`);
+  try{await expect(kind==="assignment"?assignDriversBulk({actor,orderIds:batchIds,expectedStates,driverId:ids.users.checker}):updateOrdersStatusBulk({actor,orderIds:batchIds,expectedStates,status:"pickup_in_progress"})).rejects.toThrow("synthetic bulk outbox failure");expect(await snapshot()).toEqual(before);}finally{await pool.query('DROP TRIGGER cp_bulk_fail ON "AnalyticsDomainEventOutbox"; DROP FUNCTION cp_bulk_fail();');}
+});
+it("bulk PostgreSQL manual status override is contained and same-tenant foreign company hides whole batch",async()=>{
+  await mockPrisma.order.update({where:{id:orderId},data:{assignedDriverId:ids.users.checker}});const before=await snapshot();await expect(updateOrdersStatusBulk({actor,orderIds:[orderId],expectedStates:await expectations([orderId]),status:"pickup_in_progress"})).rejects.toMatchObject({statusCode:403});await expect(assignDriversBulk({actor,orderIds:[orderId,ids.orders.transAsiaDe],expectedStates:await expectations([orderId,ids.orders.transAsiaDe]),driverId:ids.users.checker})).rejects.toMatchObject({statusCode:403});expect(await snapshot()).toEqual(before);
+});
+it("bulk PostgreSQL revoked target while waiting for Order lock prevents any assignment",async()=>{
+  const expectedStates=await expectations(),before=await snapshot(),held=await pool.connect();let pending:Promise<unknown>|undefined,released=false;
+  try{await held.query("BEGIN");await held.query('SELECT "id" FROM "Order" WHERE "id"=$1 FOR UPDATE',[orderId]);pending=assignDriversBulk({actor,orderIds:batchIds,expectedStates,driverId:ids.users.checker});pending.catch(()=>undefined);
+    let observed=false;for(let n=0;n<20;n++){const r=await pool.query(`SELECT count(*)::int AS count FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%FOR UPDATE%' AND query LIKE '%"Order"%'`);if(r.rows[0].count){observed=true;break;}await new Promise(resolve=>setTimeout(resolve,50));}expect(observed).toBe(true);await mockPrisma.companyMembership.update({where:{id:ids.companyMemberships.checkerTransAsiaUz},data:{status:"suspended"}});await held.query("COMMIT");released=true;await expect(pending).rejects.toMatchObject({statusCode:403});expect(await snapshot()).toEqual(before);
+  }finally{if(!released)await held.query("ROLLBACK");held.release();if(pending)await Promise.allSettled([pending]);await mockPrisma.companyMembership.update({where:{id:ids.companyMemberships.checkerTransAsiaUz},data:{status:"active"}});}
+});
+
+it("bulk PostgreSQL revoked operator while waiting for Order lock prevents any assignment",async()=>{
+  const expectedStates=await expectations(),before=await snapshot(),held=await pool.connect();let pending:Promise<unknown>|undefined,released=false;
+  try{await held.query("BEGIN");await held.query('SELECT "id" FROM "Order" WHERE "id"=$1 FOR UPDATE',[orderId]);pending=assignDriversBulk({actor,orderIds:batchIds,expectedStates,driverId:ids.users.checker});pending.catch(()=>undefined);
+    let observed=false;for(let n=0;n<20;n++){const r=await pool.query(`SELECT count(*)::int AS count FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%FOR UPDATE%' AND query LIKE '%"Order"%'`);if(r.rows[0].count){observed=true;break;}await new Promise(resolve=>setTimeout(resolve,50));}expect(observed).toBe(true);await mockPrisma.companyMembership.update({where:{id:actor.membershipId},data:{status:"suspended"}});await held.query("COMMIT");released=true;await expect(pending).rejects.toMatchObject({statusCode:403});expect(await snapshot()).toEqual(before);
+  }finally{if(!released)await held.query("ROLLBACK");held.release();if(pending)await Promise.allSettled([pending]);await mockPrisma.companyMembership.update({where:{id:actor.membershipId},data:{status:"active"}});}
 });

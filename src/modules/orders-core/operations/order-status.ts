@@ -14,6 +14,70 @@ import { OrderActor, orderError } from "../shared";
 
 import { requireDispatchAuthority, dispatchOrderWhere, type DispatchAuthority } from "../domain/dispatch-authority";
 
+import { parseDispatchBatch, requireExpectedDispatchState, lockDispatchBatch, nextDispatchTime, withDispatchChanges, dispatchTransactionOptions } from "../domain/dispatch-batch";
+
+const dispatchStateSelect = {
+        id: true, updatedAt: true,
+        status: true,
+        lastExceptionReason: true,
+        assignedDriverId: true,
+        currentWarehouseId: true,
+        codAmount: true,
+        codPaidStatus: true,
+        serviceCharge: true,
+        serviceChargePaidStatus: true,
+        deliveryChargePaidBy: true,
+        cashCollections: {
+          select: {
+            kind: true,
+            status: true,
+            expectedAmount: true,
+          },
+        },
+      } as const;
+
+type DispatchRow = Prisma.OrderGetPayload<{select:typeof dispatchStateSelect}>;
+function assertDriverStatusTransition(actor:OrderActor,order:DispatchRow,status:OrderStatus,reasonCode?:ReasonCode|null) {
+    if (order.assignedDriverId !== actor.id) {
+      throw orderError("You are not assigned to this order; manual transition policy is unavailable", 403);
+    }
+    if (FINAL_ORDER_STATUSES.includes(order.status)) {
+      throw orderError("Order is already in final state", 400);
+    }
+
+    const allowedNext = getDriverAllowedTransitionsForOrder(order);
+    if (!allowedNext.includes(status)) {
+      const currentStage = formatStatus(order.status);
+      const targetStage = formatStatus(status);
+      const allowedStages = allowedNext.map(formatStatus).join(", ");
+      throw orderError(
+        `Driver cannot move order from ${currentStage} to ${targetStage}. Allowed next stages: ${allowedStages || "none"}.`,
+        400,
+      );
+    }
+
+    if (REASON_REQUIRED_STATUSES.has(status) && !reasonCode) {
+      throw orderError(`reasonCode is required when status is ${status}`, 400);
+    }
+
+    const { hasPickupCashDue, hasDeliveryCashDue } = hasCashDueForStage(order);
+
+    if (status === OrderStatus.picked_up && hasPickupCashDue) {
+      throw orderError(
+        "Cannot complete pickup while sender-side service charge is still expected. Collect cash first.",
+        400,
+      );
+    }
+
+    if (status === OrderStatus.delivered && hasDeliveryCashDue) {
+      throw orderError(
+        "Cannot complete delivery while COD/service charge is still expected. Collect cash first.",
+        400,
+      );
+    }
+
+}
+
 type AssignmentType = "pickup" | "delivery" | "linehaul";
 
 const FINAL_ORDER_STATUSES: OrderStatus[] = [
@@ -121,17 +185,19 @@ function normalizeAssignmentType(input: unknown): AssignmentType {
   if (input === "pickup" || input === "delivery" || input === "linehaul") {
     return input;
   }
-  return "pickup";
+  if (input == null) return "pickup";
+  throw orderError("Invalid assignment type", 400);
 }
 
 async function resolveActorWarehouseType(
   actor: OrderActor,
+  db: Prisma.TransactionClient = prisma,
 ): Promise<WarehouseType | null> {
   if (!actor.warehouseId) return null;
   if (!actor.warehouseId) {
     throw orderError("Warehouse user has no warehouse assigned", 403);
   }
-  const warehouse = await prisma.warehouse.findFirst({
+  const warehouse = await db.warehouse.findFirst({
     where: { id: actor.warehouseId, tenantId: actor.tenantId ?? "__no_access__" },
     select: { type: true, tenantId: true },
   });
@@ -165,7 +231,7 @@ function resolveWarehouseId(actor: OrderActor, provided?: string | null) {
   return provided ?? null;
 }
 
-async function requireWarehouseReference(actor: OrderActor, warehouseId: string | null) {
+async function requireWarehouseReference(actor: OrderActor, warehouseId: string | null, db: Prisma.TransactionClient = prisma) {
   if (!warehouseId) return;
   if (!actor.tenantId) throw orderError("Tenant context required", 403);
 
@@ -179,7 +245,7 @@ async function requireWarehouseReference(actor: OrderActor, warehouseId: string 
     throw orderError("Warehouse is outside the selected membership scope", 403);
   }
 
-  const warehouse = await prisma.warehouse.findFirst({
+  const warehouse = await db.warehouse.findFirst({
     where: { id: warehouseId, tenantId: actor.tenantId },
     select: { id: true },
   });
@@ -273,9 +339,10 @@ async function loadAssignedOrdersForResponse(
   orderIds: string[],
   authority: DispatchAuthority,
   _includeFull?: boolean,
+  db: Prisma.TransactionClient = prisma,
 ) {
   // Full mutation expansion is contained; use authorized detail endpoints.
-  return prisma.order.findMany({
+  return db.order.findMany({
     where: dispatchOrderWhere(authority, orderIds),
     select: {
       id: true,
@@ -290,151 +357,58 @@ async function loadAssignedOrdersForResponse(
 }
 
 export async function assignDriversBulk(args: {
-  orderIds: string[];
-  driverId: string;
-  type?: AssignmentType | string;
-  warehouseId?: string | null;
-  note?: string | null;
-  region?: string | null;
-  actor: OrderActor;
-  includeFull?: boolean;
+  orderIds: string[]; expectedStates?: unknown; driverId: string; type?: AssignmentType | string;
+  warehouseId?: string | null; note?: string | null; region?: string | null; actor: OrderActor; includeFull?: boolean;
 }) {
-  const { orderIds, driverId, warehouseId, note, region, actor: requestedActor, includeFull } =
-    args;
-  const authority = await requireDispatchAuthority(requestedActor, "shipment.assignCourier");
-  const { actor } = authority;
-  const type = normalizeAssignmentType(args.type);
-
-  if (!Array.isArray(orderIds) || orderIds.length === 0) {
-    throw orderError("orderIds must be a non-empty array", 400);
-  }
+  let authority = await requireDispatchAuthority(args.actor, "shipment.assignCourier");
+  let { actor } = authority;
+  const { orderIds, expected } = parseDispatchBatch(args.orderIds, args.expectedStates);
+  const type = normalizeAssignmentType(args.type), driverId = args.driverId;
   if (!driverId) throw orderError("Missing driverId", 400);
-
-  const driver = await prisma.user.findUnique({
-    where: { id: driverId },
-    select: { id: true, driverType: true },
-  });
-  if (!driver || !driver.driverType) {
-    throw orderError("Driver not found or invalid role", 400);
-  }
-  if (!actor.tenantId || !actor.companyId) {
-    throw orderError("Tenant-bound company context required", 403);
-  }
-  const driverMembership = await prisma.companyMembership.findFirst({
-    where: {
-      userId: driverId,
-      tenantId: actor.tenantId,
-      companyId: actor.companyId,
-      status: "active",
-      tenant: { status: "active" },
-      tenantMembership: { userId: driverId, tenantId: actor.tenantId, status: "active" },
-      company: { id: actor.companyId, tenantId: actor.tenantId, isActive: true },
-    },
-    select: { id: true, companyId: true, roles: { select: { role: { select: { companyId: true, isSystem: true,
-      rolePermissions: { select: { permission: { select: { key: true } } } } } } } } },
-  });
-  if (!driverMembership || !driverMembership.roles.some(({ role }) =>
-    (role.companyId === actor.companyId || (role.companyId === null && role.isSystem)) &&
-    role.rolePermissions.some(({ permission }) => permission.key === "drivers.telemetry"))) {
-    throw orderError("Driver is outside the selected company context", 403);
-  }
-
-  const orders = await prisma.order.findMany({
-    where: dispatchOrderWhere(authority, orderIds),
-    select: {
-      id: true,
-      status: true,
-      currentWarehouseId: true,
-    },
-  });
-  if (orders.length !== orderIds.length) {
-    throw orderError("Some orders were not found or out of scope", 403);
-  }
-
-  const final = orders.filter((o) => FINAL_ORDER_STATUSES.includes(o.status));
-  if (final.length) {
-    throw orderError(
-      `Cannot assign driver for final orders: ${final
-        .map((o) => `${o.id}(${o.status})`)
-        .join(", ")}`,
-      400,
-    );
-  }
-
-  assertWarehouseScope(actor, orders);
-
-  const blocked = orders.filter(
-    (o) => !ASSIGNABLE_ORDER_STATUSES[type].includes(o.status),
-  );
-  if (blocked.length) {
-    const blockedStages = Array.from(
-      new Set(blocked.map((o) => formatStatus(o.status))),
-    ).join(", ");
-    const allowedStages = ASSIGNABLE_ORDER_STATUSES[type]
-      .map(formatStatus)
-      .join(", ");
-    throw orderError(
-      `Assignment is not possible at the current stage for ${type}. Current stages: ${blockedStages}. Allowed stages for ${type}: ${allowedStages}.`,
-      400,
-    );
-  }
-
-  const effectiveWarehouseId = resolveWarehouseId(actor, warehouseId);
-  await requireWarehouseReference(actor, effectiveWarehouseId);
-  await prisma.$transaction(async (tx) => {
-    const assignment = await tx.order.updateMany({
-      where: dispatchOrderWhere(authority, orderIds),
-      data: { assignedDriverId: driverId },
-    });
-    if (assignment.count !== orderIds.length) {
-      throw orderError("Some orders are no longer in scope", 409);
+  return prisma.$transaction(async tx => {
+    await lockDispatchBatch(tx, authority, orderIds);
+    authority = await requireDispatchAuthority(actor,"shipment.assignCourier");
+    actor = authority.actor;
+    const orders = await tx.order.findMany({ where: dispatchOrderWhere(authority, orderIds), select: {
+      id: true, status: true, assignedDriverId: true, currentWarehouseId: true, updatedAt: true,
+    } });
+    if (orders.length !== orderIds.length) throw orderError("Some orders are no longer in scope", 409);
+    requireExpectedDispatchState(orders, expected); assertWarehouseScope(actor, orders);
+    if (orders.some(order => FINAL_ORDER_STATUSES.includes(order.status) || !ASSIGNABLE_ORDER_STATUSES[type].includes(order.status)))
+      throw orderError("Assignment is not permitted at the current stage", 409);
+    const driver = await tx.user.findUnique({where:{id:driverId},select:{id:true,driverType:true}});
+    const membership = await tx.companyMembership.findFirst({ where: {
+      userId: driverId, tenantId: actor.tenantId, companyId: actor.companyId!, status: "active", tenant: {status:"active"},
+      tenantMembership: {userId:driverId,tenantId:actor.tenantId!,status:"active"},
+      company:{id:actor.companyId!,tenantId:actor.tenantId!,isActive:true},
+    }, select:{id:true,roles:{select:{role:{select:{companyId:true,isSystem:true,rolePermissions:{select:{permission:{select:{key:true}}}}}}}}} });
+    if (!driver?.driverType || !membership || !membership.roles.some(({role}) =>
+      (role.companyId === actor.companyId || (role.companyId === null && role.isSystem)) &&
+      role.rolePermissions.some(({permission}) => permission.key === "drivers.telemetry"))) throw orderError("Driver is outside the selected company context",403);
+    if (actor.warehouseId && args.warehouseId && actor.warehouseId !== args.warehouseId) throw orderError("Conflicting warehouse selection",403);
+    const warehouseId = resolveWarehouseId(actor,args.warehouseId);
+    await requireWarehouseReference(actor,warehouseId,tx);
+    const changed: string[] = [];
+    for (const order of orders) {
+      const status = type === "pickup" ? OrderStatus.assigned : order.status;
+      if (order.assignedDriverId === driverId && order.status === status) continue;
+      const result = await tx.order.updateMany({where:{AND:[dispatchOrderWhere(authority,[order.id]),{status:order.status,assignedDriverId:order.assignedDriverId,updatedAt:order.updatedAt}]},
+        data:{assignedDriverId:driverId,status,updatedAt:nextDispatchTime(order.updatedAt)}});
+      if (result.count !== 1) throw orderError("Order is no longer in scope",409);
+      changed.push(order.id);
+      await tx.tracking.create({data:{orderId:order.id,status:type === "pickup" ? status : null,reasonCode:null,
+        note:args.note ?? `Driver assigned (${type}) to ${driverId}`,region:args.region ?? null,warehouseId,
+        actorId:actor.id,actorRole:null,parcelId:null}});
     }
-
-    if (type === "pickup") {
-      await tx.order.updateMany({
-        where: {
-          AND: [dispatchOrderWhere(authority, orderIds), { status: { in: [OrderStatus.pending, OrderStatus.exception] } }],
-        },
-        data: { status: OrderStatus.assigned },
-      });
-    }
-
-    await tx.tracking.createMany({
-      data: orderIds.map((orderId) => ({
-        orderId,
-        status: type === "pickup" ? OrderStatus.assigned : null,
-        reasonCode: null,
-        note: note ?? `Driver assigned (${type}) to ${driverId}`,
-        region: region ?? null,
-        warehouseId: effectiveWarehouseId,
-        actorId: actor.id,
-        actorRole: normalizeActorRoleForTracking(),
-        parcelId: null,
-      })),
-    });
-
-    await enqueueCargoPilotDomainEventsTx(
-      tx,
-      orderIds.map((orderId) => ({
-        type: type === "pickup" ? "order_status_changed" : "manual_refresh",
-        tenantScope: resolveActorTenantScope(actor),
-        entityId: orderId,
-        payload: {
-          source: "assignDriversBulk",
-          assignmentType: type,
-          driverId,
-          actorId: actor.id,
-          actorRole: normalizeActorRoleForTracking(),
-        },
-      })),
-    );
-  });
-
-  return loadAssignedOrdersForResponse(orderIds, authority, includeFull);
+    if (changed.length) await enqueueCargoPilotDomainEventsTx(tx,changed.map(id=>({type:type === "pickup" ? "order_status_changed" : "manual_refresh",
+      tenantScope:resolveActorTenantScope(actor),entityId:id,payload:{source:"assignDriversBulk",assignmentType:type,driverId,actorId:actor.id,actorRole:null}})));
+    return withDispatchChanges(await loadAssignedOrdersForResponse(orderIds,authority,args.includeFull,tx),changed);
+  },dispatchTransactionOptions);
 }
 
 export async function assignOrderTasksBulk(args: {
   orderIds: string[];
+  expectedStates?: unknown;
   driverId: string;
   type?: AssignmentType | string;
   warehouseId?: string | null;
@@ -447,162 +421,38 @@ export async function assignOrderTasksBulk(args: {
 }
 
 export async function updateOrdersStatusBulk(args: {
-  orderIds: string[];
-  status: OrderStatus;
-  reasonCode?: ReasonCode | null;
-  warehouseId?: string | null;
-  note?: string | null;
-  region?: string | null;
-  actor: OrderActor;
-  includeFull?: boolean;
+  orderIds: string[]; expectedStates?: unknown; status: OrderStatus; reasonCode?: ReasonCode | null;
+  warehouseId?: string | null; note?: string | null; region?: string | null; actor: OrderActor; includeFull?: boolean;
 }) {
-  const {
-    orderIds,
-    status,
-    reasonCode,
-    warehouseId,
-    note,
-    region,
-    actor: requestedActor,
-    includeFull,
-  } = args;
-  const authority = await requireDispatchAuthority(requestedActor, "shipment.changeStatus");
-  const { actor } = authority;
-
-  const actorWarehouseType = await resolveActorWarehouseType(actor);
-
-  if (!Array.isArray(orderIds) || orderIds.length === 0) {
-    throw orderError("orderIds must be a non-empty array", 400);
-  }
-
-  if (actor.warehouseId) {
-    const allowedStatuses =
-      WAREHOUSE_ALLOWED_MANUAL_STATUSES[
-        actorWarehouseType ?? WarehouseType.warehouse
-      ];
-    if (!allowedStatuses.has(status)) {
-      throw orderError(
-        `Warehouse role can set only: ${Array.from(allowedStatuses).join(", ")}`,
-        403,
-      );
+  let authority = await requireDispatchAuthority(args.actor,"shipment.changeStatus");
+  let {actor} = authority;
+  const {orderIds,expected} = parseDispatchBatch(args.orderIds,args.expectedStates);
+  return prisma.$transaction(async tx => {
+    await lockDispatchBatch(tx,authority,orderIds);
+    authority = await requireDispatchAuthority(actor,"shipment.changeStatus");
+    actor = authority.actor;
+    const orders = await tx.order.findMany({where:dispatchOrderWhere(authority,orderIds),select:dispatchStateSelect});
+    if (orders.length !== orderIds.length) throw orderError("Some orders are no longer in scope",409);
+    requireExpectedDispatchState(orders,expected); assertWarehouseScope(actor,orders);
+    await requireWarehouseReference(actor,args.warehouseId ?? null,tx);
+    const warehouseType = await resolveActorWarehouseType(actor,tx);
+    if (warehouseType && !WAREHOUSE_ALLOWED_MANUAL_STATUSES[warehouseType].has(args.status)) throw orderError("Warehouse target status forbidden",403);
+    // The warehouse target allowlist does not establish a manual transition matrix.
+    for (const order of orders) {
+      assertDriverStatusTransition(actor,order,args.status,args.reasonCode);
+      if (args.warehouseId && args.warehouseId !== order.currentWarehouseId) throw orderError("Warehouse does not belong to current order state",403);
     }
-  }
-
-  if (REASON_REQUIRED_STATUSES.has(status) && !reasonCode) {
-    throw orderError(`reasonCode is required when status is ${status}`, 400);
-  }
-
-  const orders = await prisma.order.findMany({
-    where: dispatchOrderWhere(authority, orderIds),
-    select: {
-      id: true,
-      status: true,
-      currentWarehouseId: true,
-      codAmount: true,
-      codPaidStatus: true,
-      serviceCharge: true,
-      serviceChargePaidStatus: true,
-      deliveryChargePaidBy: true,
-      cashCollections: {
-        select: {
-          kind: true,
-          status: true,
-          expectedAmount: true,
-        },
-      },
-    },
-  });
-  if (orders.length !== orderIds.length) {
-    throw orderError("Some orders were not found or out of scope", 403);
-  }
-
-  assertWarehouseScope(actor, orders);
-
-  const effectiveWarehouseId = resolveWarehouseId(actor, warehouseId);
-  const requiresWarehouseContext =
-    status === OrderStatus.at_warehouse ||
-    status === OrderStatus.in_transit ||
-    status === OrderStatus.out_for_delivery;
-
-  if (requiresWarehouseContext && !effectiveWarehouseId) {
-    throw orderError("warehouseId is required for this update", 400);
-  }
-  await requireWarehouseReference(actor, effectiveWarehouseId);
-
-  if (status === OrderStatus.picked_up || status === OrderStatus.delivered) {
-    const blocked = orders.filter((order) => {
-      const { hasPickupCashDue, hasDeliveryCashDue } = hasCashDueForStage(order);
-
-      if (status === OrderStatus.picked_up) return hasPickupCashDue;
-      return hasDeliveryCashDue;
-    });
-
-    if (blocked.length > 0) {
-      const ids = blocked.map((order) => order.id).join(", ");
-      if (status === OrderStatus.picked_up) {
-        throw orderError(
-          `Cannot complete pickup while sender-side service charge is still expected. Blocked order(s): ${ids}`,
-          400,
-        );
-      }
-      throw orderError(
-        `Cannot complete delivery while COD/service charge is still expected. Blocked order(s): ${ids}`,
-        400,
-      );
+    for (const order of orders) {
+      const result = await tx.order.updateMany({where:{AND:[dispatchOrderWhere(authority,[order.id]),{status:order.status,assignedDriverId:actor.id,updatedAt:order.updatedAt}]},
+        data:{status:args.status,updatedAt:nextDispatchTime(order.updatedAt),...(args.status === OrderStatus.exception ? {lastExceptionReason:args.reasonCode ?? null,lastExceptionAt:new Date()} : {})}});
+      if (result.count !== 1) throw orderError("Order is no longer in scope",409);
+      await tx.tracking.create({data:{orderId:order.id,status:args.status,reasonCode:args.reasonCode ?? null,note:args.note ?? null,region:args.region ?? null,
+        warehouseId:order.currentWarehouseId,actorId:actor.id,actorRole:null,parcelId:null}});
     }
-  }
-
-  const updateData: any = { status };
-  if (status === OrderStatus.at_warehouse && effectiveWarehouseId) {
-    updateData.currentWarehouseId = effectiveWarehouseId;
-    updateData.assignedDriverId = null;
-  }
-  if (status === OrderStatus.exception) {
-    updateData.lastExceptionReason = reasonCode ?? null;
-    updateData.lastExceptionAt = new Date();
-  }
-
-  await prisma.$transaction(async (tx) => {
-    const changed = await tx.order.updateMany({
-      where: dispatchOrderWhere(authority, orderIds),
-      data: updateData,
-    });
-    if (changed.count !== orderIds.length) {
-      throw orderError("Some orders are no longer in scope", 409);
-    }
-
-    await tx.tracking.createMany({
-      data: orderIds.map((orderId) => ({
-        orderId,
-        status,
-        reasonCode: reasonCode ?? null,
-        note: note ?? null,
-        region: region ?? null,
-        warehouseId: effectiveWarehouseId,
-        actorId: actor.id,
-        actorRole: normalizeActorRoleForTracking(),
-        parcelId: null,
-      })),
-    });
-
-    await enqueueCargoPilotDomainEventsTx(
-      tx,
-      orderIds.map((orderId) => ({
-        type: "order_status_changed",
-        tenantScope: resolveActorTenantScope(actor),
-        entityId: orderId,
-        payload: {
-          source: "updateOrdersStatusBulk",
-          status,
-          reasonCode: reasonCode ?? null,
-          actorId: actor.id,
-          actorRole: normalizeActorRoleForTracking(),
-        },
-      })),
-    );
-  });
-
-  return loadAssignedOrdersForResponse(orderIds, authority, includeFull);
+    await enqueueCargoPilotDomainEventsTx(tx,orders.map(order=>({type:"order_status_changed",tenantScope:resolveActorTenantScope(actor),entityId:order.id,
+      payload:{source:"updateOrdersStatusBulk",status:args.status,reasonCode:args.reasonCode ?? null,actorId:actor.id,actorRole:null}})));
+    return withDispatchChanges(await loadAssignedOrdersForResponse(orderIds,authority,args.includeFull,tx),orderIds);
+  },dispatchTransactionOptions);
 }
 
 export async function updateDriverOrderStatus(args: {
@@ -624,28 +474,7 @@ export async function updateDriverOrderStatus(args: {
   await prisma.$transaction(async (tx) => {
     await tx.$executeRawUnsafe("SET LOCAL lock_timeout = '2s'");
     await tx.$executeRawUnsafe("SET LOCAL statement_timeout = '5s'");
-    const stateQuery = {
-      where: dispatchOrderWhere(authority, [orderId]),
-      select: {
-        id: true,
-        status: true,
-        lastExceptionReason: true,
-        assignedDriverId: true,
-        currentWarehouseId: true,
-        codAmount: true,
-        codPaidStatus: true,
-        serviceCharge: true,
-        serviceChargePaidStatus: true,
-        deliveryChargePaidBy: true,
-        cashCollections: {
-          select: {
-            kind: true,
-            status: true,
-            expectedAmount: true,
-          },
-        },
-      },
-    } as const;
+    const stateQuery = {where:dispatchOrderWhere(authority,[orderId]),select:dispatchStateSelect} as const;
     const initial = await tx.order.findFirst(stateQuery);
     if (!initial) throw orderError("Order not found", 404);
     const locked = await tx.$queryRaw<Array<{ id: string }>>`SELECT "id" FROM "Order"
@@ -656,45 +485,9 @@ export async function updateDriverOrderStatus(args: {
     if (!order) {
       throw orderError("Order not found", 404);
     }
-    if (order.assignedDriverId !== actor.id) {
-      throw orderError("You are not assigned to this order", 403);
-    }
-    if (FINAL_ORDER_STATUSES.includes(order.status)) {
-      throw orderError("Order is already in final state", 400);
-    }
+    assertDriverStatusTransition(actor,order,status,reasonCode);
 
-    const allowedNext = getDriverAllowedTransitionsForOrder(order);
-    if (!allowedNext.includes(status)) {
-      const currentStage = formatStatus(order.status);
-      const targetStage = formatStatus(status);
-      const allowedStages = allowedNext.map(formatStatus).join(", ");
-      throw orderError(
-        `Driver cannot move order from ${currentStage} to ${targetStage}. Allowed next stages: ${allowedStages || "none"}.`,
-        400,
-      );
-    }
-
-    if (REASON_REQUIRED_STATUSES.has(status) && !reasonCode) {
-      throw orderError(`reasonCode is required when status is ${status}`, 400);
-    }
-
-    const { hasPickupCashDue, hasDeliveryCashDue } = hasCashDueForStage(order);
-
-    if (status === OrderStatus.picked_up && hasPickupCashDue) {
-      throw orderError(
-        "Cannot complete pickup while sender-side service charge is still expected. Collect cash first.",
-        400,
-      );
-    }
-
-    if (status === OrderStatus.delivered && hasDeliveryCashDue) {
-      throw orderError(
-        "Cannot complete delivery while COD/service charge is still expected. Collect cash first.",
-        400,
-      );
-    }
-
-    const updateData: any = { status };
+    const updateData: any = { status, updatedAt:nextDispatchTime(order.updatedAt) };
     if (status === OrderStatus.at_warehouse) {
       updateData.assignedDriverId = null;
     }

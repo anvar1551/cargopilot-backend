@@ -7,6 +7,7 @@ import { assignDriversBulk, updateOrdersStatusBulk, updateDriverOrderStatus } fr
 import { enqueueCargoPilotDomainEventsTx } from "../../src/modules/analytics-core/infrastructure/analyticsOutbox";
 const actor = { id: "synthetic-actor", membershipId:"synthetic-membership",companyMembershipId:"synthetic-membership",tenantMembershipId:"synthetic-tenant-member",tenantId: "synthetic-tenant", companyId: "synthetic-company", scopes: [{ scopeType: "company" as const, scopeRefId: "synthetic-company" }] };
 const summary = { id: "synthetic-order", orderNumber: "synthetic-number", status: "assigned", assignedDriverId: "synthetic-driver", currentWarehouseId: null, updatedAt: new Date("2026-10-03T00:00:00Z") };
+const expected = (row:any) => [{orderId:row.id,updatedAt:row.updatedAt.toISOString(),status:row.status,assignedDriverId:row.assignedDriverId,currentWarehouseId:row.currentWarehouseId}];
 const summarySelect = { id: true, orderNumber: true, status: true, assignedDriverId: true, currentWarehouseId: true, updatedAt: true };
 beforeEach(() => {
   jest.clearAllMocks();
@@ -14,25 +15,27 @@ beforeEach(() => {
   db.$queryRaw.mockResolvedValue([{id:"synthetic-order"}]);
   (loadAccessSnapshot as jest.Mock).mockResolvedValue({...actor,userId:actor.id,permissionCodes:["shipment.assignCourier","shipment.changeStatus"],roleCodes:[],warehouseId:null});
   (buildMembershipOrderScopeWhere as jest.Mock).mockResolvedValue({tenantId:actor.tenantId,ownerOrgId:actor.companyId});
-  db.$transaction.mockImplementation(async (fn: any) => fn(db));
+  db.$transaction.mockImplementation(async (fn: any) => { insideTransaction=true; try { return await fn(db); } finally { insideTransaction=false; } });
   db.user.findUnique.mockResolvedValue({ id: summary.assignedDriverId, driverType: "local" });
   db.companyMembership.findFirst.mockResolvedValue({ id: "synthetic-driver-membership",roles:[{role:{companyId:actor.companyId,isSystem:false,rolePermissions:[{permission:{key:"drivers.telemetry"}}]}}] });
   db.order.updateMany.mockResolvedValue({ count: 1 });
   db.tracking.createMany.mockResolvedValue({ count: 1 }); db.tracking.create.mockResolvedValue({});
   db.order.findMany.mockReset(); db.order.findFirst.mockReset();
 });
+let insideTransaction = false;
 function assertResponseQuery(query: any) {
   expect(query.select).toEqual(summarySelect); expect(query.include).toBeUndefined();
   expect(JSON.stringify(query.where)).toContain(actor.tenantId); expect(JSON.stringify(query.where)).toContain(actor.companyId);
 }
 it.each([false, true])("assignment includeFull=%s returns only the explicit summary", async includeFull => {
-  db.order.findMany.mockResolvedValueOnce([{ ...summary, status: "pending" }]).mockImplementation(async (query: any) => { assertResponseQuery(query); return [summary]; });
-  expect(await assignDriversBulk({ orderIds: [summary.id], driverId: summary.assignedDriverId, actor, includeFull })).toEqual([summary]);
+  db.order.findMany.mockResolvedValueOnce([{id:summary.id}]).mockResolvedValueOnce([{ ...summary, status: "pending" }]).mockImplementation(async (query: any) => { expect(insideTransaction).toBe(true); assertResponseQuery(query); return [summary]; });
+  expect(await assignDriversBulk({ orderIds: [summary.id], expectedStates:expected({...summary,status:"pending"}), driverId: summary.assignedDriverId, actor, includeFull })).toEqual([summary]);
   expect(db.order.updateMany).toHaveBeenCalled(); expect(enqueueCargoPilotDomainEventsTx).toHaveBeenCalledTimes(1);
 });
 it.each([false, true])("bulk status includeFull=%s uses the same minimized response", async includeFull => {
-  db.order.findMany.mockResolvedValueOnce([{ ...summary, cashCollections: [], codAmount: null, serviceCharge: null }]).mockImplementation(async (query: any) => { assertResponseQuery(query); return [summary]; });
-  expect(await updateOrdersStatusBulk({ orderIds: [summary.id], status: "exception", reasonCode: "NO_CAPACITY_PICKUP", actor, includeFull })).toEqual([summary]);
+  (loadAccessSnapshot as jest.Mock).mockResolvedValue({...actor,userId:summary.assignedDriverId,permissionCodes:["shipment.changeStatus"],roleCodes:[],warehouseId:null});
+  db.order.findMany.mockResolvedValueOnce([{id:summary.id}]).mockResolvedValueOnce([{ ...summary,status:"out_for_delivery", cashCollections: [], codAmount: null, serviceCharge: null }]).mockImplementation(async (query: any) => { assertResponseQuery(query); return [summary]; });
+  expect(await updateOrdersStatusBulk({ orderIds: [summary.id], expectedStates:expected({...summary,status:"out_for_delivery"}), status: "exception", reasonCode: "NO_CAPACITY_PICKUP", actor, includeFull })).toEqual([summary]);
   expect(enqueueCargoPilotDomainEventsTx).toHaveBeenCalledTimes(1);
 });
 it("driver mutation retains its authorized summary contract", async () => {
@@ -43,7 +46,7 @@ it("driver mutation retains its authorized summary contract", async () => {
 });
 it("out-of-scope mutation never reads a response or writes business events", async () => {
   db.order.findMany.mockResolvedValue([]);
-  await expect(updateOrdersStatusBulk({ orderIds: [summary.id], status: "exception", reasonCode: "NO_CAPACITY_PICKUP", actor, includeFull: true })).rejects.toMatchObject({ statusCode: 403 });
+  await expect(updateOrdersStatusBulk({ orderIds: [summary.id], status: "exception", reasonCode: "NO_CAPACITY_PICKUP", actor, expectedStates:expected(summary), includeFull: true })).rejects.toMatchObject({ statusCode: 403 });
   expect(db.order.findMany).toHaveBeenCalledTimes(1); expect(db.order.updateMany).not.toHaveBeenCalled(); expect(db.tracking.createMany).not.toHaveBeenCalled(); expect(enqueueCargoPilotDomainEventsTx).not.toHaveBeenCalled();
 });
 it.each([
