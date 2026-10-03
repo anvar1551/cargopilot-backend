@@ -6,6 +6,7 @@ import { randomUUID, createHash } from "crypto";
 import { MembershipStatus, Prisma } from "@prisma/client";
 import prisma from "../../../config/prismaClient";
 import { RefreshTokenPayload } from "../types";
+import { lockCredentialUser } from "./credential-lock";
 import { lockRefreshContext, revokeRecordedSuccessors, MAX_REFRESH_ROTATION_DEPTH, refreshLineageTransactionOptions } from "./refresh-lineage";
 import { clearIdentityAccessCacheForUser, loadAccessSnapshot } from "../access-control";
 
@@ -183,12 +184,18 @@ async function resolveLoginContext(userId: string, requestedMembershipId?: strin
   return eligible[0].context;
 }
 
-async function resolveStoredContext(userId: string, companyMembershipId: string) {
-  const selected = await prisma.companyMembership.findFirst({
+async function resolveStoredContext(userId: string, companyMembershipId: string, db: Prisma.TransactionClient | typeof prisma = prisma) {
+  const selected = await db.companyMembership.findFirst({
     where: { id: companyMembershipId, userId },
     select: tenantSessionMembershipSelect,
   });
   return toTenantSessionContext(selected);
+}
+
+function sameSelectedContext(left: TenantSessionContext | null, right: TenantSessionContext) {
+  return left && left.userId === right.userId && left.membershipId === right.membershipId &&
+    left.companyMembershipId === right.companyMembershipId && left.companyId === right.companyId &&
+    left.tenantId === right.tenantId && left.tenantMembershipId === right.tenantMembershipId;
 }
 
 async function createRefreshSession(args: TenantSessionContext & {
@@ -296,11 +303,12 @@ export async function loginUser(args: {
     requireFresh: true,
   });
   if (!access) throw new InvalidMembershipSelectionError();
-  const session = await issueAuthSession({
-    ...context,
-    userAgent: args.userAgent ?? null,
-    ipAddress: args.ipAddress ?? null,
-  });
+  const session = await prisma.$transaction(async tx => {
+    const locked = await lockCredentialUser(tx, user.id);
+    if (locked.password !== user.password) throw new Error("Invalid email or password");
+    if (!sameSelectedContext(await resolveStoredContext(user.id, context.companyMembershipId, tx), context)) throw new InvalidMembershipSelectionError();
+    return issueAuthSession({ ...context, userAgent: args.userAgent ?? null, ipAddress: args.ipAddress ?? null }, tx);
+  }, refreshLineageTransactionOptions);
   return { ...session, user: access };
 }
 
@@ -363,6 +371,7 @@ export async function refreshUserSession(args: {
   if (!Number.isInteger(session.rotationDepth) || session.rotationDepth < 0 || session.rotationDepth >= MAX_REFRESH_ROTATION_DEPTH ||
       session.replacedBySessionId || session.replacementDepth !== null) throw new Error("Refresh session requires fresh login");
   const next = await prisma.$transaction(async (tx) => {
+    await lockCredentialUser(tx, context.userId);
     await lockRefreshContext(tx, context);
     const consumedAt = new Date();
     const revoked = await tx.userRefreshSession.updateMany({
@@ -424,12 +433,20 @@ export async function revokeRefreshSession(refreshToken: string) {
 }
 
 export async function changeUserPassword(args: {
-  userId: string;
+  actor: AppUser;
   currentPassword: string;
   newPassword: string;
 }) {
+  const actor = args.actor;
+  if (!actor?.id || !actor.tenantId || !actor.tenantMembershipId || !actor.companyId ||
+      !actor.companyMembershipId || actor.membershipId !== actor.companyMembershipId) throw new Error("Unauthorized");
+  const context: TenantSessionContext = { userId: actor.id, membershipId: actor.membershipId,
+    companyMembershipId: actor.companyMembershipId, tenantMembershipId: actor.tenantMembershipId,
+    tenantId: actor.tenantId, companyId: actor.companyId, branchId: actor.branchId };
+  const access = await loadAccessSnapshot({ userId: actor.id, ...actor, requireFresh: true });
+  if (!access) throw new Error("Unauthorized");
   const user = await prisma.user.findUnique({
-    where: { id: args.userId },
+    where: { id: actor.id },
     select: { id: true, password: true },
   });
   if (!user) throw new Error("Unauthorized");
@@ -438,14 +455,15 @@ export async function changeUserPassword(args: {
   if (!ok) throw new Error("Current password is incorrect");
 
   const password = await bcrypt.hash(args.newPassword, 10);
-  await prisma.user.update({
-    where: { id: args.userId },
-    data: { password },
-  });
-  await prisma.userRefreshSession.updateMany({
-    where: { userId: args.userId, revokedAt: null },
-    data: { revokedAt: new Date() },
-  });
+  await prisma.$transaction(async tx => {
+    const locked = await lockCredentialUser(tx, actor.id);
+    if (locked.password !== user.password) throw new Error("Current password is incorrect");
+    if (!sameSelectedContext(await resolveStoredContext(actor.id, actor.companyMembershipId, tx), context)) throw new Error("Unauthorized");
+    const changed = await tx.user.updateMany({ where: { id: actor.id, password: user.password }, data: { password } });
+    if (changed.count !== 1) throw new Error("Current password is incorrect");
+    await tx.userRefreshSession.updateMany({ where: { userId: actor.id, revokedAt: null }, data: { revokedAt: new Date() } });
+  }, refreshLineageTransactionOptions);
+  clearIdentityAccessCacheForUser(actor.id);
 }
 
 export async function listUsersForCompany(args: {

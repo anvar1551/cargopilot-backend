@@ -10,7 +10,8 @@ import { persistTenantDemoFixture } from "../tenancy/postgres-fixture.persistenc
 jest.mock("../../src/config/redis",()=>({getRedisClient:jest.fn(async()=>null),getRedisPrefix:()=>"disposable-refresh",withRedisTimeout:async(_name:string,work:()=>Promise<unknown>)=>work()}));
 import jwt from "jsonwebtoken";
 import { createHash } from "crypto";
-import { refreshUserSession } from "../../src/modules/identity-access/application/auth.service";
+import { refreshUserSession, loginUser, changeUserPassword } from "../../src/modules/identity-access/application/auth.service";
+import bcrypt from "bcryptjs";
 const url=process.env.CARGOPILOT_WORKER_TEST_DATABASE_URL,runId=process.env.CARGOPILOT_WORKER_RUN_ID;
 if(!url||!runId||!/^[a-f0-9]{12}$/.test(runId))throw Error("Disposable refresh identity required");
 const target=new URL(url);
@@ -167,3 +168,62 @@ it("lineage PostgreSQL final logout write failure rolls back all revocation and 
   finally { await pool.query('DROP TRIGGER cp_logout_fail ON "UserRefreshSession"; DROP FUNCTION cp_logout_fail();'); }
   await revokeRefreshSession(original.token); expect((await rows()).find(row => row.id === sid)!.revokedAt).not.toBeNull();
 });
+
+const passwordActor: any = { ...context, membershipId: context.companyMembershipId, branchId: null };
+const oldPassword = "synthetic-native-old-password", newPassword = "synthetic-native-new-password";
+const passwordChange = () => changeUserPassword({ actor: passwordActor, currentPassword: oldPassword, newPassword });
+const passwordLogin = (password = oldPassword) => loginUser({ email: fixture.users.find(user => user.id === context.id)!.email, password, companyMembershipId: context.companyMembershipId });
+async function withCredentials(work: () => Promise<void>) {
+  const original = await mockPrisma.user.findUniqueOrThrow({ where: { id: context.id }, select: { password: true } });
+  await mockPrisma.user.update({ where: { id: context.id }, data: { password: bcrypt.hashSync(oldPassword, 4) } });
+  try { await work(); } finally { await mockPrisma.user.update({ where: { id: context.id }, data: { password: original.password } }); }
+}
+it("credential PostgreSQL valid change atomically revokes every own context/root, retains other users and permits only new credentials", async () => withCredentials(async () => {
+  const original = await accepted(); await refreshUserSession({ refreshToken: original.token }); await accepted();
+  const foreignBefore = await mockPrisma.userRefreshSession.findMany({ where: { userId: { not: context.id } }, orderBy: { id: "asc" } });
+  const business = await sessionBusinessCounts(); await passwordChange();
+  expect((await rows()).every(row => row.revokedAt !== null)).toBe(true);
+  expect(await mockPrisma.userRefreshSession.findMany({ where: { userId: { not: context.id } }, orderBy: { id: "asc" } })).toEqual(foreignBefore);
+  await expect(passwordLogin()).rejects.toThrow("Invalid email or password"); const next = await passwordLogin(newPassword);
+  expect((await rows()).find(row => row.id === refreshSid(next.refreshToken))!.revokedAt).toBeNull(); expect(next.user.companyMembershipId).toBe(context.companyMembershipId);
+  expect(await sessionBusinessCounts()).toEqual(business);
+}));
+it("credential PostgreSQL failed refresh cleanup rolls back password and every session, leaving old credentials usable", async () => withCredentials(async () => {
+  const original = await accepted(), before = await rows(), userBefore = await mockPrisma.user.findUniqueOrThrow({ where: { id: context.id } }), business = await sessionBusinessCounts();
+  await pool.query(`CREATE FUNCTION cp_credential_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id='${original.sid}' AND OLD."revokedAt" IS NULL AND NEW."revokedAt" IS NOT NULL THEN RAISE EXCEPTION 'synthetic credential cleanup failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER cp_credential_fail BEFORE UPDATE ON "UserRefreshSession" FOR EACH ROW EXECUTE FUNCTION cp_credential_fail();`);
+  try { await expect(passwordChange()).rejects.toThrow("synthetic credential cleanup failure"); expect(await rows()).toEqual(before); expect(await mockPrisma.user.findUniqueOrThrow({ where: { id: context.id } })).toEqual(userBefore); expect(await sessionBusinessCounts()).toEqual(business); }
+  finally { await pool.query('DROP TRIGGER cp_credential_fail ON "UserRefreshSession"; DROP FUNCTION cp_credential_fail();'); }
+  const next = await passwordLogin(); expect((await rows()).find(row => row.id === refreshSid(next.refreshToken))!.revokedAt).toBeNull();
+}));
+async function passwordWinsPrecheckedOperation(operation: () => Promise<unknown>, expected: string) {
+  const originalTransaction = mockPrisma.$transaction.bind(mockPrisma); let enter!: () => void, release!: () => void, calls = 0;
+  const entered = new Promise<void>(resolve => { enter = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  const deadline = setTimeout(() => release(), 5000);
+  const spy = jest.spyOn(mockPrisma, "$transaction").mockImplementation(async (fn: any, options: any) => { if (++calls === 1) { enter(); await gate; } return originalTransaction(fn, options); });
+  const pending = operation(); pending.catch(() => undefined);
+  try { await entered; await passwordChange(); const sessions = await rows(), user = await mockPrisma.user.findUniqueOrThrow({ where: { id: context.id } }), business = await sessionBusinessCounts(); release(); await expect(pending).rejects.toThrow(expected); expect(await rows()).toEqual(sessions); expect(await mockPrisma.user.findUniqueOrThrow({ where: { id: context.id } })).toEqual(user); expect(await sessionBusinessCounts()).toEqual(business); }
+  finally { release(); clearTimeout(deadline); await Promise.allSettled([pending]); spy.mockRestore(); }
+}
+it("credential PostgreSQL old-password login prechecked before committed password change creates no session", async () => withCredentials(() => passwordWinsPrecheckedOperation(() => passwordLogin(), "Invalid email or password")));
+it("credential PostgreSQL refresh prechecked before committed password change cannot consume or create a successor", async () => withCredentials(async () => { const original = await accepted(); await passwordWinsPrecheckedOperation(() => refreshUserSession({ refreshToken: original.token }), "revoked"); }));
+it("credential PostgreSQL password change waits for accepted rotation then revokes its committed successor", async () => withCredentials(async () => {
+  const original = await accepted(), business = await sessionBusinessCounts(), originalTransaction = mockPrisma.$transaction.bind(mockPrisma);
+  let enter!: () => void, release!: () => void, calls = 0; const entered = new Promise<void>(resolve => { enter = resolve; }), gate = new Promise<void>(resolve => { release = resolve; }); const deadline = setTimeout(() => release(), 5000);
+  const spy = jest.spyOn(mockPrisma, "$transaction").mockImplementation(async (fn: any, options: any) => originalTransaction(async tx => {
+    if (++calls !== 1) return fn(tx);
+    const proxy = new Proxy(tx, { get(target: any, key) { if (key !== "userRefreshSession") { const value = target[key]; return typeof value === "function" ? value.bind(target) : value; }
+      return new Proxy(target.userRefreshSession, { get(model: any, method) { if (method !== "create") return model[method]; return async (args: any) => { const result = await model.create(args); enter(); await gate; return result; }; } }); } }); return fn(proxy);
+  }, options));
+  const rotation = refreshUserSession({ refreshToken: original.token }); rotation.catch(() => undefined); let change: Promise<void> | undefined;
+  try { await entered; change = passwordChange(); change.catch(() => undefined); let observed = false; const until = Date.now() + 1500;
+    while (Date.now() < until) { const waiting = await pool.query("SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%FROM \"User\"%'"); if (waiting.rows[0].n > 0) { observed = true; break; } await new Promise(resolve => setTimeout(resolve, 25)); }
+    expect(observed).toBe(true); release(); const issued = await rotation; await change; expect((await rows()).find(row => row.id === refreshSid(issued.refreshToken))!.revokedAt).not.toBeNull(); expect((await rows()).every(row => row.revokedAt !== null)).toBe(true); expect(await sessionBusinessCounts()).toEqual(business);
+  } finally { release(); clearTimeout(deadline); await Promise.allSettled([rotation, ...(change ? [change] : [])]); spy.mockRestore(); }
+}));
+it("credential PostgreSQL three preverified password changes accept one hash transition and reject stale competitors without session effects", async () => withCredentials(async () => {
+  await accepted(); const before = await rows(), business = await sessionBusinessCounts(), originalTransaction = mockPrisma.$transaction.bind(mockPrisma);
+  let release!: () => void, calls = 0; const gate = new Promise<void>(resolve => { release = resolve; }); const deadline = setTimeout(() => release(), 5000);
+  const spy = jest.spyOn(mockPrisma, "$transaction").mockImplementation(async (fn: any, options: any) => { if (++calls === 3) release(); await gate; return originalTransaction(fn, options); });
+  try { const results = await Promise.allSettled([passwordChange(), passwordChange(), passwordChange()]); expect(calls).toBe(3); expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1); expect(results.filter(result => result.status === "rejected").every(result => String((result as PromiseRejectedResult).reason.message).includes("incorrect"))).toBe(true); const after = await rows(); expect(after).toHaveLength(before.length); expect(after.every(row => row.revokedAt !== null)).toBe(true); expect(await bcrypt.compare(newPassword, (await mockPrisma.user.findUniqueOrThrow({ where: { id: context.id } })).password)).toBe(true); expect(await sessionBusinessCounts()).toEqual(business); }
+  finally { release(); clearTimeout(deadline); spy.mockRestore(); }
+}));

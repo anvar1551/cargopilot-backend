@@ -82,7 +82,7 @@ function resetDatabaseMocks() {
     database.order.create, database.customerEntity.create].forEach((mock) => mock.mockReset());
   database.user.findUnique.mockResolvedValue({ id: ids.user, password: passwordHash });
   database.$executeRaw.mockReset().mockResolvedValue(0);
-  database.$queryRaw.mockReset().mockResolvedValue([]);
+  database.$queryRaw.mockReset().mockImplementation(async (sql: any) => sql.text.includes('FROM "User"') ? [{ id: ids.user, password: passwordHash }] : []);
   database.userRefreshSession.create.mockResolvedValue({});
   database.userRefreshSession.updateMany.mockResolvedValue({ count: 1 });
   database.$transaction.mockImplementation(async (run: (tx: typeof database) => Promise<unknown>) => run(database));
@@ -207,7 +207,7 @@ describe("tenant-bound authentication sessions (mocked database evidence)", () =
     database.companyMembership.findFirst.mockResolvedValue(membership());
     const login = await loginUser({ email: "user@example.test", password: "correct-password" });
     const saved = database.userRefreshSession.create.mock.calls[0][0].data;
-    database.userRefreshSession.create.mockClear();
+    database.userRefreshSession.create.mockClear(); database.$transaction.mockClear();
     database.userRefreshSession.findUnique.mockResolvedValue({ ...saved, user: { id: ids.user }, revokedAt: null });
 
     const refreshed = await refreshUserSession({ refreshToken: login.refreshToken });
@@ -240,7 +240,7 @@ describe("tenant-bound authentication sessions (mocked database evidence)", () =
     database.companyMembership.findFirst.mockResolvedValue(membership());
     const login = await loginUser({ email: "user@example.test", password: "correct-password" });
     const saved = database.userRefreshSession.create.mock.calls[0][0].data;
-    database.userRefreshSession.create.mockClear();
+    database.userRefreshSession.create.mockClear(); database.$transaction.mockClear();
     database.userRefreshSession.findUnique.mockResolvedValue({ ...saved, user: { id: ids.user }, revokedAt: null });
     database.userRefreshSession.updateMany.mockResolvedValue({ count: 0 });
     await expect(refreshUserSession({ refreshToken: login.refreshToken })).rejects.toThrow("revoked");
@@ -256,7 +256,7 @@ describe("tenant-bound authentication sessions (mocked database evidence)", () =
     database.companyMembership.findFirst.mockResolvedValue(membership());
     const login = await loginUser({ email: "user@example.test", password: "correct-password" });
     const saved = database.userRefreshSession.create.mock.calls[0][0].data;
-    database.userRefreshSession.create.mockClear();
+    database.userRefreshSession.create.mockClear(); database.$transaction.mockClear();
     database.userRefreshSession.findUnique.mockResolvedValue({ ...saved, revokedAt: new Date(), user: { id: ids.user } });
     await expect(refreshUserSession({ refreshToken: login.refreshToken })).rejects.toThrow("revoked");
 
@@ -273,7 +273,7 @@ describe("tenant-bound authentication sessions (mocked database evidence)", () =
     database.companyMembership.findFirst.mockResolvedValue(membership());
     const login = await loginUser({ email: "user@example.test", password: "correct-password" });
     const saved = database.userRefreshSession.create.mock.calls[0][0].data;
-    database.userRefreshSession.create.mockClear();
+    database.userRefreshSession.create.mockClear(); database.$transaction.mockClear();
     database.userRefreshSession.findUnique.mockResolvedValue({ ...saved, revokedAt: null, user: { id: ids.user } });
     database.companyMembership.findFirst.mockResolvedValue(membership({ status: "suspended" }));
 
@@ -289,7 +289,7 @@ describe("tenant-bound authentication sessions (mocked database evidence)", () =
     database.companyMembership.findFirst.mockResolvedValue(membership());
     const login = await loginUser({ email: "user@example.test", password: "correct-password" });
     const saved = database.userRefreshSession.create.mock.calls[0][0].data;
-    database.userRefreshSession.create.mockClear();
+    database.userRefreshSession.create.mockClear(); database.$transaction.mockClear();
     database.userRefreshSession.findUnique.mockResolvedValue({ ...saved, rotationDepth, revokedAt: null, user: { id: ids.user } });
     await expect(refreshUserSession({ refreshToken: login.refreshToken })).rejects.toThrow("fresh login");
     expect(database.$transaction).not.toHaveBeenCalled();

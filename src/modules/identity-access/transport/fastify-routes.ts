@@ -211,7 +211,7 @@ const usersFastifyRoutes: FastifyPluginAsync<IdentityAccessRouteOptions> = async
       }
       const dto = changePasswordSchema.parse(request.body ?? {});
       await changeUserPassword({
-        userId: request.user.id,
+        actor: request.user,
         currentPassword: dto.currentPassword,
         newPassword: dto.newPassword,
       });

@@ -2,6 +2,35 @@
 
 ## Current state / resume
 
+Current continuation after local de419d20d42a7d89cc0341ff0f6043a55f440256:
+password/session serialization implemented in9 intended source/test/report
+files. See Password_Session_Serialization.md. Existing User row serializes
+login, refresh and atomic self-service credential/all-user refresh revocation;
+checked hash/current selected membership reloaded before writes.47 current
+unit/HTTP cases passed (16new credential,26affected tenant sessions,5focused
+HTTP/login/password cases;14unrelated skipped). Full99chain passed22native
+cases,6new credential schedules and16affected rotation/logout, not22new cases.
+Owned cp-password-session-d75fab550424 exact name/run-label/storage checked
+before removal; owned tmpfs removed and filtered absence verified. No schema,
+dependency/client/dist changes. Final node node_modules/typescript/bin/tsc
+--noEmit passed after the test-only parameterization correction; initial
+tuple-inference failure remains recorded, not passing evidence. Exact staged
+scope/whitespace/credential checks precede the coherent local checkpoint.
+
+Next dependency-ready task: bind access tokens and realtime authentication to
+durable refresh-session identity/revocation, without granting authority from a
+receipt. Current access JWT has no session ID, so HTTP/realtime cannot identify
+which revoked session issued it; User/context lock only closes refresh issuance
+races. Inspect exact sign/issue ordering, access claim validators, HTTP and
+Socket.IO consumers and current protected-delivery validators before writing
+additive plan. Require current exact stored user/tenant/company membership
+session at each covered boundary; explicitly decide legacy access compatibility
+as fresh-login containment, never permissive fallback. Do not invent automatic
+family compromise response or claim already-connected socket/distributed races
+fixed by connection-time validation. Also record credential security audit
+coverage separately. Ready dispatch/remaining workers and consolidated financial
+policy/infrastructure/history/client blockers remain; mission incomplete.
+
 Active continuation2026-10-03 from verified5c40ba6a3225539a25ca0a15ac0706cdce320859:
 refresh lineage/successor logout implemented and reviewed in12 intended files.
 See Refresh_Lineage_And_Logout.md. Existing pointer reused, same-context/depth
@@ -418,7 +447,8 @@ This is the current mission checklist; older next-task/handoff prose below is hi
 | Refresh single-use rotation | implemented/tested / timing verification outstanding | Atomic exact-selection consumption and replacement already had3native cases; correction repeats expiry/current tenant/company/membership graph at consuming UPDATE. See Tenant_Bound_Sessions.md and current evidence. No first-membership fallback or changed API. Revocation after statement snapshot remains a timing boundary. |
 | Exact-token logout | implemented/tested | Logout_Exact_Token_Binding.md:14mocked/unit +2native cases; purpose/hash/exact selected stored context at conditional revoke, no replacement or business effects. Does not revoke successors/access tokens/sockets. |
 | Recorded refresh lineage / successor logout | implemented/tested | Existing pointer now published atomically; same-context immutable depth/acceptance constraints and bounded locked logout.58 current unit/HTTP cases and16native cases at99chain,6new native. Historical unrecorded chains not inferred/certified. See Refresh_Lineage_And_Logout.md. |
-| Family compromise response / password-change rotation / distributed revocation | technically unfinished / policy and verification outstanding | Reuse rejects without issuing tokens; automatic compromise response needs distinction from benign concurrent retries. Password change and login/refresh concurrency remains ready technical work. Existing access tokens/cache/sockets do not gain immediate distributed revocation from successor logout. |
+| Password-change / login / refresh serialization | implemented/tested | Existing User-row lock, checked-hash/current selected context, atomic credential/refresh revocation;16new unit and6new actual PostgreSQL schedules at99chain, affected consumers/rotation/logout passed. See Password_Session_Serialization.md. |
+| Family compromise response / durable access-session revocation | technically unfinished / policy and verification outstanding | Reuse rejects without issuing tokens; automatic compromise response needs distinction from benign concurrent retries. Existing access tokens lack durable session ID and connected sockets/cache do not gain immediate distributed revocation from successor logout/password cleanup. This is next ready technical work, not a claim of complete invalidation. |
 | Nullable/historical constraint certification / provisioning | verification outstanding | NOT VALID and optional-null expansions are transitional. No existing DB mapping/reset/backfill authorized; synthetic fixture evidence does not certify existing rows. |
 | Redis lifecycle/backpressure, storage/native transport, CI/dependency/infrastructure/RLS | verification outstanding | Retain specific earlier release gates; isolated approved resource evidence only. No live AWS/services, dependency changes or RLS claims. |
 | Clients / real browser-device compatibility | verification outstanding | Deferred throughout backend phase; record API impacts, do not implement/rewrite clients. |

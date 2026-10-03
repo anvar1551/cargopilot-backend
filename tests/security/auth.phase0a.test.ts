@@ -19,19 +19,19 @@ jest.mock("../../src/modules/identity-access/access-control", () => ({
 
 const keySecret = "synthetic-phase-0a-key-32-characters-long";
 const snapshot = {
-  userId: "user-a", membershipId: "membership-a", companyMembershipId: "membership-a",
+  userId: "10000000-0000-4000-8000-000000000001", membershipId: "membership-a", companyMembershipId: "membership-a",
   companyId: "company-a", tenantId: "tenant-a", tenantMembershipId: "tenant-membership-a", branchId: null,
   name: "Alice", email: "alice@example.test", warehouseId: "warehouse-a", customerEntityId: null,
   roleCodes: ["worker"], permissionCodes: [], scopes: [{ scopeType: "warehouse" as const, scopeRefId: "warehouse-a" }],
 };
 const boundMembership = {
-  id: "membership-a", userId: "user-a", companyId: "company-a", branchId: null, status: "active",
+  id: "membership-a", userId: "10000000-0000-4000-8000-000000000001", companyId: "company-a", branchId: null, status: "active",
   tenantId: "tenant-a", tenantMembershipId: "tenant-membership-a",
   tenant: { id: "tenant-a", name: "Tenant A", status: "active" },
-  tenantMembership: { id: "tenant-membership-a", tenantId: "tenant-a", userId: "user-a", status: "active" },
+  tenantMembership: { id: "tenant-membership-a", tenantId: "tenant-a", userId: "10000000-0000-4000-8000-000000000001", status: "active" },
   company: { id: "company-a", name: "Company A", tenantId: "tenant-a", isActive: true }, branch: null,
 };
-const sessionToken = () => jwt.sign({ id: "user-a", membershipId: "membership-a", companyMembershipId: "membership-a",
+const sessionToken = () => jwt.sign({ id: "10000000-0000-4000-8000-000000000001", membershipId: "membership-a", companyMembershipId: "membership-a",
   companyId: "company-a", tenantId: "tenant-a", tenantMembershipId: "tenant-membership-a", tokenType: "access" }, process.env.JWT_SECRET!);
 const hash = bcrypt.hashSync("test-password", 10);
 
@@ -160,10 +160,11 @@ describe("Phase 0A identity routes (real services, mocked database)", () => {
   });
 
   it("preserves successful login and refresh response contracts with actual signing/hashing", async () => {
-    database.user.findUnique.mockResolvedValue({ id: "user-a", password: hash });
+    database.user.findUnique.mockResolvedValue({ id: "10000000-0000-4000-8000-000000000001", password: hash });
     database.companyMembership.findMany.mockResolvedValue([boundMembership]);
     database.companyMembership.findFirst.mockResolvedValue(boundMembership);
     database.userRefreshSession.create.mockResolvedValue({});
+    database.$executeRaw.mockResolvedValue(0); database.$queryRaw.mockImplementation(async (sql: any) => sql.text.includes('FROM "User"') ? [{ id: "10000000-0000-4000-8000-000000000001", password: hash }] : []);
     database.userRefreshSession.updateMany.mockResolvedValue({ count: 1 });
     database.$transaction.mockImplementation(async (run: any) => run(database));
     const app = await appWith();
@@ -175,11 +176,11 @@ describe("Phase 0A identity routes (real services, mocked database)", () => {
       expect(body.user).toEqual(snapshot);
       expect(body.accessTokenExpiresInSec).toBeGreaterThan(0);
       const access = jwt.verify(body.token, keySecret) as any;
-      expect(access).toMatchObject({ id: "user-a", companyId: "company-a", membershipId: "membership-a", tokenType: "access" });
+      expect(access).toMatchObject({ id: "10000000-0000-4000-8000-000000000001", companyId: "company-a", membershipId: "membership-a", tokenType: "access" });
       const saved = database.userRefreshSession.create.mock.calls.slice(-1)[0][0].data;
       expect(saved.tokenHash).not.toBe(body.refreshToken);
       expect(saved.ipAddress).toBe("127.0.0.1");
-      database.userRefreshSession.findUnique.mockResolvedValue({ ...saved, user: { id: "user-a" }, revokedAt: null });
+      database.userRefreshSession.findUnique.mockResolvedValue({ ...saved, user: { id: "10000000-0000-4000-8000-000000000001" }, revokedAt: null });
       const refreshed = await app.inject({ method: "POST", url: "/api/auth/refresh", payload: { refreshToken: body.refreshToken } });
       expect(refreshed.statusCode).toBe(200);
       expect(refreshed.json().user).toEqual(snapshot);
@@ -192,7 +193,7 @@ describe("Phase 0A identity routes (real services, mocked database)", () => {
 
   it.each(["unknown", "wrong-password", "inactive-membership"])("returns the same error for %s", async (state) => {
     const compare = jest.spyOn(bcrypt, "compare");
-    database.user.findUnique.mockResolvedValue(state === "unknown" ? null : { id: "user-a", password: hash });
+    database.user.findUnique.mockResolvedValue(state === "unknown" ? null : { id: "10000000-0000-4000-8000-000000000001", password: hash });
     database.companyMembership.findMany.mockResolvedValue([]);
     const app = await appWith();
     try {
