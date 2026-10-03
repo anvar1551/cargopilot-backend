@@ -1,3 +1,4 @@
+import { enqueueAcceptedFinancePublication } from "./finance-outbox-authority";
 import { requireChartTemplateSource, assertChartInstallationSource } from "../domain/chart-template-authority";
 import { listOwnedSourceEvents } from "./source-event-read";
 import { listOwnedPostingRules, getOwnedPostingRule } from "./posting-rule-read";
@@ -121,16 +122,7 @@ async function enqueueEvent(
     payload: Record<string, unknown>;
   },
 ) {
-  return tx.financeDomainEventOutbox.create({
-    data: {
-      legalEntityId: input.legalEntityId,
-      aggregateType: input.aggregateType,
-      aggregateId: input.aggregateId,
-      eventType: input.eventType,
-      occurredAt: new Date(),
-      payloadJson: input.payload as Prisma.InputJsonValue,
-    },
-  });
+  return enqueueAcceptedFinancePublication(tx, { legalEntityId: input.legalEntityId, aggregateType: input.aggregateType, aggregateId: input.aggregateId, eventType: input.eventType });
 }
 
 async function findJournal(tx: Tx, companyId: string, journalId: string, tenantId: string) {

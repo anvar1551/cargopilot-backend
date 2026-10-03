@@ -172,6 +172,7 @@ model FinanceLegalEntity {
   journalEntries             FinanceJournalEntry[]
   auditEvents                FinanceAuditEvent[]
   outboxEvents               FinanceDomainEventOutbox[]
+  ownedPublications FinanceDomainEventOutbox[] @relation("FinancePublicationOwner")
   numberSequences            FinanceNumberSequence[]
   chartTemplateInstallations FinanceChartTemplateInstallation[]
   sourceEvents               FinanceSourceEvent[]
@@ -241,6 +242,8 @@ model FinanceSourceEvent {
 }
 
 model FinanceChartTemplateInstallation {
+  publications FinanceDomainEventOutbox[] @relation("FinancePublicationChart")
+  @@unique([legalEntityId, id], map: "FinanceChartInstallation_entity_identity_key")
   id                String             @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   legalEntityId     String             @db.Uuid
   legalEntity       FinanceLegalEntity @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
@@ -256,6 +259,7 @@ model FinanceChartTemplateInstallation {
 }
 
 model FinanceAccount {
+  publications FinanceDomainEventOutbox[] @relation("FinancePublicationAccount")
   id            String               @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   legalEntityId String               @db.Uuid
   legalEntity   FinanceLegalEntity   @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
@@ -416,6 +420,7 @@ model FinanceDocument {
 }
 
 model FinanceJournalEntry {
+  publications FinanceDomainEventOutbox[] @relation("FinancePublicationJournal")
   id               String               @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   legalEntityId    String               @db.Uuid
   legalEntity      FinanceLegalEntity   @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
@@ -519,6 +524,24 @@ model FinanceAuditEvent {
 }
 
 model FinanceDomainEventOutbox {
+  tenantId String? @db.Uuid
+  companyId String? @db.Uuid
+  ownedEntity FinanceLegalEntity? @relation("FinancePublicationOwner", fields: [legalEntityId, tenantId, companyId], references: [id, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceOutbox_owner_fkey")
+  accountId String? @db.Uuid
+  account FinanceAccount? @relation("FinancePublicationAccount", fields: [legalEntityId, accountId], references: [legalEntityId, id], onDelete: Restrict, onUpdate: Restrict, map: "FinanceOutbox_account_fkey")
+  installationId String? @db.Uuid
+  installation FinanceChartTemplateInstallation? @relation("FinancePublicationChart", fields: [legalEntityId, installationId], references: [legalEntityId, id], onDelete: Restrict, onUpdate: Restrict, map: "FinanceOutbox_chart_fkey")
+  journalId String? @db.Uuid
+  journal FinanceJournalEntry? @relation("FinancePublicationJournal", fields: [journalId, legalEntityId], references: [id, legalEntityId], onDelete: Restrict, onUpdate: Restrict, map: "FinanceOutbox_journal_fkey")
+  acceptedAt DateTime?
+  capability String?
+  contentHash String?
+  publicationState String @default("unaccepted")
+  claimToken String? @db.Uuid
+  leaseExpiresAt DateTime?
+  dispatchStartedAt DateTime?
+  @@index([tenantId, companyId, publicationState, nextAttemptAt], map: "FinanceOutbox_owner_state_idx")
+  @@index([publicationState, nextAttemptAt, createdAt], map: "FinanceOutbox_claim_idx")
   id            String             @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   legalEntityId String             @db.Uuid
   legalEntity   FinanceLegalEntity @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
