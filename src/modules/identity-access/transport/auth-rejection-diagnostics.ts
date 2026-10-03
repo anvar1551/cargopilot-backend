@@ -2,6 +2,7 @@ import { performance } from "perf_hooks";
 
 const rejectionCodes = [
   "LOGIN_CREDENTIALS_REJECTED", "LOGIN_SELECTION_REJECTED", "LOGIN_UNAVAILABLE",
+  "ACCESS_SESSION_REJECTED", "ACCESS_PERMISSION_REJECTED", "ACCESS_AUTHORITY_UNAVAILABLE",
   "REFRESH_REJECTED", "REFRESH_UNAVAILABLE", "AUTH_ADMISSION_LIMITED", "AUTH_ADMISSION_UNAVAILABLE",
 ] as const;
 export type AuthRejectionCode = typeof rejectionCodes[number];

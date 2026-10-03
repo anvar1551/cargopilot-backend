@@ -1,3 +1,4 @@
+import { recordAuthRejection } from "./auth-rejection-diagnostics";
 import jwt from "jsonwebtoken";
 import { FastifyReply, FastifyRequest } from "fastify";
 import { authorize, loadAccessSnapshot } from "../access-control";
@@ -69,41 +70,44 @@ type AuthOptions = {
   anyPermission?: string[];
 };
 
+function rejectAuthorityFailure(reply: FastifyReply, error: unknown) {
+  const forbidden = (error as { statusCode?: unknown } | null)?.statusCode === 403;
+  recordAuthRejection(forbidden ? "ACCESS_PERMISSION_REJECTED" : "ACCESS_AUTHORITY_UNAVAILABLE",
+    diagnostic => console.warn(JSON.stringify(diagnostic)));
+  return reply.code(forbidden ? 403 : 500).send({ error: forbidden ? "Forbidden" : "Authentication unavailable" });
+}
+
 export function fastifyAuth(options: AuthOptions = {}) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = await resolveAuthenticatedUserFromAuthHeader(
-      typeof request.headers.authorization === "string"
-        ? request.headers.authorization
-        : undefined,
-    );
+    let user: AppUser | null;
+    try {
+      user = await resolveAuthenticatedUserFromAuthHeader(
+        typeof request.headers.authorization === "string" ? request.headers.authorization : undefined,
+      );
+    } catch {
+      // Never pass configuration/database/verification exception details to HTTP or logs.
+      return rejectAuthorityFailure(reply, null);
+    }
     if (!user) {
+      recordAuthRejection("ACCESS_SESSION_REJECTED", diagnostic => console.warn(JSON.stringify(diagnostic)));
       return reply.code(401).send({ error: "Unauthorized" });
     }
     request.user = user;
 
     if (options.permission) {
-      try {
-        await authorize(user, options.permission);
-      } catch (err: any) {
-        return reply
-          .code(err?.statusCode ?? 403)
-          .send({ error: err?.message ?? "Forbidden" });
-      }
+      try { await authorize(user, options.permission); }
+      catch (error) { return rejectAuthorityFailure(reply, error); }
     }
 
     if (options.anyPermission?.length) {
-      let lastError: any = null;
       for (const permission of options.anyPermission) {
-        try {
-          await authorize(user, permission);
-          return;
-        } catch (err: any) {
-          lastError = err;
+        try { await authorize(user, permission); return; }
+        catch (error) {
+          if ((error as { statusCode?: unknown } | null)?.statusCode !== 403)
+            return rejectAuthorityFailure(reply, null);
         }
       }
-      return reply
-        .code(lastError?.statusCode ?? 403)
-        .send({ error: lastError?.message ?? "Forbidden" });
+      return rejectAuthorityFailure(reply, { statusCode: 403 });
     }
   };
 }
