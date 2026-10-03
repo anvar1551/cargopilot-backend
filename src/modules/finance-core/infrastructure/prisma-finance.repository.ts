@@ -9,7 +9,7 @@ import { listOwnedJournals, getOwnedJournal } from "./journal-read";
 import { rejectUnacceptedInvoiceExecution } from "../domain/invoice-execution-containment";
 import { financeBadRequest } from "../domain/finance.errors";
 import type { AppUser } from "../../../types/app-user";
-import { requirePostingRuleMutation, requireLegalEntityContext, rejectUnapprovedLegalEntityConfiguration, rejectUnapprovedPeriodConfiguration, rejectUnapprovedManualJournalExecution } from "../application/legal-entity-access";
+import { requireAccountMutation, requirePostingRuleMutation, requireLegalEntityContext, rejectUnapprovedLegalEntityConfiguration, rejectUnapprovedPeriodConfiguration, rejectUnapprovedManualJournalExecution } from "../application/legal-entity-access";
 import { loadAcceptedCashFinance, assertAcceptedCashSource } from "./cash-finance-authority";
 import { Prisma } from "@prisma/client";
 import prisma from "../../../config/prismaClient";
@@ -366,9 +366,11 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
     }), page.limit);
   }
 
-  async createAccount(command: CreateAccountCommand) {
+  async createAccount(command: CreateAccountCommand, actor: AppUser) {
+    const context = await requireAccountMutation(actor, command);
     return prisma.$transaction(async (tx) => {
-      const entity = await requireLegalEntity(tx, command.companyId);
+      const entity = await requireJournalEntity(tx, context.companyId);
+      if (entity.tenantId !== context.tenantId) throw financeConflict("Account tenant context rejected", "FINANCE_ACCOUNT_OWNERSHIP_REJECTED");
       if (command.parentId) {
         const parent = await tx.financeAccount.findFirst({
           where: { id: command.parentId, legalEntityId: entity.id },
@@ -412,9 +414,11 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
     });
   }
 
-  async bootstrapChart(command: BootstrapChartCommand) {
+  async bootstrapChart(command: BootstrapChartCommand, actor: AppUser) {
+    const context = await requireAccountMutation(actor, command);
     return prisma.$transaction(async (tx) => {
-      const entity = await requireLegalEntity(tx, command.companyId);
+      const entity = await requireJournalEntity(tx, context.companyId);
+      if (entity.tenantId !== context.tenantId) throw financeConflict("Account tenant context rejected", "FINANCE_ACCOUNT_OWNERSHIP_REJECTED");
       const installation = await tx.financeChartTemplateInstallation.findUnique({
         where: {
           legalEntityId_templateCode_templateVersion: {

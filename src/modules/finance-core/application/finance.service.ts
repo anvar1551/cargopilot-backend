@@ -21,7 +21,7 @@ import {
 import type { AppUser } from "../../../types/app-user";
 import { rejectUnapprovedAutomaticPosting } from "../domain/automatic-execution-containment";
 import { FinanceError } from "../domain/finance.errors";
-import { requirePostingRuleMutation, requireLegalEntityContext, rejectUnapprovedLegalEntityConfiguration, rejectUnapprovedPeriodConfiguration, rejectUnapprovedManualJournalExecution } from "./legal-entity-access";
+import { requirePostingRuleMutation, requireAccountMutation, requireLegalEntityContext, rejectUnapprovedLegalEntityConfiguration, rejectUnapprovedPeriodConfiguration, rejectUnapprovedManualJournalExecution } from "./legal-entity-access";
 
 export class FinanceService {
   constructor(private readonly repository: FinanceRepositoryPort) {}
@@ -57,17 +57,19 @@ export class FinanceService {
     return this.repository.listAccounts(actor, page);
   }
 
-  createAccount(input: CreateAccountCommand) {
+  async createAccount(input: CreateAccountCommand, actor: AppUser) {
+    await requireAccountMutation(actor, input);
     const currency = input.currency ? assertFinanceCurrency(input.currency) : null;
-    return this.repository.createAccount({ ...input, currency });
+    return this.repository.createAccount({ ...input, currency }, actor);
   }
 
-  bootstrapChart(input: {
+  async bootstrapChart(input: {
     companyId: string;
     actorUserId: string;
     templateCode: string;
     templateVersion: number;
-  }) {
+  }, actor: AppUser) {
+    await requireAccountMutation(actor, input);
     const accounts = getChartTemplate(input.templateCode, input.templateVersion);
     if (!accounts) {
       throw financeBadRequest(
@@ -75,7 +77,7 @@ export class FinanceService {
         "FINANCE_CHART_TEMPLATE_UNKNOWN",
       );
     }
-    return this.repository.bootstrapChart({ ...input, accounts });
+    return this.repository.bootstrapChart({ ...input, accounts }, actor);
   }
 
   async listPeriods(actor: AppUser, page: { cursor?: string; limit: number }) {

@@ -747,7 +747,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
             ...input,
             companyId: request.user!.companyId,
             actorUserId: request.user!.id,
-          }),
+          }, request.user!),
         );
       } catch (error) {
         return sendError(reply, error, "Failed to install chart template");
@@ -765,7 +765,7 @@ const financeFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           ...input,
           companyId: request.user!.companyId,
           actorUserId: request.user!.id,
-        });
+        }, request.user!);
         return reply.code(201).send(account);
       } catch (error) {
         return sendError(reply, error, "Failed to create finance account");

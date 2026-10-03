@@ -107,8 +107,8 @@ export interface FinanceRepositoryPort {
   getLegalEntity(actor: AppUser): Promise<unknown>;
   configureLegalEntity(command: ConfigureLegalEntityCommand): Promise<unknown>;
   listAccounts(actor: AppUser, page: CursorPage): Promise<unknown>;
-  createAccount(command: CreateAccountCommand): Promise<unknown>;
-  bootstrapChart(command: BootstrapChartCommand): Promise<unknown>;
+  createAccount(command: CreateAccountCommand, actor: AppUser): Promise<unknown>;
+  bootstrapChart(command: BootstrapChartCommand, actor: AppUser): Promise<unknown>;
   listPeriods(actor: AppUser, page: CursorPage): Promise<unknown>;
   createPeriod(command: CreatePeriodCommand): Promise<unknown>;
   changePeriodStatus(command: ChangePeriodStatusCommand): Promise<unknown>;
