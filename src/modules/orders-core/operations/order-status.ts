@@ -326,26 +326,9 @@ function hasCashDueForStage(order: {
 async function loadAssignedOrdersForResponse(
   orderIds: string[],
   actor: OrderActor,
-  includeFull?: boolean,
+  _includeFull?: boolean,
 ) {
-  if (includeFull) {
-    return prisma.order.findMany({
-      where: scopedOrderWhere(actor, orderIds),
-      include: {
-        customer: true,
-        assignedDriver: true,
-        currentWarehouse: true,
-        parcels: true,
-        trackingEvents: {
-          include: { actor: true, warehouse: true, parcel: true },
-          orderBy: { timestamp: "asc" },
-        },
-        invoice: true,
-      },
-      orderBy: { createdAt: "desc" },
-    });
-  }
-
+  // Full mutation expansion is contained; use authorized detail endpoints.
   return prisma.order.findMany({
     where: scopedOrderWhere(actor, orderIds),
     select: {
@@ -666,36 +649,7 @@ export async function updateOrdersStatusBulk(args: {
     );
   });
 
-  if (includeFull) {
-    return prisma.order.findMany({
-      where: scopedOrderWhere(actor, orderIds),
-      include: {
-        customer: true,
-        assignedDriver: true,
-        currentWarehouse: true,
-        parcels: true,
-        trackingEvents: {
-          include: { actor: true, warehouse: true, parcel: true },
-          orderBy: { timestamp: "asc" },
-        },
-        invoice: true,
-      },
-      orderBy: { createdAt: "desc" },
-    });
-  }
-
-  return prisma.order.findMany({
-    where: scopedOrderWhere(actor, orderIds),
-    select: {
-      id: true,
-      orderNumber: true,
-      status: true,
-      assignedDriverId: true,
-      currentWarehouseId: true,
-      updatedAt: true,
-    },
-    orderBy: { createdAt: "desc" },
-  });
+  return loadAssignedOrdersForResponse(orderIds, actor, includeFull);
 }
 
 export async function updateDriverOrderStatus(args: {
