@@ -1,3 +1,4 @@
+import { requireChartTemplateSource, assertChartInstallationSource } from "../domain/chart-template-authority";
 import { listOwnedSourceEvents } from "./source-event-read";
 import { listOwnedPostingRules, getOwnedPostingRule } from "./posting-rule-read";
 import { rejectUnsupportedGenericFinanceIngestion, rejectUnapprovedAutomaticPosting, requireSupportedFinanceSource } from "../domain/automatic-execution-containment";
@@ -416,6 +417,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
 
   async bootstrapChart(command: BootstrapChartCommand, actor: AppUser) {
     const context = await requireAccountMutation(actor, command);
+    const templateAccounts = requireChartTemplateSource(command);
     return prisma.$transaction(async (tx) => {
       const entity = await requireJournalEntity(tx, context.companyId);
       if (entity.tenantId !== context.tenantId) throw financeConflict("Account tenant context rejected", "FINANCE_ACCOUNT_OWNERSHIP_REJECTED");
@@ -432,7 +434,8 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
         const accounts = await tx.financeAccount.findMany({
           where: {
             legalEntityId: entity.id,
-            metadataJson: { path: ["templateCode"], equals: command.templateCode },
+            AND: [{ metadataJson: { path: ["templateCode"], equals: command.templateCode } },
+              { metadataJson: { path: ["templateVersion"], equals: command.templateVersion } }],
           },
           orderBy: { code: "asc" },
         });
@@ -442,6 +445,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
             "FINANCE_CHART_TEMPLATE_INTEGRITY_ERROR",
           );
         }
+        assertChartInstallationSource(installation, accounts, templateAccounts, {entityId:entity.id,baseCurrency:entity.baseCurrency,templateCode:command.templateCode,templateVersion:command.templateVersion});
         return { installation, accounts, idempotent: true };
       }
       const existingAccounts = await tx.financeAccount.count({
@@ -456,7 +460,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
 
       const accountIdByCode = new Map<string, string>();
       const createdAccounts = [];
-      for (const templateAccount of command.accounts) {
+      for (const templateAccount of templateAccounts) {
         const parentId = templateAccount.parentCode
           ? accountIdByCode.get(templateAccount.parentCode)
           : undefined;
