@@ -1,12 +1,14 @@
 jest.mock("../../src/config/prismaClient", () => ({ __esModule: true, default: require("./fixtures").database }));
 jest.mock("../../src/modules/identity-access/access-control", () => ({ loadAccessSnapshot: jest.fn() }));
 jest.mock("../../src/modules/orders-core/domain/order-access", () => ({ requireAuthorizedOrder: jest.fn() }));
+jest.mock("../../src/modules/orders-core/domain/company-authority", () => ({ requireTenantBoundOrderCompanyAuthority: jest.fn() }));
 jest.mock("../../src/modules/live-map-core/infrastructure/selectedTelemetryStore", () => ({
   readSelectedPresence: jest.fn(), readSelectedTelemetry: jest.fn(), writeSelectedPresence: jest.fn(), writeSelectedTelemetry: jest.fn(),
 }));
 jest.mock("../../src/modules/live-map-core/infrastructure/liveMapStore", () => ({ publishLiveMapEvent: jest.fn() }));
 import { loadAccessSnapshot } from "../../src/modules/identity-access/access-control";
 import { requireAuthorizedOrder } from "../../src/modules/orders-core/domain/order-access";
+import { requireTenantBoundOrderCompanyAuthority } from "../../src/modules/orders-core/domain/company-authority";
 import { getDriverPresence, setDriverPresence, ingestDriverLocation, ingestDriverTelemetry, heartbeatDriverPresence } from "../../src/modules/live-map-core/application/liveMapService";
 import * as store from "../../src/modules/live-map-core/infrastructure/selectedTelemetryStore";
 import { publishLiveMapEvent } from "../../src/modules/live-map-core/infrastructure/liveMapStore";
@@ -17,6 +19,7 @@ const orderId = "00000000-0000-4000-8000-000000000002";
 beforeEach(() => {
   jest.resetAllMocks();
   (loadAccessSnapshot as jest.Mock).mockResolvedValue({ permissionCodes: ["drivers.telemetry"] });
+  (requireTenantBoundOrderCompanyAuthority as jest.Mock).mockResolvedValue({ companyId: "company-a" });
   (store.readSelectedPresence as jest.Mock).mockResolvedValue({ enabled: true, updatedAt: "2026-01-01T00:00:00.000Z" });
   (store.readSelectedTelemetry as jest.Mock).mockResolvedValue(null);
   (requireAuthorizedOrder as jest.Mock).mockResolvedValue({ ownerOrgId: "company-a", assignedDriverId: actor().id });
@@ -27,6 +30,7 @@ it("authorized self location uses fresh selected context, server receipt time, a
   const user = actor(); const capturedAt = "2099-01-01T00:00:00Z";
   const result = await ingestDriverLocation({ actor: user, body: { context: context(user), lat: 53, lng: 8, orderId, recordedAt: capturedAt } });
   expect(loadAccessSnapshot).toHaveBeenCalledWith({ ...context(user), membershipId: user.membershipId, requireFresh: true });
+  expect(requireTenantBoundOrderCompanyAuthority).toHaveBeenCalledWith(expect.anything(), user, "drivers.telemetry");
   expect(requireAuthorizedOrder).toHaveBeenCalledWith(user, orderId, "shipment.view");
   expect(result).toMatchObject({ ok: true, broadcasted: false, clientCapturedAt: capturedAt, location: { warehouseId: null, orderId } });
   expect(result.location!.recordedAt).not.toBe(capturedAt);
@@ -72,6 +76,11 @@ it("each subsequent read revalidates current permission, with no stale fallback"
   (loadAccessSnapshot as jest.Mock).mockResolvedValue(null);
   await expect(getDriverPresence({ actor: actor(), query: { context: context() } })).rejects.toMatchObject({ statusCode: 403 });
   expect(store.readSelectedPresence).toHaveBeenCalledTimes(1);
+});
+it("foreign company role definitions cannot turn snapshot permission claims into telemetry authority", async () => {
+  (requireTenantBoundOrderCompanyAuthority as jest.Mock).mockRejectedValue(Object.assign(new Error("Company permission required"), { statusCode: 403 }));
+  await expect(setDriverPresence({ actor: actor(), body: { context: context(), enabled: true } })).rejects.toMatchObject({ statusCode: 403 });
+  noStorage();
 });
 it("new context sharing starts disabled and cannot upload coordinates before opt-in", async () => {
   (store.readSelectedPresence as jest.Mock).mockResolvedValue(null);

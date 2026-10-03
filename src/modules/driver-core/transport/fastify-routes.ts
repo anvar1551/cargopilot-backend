@@ -36,11 +36,14 @@ const driverFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     "/",
     { preHandler: fastifyAuth({ permission: "drivers.manage" }) },
     async (request, reply) => {
+      if (!request.user?.id) return reply.code(401).send({ error: "Unauthorized" });
       try {
-        const drivers = await listDriversView();
+        reply.header("Cache-Control", "no-store");
+        const drivers = await listDriversView(request.user, request.query);
         return reply.send(drivers);
       } catch (err: any) {
-        return reply.code(500).send({ error: err?.message || "Failed to fetch drivers" });
+        const status = err instanceof ZodError ? 400 : [400, 403, 404].includes(err?.statusCode) ? err.statusCode : 500;
+        return reply.code(status).send({ error: "Failed to fetch drivers", code: "DRIVER_DIRECTORY_FAILED" });
       }
     },
   );
@@ -53,6 +56,7 @@ const driverFastifyRoutes: FastifyPluginAsync = async (fastify) => {
         const payload = await updateDriverProfileById(
           String((request.params as any)?.id || ""),
           request.body ?? {},
+          request.user,
         );
         return reply.send(payload);
       } catch (err: any) {
@@ -63,7 +67,8 @@ const driverFastifyRoutes: FastifyPluginAsync = async (fastify) => {
           });
         }
         return reply.code(err?.statusCode ?? 500).send({
-          error: err?.message || "Failed to update driver profile",
+          error: "Membership-scoped driver configuration is unavailable",
+          code: "DRIVER_CONFIGURATION_UNAVAILABLE",
         });
       }
     },

@@ -86,7 +86,7 @@ test("shipment.update cannot create; creation needs new capability plus selected
   expect(database.warehouse.create).not.toHaveBeenCalled();
 });
 test.each([{ primaryWarehouseId: "foreign" }, { warehouseIds: ["foreign"] }, { primaryWarehouseId: null }, { warehouseIds: [] }])("driver assignment contained before reads or writes", async body => {
-  await expect(updateDriverProfileById("other-user", body)).rejects.toMatchObject({ statusCode: 403 });
+  await expect(updateDriverProfileById("other-user", body, context)).rejects.toMatchObject({ statusCode: 403 });
   expect(database.user.findUnique).not.toHaveBeenCalled(); expect(database.$transaction).not.toHaveBeenCalled();
 });
 test.each([{ warehouseId: "foreign" }, { warehouseId: null }, { scopes: [{ scopeType: " WAREHOUSE ", scopeRefId: "foreign" }] }])("admin assignment/grant contained before effects", async body => {

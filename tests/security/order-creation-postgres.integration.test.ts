@@ -1,5 +1,9 @@
 jest.mock("../../src/modules/live-map-core/infrastructure/liveMapStore",()=>({publishLiveMapEvent:jest.fn(),readDriverLocation:jest.fn(),readDriverIdsInViewport:jest.fn(),readDriverLocations:jest.fn(),readDriverLocationsInViewport:jest.fn(),readDriverPresences:jest.fn(),touchDriverPresenceHeartbeat:jest.fn(),upsertDriverLocation:jest.fn(),upsertDriverPresence:jest.fn()}));
 import {getLiveMapSnapshot} from "../../src/modules/live-map-core/application/liveMapService";
+jest.mock("../../src/modules/live-map-core/infrastructure/selectedTelemetryStore",()=>({readSelectedPresence:jest.fn(async()=>null),readSelectedTelemetry:jest.fn(async()=>null),writeSelectedPresence:jest.fn(),writeSelectedTelemetry:jest.fn()}));
+import {getDriverPresence} from "../../src/modules/live-map-core/application/selectedDriverTelemetry";
+import {readSelectedPresence,readSelectedTelemetry} from "../../src/modules/live-map-core/infrastructure/selectedTelemetryStore";
+import {listDriversView,updateDriverProfileById} from "../../src/modules/driver-core/application/driverProfileService";
 jest.mock("../../src/config/prismaClient",()=>({__esModule:true,default:new Proxy({}, {get:(_t,name)=>{const value=(mockPrisma as any)[name];return typeof value==="function"?value.bind(mockPrisma):value;}})}));
 jest.mock("../../src/modules/orders-core/cash",()=>({buildInitialOrderCashCollections:jest.requireActual("../../src/modules/orders-core/cash/collection.shared").buildInitialOrderCashCollections}));
 jest.mock("../../src/modules/orders-core/sla",()=>({resolveOrderSlaSnapshot:jest.fn(async()=>({}))}));
@@ -43,6 +47,7 @@ beforeAll(async()=>{
   const permission=await mockPrisma.permission.create({data:{key:"shipment.create",resource:"synthetic-order",action:"create"}});
   const viewPermission=await mockPrisma.permission.create({data:{key:"shipment.view",resource:"synthetic-order",action:"view"}});
   for(const m of memberships){const role=await mockPrisma.role.create({data:{code:randomUUID(),name:"Synthetic creator",companyId:m.companyId}});roles.push(role.id);await mockPrisma.rolePermission.create({data:{roleId:role.id,permissionId:viewPermission.id}});await mockPrisma.rolePermission.create({data:{roleId:role.id,permissionId:permission.id}});await mockPrisma.membershipRole.create({data:{membershipId:m.id,roleId:role.id}});await mockPrisma.membershipScope.create({data:{membershipId:m.id,scopeType:"company",scopeRefId:m.companyId}});}
+  for(const key of ["drivers.telemetry","drivers.manage"]){const p=await mockPrisma.permission.create({data:{key,resource:"synthetic-driver",action:key.split(".")[1]}});for(const roleId of roles)await mockPrisma.rolePermission.create({data:{roleId,permissionId:p.id}});}
   process.env.ORDER_LABEL_BLOCKING="true";
 });
 afterAll(async()=>{delete process.env.ORDER_LABEL_BLOCKING;await mockPrisma?.$disconnect();await pool.end();});
@@ -141,4 +146,28 @@ it("live-map PostgreSQL selected markers isolate companies/tenants and hide lega
 it("live-map PostgreSQL fresh permission removal denies the next read without changing business state",async()=>{
   await getLiveMapSnapshot({actor:actor()});const grant=await mockPrisma.rolePermission.findFirstOrThrow({where:{roleId:roles[0],permission:{key:"shipment.view"}}});const before=await state();await mockPrisma.rolePermission.delete({where:{id:grant.id}});
   try{await expect(getLiveMapSnapshot({actor:actor()})).rejects.toMatchObject({statusCode:403});expect(await state()).toEqual(before);}finally{await mockPrisma.rolePermission.create({data:grant});}
+});
+
+
+it("driver ownership PostgreSQL selected directory excludes global classification and foreign company cursors",async()=>{
+  const unrelated=fixture.users.find(user=>user.id!==ids.users.multiTenant)!;
+  await mockPrisma.user.update({where:{id:unrelated.id},data:{driverType:"local"}});
+  const before=await state();
+  for(const m of memberships){const result=await listDriversView(actor(m));expect(result).toHaveLength(1);expect(result[0]).toMatchObject({id:m.userId,companyMembershipId:m.id,driverType:null,warehouseId:null,warehouseIds:[],isPartial:true});expect(result[0]).not.toHaveProperty("tenantMembership");const c={userId:m.userId,tenantId:m.tenantId,tenantMembershipId:m.tenantMembershipId,companyId:m.companyId,companyMembershipId:m.id};await expect(getDriverPresence({actor:actor(m),query:{context:c}})).resolves.toMatchObject({ok:true,presence:{enabled:false}});expect(readSelectedPresence).toHaveBeenLastCalledWith(c);}
+  await expect(listDriversView(actor(),{cursor:memberships[1].id})).rejects.toMatchObject({statusCode:404});
+  await expect(listDriversView(actor(),{cursor:memberships[2].id})).rejects.toMatchObject({statusCode:404});
+  expect(await listDriversView(actor(),{cursor:memberships[0].id,limit:1})).toEqual([]);expect(await state()).toEqual(before);
+});
+it("driver ownership PostgreSQL foreign-role, suspended context and global profile mutations have zero business effects",async()=>{
+  const telemetry=await mockPrisma.permission.findUniqueOrThrow({where:{key:"drivers.telemetry"}});
+  const ownGrant=await mockPrisma.rolePermission.findFirstOrThrow({where:{roleId:roles[0],permissionId:telemetry.id}});
+  const foreignGrant=await mockPrisma.membershipRole.create({data:{membershipId:memberships[0].id,roleId:roles[1]}});
+  await mockPrisma.rolePermission.delete({where:{id:ownGrant.id}});
+  const c={userId:actor().id,tenantId:actor().tenantId,tenantMembershipId:actor().tenantMembershipId,companyId:actor().companyId,companyMembershipId:actor().companyMembershipId};
+  const before=await state();const userBefore=await mockPrisma.user.findUniqueOrThrow({where:{id:actor().id},select:{driverType:true,warehouseId:true,liveLocationEnabled:true}});
+  try{await expect(getDriverPresence({actor:actor(),query:{context:c}})).rejects.toMatchObject({statusCode:403});expect(readSelectedPresence).not.toHaveBeenCalled();expect(readSelectedTelemetry).not.toHaveBeenCalled();expect(await listDriversView(actor())).toEqual([]);await expect(updateDriverProfileById(actor().id,{driverType:"linehaul"},actor())).rejects.toMatchObject({statusCode:409});expect(await mockPrisma.user.findUniqueOrThrow({where:{id:actor().id},select:{driverType:true,warehouseId:true,liveLocationEnabled:true}})).toEqual(userBefore);expect(await state()).toEqual(before);}
+  finally{await mockPrisma.rolePermission.create({data:ownGrant});await mockPrisma.membershipRole.delete({where:{id:foreignGrant.id}});}
+  await mockPrisma.companyMembership.update({where:{id:memberships[0].id},data:{status:"suspended"}});
+  try{await expect(listDriversView(actor())).rejects.toMatchObject({statusCode:403});await expect(getDriverPresence({actor:actor(),query:{context:c}})).rejects.toMatchObject({statusCode:403});expect(readSelectedPresence).not.toHaveBeenCalled();expect(await state()).toEqual(before);}
+  finally{await mockPrisma.companyMembership.update({where:{id:memberships[0].id},data:{status:"active"}});}
 });

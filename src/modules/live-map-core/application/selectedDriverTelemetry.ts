@@ -1,7 +1,9 @@
 import { z } from "zod";
 import type { AppUser } from "../../../types/app-user";
+import prisma from "../../../config/prismaClient";
 import { loadAccessSnapshot } from "../../identity-access/access-control";
 import { requireAuthorizedOrder } from "../../orders-core/domain/order-access";
+import { requireTenantBoundOrderCompanyAuthority } from "../../orders-core/domain/company-authority";
 import {
   readSelectedPresence, readSelectedTelemetry, writeSelectedPresence, writeSelectedTelemetry,
   type TelemetryContext,
@@ -44,6 +46,9 @@ async function authorize(actor: AppUser, expected: TelemetryContext, driverId?: 
   if (driverId && driverId !== actor.id) fail("Delegated driver telemetry unavailable");
   const snapshot = await loadAccessSnapshot({ ...context, membershipId: actor.membershipId, requireFresh: true });
   if (!snapshot || !snapshot.permissionCodes.includes("drivers.telemetry")) fail("Current telemetry permission required");
+  // The general snapshot does not certify ownership of attached role definitions.
+  // Reuse the authoritative company-role check; foreign company roles grant nothing.
+  await requireTenantBoundOrderCompanyAuthority(prisma, actor, "drivers.telemetry");
   // Self-service permission applies only to this human's explicitly selected active membership.
   // User.driverType/warehouseId, permissions in another company and manager claims grant nothing.
   return context;
