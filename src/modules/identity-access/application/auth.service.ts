@@ -398,9 +398,22 @@ export async function revokeRefreshSession(refreshToken: string) {
   } catch {
     return;
   }
-  if (!decoded?.sid) return;
+  const ids = [decoded?.sid, decoded?.id, decoded?.tenantId, decoded?.tenantMembershipId,
+    decoded?.companyMembershipId, decoded?.companyId];
+  if (decoded?.tokenType !== "refresh" || ids.some(value => typeof value !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value))) return;
+  // Security cleanup may revoke this exact token even after membership suspension.
+  // The predicate binds possession to stored identity; it does not authorize business access.
   await prisma.userRefreshSession.updateMany({
-    where: { id: decoded.sid, revokedAt: null },
+    where: {
+      id: decoded.sid, userId: decoded.id, tokenHash: hashToken(token), revokedAt: null,
+      tenantId: decoded.tenantId, tenantMembershipId: decoded.tenantMembershipId,
+      companyMembershipId: decoded.companyMembershipId,
+      companyMembership: { is: {
+        id: decoded.companyMembershipId, userId: decoded.id, tenantId: decoded.tenantId,
+        tenantMembershipId: decoded.tenantMembershipId, companyId: decoded.companyId,
+      } },
+    },
     data: { revokedAt: new Date() },
   });
 }

@@ -104,7 +104,7 @@ membership, tenant and company eligibility. This does not lock all membership
 rows or demonstrate revocation after the statement snapshot; subsequent HTTP
 authentication still reloads the membership. Concurrent logout and refresh can
 also leave the newly rotated session active because logout targets only the
-presented session identifier.
+presented session identifier (now also bound to exact refresh purpose, hash, user and selected context; see Logout_Exact_Token_Binding.md).
 
 ## Focused PostgreSQL rotation evidence (mission continuation)
 
