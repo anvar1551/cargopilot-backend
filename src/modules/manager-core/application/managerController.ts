@@ -5,14 +5,14 @@ import { getRedisClient, getRedisPrefix, withRedisTimeout } from "../../../confi
 import { getAnalyticsSummaryV2 } from "../../analytics-core/application/analyticsV2";
 import { analyticsConfig } from "../../analytics-core/config/analyticsConfig";
 import { analyticsLogger } from "../../analytics-core/config/analyticsLogger";
-import { subscribeAnalyticsInvalidation } from "../../analytics-core/realtime/analyticsV2Realtime";
+import type { AppUser } from "../../../types/app-user";
 
 export type ManagerOverviewPayload = {
   totalOrders: number;
   pending: number;
   inTransit: number;
   delivered: number;
-  totalRevenue: number;
+  totalRevenue: number | null;
   overdueOpenOrders: number;
   dueSoonOpenOrders: number;
   staleOpenOrders: number;
@@ -40,15 +40,10 @@ function hasPermission(actor: ManagerActor, permission: string) {
   return Array.isArray(actor.permissionCodes) && actor.permissionCodes.includes(permission);
 }
 
-const overviewCache = new Map<
-  string,
-  { expiresAt: number; staleUntil: number; payload: ManagerOverviewPayload }
->();
 const driversCache = new Map<
   string,
   { expiresAt: number; staleUntil: number; payload: DriverListPayload }
 >();
-const overviewBuilds = new Map<string, Promise<ManagerOverviewPayload>>();
 const driverBuilds = new Map<string, Promise<DriverListPayload>>();
 
 function pruneExpired<T>(cache: Map<string, { expiresAt: number; staleUntil: number; payload: T }>) {
@@ -59,46 +54,13 @@ function pruneExpired<T>(cache: Map<string, { expiresAt: number; staleUntil: num
 }
 
 const cacheGcTimer = setInterval(() => {
-  pruneExpired(overviewCache);
   pruneExpired(driversCache);
 }, 60_000);
 cacheGcTimer.unref();
 
-function getOverviewRedisKey(rawKey: string) {
-  const digest = createHash("sha1").update(rawKey).digest("hex");
-  return `${getRedisPrefix()}:manager:overview:${digest}`;
-}
-
 function getDriversRedisKey(rawKey: string) {
   const digest = createHash("sha1").update(rawKey).digest("hex");
   return `${getRedisPrefix()}:manager:drivers:${digest}`;
-}
-
-function clearManagerOverviewCache() {
-  overviewCache.clear();
-  void getRedisClient()
-    .then((redis) =>
-      redis
-        ? withRedisTimeout("manager:overview:clear", () => redis.del(getOverviewRedisKey("overview-v1")))
-        : undefined,
-    )
-    .catch((err: any) => {
-      analyticsLogger.throttledWarn(
-        "manager-overview-clear-redis-failed",
-        "manager overview redis clear failed",
-        { error: err, throttleMs: 60_000 },
-      );
-    });
-}
-
-function writeOverviewMemory(key: string, payload: ManagerOverviewPayload, ttlMs: number) {
-  const staleMs = Math.max(ttlMs, Number(process.env.MANAGER_OVERVIEW_STALE_MS || 10 * 60_000));
-  const now = Date.now();
-  overviewCache.set(key, {
-    payload,
-    expiresAt: now + ttlMs,
-    staleUntil: now + ttlMs + staleMs,
-  });
 }
 
 function writeDriversMemory(key: string, payload: DriverListPayload, ttlMs: number) {
@@ -111,14 +73,10 @@ function writeDriversMemory(key: string, payload: DriverListPayload, ttlMs: numb
   });
 }
 
-async function buildManagerOverviewPayload(actor: ManagerActor): Promise<ManagerOverviewPayload> {
+async function buildManagerOverviewPayload(actor: AppUser): Promise<ManagerOverviewPayload> {
   const summary = await getAnalyticsSummaryV2({
     rangeDays: analyticsConfig.defaults.rangeDays,
-    scope: {
-      role: hasPermission(actor, "drivers.manage") ? "manager" : "warehouse",
-      warehouseId: actor.warehouseId ?? null,
-      userId: actor.id ?? null,
-    },
+    actor,
   });
 
   const summaryPayload = summary.payload;
@@ -197,117 +155,8 @@ async function buildDriverListPayload(args: {
   });
 }
 
-subscribeAnalyticsInvalidation((event) => {
-  if (
-    event.keys.includes("summary") ||
-    event.keys.includes("trend") ||
-    event.reason === "order_mutation" ||
-    event.reason === "worker_rebuild"
-  ) {
-    clearManagerOverviewCache();
-  }
-});
-
-export async function getManagerOverviewPayload(args: {
-  actor: ManagerActor;
-}): Promise<{ payload: ManagerOverviewPayload; cache: "HIT" | "MISS" | "STALE"; ttlMs: number }> {
-  const cacheKey = "overview-v1";
-  const cacheTtlMs = Math.min(
-    Math.max(Number(process.env.MANAGER_OVERVIEW_CACHE_TTL_MS || 60_000), 5_000),
-    300_000,
-  );
-
-  const memoryHit = overviewCache.get(cacheKey);
-  if (memoryHit && Date.now() < memoryHit.expiresAt) {
-    return { payload: memoryHit.payload, cache: "HIT", ttlMs: cacheTtlMs };
-  }
-  if (memoryHit && Date.now() < memoryHit.staleUntil) {
-    if (!overviewBuilds.has(cacheKey)) {
-      const build = buildManagerOverviewPayload(args.actor)
-        .then(async (payload) => {
-          writeOverviewMemory(cacheKey, payload, cacheTtlMs);
-          const redis = await getRedisClient();
-          if (redis) {
-            await withRedisTimeout("manager:overview:bg-set", () =>
-              redis.set(
-                getOverviewRedisKey(cacheKey),
-                JSON.stringify(payload),
-                "EX",
-                Math.max(1, Math.floor(cacheTtlMs / 1000)),
-              ),
-            );
-          }
-          return payload;
-        })
-        .catch((err: any) => {
-          analyticsLogger.throttledWarn(
-            "manager-overview-background-refresh-failed",
-            "manager overview background refresh failed",
-            { error: err, throttleMs: 60_000 },
-          );
-          return memoryHit.payload;
-        })
-        .finally(() => {
-          overviewBuilds.delete(cacheKey);
-        });
-      overviewBuilds.set(cacheKey, build);
-    }
-    return { payload: memoryHit.payload, cache: "STALE", ttlMs: cacheTtlMs };
-  }
-  if (memoryHit) overviewCache.delete(cacheKey);
-
-  try {
-    const redis = await getRedisClient();
-    if (redis) {
-      const redisHit = await withRedisTimeout("manager:overview:get", () =>
-        redis.get(getOverviewRedisKey(cacheKey)),
-      );
-      if (redisHit) {
-        const payload = JSON.parse(redisHit) as ManagerOverviewPayload;
-        writeOverviewMemory(cacheKey, payload, cacheTtlMs);
-        return { payload, cache: "HIT", ttlMs: cacheTtlMs };
-      }
-    }
-  } catch (err: any) {
-    analyticsLogger.throttledWarn(
-      "manager-overview-redis-read-failed",
-      "manager overview redis read failed",
-      { error: err, throttleMs: 60_000 },
-    );
-  }
-
-  let build = overviewBuilds.get(cacheKey);
-  if (!build) {
-    build = buildManagerOverviewPayload(args.actor).finally(() => {
-      overviewBuilds.delete(cacheKey);
-    });
-    overviewBuilds.set(cacheKey, build);
-  }
-
-  const payload = await build;
-  writeOverviewMemory(cacheKey, payload, cacheTtlMs);
-
-  try {
-    const redis = await getRedisClient();
-    if (redis) {
-      await withRedisTimeout("manager:overview:set", () =>
-        redis.set(
-          getOverviewRedisKey(cacheKey),
-          JSON.stringify(payload),
-          "EX",
-          Math.max(1, Math.floor(cacheTtlMs / 1000)),
-        ),
-      );
-    }
-  } catch (err: any) {
-    analyticsLogger.throttledWarn(
-      "manager-overview-redis-write-failed",
-      "manager overview redis write failed",
-      { error: err, throttleMs: 60_000 },
-    );
-  }
-
-  return { payload, cache: "MISS", ttlMs: cacheTtlMs };
+export async function getManagerOverviewPayload(args: { actor: AppUser }): Promise<{ payload: ManagerOverviewPayload; cache: "MISS"; ttlMs: number }> {
+  return { payload: await buildManagerOverviewPayload(args.actor), cache: "MISS", ttlMs: 0 };
 }
 
 export async function listDriversPayload(args: {

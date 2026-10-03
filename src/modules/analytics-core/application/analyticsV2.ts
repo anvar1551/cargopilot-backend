@@ -1,16 +1,8 @@
-import { createHash } from "crypto";
 import { PaidStatus, Prisma } from "@prisma/client";
-import prisma from "../../../config/prismaClient";
-import { makeScopeKey } from "../infrastructure/makeScopeKey";
+import type { AppUser } from "../../../types/app-user";
+import { requireAnalyticsScope, freshAnalyticsRead } from "./analyticsScope";
 import { analyticsConfig } from "../config/analyticsConfig";
 import { analyticsLogger } from "../config/analyticsLogger";
-import {
-  readThroughAnalyticsProjection,
-  getFinanceQueueReadModelKey,
-  getSummaryReadModelKey,
-  getTrendReadModelKey,
-  getWarningsReadModelKey,
-} from "../infrastructure/analyticsReadModel";
 
 const ACTIVE_ORDER_STATUSES = [
   "pending",
@@ -31,27 +23,22 @@ const DEFAULT_SLA_POLICY = {
 } as const;
 
 const UNPAID_PAID_STATUSES: PaidStatus[] = ["NOT_PAID", "PARTIAL"];
-type Scope = {
-  role: string;
-  warehouseId: string | null;
-  userId: string | null;
-};
 
 type SummaryParams = {
   rangeDays?: number;
   staleHours?: number;
-  scope: Scope;
+  actor: AppUser;
 };
 
 type TrendParams = {
   rangeDays?: number;
-  scope: Scope;
+  actor: AppUser;
 };
 
 type WarningsParams = {
   rangeDays?: number;
   staleHours?: number;
-  scope: Scope;
+  actor: AppUser;
 };
 
 type QueueParams = {
@@ -62,7 +49,7 @@ type QueueParams = {
   queueStatuses?: string[];
   queueKinds?: string[];
   queueHolderTypes?: string[];
-  scope: Scope;
+  actor: AppUser;
 };
 
 type MoneyBucket = {
@@ -144,7 +131,7 @@ let cachedPolicy: {
   expiresAt: 0,
 };
 
-async function getSlaPolicy() {
+async function getSlaPolicy(db: Prisma.TransactionClient) {
   const dbPolicyEnabled = analyticsConfig.slaPolicyDbEnabled;
   if (Date.now() < cachedPolicy.expiresAt) {
     return {
@@ -156,10 +143,10 @@ async function getSlaPolicy() {
 
   if (dbPolicyEnabled) {
     try {
-      const db = prisma as any;
       if (typeof db?.operationalSlaPolicy?.findUnique === "function") {
         const row = await db.operationalSlaPolicy.findUnique({
           where: { singletonKey: "global" },
+          select: { staleHours: true, dueSoonHours: true, overdueGraceHours: true },
         });
         if (row) {
           cachedPolicy = {
@@ -187,7 +174,7 @@ async function getSlaPolicy() {
         /OperationalSlaPolicy/i.test(String(error?.message ?? ""));
       if (!knownSchemaMismatch) {
         analyticsLogger.throttledWarn("sla-policy-load", "sla policy load failed", {
-          error,
+          meta: { code: "SLA_POLICY_UNAVAILABLE" },
           throttleMs: 60_000,
         });
       }
@@ -207,79 +194,22 @@ async function getSlaPolicy() {
   };
 }
 
-function buildScopeOrderWhere(scope: Scope): Prisma.OrderWhereInput {
-  if (scope.role !== "warehouse" || !scope.warehouseId) return {};
-  return {
-    OR: [
-      { currentWarehouseId: scope.warehouseId },
-      { assignedDriver: { warehouseId: scope.warehouseId } },
-      { assignedDriver: { warehouseAccesses: { some: { warehouseId: scope.warehouseId } } } },
-    ],
-  };
-}
-
-function buildScopeOrderSql(scope: Scope, orderAlias: string) {
-  if (scope.role !== "warehouse" || !scope.warehouseId) {
-    return Prisma.sql`TRUE`;
-  }
-  const wid = scope.warehouseId;
-  return Prisma.sql`(
-    ${Prisma.raw(`"${orderAlias}"."currentWarehouseId"`)} = ${wid}::uuid
-    OR EXISTS (
-      SELECT 1
-      FROM "User" ad
-      WHERE ad.id = ${Prisma.raw(`"${orderAlias}"."assignedDriverId"`)}
-        AND (
-          ad."warehouseId" = ${wid}::uuid
-          OR EXISTS (
-            SELECT 1
-            FROM "DriverWarehouseAccess" dwa
-            WHERE dwa."driverId" = ad.id
-              AND dwa."warehouseId" = ${wid}::uuid
-          )
-        )
-    )
-  )`;
-}
-
-function buildScopeQueueSql(scope: Scope, orderAlias: string, assignedDriverAlias: string) {
-  if (scope.role !== "warehouse" || !scope.warehouseId) {
-    return Prisma.sql`TRUE`;
-  }
-  const wid = scope.warehouseId;
-  return Prisma.sql`(
-    ${Prisma.raw(`"${orderAlias}"."currentWarehouseId"`)} = ${wid}::uuid
-    OR ${Prisma.raw(`"${assignedDriverAlias}"."warehouseId"`)} = ${wid}::uuid
-    OR EXISTS (
-      SELECT 1
-      FROM "DriverWarehouseAccess" dwa
-      WHERE dwa."driverId" = ${Prisma.raw(`"${assignedDriverAlias}"."id"`)}
-        AND dwa."warehouseId" = ${wid}::uuid
-    )
-  )`;
-}
-
-function digestFilter(input: unknown) {
-  return createHash("sha1").update(JSON.stringify(input)).digest("hex").slice(0, 20);
-}
-
 export async function getAnalyticsSummaryV2(params: SummaryParams) {
-  const policy = await getSlaPolicy();
+  const selected = await requireAnalyticsScope(params.actor);
   const rangeDays = clampInt(params.rangeDays ?? 30, 7, 180, 30);
-  const staleHours = clampInt(params.staleHours ?? policy.staleHours, 6, 720, policy.staleHours);
-  const scopeKey = makeScopeKey(params.scope);
-  const ttlMs = analyticsConfig.cache.summaryTtlMs;
-  const readModelKey = getSummaryReadModelKey({
-    scope: scopeKey,
-    rangeDays,
-    staleHours,
-  });
-
-  const result = await readThroughAnalyticsProjection({
-    section: "summary",
-    key: readModelKey,
-    ttlMs,
-    buildFromDb: async () => {
+  let invoiceScope: Awaited<ReturnType<typeof requireAnalyticsScope>> | null = null;
+  try { invoiceScope = await requireAnalyticsScope(params.actor, "finance.invoices.read"); }
+  catch (error: any) { if (error?.statusCode !== 403) throw error; }
+  const invoiceSql = invoiceScope ? Prisma.sql`${invoiceScope.sql}
+    AND o."ownerOrgId" = ${params.actor.companyId}::uuid
+    AND i."tenantId" = o."tenantId" AND i."companyId" = o."ownerOrgId"
+    AND i."customerId" = o."customerId"
+    AND i."customerEntityId" IS NOT DISTINCT FROM o."customerEntityId"
+    AND (i."customerEntityId" IS NULL OR EXISTS (SELECT 1 FROM "CustomerEntity" ce
+      WHERE ce.id = i."customerEntityId" AND ce."tenantId" = o."tenantId"))` : Prisma.sql`FALSE`;
+  const result = await freshAnalyticsRead(async db => {
+      const policy = await getSlaPolicy(db);
+      const staleHours = clampInt(params.staleHours ?? policy.staleHours, 6, 720, policy.staleHours);
       const now = new Date();
       const rangeStart = startOfUtcDay(subtractDays(now, rangeDays - 1));
       const rangeEnd = endOfUtcDay(now);
@@ -289,10 +219,10 @@ export async function getAnalyticsSummaryV2(params: SummaryParams) {
       const activeStatusesSql = Prisma.sql`ARRAY[${Prisma.join(
         ACTIVE_ORDER_STATUSES.map((status) => Prisma.sql`${status}`),
       )}]::"OrderStatus"[]`;
-      const scopeSql = buildScopeOrderSql(params.scope, "o");
+      const scopeSql = selected.sql;
 
       const [ordersAggRows, invoiceAggRows, financeCurrencyRows] = await Promise.all([
-        prisma.$queryRaw<
+        db.$queryRaw<
           Array<{
             totalOrders: bigint;
             createdInRange: bigint;
@@ -386,7 +316,7 @@ export async function getAnalyticsSummaryV2(params: SummaryParams) {
             WHERE ${scopeSql}
           `,
         ),
-        prisma.$queryRaw<Array<{ pendingInvoicesCount: bigint; invoicedPaidAmount: number | null }>>(
+        db.$queryRaw<Array<{ pendingInvoicesCount: bigint; invoicedPaidAmount: number | null }>>(
           Prisma.sql`
             SELECT
               COUNT(*) FILTER (
@@ -401,10 +331,10 @@ export async function getAnalyticsSummaryV2(params: SummaryParams) {
               ), 0)::double precision AS "invoicedPaidAmount"
             FROM "Invoice" i
             INNER JOIN "Order" o ON o.id = i."orderId"
-            WHERE ${scopeSql}
+            WHERE ${scopeSql} AND ${invoiceSql}
           `,
         ),
-        prisma.$queryRaw<
+        db.$queryRaw<
           Array<{
             currency: string | null;
             serviceChargeExpected: number | null;
@@ -431,7 +361,8 @@ export async function getAnalyticsSummaryV2(params: SummaryParams) {
                 COALESCE(
                   NULLIF(pi."paidInvoiceAmount", 0),
                   CASE
-                    WHEN o."createdAt" >= ${rangeStart}
+                    WHEN o."ownerOrgId" = ${params.actor.companyId}::uuid
+                      AND o."createdAt" >= ${rangeStart}
                       AND o."createdAt" <= ${rangeEnd}
                       AND o."serviceChargePaidStatus" = 'PAID'::"PaidStatus"
                     THEN COALESCE(o."serviceCharge", 0)
@@ -449,6 +380,8 @@ export async function getAnalyticsSummaryV2(params: SummaryParams) {
                     AND i."createdAt" <= ${rangeEnd}
                 ), 0)::double precision AS "paidInvoiceAmount"
               FROM "Invoice" i
+              INNER JOIN "Order" o ON o.id = i."orderId"
+              WHERE ${scopeSql} AND ${invoiceSql}
               GROUP BY i."orderId"
             ) pi ON pi."orderId" = o.id
             WHERE ${scopeSql}
@@ -525,9 +458,10 @@ export async function getAnalyticsSummaryV2(params: SummaryParams) {
           dueTodayOpenOrders: dueSoonOpenOrders,
         },
         finance: {
-          invoicedPaidAmount,
-          invoicedPaidAmountByCurrency,
-          pendingInvoicesCount,
+          invoiceAccess: invoiceScope ? "available" : "unavailable",
+          invoicedPaidAmount: invoiceScope ? invoicedPaidAmount : null,
+          invoicedPaidAmountByCurrency: invoiceScope ? invoicedPaidAmountByCurrency : null,
+          pendingInvoicesCount: invoiceScope ? pendingInvoicesCount : null,
           serviceChargeExpected,
           serviceChargeExpectedByCurrency,
           codExpected,
@@ -537,31 +471,21 @@ export async function getAnalyticsSummaryV2(params: SummaryParams) {
         },
         generatedAt: new Date().toISOString(),
       };
-    },
   });
   return result;
 }
 
 export async function getAnalyticsTrendV2(params: TrendParams) {
+  const selected = await requireAnalyticsScope(params.actor);
   const rangeDays = clampInt(params.rangeDays ?? 30, 7, 180, 30);
-  const scopeKey = makeScopeKey(params.scope);
-  const ttlMs = analyticsConfig.cache.trendTtlMs;
-  const readModelKey = getTrendReadModelKey({
-    scope: scopeKey,
-    rangeDays,
-  });
-  return readThroughAnalyticsProjection({
-    section: "trend",
-    key: readModelKey,
-    ttlMs,
-    buildFromDb: async () => {
+  const result = await freshAnalyticsRead(async db => {
       const now = new Date();
       const rangeStart = startOfUtcDay(subtractDays(now, rangeDays - 1));
       const rangeEnd = endOfUtcDay(now);
-      const scopeSql = buildScopeOrderSql(params.scope, "o");
+      const scopeSql = selected.sql;
 
       const [createdRows, deliveredRows] = await Promise.all([
-        prisma.$queryRaw<Array<{ day: Date; count: bigint }>>(
+        db.$queryRaw<Array<{ day: Date; count: bigint }>>(
           Prisma.sql`
             SELECT DATE_TRUNC('day', o."createdAt") AS day, COUNT(*)::bigint AS count
             FROM "Order" o
@@ -572,7 +496,7 @@ export async function getAnalyticsTrendV2(params: TrendParams) {
             ORDER BY day ASC
           `,
         ),
-        prisma.$queryRaw<Array<{ day: Date; count: bigint }>>(
+        db.$queryRaw<Array<{ day: Date; count: bigint }>>(
           Prisma.sql`
             SELECT DATE_TRUNC('day', o."updatedAt") AS day, COUNT(*)::bigint AS count
             FROM "Order" o
@@ -606,33 +530,22 @@ export async function getAnalyticsTrendV2(params: TrendParams) {
         },
         generatedAt: new Date().toISOString(),
       };
-    },
   });
+  return result;
 }
 
 export async function getAnalyticsWarningsV2(params: WarningsParams) {
-  const policy = await getSlaPolicy();
+  const selected = await requireAnalyticsScope(params.actor);
   const rangeDays = clampInt(params.rangeDays ?? 30, 7, 180, 30);
-  const staleHours = clampInt(params.staleHours ?? policy.staleHours, 6, 720, policy.staleHours);
-  const scopeKey = makeScopeKey(params.scope);
-  const ttlMs = analyticsConfig.cache.warningsTtlMs;
-  const readModelKey = getWarningsReadModelKey({
-    scope: scopeKey,
-    rangeDays,
-    staleHours,
-  });
-
-  const result = await readThroughAnalyticsProjection({
-    section: "warnings",
-    key: readModelKey,
-    ttlMs,
-    buildFromDb: async () => {
+  const result = await freshAnalyticsRead(async db => {
+      const policy = await getSlaPolicy(db);
+      const staleHours = clampInt(params.staleHours ?? policy.staleHours, 6, 720, policy.staleHours);
       const now = new Date();
       const rangeStart = startOfUtcDay(subtractDays(now, rangeDays - 1));
       const rangeEnd = endOfUtcDay(now);
       const overdueBefore = new Date(now.getTime() - policy.overdueGraceHours * 60 * 60 * 1000);
       const staleBefore = new Date(now.getTime() - staleHours * 60 * 60 * 1000);
-      const scopeWhere = buildScopeOrderWhere(params.scope);
+      const scopeWhere = selected.where;
 
       const financeExposureWhere: Prisma.OrderWhereInput = {
         ...scopeWhere,
@@ -644,22 +557,22 @@ export async function getAnalyticsWarningsV2(params: WarningsParams) {
       };
 
       const [overdueTotal, staleTotal, financeExposureTotal, overdueOrders, staleOrders, financeExposureOrders] = await Promise.all([
-        prisma.order.count({ where: { ...scopeWhere, status: { in: [...ACTIVE_ORDER_STATUSES] }, expectedDeliveryAt: { lt: overdueBefore } } }),
-        prisma.order.count({ where: { ...scopeWhere, status: { in: [...ACTIVE_ORDER_STATUSES] }, updatedAt: { lt: staleBefore } } }),
-        prisma.order.count({ where: financeExposureWhere }),
-        prisma.order.findMany({
+        db.order.count({ where: { ...scopeWhere, status: { in: [...ACTIVE_ORDER_STATUSES] }, expectedDeliveryAt: { lt: overdueBefore } } }),
+        db.order.count({ where: { ...scopeWhere, status: { in: [...ACTIVE_ORDER_STATUSES] }, updatedAt: { lt: staleBefore } } }),
+        db.order.count({ where: financeExposureWhere }),
+        db.order.findMany({
           where: { ...scopeWhere, status: { in: [...ACTIVE_ORDER_STATUSES] }, expectedDeliveryAt: { lt: overdueBefore } },
           select: { id: true, orderNumber: true, status: true, expectedDeliveryAt: true, updatedAt: true },
           orderBy: [{ expectedDeliveryAt: "asc" }, { updatedAt: "asc" }],
           take: 20,
         }),
-        prisma.order.findMany({
+        db.order.findMany({
           where: { ...scopeWhere, status: { in: [...ACTIVE_ORDER_STATUSES] }, updatedAt: { lt: staleBefore } },
           select: { id: true, orderNumber: true, status: true, expectedDeliveryAt: true, updatedAt: true },
           orderBy: [{ updatedAt: "asc" }],
           take: 20,
         }),
-        prisma.order.findMany({
+        db.order.findMany({
           where: financeExposureWhere,
           select: {
             id: true,
@@ -710,57 +623,30 @@ export async function getAnalyticsWarningsV2(params: WarningsParams) {
           updatedAt: order.updatedAt.toISOString(),
         })),
       };
-    },
   });
   return result;
 }
 
 export async function getAnalyticsFinanceQueueV2(params: QueueParams) {
-  const queuePageSize = Math.min(
-    Math.max(Number(params.queuePageSize ?? 20) || 20, 5),
-    200,
-  );
-  const queuePage = Math.max(Number(params.queuePage ?? 1) || 1, 1);
+  const selected = await requireAnalyticsScope(params.actor);
+  const queuePageSize = clampInt(params.queuePageSize, 5, 100, 20);
+  const queuePage = clampInt(params.queuePage, 1, 10000, 1);
   const queueOffset = (queuePage - 1) * queuePageSize;
-  const scopeKey = makeScopeKey(params.scope);
-  const ttlMs = analyticsConfig.cache.financeQueueTtlMs;
-
-  const queueStatuses = Array.from(
-    new Set(
-      (params.queueStatuses ?? []).filter((v) =>
-        v === "expected" || v === "held" || v === "settled",
-      ),
-    ),
-  );
-  const queueKinds = Array.from(
-    new Set((params.queueKinds ?? []).filter((v) => v === "cod" || v === "service_charge")),
-  );
-  const queueHolderTypes = Array.from(
-    new Set((params.queueHolderTypes ?? []).filter((v) =>
-      ["none", "driver", "warehouse", "pickup_point", "finance"].includes(v),
-    )),
-  );
-
-  const filterHash = digestFilter({
-    scopeKey,
-    queueFrom: params.queueFrom?.toISOString() ?? null,
-    queueTo: params.queueTo?.toISOString() ?? null,
-    queueStatuses,
-    queueKinds,
-    queueHolderTypes,
-    queuePageSize,
-  });
-  const readModelKey = getFinanceQueueReadModelKey({
-    scope: scopeKey,
-    filterHash,
-    page: queuePage,
-  });
-
-  const result = await readThroughAnalyticsProjection({
-    section: "finance-queue",
-    key: readModelKey,
-    ttlMs,
-    buildFromDb: async () => {
+  const allowed = (values: string[] | undefined, choices: string[]) => {
+    if (!values) return [];
+    if (!Array.isArray(values) || values.length > 20 || values.some(value => !choices.includes(value))) {
+      throw Object.assign(new Error("Invalid analytics filter"), { statusCode: 400 });
+    }
+    return [...new Set(values)];
+  };
+  const queueStatuses = allowed(params.queueStatuses, ["expected", "held", "settled"]);
+  const queueKinds = allowed(params.queueKinds, ["cod", "service_charge"]);
+  const queueHolderTypes = allowed(params.queueHolderTypes, ["none", "driver", "warehouse", "pickup_point", "finance"]);
+  if ([params.queueFrom, params.queueTo].some(value => value !== undefined && (!(value instanceof Date) || !Number.isFinite(value.getTime()))) ||
+      (params.queueFrom && params.queueTo && params.queueFrom >= params.queueTo)) {
+    throw Object.assign(new Error("Invalid analytics dates"), { statusCode: 400 });
+  }
+  const result = await freshAnalyticsRead(async db => {
       const visibleStatuses = queueStatuses.length ? queueStatuses : ["expected", "held"];
       const queueWhereParts: Prisma.Sql[] = [
         Prisma.sql`cc.status::text IN (${Prisma.join(visibleStatuses)})`,
@@ -781,19 +667,18 @@ export async function getAnalyticsFinanceQueueV2(params: QueueParams) {
       if (params.queueTo) {
         queueWhereParts.push(Prisma.sql`${queueReferenceAtSql} < ${params.queueTo}`);
       }
-      queueWhereParts.push(buildScopeQueueSql(params.scope, "o", "ad"));
+      queueWhereParts.push(selected.sql, Prisma.sql`o."ownerOrgId" = ${params.actor.companyId}::uuid`);
 
       const [totalRows, queueRows] = await Promise.all([
-        prisma.$queryRaw<Array<{ total: bigint }>>(
+        db.$queryRaw<Array<{ total: bigint }>>(
           Prisma.sql`
             SELECT COUNT(*)::bigint AS total
             FROM "CashCollection" cc
             INNER JOIN "Order" o ON o.id = cc."orderId"
-            LEFT JOIN "User" ad ON ad.id = o."assignedDriverId"
             WHERE ${Prisma.join(queueWhereParts, " AND ")}
           `,
         ),
-        prisma.$queryRaw<
+        db.$queryRaw<
           Array<{
             id: string;
             orderId: string;
@@ -818,20 +703,17 @@ export async function getAnalyticsFinanceQueueV2(params: QueueParams) {
               cc.kind::text AS kind,
               cc.status::text AS status,
               cc."currentHolderType"::text AS "holderType",
-              COALESCE(cc."currentHolderLabel", u."name", w."name") AS "holderLabel",
+              NULL::text AS "holderLabel",
               COALESCE(cc."collectedAmount", cc."expectedAmount")::double precision AS amount,
               cc.currency,
               COALESCE(cc."settledAt", cc."collectedAt", cc."createdAt", cc."updatedAt") AS "referenceAt",
               cc."updatedAt"
             FROM "CashCollection" cc
             INNER JOIN "Order" o ON o.id = cc."orderId"
-            LEFT JOIN "User" u ON u.id = cc."currentHolderUserId"
-            LEFT JOIN "Warehouse" w ON w.id = cc."currentHolderWarehouseId"
-            LEFT JOIN "User" ad ON ad.id = o."assignedDriverId"
             WHERE ${Prisma.join(queueWhereParts, " AND ")}
             ORDER BY
               ${queueReferenceAtSql} DESC,
-              cc."updatedAt" DESC
+              cc."updatedAt" DESC, cc.id DESC
             LIMIT ${queuePageSize}
             OFFSET ${queueOffset}
           `,
@@ -873,7 +755,6 @@ export async function getAnalyticsFinanceQueueV2(params: QueueParams) {
           hasNext: queuePage < pageCount,
         },
       };
-    },
   });
   return result;
 }

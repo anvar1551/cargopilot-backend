@@ -103,12 +103,13 @@ export async function loadAccessSnapshot(args: {
   companyId?: string;
   companyMembershipId?: string;
   requireFresh?: boolean;
+  explicitScopesOnly?: boolean;
 }): Promise<AccessSnapshot | null> {
   const userId = String(args.userId || "").trim();
   const membershipId = String(args.membershipId || "").trim();
   if (!userId || !membershipId) return null;
 
-  if (!args.requireFresh) {
+  if (!args.requireFresh && !args.explicitScopesOnly) {
     const cached = readAccessCache(userId, membershipId, args);
     if (cached) return cached;
   }
@@ -191,7 +192,7 @@ export async function loadAccessSnapshot(args: {
   const roleCodes = Array.from(new Set(membership.roles.map((item) => item.role.code)));
 
   const scopes: ScopeItem[] =
-    membership.scopes.length > 0
+    membership.scopes.length > 0 || args.explicitScopesOnly
       ? membership.scopes.map((item) => ({
           scopeType: item.scopeType,
           scopeRefId: item.scopeRefId,
@@ -220,7 +221,7 @@ export async function loadAccessSnapshot(args: {
     scopes,
   };
   if (!matchesExpectedContext(snapshot, args)) return null;
-  writeAccessCache(snapshot);
+  if (!args.explicitScopesOnly) writeAccessCache(snapshot);
   return snapshot;
 }
 
@@ -375,9 +376,10 @@ function isCustomerWorkspaceOnly(snapshot: AccessSnapshot) {
   return !hasOperationalRole;
 }
 
-export async function buildOrderScopeWhere(
+async function buildOrderScopeWhereInternal(
   user: AuthUser,
-  requiredPermission?: string,
+  requiredPermission: string | undefined,
+  includeGlobalUserBindings: boolean,
 ): Promise<Prisma.OrderWhereInput | null> {
   const snapshot = await loadAccessSnapshot({
     userId: user.id,
@@ -387,6 +389,7 @@ export async function buildOrderScopeWhere(
     tenantId: user.tenantId,
     tenantMembershipId: user.tenantMembershipId,
     requireFresh: true,
+    explicitScopesOnly: !includeGlobalUserBindings,
   });
   if (!snapshot) return { id: "__no_access__" };
   if (requiredPermission && !snapshot.permissionCodes.includes(requiredPermission)) {
@@ -394,6 +397,7 @@ export async function buildOrderScopeWhere(
   }
 
   if (isCustomerWorkspaceOnly(snapshot)) {
+    if (!includeGlobalUserBindings) return { id: "__no_access__" };
     return {
       AND: [
         { tenantId: snapshot.tenantId },
@@ -414,7 +418,7 @@ export async function buildOrderScopeWhere(
   }
 
   if (
-    snapshot.permissionCodes.includes("shipment.view") &&
+    includeGlobalUserBindings && snapshot.permissionCodes.includes("shipment.view") &&
     snapshot.warehouseId
   ) {
     clauses.push({ currentWarehouseId: snapshot.warehouseId });
@@ -425,7 +429,7 @@ export async function buildOrderScopeWhere(
   }
 
   if (
-    (snapshot.permissionCodes.includes("shipment.view") ||
+    includeGlobalUserBindings && (snapshot.permissionCodes.includes("shipment.view") ||
       snapshot.permissionCodes.includes("shipment.update")) &&
     snapshot.customerEntityId
   ) {
@@ -438,6 +442,16 @@ export async function buildOrderScopeWhere(
       orWhere<Prisma.OrderWhereInput>(clauses) ?? { id: "__no_access__" },
     ],
   };
+}
+
+/** Existing compatibility policy; other callers retain their current behavior. */
+export function buildOrderScopeWhere(user: AuthUser, requiredPermission?: string) {
+  return buildOrderScopeWhereInternal(user, requiredPermission, true);
+}
+
+/** Explicit membership/object scopes only; never infer access from user-global business links. */
+export function buildMembershipOrderScopeWhere(user: AuthUser, requiredPermission: string) {
+  return buildOrderScopeWhereInternal(user, requiredPermission, false);
 }
 
 export async function buildSupportScopeWhere(

@@ -9,23 +9,17 @@ const managerFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     "/overview",
     { preHandler: fastifyAuth({ permission: "shipment.view" }) },
     async (request, reply) => {
+      reply.header("Cache-Control", "no-store");
       try {
+        if (!request.user) return reply.code(401).send({ error: "Authentication required" });
         const result = await getManagerOverviewPayload({
-          actor: {
-            id: request.user?.id ?? null,
-            roleCodes: Array.isArray(request.user?.roleCodes) ? request.user.roleCodes : [],
-            permissionCodes: Array.isArray(request.user?.permissionCodes)
-              ? request.user.permissionCodes
-              : [],
-            warehouseId: request.user?.warehouseId ?? null,
-          },
+          actor: request.user,
         });
 
         reply.header("X-Overview-Cache", result.cache);
-        reply.header("Cache-Control", `private, max-age=${Math.floor(result.ttlMs / 1000)}`);
         return reply.send(result.payload);
       } catch (err: any) {
-        return reply.code(500).send({ error: err?.message || "Failed to load overview" });
+        return reply.code([401, 403].includes(err?.statusCode) ? err.statusCode : 500).send({ error: "Selected overview unavailable" });
       }
     },
   );

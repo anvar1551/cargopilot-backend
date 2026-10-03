@@ -171,3 +171,64 @@ it("driver ownership PostgreSQL foreign-role, suspended context and global profi
   try{await expect(listDriversView(actor())).rejects.toMatchObject({statusCode:403});await expect(getDriverPresence({actor:actor(),query:{context:c}})).rejects.toMatchObject({statusCode:403});expect(readSelectedPresence).not.toHaveBeenCalled();expect(await state()).toEqual(before);}
   finally{await mockPrisma.companyMembership.update({where:{id:memberships[0].id},data:{status:"active"}});}
 });
+import { getAnalyticsSummaryV2, getAnalyticsTrendV2, getAnalyticsWarningsV2, getAnalyticsFinanceQueueV2 } from "../../src/modules/analytics-core/application/analyticsV2";
+import { freshAnalyticsRead } from "../../src/modules/analytics-core/application/analyticsScope";
+let analyticsPrepared = false;
+async function prepareAnalyticsFixtures() {
+  if (analyticsPrepared) return;
+  for (const order of fixture.orders) {
+    await mockPrisma.order.update({ where: { id: order.id }, data: { createdAt: new Date(), expectedDeliveryAt: new Date(Date.now() - 86400000), serviceCharge: 40, serviceChargePaidStatus: "NOT_PAID", codAmount: 60, codPaidStatus: "NOT_PAID" } });
+    await mockPrisma.cashCollection.create({ data: { orderId: order.id, kind: "cod", expectedAmount: 60, currency: "USD", currentHolderLabel: "Unproven synthetic global holder" } });
+  }
+  for (const invoice of fixture.invoices) await mockPrisma.invoice.update({ where: { id: invoice.id }, data: { createdAt: new Date() } });
+  await mockPrisma.order.create({ data: { orderNumber: "analytics-legacy-" + run, customerId: actor().id, ownerOrgId: actor().companyId, pickupAddress: "Synthetic legacy", dropoffAddress: "Synthetic legacy" } });
+  analyticsPrepared = true;
+}
+it("analytics ownership PostgreSQL actual summary/trend/warning/queue predicates isolate selected companies and tenants", async () => {
+  await prepareAnalyticsFixtures(); const before = await state();
+  for (const m of memberships) {
+    const owned = fixture.orders.find(order => order.ownerOrgId === m.companyId)!;
+    const summary = await getAnalyticsSummaryV2({ actor: actor(m) }); expect(summary.cacheHit).toBe(false); expect(summary.payload.overview.totalOrders).toBe(1); expect(summary.payload.finance).toMatchObject({ invoiceAccess: "unavailable", invoicedPaidAmount: null });
+    const trend = await getAnalyticsTrendV2({ actor: actor(m) }); expect(trend.payload.trend.created.reduce((sum, row) => sum + row.count, 0)).toBe(1);
+    const warnings = await getAnalyticsWarningsV2({ actor: actor(m) }); expect(warnings.payload.overdueTotal).toBe(1); expect(warnings.payload.financeExposureTotal).toBe(1); expect(warnings.payload.overdueOrders.map(order => order.id)).toEqual([owned.id]); expect(warnings.payload.financeExposureOrders.map(order => order.id)).toEqual([owned.id]);
+    const queue = await getAnalyticsFinanceQueueV2({ actor: actor(m) }); expect(queue.payload.queueMeta.total).toBe(1); expect(queue.payload.queue.map(row => row.orderId)).toEqual([owned.id]); expect(queue.payload.queue[0].holderLabel).toBeNull();
+  }
+  expect(await state()).toEqual(before); expect(enqueueOrderLabelJob).not.toHaveBeenCalled(); expect(autoBookCarrierForOrder).not.toHaveBeenCalled();
+});
+it("analytics ownership PostgreSQL explicit warehouse scope cannot become company default or global User binding", async () => {
+  await prepareAnalyticsFixtures(); const own = memberships[0], scope = await mockPrisma.membershipScope.findFirstOrThrow({ where: { membershipId: own.id } });
+  await mockPrisma.membershipScope.update({ where: { id: scope.id }, data: { scopeType: "warehouse", scopeRefId: ids.warehouses.transAsiaDe } });
+  const before = await state();
+  try {
+    const warnings = await getAnalyticsWarningsV2({ actor: actor() }); expect(warnings.payload.overdueOrders.map(order => order.id)).toEqual([ids.orders.transAsiaDe]);
+    expect((await getAnalyticsSummaryV2({ actor: actor() })).payload.overview.totalOrders).toBe(1);
+    // Company-specific custody remains outside this actor's selected financial company.
+    expect((await getAnalyticsFinanceQueueV2({ actor: actor() })).payload.queueMeta.total).toBe(0);
+    await mockPrisma.membershipScope.delete({ where: { id: scope.id } });
+    for (const read of [getAnalyticsSummaryV2, getAnalyticsTrendV2, getAnalyticsWarningsV2, getAnalyticsFinanceQueueV2]) await expect(read({ actor: actor() })).rejects.toMatchObject({ statusCode: 403 });
+    expect(await state()).toEqual(before);
+  } finally { await mockPrisma.membershipScope.upsert({ where: { id: scope.id }, create: scope, update: { scopeType: scope.scopeType, scopeRefId: scope.scopeRefId } }); }
+});
+it("analytics ownership PostgreSQL invoice permission and legal-company ownership are distinct from order visibility", async () => {
+  await prepareAnalyticsFixtures();
+  const permission = await mockPrisma.permission.create({ data: { key: "finance.invoices.read", resource: "synthetic-invoice", action: "read" } });
+  for (const roleId of roles) await mockPrisma.rolePermission.create({ data: { roleId, permissionId: permission.id } });
+  const before = await state();
+  for (const m of memberships) { const summary = await getAnalyticsSummaryV2({ actor: actor(m) }); expect(summary.payload.finance).toMatchObject({ invoiceAccess: "available", pendingInvoicesCount: 1 }); }
+  const scope = await mockPrisma.membershipScope.findFirstOrThrow({ where: { membershipId: memberships[0].id } });
+  await mockPrisma.membershipScope.update({ where: { id: scope.id }, data: { scopeType: "warehouse", scopeRefId: ids.warehouses.transAsiaDe } });
+  try { const summary = await getAnalyticsSummaryV2({ actor: actor() }); expect(summary.payload.overview.totalOrders).toBe(1); expect(summary.payload.finance.pendingInvoicesCount).toBe(0); } finally { await mockPrisma.membershipScope.update({ where: { id: scope.id }, data: { scopeType: scope.scopeType, scopeRefId: scope.scopeRefId } }); }
+  expect(await state()).toEqual(before);
+});
+it("analytics ownership PostgreSQL fresh revocation and readonly snapshots leave protected records/outbox unchanged", async () => {
+  await prepareAnalyticsFixtures(); const before = await state(), rowBefore = await mockPrisma.order.findUniqueOrThrow({ where: { id: ids.orders.transAsiaUz } });
+  await expect(freshAnalyticsRead(tx => tx.order.update({ where: { id: rowBefore.id }, data: { pickupAddress: "Forbidden readonly mutation" } }))).rejects.toThrow();
+  expect(await mockPrisma.order.findUniqueOrThrow({ where: { id: rowBefore.id } })).toEqual(rowBefore);
+  const grant = await mockPrisma.rolePermission.findFirstOrThrow({ where: { roleId: roles[0], permission: { key: "shipment.view" } } });
+  await mockPrisma.rolePermission.delete({ where: { id: grant.id } });
+  try { for (const read of [getAnalyticsSummaryV2, getAnalyticsTrendV2, getAnalyticsWarningsV2, getAnalyticsFinanceQueueV2]) await expect(read({ actor: actor() })).rejects.toMatchObject({ statusCode: 403 }); }
+  finally { await mockPrisma.rolePermission.create({ data: grant }); }
+  await mockPrisma.tenant.update({ where: { id: actor().tenantId }, data: { status: "suspended" } });
+  try { await expect(getAnalyticsSummaryV2({ actor: actor() })).rejects.toMatchObject({ statusCode: 403 }); } finally { await mockPrisma.tenant.update({ where: { id: actor().tenantId }, data: { status: "active" } }); }
+  expect(await state()).toEqual(before); expect(enqueueOrderLabelJob).not.toHaveBeenCalled(); expect(autoBookCarrierForOrder).not.toHaveBeenCalled();
+});
