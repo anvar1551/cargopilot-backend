@@ -14,17 +14,7 @@ import {
 } from "../application/driverProfileService";
 
 function liveMapActorFromRequest(request: any) {
-  const warehouseId = request.user?.warehouseId ?? null;
-  const userId = request.user?.id as string | undefined;
-  if (!userId) return null;
-  return {
-    userId,
-    warehouseId,
-    roleCodes: Array.isArray(request.user?.roleCodes) ? request.user.roleCodes : [],
-    permissionCodes: Array.isArray(request.user?.permissionCodes)
-      ? request.user.permissionCodes
-      : [],
-  };
+  return request.user?.id ? request.user : null;
 }
 
 function sendLiveMapActionError(reply: any, err: any, fallbackMessage: string) {
@@ -37,16 +27,8 @@ function sendLiveMapActionError(reply: any, err: any, fallbackMessage: string) {
       })),
     });
   }
-  if (typeof err?.message === "string" && err.message.includes("different driver")) {
-    return reply.code(403).send({ error: err.message });
-  }
-  if (typeof err?.message === "string" && err.message.includes("required for manager")) {
-    return reply.code(400).send({ error: err.message });
-  }
-  if (typeof err?.message === "string" && err.message.includes("not found")) {
-    return reply.code(404).send({ error: err.message });
-  }
-  return reply.code(400).send({ error: err?.message || fallbackMessage });
+  const status = [400, 403, 404, 409, 503].includes(err?.statusCode) ? err.statusCode : 500;
+  return reply.code(status).send({ error: fallbackMessage, code: "DRIVER_TELEMETRY_FAILED" });
 }
 
 const driverFastifyRoutes: FastifyPluginAsync = async (fastify) => {
@@ -121,6 +103,7 @@ const driverFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     "/presence",
     { preHandler: fastifyAuth({ anyPermission: ["drivers.telemetry", "drivers.manage"] }) },
     async (request, reply) => {
+      reply.header("Cache-Control", "no-store");
       const actor = liveMapActorFromRequest(request);
       if (!actor) return reply.code(401).send({ error: "Unauthorized" });
       try {
