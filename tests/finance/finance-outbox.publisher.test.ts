@@ -98,3 +98,10 @@ it("publication exceptions cannot persist arbitrary message or name",async()=>{
   queryRaw.mockResolvedValue([event]);xadd.mockRejectedValue({message:"synthetic-private-endpoint",name:"synthetic-private-token"});updateMany.mockResolvedValue({count:1});
   expect(await processFinanceOutboxBatchOnce()).toMatchObject({published:0,failed:1});expect(JSON.stringify(updateMany.mock.calls)).not.toContain("synthetic-private");expect(updateMany.mock.calls[0][0].data.lastError).toBe("FINANCE_OUTBOX_PUBLISH_FAILED");
 });
+
+it.each([0, 2])("completion count %i cannot acknowledge durable publication or release an uncertain claim",async count=>{
+  jest.clearAllMocks();queryRaw.mockResolvedValue([event]);xadd.mockResolvedValue("synthetic-transport-id");updateMany.mockResolvedValue({count});
+  expect(await processFinanceOutboxBatchOnce({consumerId:"synthetic-consumer"})).toEqual({claimed:1,published:0,failed:1});
+  expect(xadd).toHaveBeenCalledTimes(1);expect(updateMany).toHaveBeenCalledTimes(1);
+  expect(updateMany.mock.calls[0][0].where).toEqual({id:event.id,claimedBy:"synthetic-consumer",publishedAt:null});
+});

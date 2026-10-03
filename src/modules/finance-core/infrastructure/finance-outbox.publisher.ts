@@ -116,7 +116,7 @@ export async function processFinanceOutboxBatchOnce(options?: {
   for (const row of rows) {
     try {
       await publish(row);
-      await prisma.financeDomainEventOutbox.updateMany({
+      const confirmation = await prisma.financeDomainEventOutbox.updateMany({
         where: { id: row.id, claimedBy: consumerId, publishedAt: null },
         data: {
           publishedAt: new Date(),
@@ -126,7 +126,10 @@ export async function processFinanceOutboxBatchOnce(options?: {
           lastError: null,
         },
       });
-      published += 1;
+      // A transport append is not a confirmed durable publication.
+      // Do not release or retry a claim that this worker no longer owns.
+      if (confirmation.count === 1) published += 1;
+      else failed += 1;
     } catch (error: any) {
       const attempts = row.attempts + 1;
       await prisma.financeDomainEventOutbox.updateMany({
