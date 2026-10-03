@@ -1,6 +1,62 @@
 # CargoPilot security hardening backlog
 
-## Current state / resume
+## Current state — finite backend batch complete (2026-10-03)
+
+Published starting point: 42f448e45f822ad37f9e0980f860998d7f8ddd4b, branch cargopilot/erp-foundation. Current implementation HEAD: 48d72c1fe6283edc72ca37cbd5241317c54f65ec; the following dashboard checkpoint changes documentation only. Local reviewed milestones: c6632d2b8d2df0fcec31610a642d78332a83c6c5 (atomic dispatch notifications, 14 files), 48d72c1fe6283edc72ca37cbd5241317c54f65ec (direct-account request receipts, 14 files). No push. Intended final dirty scope is preserved pre-existing dist only; no implementation underway. This finite batch stops here, as requested; do not automatically resume another security area.
+
+### Implemented with stated evidence
+
+| Capability | Current bounded enforcement / evidence |
+|---|---|
+| R1 Atomic dispatch notifications | Eligible owner-company recipient notification, Order, Tracking and analytics commit together; source/recipient uniqueness, immutable retargeting, no legacy adoption; after-commit emission reloads IDs without creation. 88 current unit/mocked/HTTP cases and 11 new PostgreSQL cases; 25 affected dispatch/lifecycle cases reran. Atomic_Dispatch_Notifications.md is authoritative for scope/retention/rollout. |
+| R2 Direct-account retries | Mandatory normalized UUID operationId; exact selected context/entity/hash, fresh authorization after both locks, one account/receipt/audit/non-posting outbox fact; original projected result and historical parent ownership checked. 60 unit/mocked/HTTP cases and 18 current PostgreSQL cases; eight affected account/chart cases reran. Account_Creation_Retries.md records contract and rollout. |
+| Previously completed bounded controls | Covered tenant-scoped business APIs, order/import identity, cash custody, parent/child authorization, accepted workers/webhooks, financial read/reference integrity, immutable configuration foundations and typed payment reservations retain their recorded evidence. Selected refresh lineage/password serialization/access/socket revocation and accepted security audit remain implemented; older real WebSocket/two-process evidence is not evidence for this new notification emitter. Do not reopen completed work without a changed dependency or reproduced failure. |
+
+Actual checks this batch: 148 distinct current unit/mocked/HTTP cases across seven affected suites; final authored PostgreSQL suites 11 dispatch + 18 account cases, plus 25 dispatch and eight account/chart affected cases. These are current cases, not sums of earlier runs. Full 106-file migration setup, selected SQL/source/catalog review, offline Prisma syntax/necessary ignored-client generation and final no-emit passed. No complete semantic schema/SQL equivalence, history certification, real Redis/provider/S3/device or new Socket.IO transport claim. Initial schema uniqueness error and outdated unit fixtures were corrected; direct FK assertions were strengthened to distinguish FK errors from uniqueness. Final split fixture suites reran together; the final historical-parent correction reran only its new case and one matching-retry case. See the two reports for commands, skipped cases and exact cleanup.
+
+Four sequential, exclusively owned disposable runs (9a1952f484b2, 091c32986d30, 540a8efb6151, 682fd6801dec) used cached images without pulls, loopback synthetic credentials/env allowlist and bounded CPU/memory/PIDs/tmpfs/connections/transactions. Each ownership/storage check preceded removal and filtered absence confirmed cleanup. No owned resources remain. No existing services/databases, AWS, production, clients, dependencies, emitting build or dist writes.
+
+### Partially implemented
+
+| Workflow/foundation | Exact remaining boundary |
+|---|---|
+| Tenant migration | Nullable ownership and NOT VALID historical references remain transitional. Covered APIs fail closed, but no existing-database certification/provisioning/non-null cutover has occurred. Compound equality does not classify an organization legally. |
+| Integration configuration lifecycle | Immutable provider/template/routing journal/publication/read foundations exist; public authoring/rotation and version retirement/cancellation/reacceptance are not fully restored. Technical HTTP/workflow work and the decisions below remain. |
+| Durable publication and proof recovery | Accepted owned/fenced database records are implemented. Native transport and authorized reconciliation of legacy/incomplete/uncertain work are not restored or certified; never blind replay/delete. |
+| Audit coverage | Accepted credential events and covered bounded rejection diagnostics exist. Wider IAM/object-denial durable coverage and production collection/retention remain unfinished; do not call sampling a complete audit trail. |
+
+### Deliberately unavailable — containment is not restoration
+
+| Unavailable workflow | Exact blocker |
+|---|---|
+| New invoice issuance / approved pricing and FX acceptance | No approved immutable exact pricing/FX basis and source acceptance policy. Existing supported issued-invoice Stripe checkout remains separate and callable with its current typed authority. |
+| Manual/automatic posting, manual approval, financial mapping/account use | Independent eligible checker, immutable accepted rule version/accounting mappings and applicable FX policy are not approved. Account authoring is not that approval. Unsupported cash-finance mappings remain denied. |
+| Sensitive finance configuration/period writes; bank/payment-run/statement/settlement/carrier-bill execution | Independent accepted configuration/source, checker eligibility, authoritative matching and cancellation/recovery policy remain missing. Existing scoped reads do not approve mutation. |
+| Refund/cash allocation/manual synchronization/unsupported providers or callback transitions | Durable accepted refund/allocation authority, provider-specific verified contracts, checker and uncertain-outcome recovery decisions remain absent. Existing exact supported callbacks do not authorize arbitrary order or monetary changes. |
+| Public integration credential rotation, retirement and accepted-job cancellation/reacceptance; manual replay/retry-now | Immutable foundations alone are insufficient: approval eligibility and history-preserving retirement/cancellation/reacceptance/reconciliation procedures must be defined and wired. |
+| Administrative enrollment/delegation/grants, global profile and warehouse assignment restoration | No approved grant ceiling/delegator eligibility, independent privileged acceptance/provisioning or typed assignment/delegation policy. Existing grants/manual bootstrap remain uncertified. Deliberately provisioned warehouse.create is not implicit role elevation. |
+| Manual dispatch overrides; manager-wide live telemetry/SSE/rebuild/global analytics producers | No approved transition/delegated recipient/classification model and durable scoped acceptance for those legacy producers. Covered driver transitions and selected reads remain available; no user-global or cross-company fallback. |
+| Uncertain proof/storage/provider/outbox reconciliation; legacy unaccepted work | No approved ownership-proven reconciliation/reacceptance/cancellation procedures and required native recovery evidence. Preserve records; no automatic ID replacement or uncertain replay. |
+| Automatic refresh-family compromise response | Theft versus benign ambiguous retry handling is undecided. Reuse still rejects; lineage/logout/revocation protection remains. |
+| Production retention/erasure/global platform notifications | No approved retention/legal-hold/erasure or separate platform authority model. Existing operational notification retention is preserved, not a production policy invented here. |
+| Current frontend direct-account creation | Confirmed lib/finance.ts createFinanceAccount sends no operationId; its old requests now return 400. Durable client identity/retry integration is deferred, not restored in this backend batch. |
+
+### Awaiting external verification or business decisions
+
+Release gates retained: existing-database/null/NOT VALID certification and provisioning authorization; accounting/pricing/FX/independent-checker/source/matching decisions above; Redis limiter lifecycle/backpressure and native worker/limiter outage behavior; native DNS/TLS/abort and PNG codec resource/ownership behavior; actual provider/S3/browser/device behavior; production pool/fleet/final-read revocation windows; dependency triage/CI/generated-artifact provenance and authorized infrastructure controls. Earlier advisory counts are historical, not a new audit. RLS remains deferred defense in depth with timing/role/pool design undecided, not current enforcement. Unapproved workflows must remain disabled rather than bypass these gates.
+
+Rollout prerequisites (not executed): additive migrations first; stop old dispatch emitters/account writers, and retain stop-old-finance-publisher and checkout/callback ordering. Preserve receipts, history, scoped authorization and containment on rollback. Native transport exactly-once delivery and production readiness are not claimed. Frontend/driver changes remain deferred.
+
+### At most three source-confirmed follow-ups — not started
+
+1. Verify new persisted-notification delivery using the existing real Socket.IO/disposable-database approach. Completion: accepted A notification reaches only eligible A sessions; wrong company/source and subsequent revocation deny, including existing connections; missing socket delivery never creates another row. Dependency: new committed emitter/schema; unit mocks are insufficient transport evidence.
+2. Verify provider-inventory SQL predicates using the saved Integration_Provider_Read_Containment.md scope. Completion: actual disposable PostgreSQL list/filter/cursor/count/projection cases preserve selected ownership with no writes/secrets. Dependency: existing fresh helper/fixtures; this recorded path has unit/HTTP evidence without query execution certification, not a newly alleged vulnerability or a full audit.
+3. Deferred client account-intent update. Completion: frontend createFinanceAccount supplies one durably stored immutable operationId/body bound to user/tenant/selected membership, survives ambiguous responses and prevents context-switch replay; affected contract/restart tests and later browser verification. Dependency: current backend receipt contract; no client code authorized by this batch.
+
+## Historical records — superseded handoffs and evidence
+
+Everything below is retained historical evidence and planning. Older HEADs, open-task descriptions and instructions to continue automatically are not the current next-task list; completed R1/R2 and earlier resolved slices must not be reopened merely because an older handoff says they are unfinished.
+
 
 ## Latest exact session-capacity handoff / 2026-10-03 (payment reservation / diagnostics)
 
