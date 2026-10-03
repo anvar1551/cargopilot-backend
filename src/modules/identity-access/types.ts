@@ -28,6 +28,7 @@ export type AccessSnapshot = {
 };
 
 export type AccessTokenPayload = {
+  sid: string;
   id: string;
   membershipId: string;
   companyMembershipId: string;

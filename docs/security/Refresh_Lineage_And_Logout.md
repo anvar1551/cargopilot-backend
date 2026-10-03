@@ -1,5 +1,9 @@
 # Refresh replacement lineage and successor logout
 
+Subsequent access JWT and socket validation now follows these accepted links and
+denies revoked terminal sessions. See Durable_Access_Session_Revocation.md for
+current enforcement/evidence and retained final-read/sweep timing boundaries.
+
 Verified baseline5c40ba6: atomic single-use consumption and exact selected context exist. UserRefreshSession.replacedBySessionId exists but is never published; logout therefore cannot follow a committed successor. Exact-token logout already verifies purpose/hash/context. These are distinct protections; do not recreate them or infer earlier chains.
 
 Plan before implementation: reuse the replacement pointer with server-owned rotationDepth (root0) and nullable replacementDepth bridge. Add one new additive migration/Prisma compound target+FK for same user/tenant/both memberships and successor depth. Published pointers are immutable, require revoked predecessor and depth+1, cannot self-link/merge or form cycles, and stay retained. New/changed populated references enforced using NOT VALID ownership/completeness constraints; historical certification unresolved. No history backfill or link inference. A unique predecessor index may stop migration if historical duplicates exist; do not repair records silently. Legacy unlinked bound sessions can begin a new tracked segment at depth0; earlier unrecorded successors cannot be retroactively certified. Legacy unbound refresh remains rejected.

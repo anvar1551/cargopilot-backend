@@ -12,6 +12,12 @@ import jwt from "jsonwebtoken";
 import { createHash } from "crypto";
 import { refreshUserSession, loginUser, changeUserPassword } from "../../src/modules/identity-access/application/auth.service";
 import bcrypt from "bcryptjs";
+import Fastify from "fastify";
+import { fastifyAuth } from "../../src/modules/identity-access/transport/fastify-auth";
+import { hasLiveAccessSession } from "../../src/modules/identity-access/application/access-session";
+import { fork, ChildProcess } from "child_process";
+import path from "path";
+const WebSocket = require("ws");
 const url=process.env.CARGOPILOT_WORKER_TEST_DATABASE_URL,runId=process.env.CARGOPILOT_WORKER_RUN_ID;
 if(!url||!runId||!/^[a-f0-9]{12}$/.test(runId))throw Error("Disposable refresh identity required");
 const target=new URL(url);
@@ -226,4 +232,95 @@ it("credential PostgreSQL three preverified password changes accept one hash tra
   const spy = jest.spyOn(mockPrisma, "$transaction").mockImplementation(async (fn: any, options: any) => { if (++calls === 3) release(); await gate; return originalTransaction(fn, options); });
   try { const results = await Promise.allSettled([passwordChange(), passwordChange(), passwordChange()]); expect(calls).toBe(3); expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1); expect(results.filter(result => result.status === "rejected").every(result => String((result as PromiseRejectedResult).reason.message).includes("incorrect"))).toBe(true); const after = await rows(); expect(after).toHaveLength(before.length); expect(after.every(row => row.revokedAt !== null)).toBe(true); expect(await bcrypt.compare(newPassword, (await mockPrisma.user.findUniqueOrThrow({ where: { id: context.id } })).password)).toBe(true); expect(await sessionBusinessCounts()).toEqual(business); }
   finally { release(); clearTimeout(deadline); spy.mockRestore(); }
+}));
+
+async function protectedHttp(token: string) {
+  const app = Fastify(); let effects = 0;
+  app.get("/protected", { preHandler: fastifyAuth() }, async request => { effects++; return { companyId: request.user!.companyId }; });
+  try { const reply = await app.inject({ url: "/protected", headers: { authorization: `Bearer ${token}` } }); return { status: reply.statusCode, body: reply.json(), effects }; }
+  finally { await app.close(); }
+}
+const accessClaims = (token: string) => jwt.verify(token, secret) as any;
+it("access PostgreSQL actual issued SID, recorded rotations and successor logout govern existing HTTP access without business effects", async () => withCredentials(async () => {
+  const login = await passwordLogin(), separate = await passwordLogin(), business = await sessionBusinessCounts();
+  expect(accessClaims(login.token).sid).toBe(refreshSid(login.refreshToken)); expect((await protectedHttp(login.token)).status).toBe(200);
+  const rotated = await refreshUserSession({ refreshToken: login.refreshToken }), twice = await refreshUserSession({ refreshToken: rotated.refreshToken });
+  expect((await protectedHttp(login.token)).status).toBe(200); expect((await protectedHttp(twice.token)).status).toBe(200);
+  await revokeRefreshSession(rotated.refreshToken);
+  for (const token of [login.token,rotated.token,twice.token]) { const response = await protectedHttp(token); expect(response).toEqual({status:401,body:{error:"Unauthorized"},effects:0}); }
+  expect((await protectedHttp(separate.token)).status).toBe(200); expect(await sessionBusinessCounts()).toEqual(business);
+}));
+it("access PostgreSQL password cleanup rejects all prior HTTP roots and allows new login", async () => withCredentials(async () => {
+  const login = await passwordLogin(), next = await refreshUserSession({refreshToken:login.refreshToken}), other = await passwordLogin(), business = await sessionBusinessCounts();
+  await passwordChange(); for (const token of [login.token,next.token,other.token]) expect((await protectedHttp(token)).effects).toBe(0);
+  expect((await protectedHttp((await passwordLogin(newPassword)).token)).status).toBe(200); expect(await sessionBusinessCounts()).toEqual(business);
+}));
+it("access PostgreSQL selected tenant/company/user mismatches, missing roots and legacy/expired JWTs fail without writes", async () => withCredentials(async () => {
+  const login = await passwordLogin(), c=accessClaims(login.token), before=await rows(), business=await sessionBusinessCounts();
+  for (const patch of [{sid:randomUUID()},{sid:undefined},{companyId:ids.organizations.transAsiaDe},{tenantId:ids.tenants.unrelated},{tenantMembershipId:ids.tenantMemberships.multiTransAsia},{companyMembershipId:ids.companyMemberships.multiTransAsiaDe,membershipId:ids.companyMemberships.multiTransAsiaDe},{id:ids.users.checker},{tokenType:"refresh"},{exp:Math.floor(Date.now()/1000)-1}]) {
+    const response=await protectedHttp(jwt.sign({...c,...patch},secret)); expect(response).toEqual({status:401,body:{error:"Unauthorized"},effects:0});
+  }
+  expect(await rows()).toEqual(before); expect(await sessionBusinessCounts()).toEqual(business);
+}));
+it("access PostgreSQL fresh owner suspension and expired terminal session deny previously accepted tokens", async () => withCredentials(async () => {
+  const login=await passwordLogin(), business=await sessionBusinessCounts();
+  await mockPrisma.tenant.update({where:{id:context.tenantId},data:{status:"suspended"}});
+  try { expect((await protectedHttp(login.token)).status).toBe(401); } finally { await mockPrisma.tenant.update({where:{id:context.tenantId},data:{status:"active"}}); }
+  expect((await protectedHttp(login.token)).status).toBe(200);
+  await mockPrisma.userRefreshSession.update({where:{id:refreshSid(login.refreshToken)},data:{expiresAt:new Date(0)}});
+  expect(await hasLiveAccessSession(accessClaims(login.token))).toBe(false); expect((await protectedHttp(login.token)).effects).toBe(0); expect(await sessionBusinessCounts()).toEqual(business);
+}));
+
+type Peer = { child: ChildProcess; port: number; emit: () => Promise<void>; close: () => Promise<void> };
+async function startSocketPeer(): Promise<Peer> {
+  const env: NodeJS.ProcessEnv = { NODE_ENV:"test", JWT_SECRET:secret, CARGOPILOT_WORKER_TEST_DATABASE_URL:url, CARGOPILOT_WORKER_RUN_ID:runId };
+  for(const key of ["PATH","SystemRoot","TEMP","TMP","USERPROFILE","APPDATA","LOCALAPPDATA"]) if(process.env[key]) env[key]=process.env[key];
+  const child=fork(path.join(__dirname,"socket-session-process.ts"),[],{execArgv:["-r","ts-node/register/transpile-only"],env,stdio:["ignore","pipe","pipe","ipc"]});
+  // Bounded diagnostic capture without printing credentials/query arguments.
+  let diagnosticBytes=0; for(const stream of [child.stdout,child.stderr]) stream?.on("data",buffer=>{diagnosticBytes+=buffer.length; if(diagnosticBytes>65536) child.kill();});
+  const waitMessage=(predicate:(m:any)=>boolean,ms:number)=>new Promise<any>((resolve,reject)=>{
+    const timer=setTimeout(()=>{cleanup();reject(Error("Socket process deadline"));},ms);
+    const onMessage=(m:any)=>{if(m?.kind==='startup-failed'||m?.kind==='failed'){cleanup();reject(Error("Socket process failed"));}else if(predicate(m)){cleanup();resolve(m);}};
+    const onExit=()=>{cleanup();reject(Error("Socket process exited"));}; const cleanup=()=>{clearTimeout(timer);child.off("message",onMessage);child.off("exit",onExit);}; child.on("message",onMessage);child.on("exit",onExit);
+  });
+  const close=async()=>{ if(child.exitCode!==null) return; const ended=new Promise<void>(resolve=>child.once("exit",()=>resolve())); child.send({kind:"shutdown"}); const timer=setTimeout(()=>child.kill(),5000); try{await ended;}finally{clearTimeout(timer);} };
+  try { const ready=await waitMessage(m=>m.kind==='ready',15000); return {child,port:ready.port,close,emit:async()=>{const request=randomUUID(),done=waitMessage(m=>m.kind==='done'&&m.request===request,10000);child.send({kind:"emit-order",request,userId:context.id,payload:{orderId:ids.orders.transAsiaUz,status:"assigned",updatedAt:new Date().toISOString()}});await done;}}; }
+  catch(error){await close();throw error;}
+}
+type Wire = { ws: any; events: string[]; closed: Promise<void> };
+async function connectWire(peer:Peer,token:string):Promise<Wire> {
+  const ws=new WebSocket(`ws://127.0.0.1:${peer.port}/socket.io/?EIO=4&transport=websocket`),events:string[]=[];
+  const closed=new Promise<void>(resolve=>ws.once("close",()=>resolve()));
+  await new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>{ws.terminate();reject(Error("Socket connection deadline"));},7000);
+    ws.on("error",()=>{clearTimeout(timer);reject(Error("Socket transport failure"));});
+    ws.on("message",(buffer:any)=>{const packet=buffer.toString(); if(packet.startsWith('0'))ws.send('40'+JSON.stringify({token})); else if(packet==='2')ws.send('3'); else if(packet.startsWith('42')){const event=JSON.parse(packet.slice(2));events.push(event[0]);if(event[0]==='driver:realtime:ready'){clearTimeout(timer);resolve();}} else if(packet.startsWith('44')){clearTimeout(timer);ws.terminate();reject(Error("Unauthorized socket"));}});
+  }); return {ws,events,closed};
+}
+async function awaitClosed(wire:Wire,ms=7500){let timer:NodeJS.Timeout|undefined;try{await Promise.race([wire.closed,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error("Revoked socket did not close")),ms);})]);}finally{if(timer)clearTimeout(timer);}}
+async function withSocketPeers(work:(peers:Peer[],wires:Wire[])=>Promise<void>){const peers:Peer[]=[],wires:Wire[]=[];try{peers.push(await startSocketPeer());peers.push(await startSocketPeer());await work(peers,wires);}finally{for(const wire of wires)wire.ws.terminate();await Promise.all(peers.map(peer=>peer.close()));}}
+async function enableSyntheticDriver(){
+  const permission=await mockPrisma.permission.upsert({where:{key:"drivers.telemetry"},create:{key:"drivers.telemetry",resource:"drivers",action:"telemetry",description:"Synthetic transport test"},update:{}});
+  const role=await mockPrisma.role.create({data:{companyId:context.companyId,code:"synthetic_transport_driver",name:"Synthetic transport driver",isSystem:false}});
+  await mockPrisma.membershipRole.create({data:{membershipId:context.companyMembershipId,roleId:role.id}});
+  const previous=await mockPrisma.order.findUniqueOrThrow({where:{id:ids.orders.transAsiaUz},select:{assignedDriverId:true}});
+  const grant=await mockPrisma.rolePermission.upsert({where:{roleId_permissionId:{roleId:role.id,permissionId:permission.id}},create:{roleId:role.id,permissionId:permission.id},update:{}});
+  await mockPrisma.order.update({where:{id:ids.orders.transAsiaUz},data:{assignedDriverId:context.id}});
+  return async()=>{await mockPrisma.order.update({where:{id:ids.orders.transAsiaUz},data:previous});await mockPrisma.rolePermission.delete({where:{roleId_permissionId:{roleId:grant.roleId,permissionId:grant.permissionId}}});await mockPrisma.membershipRole.delete({where:{membershipId_roleId:{membershipId:context.companyMembershipId,roleId:role.id}}});await mockPrisma.role.delete({where:{id:role.id}});};
+}
+it("socket transport PostgreSQL two independent processes deny successor-logout delivery to existing sockets but retain a separate root",async()=>withCredentials(async()=>{
+  const restore=await enableSyntheticDriver();try{await withSocketPeers(async(peers,wires)=>{
+    const login=await passwordLogin(), separate=await passwordLogin();for(const peer of peers)wires.push(await connectWire(peer,login.token));wires.push(await connectWire(peers[1],separate.token));
+    for(const peer of peers)await peer.emit(); await new Promise(resolve=>setTimeout(resolve,100));expect(wires.every(wire=>wire.events.includes("driver:order-updated"))).toBe(true);
+    const rotated=await refreshUserSession({refreshToken:login.refreshToken}); for(const peer of peers)await peer.emit();
+    await revokeRefreshSession(login.refreshToken); const counts=wires.map(wire=>wire.events.filter(event=>event==='driver:order-updated').length);
+    for(const peer of peers)await peer.emit();await Promise.all(wires.slice(0,2).map(wire=>awaitClosed(wire)));await new Promise(resolve=>setTimeout(resolve,100));
+    expect(wires[0].events.filter(event=>event==='driver:order-updated')).toHaveLength(counts[0]);expect(wires[1].events.filter(event=>event==='driver:order-updated')).toHaveLength(counts[1]);expect(wires[2].events.filter(event=>event==='driver:order-updated')).toHaveLength(counts[2]+1);
+    await expect(connectWire(peers[0],rotated.token)).rejects.toThrow("Unauthorized");
+  });}finally{await restore();}
+}));
+it("socket transport PostgreSQL password change disconnects existing idle sessions in two processes without a business emit",async()=>withCredentials(async()=>{
+  await withSocketPeers(async(peers,wires)=>{const login=await passwordLogin();for(const peer of peers)wires.push(await connectWire(peer,login.token));await passwordChange();await Promise.all(wires.map(wire=>awaitClosed(wire)));expect(wires.every(wire=>!wire.events.includes('driver:order-updated'))).toBe(true);});
+}));
+it("socket transport PostgreSQL existing JWT expiry disconnects idle connection and legacy access cannot connect",async()=>withCredentials(async()=>{
+  await withSocketPeers(async(peers,wires)=>{const login=await passwordLogin(),claims=accessClaims(login.token);await expect(connectWire(peers[0],jwt.sign({...claims,sid:undefined},secret))).rejects.toThrow("Unauthorized");wires.push(await connectWire(peers[0],jwt.sign({...claims,exp:Math.floor(Date.now()/1000)+2},secret)));await awaitClosed(wires[0]);expect(wires[0].events).toEqual(['driver:realtime:ready']);});
 }));

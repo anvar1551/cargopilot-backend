@@ -3,6 +3,7 @@ import { FastifyReply, FastifyRequest } from "fastify";
 import { authorize, loadAccessSnapshot } from "../access-control";
 import { AccessTokenPayload } from "../types";
 import type { AppUser } from "../../../types/app-user";
+import { hasLiveAccessSession, isBoundAccessSession } from "../application/access-session";
 
 function getBearerTokenFromHeader(header: string | undefined) {
   if (!header) return null;
@@ -29,12 +30,10 @@ async function resolveAuthenticatedUserFromAuthHeader(
   } catch {
     return null;
   }
-  if (!decoded?.id || !decoded?.membershipId || !decoded.companyMembershipId
-    || !decoded.companyId || !decoded.tenantId || !decoded.tenantMembershipId
-    || decoded.membershipId !== decoded.companyMembershipId
-    || decoded.tokenType !== "access") {
+  if (!isBoundAccessSession(decoded)) {
     return null;
   }
+  try { if (!await hasLiveAccessSession(decoded)) return null; } catch { return null; }
 
   const snapshot = await loadAccessSnapshot({
     userId: decoded.id,

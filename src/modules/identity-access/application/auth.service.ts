@@ -49,6 +49,7 @@ function getTokenLifetimeSec(token: string) {
 }
 
 function signAccessToken(payload: {
+  sid: string;
   id: string;
   membershipId: string;
   companyMembershipId: string;
@@ -237,7 +238,7 @@ async function createRefreshSession(args: TenantSessionContext & {
     }, data: { replacedBySessionId: sessionId, replacementDepth: args.predecessor.depth + 1 } });
     if (published.count !== 1) throw new Error("Refresh lineage unavailable");
   }
-  return refreshToken;
+  return { refreshToken, sessionId };
 }
 
 async function issueAuthSession(args: TenantSessionContext & {
@@ -245,7 +246,9 @@ async function issueAuthSession(args: TenantSessionContext & {
   userAgent?: string | null;
   ipAddress?: string | null;
 }, tx: Prisma.TransactionClient | typeof prisma = prisma) {
+  const { refreshToken, sessionId } = await createRefreshSession(args, tx);
   const token = signAccessToken({
+    sid: sessionId,
     id: args.userId,
     membershipId: args.membershipId,
     companyMembershipId: args.companyMembershipId,
@@ -254,11 +257,6 @@ async function issueAuthSession(args: TenantSessionContext & {
     tenantMembershipId: args.tenantMembershipId,
     branchId: args.branchId ?? null,
   });
-  const refreshToken = await createRefreshSession({
-    ...args,
-    userAgent: args.userAgent ?? null,
-    ipAddress: args.ipAddress ?? null,
-  }, tx);
   return {
     token,
     refreshToken,

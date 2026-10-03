@@ -2,6 +2,116 @@
 
 ## Current state / resume
 
+Current continuation from verified1aaa780291b38fbe43281f41330d177f32c3bb75:
+durable access-session revocation implemented in18 intended files. See
+Durable_Access_Session_Revocation.md for plan/compatibility/window/evidence.
+SID issuance and exact accepted live lineage govern HTTP, Socket.IO connection
+and individual protected emits; finite bounded idle sweeps disconnect revoked/
+expired/ineligible contexts.122current unit/mock/HTTP cases passed across affected
+milestone suites and the added admission case (29new,93affected; no rerun sum).
+Actual99chain:22affected rotation/credential/logout +4new HTTP cases passed;
+3new real websocket cases passed after explicit synthetic grant correction,
+including two independent processes. Seven distinct new native-backed cases.
+All owned e6da72d1d2d3(zero tests/type defect),847940cc24b7(28passed/1fixture
+failure),c9ae49681282(final3transport cases) cleaned after ownership/storage
+checks and filtered absence. Final no-emit passed; schema unchanged/reused.
+Protected delivery denial leaves no payload; durable notification source writes
+remain independent of online sessions. Final-check/commit races, loaded sweep
+delay, snapshot pool behavior and configured cluster/browser/device verification
+remain open; no instantaneous global revocation or production readiness claim.
+
+Next ready backend task: protected credential-change security audit. Current
+password/revocation transactions are atomic but emit no durable security audit;
+there is no generic identity audit model (existing FinanceAuditEvent is finance
+specific and must not be repurposed). Plan a minimal append-only, tenant/company/
+actor-bound credential security event in the same password-change transaction,
+without passwords/hashes/tokens/session IDs/IP/header metadata or global read API.
+Add suitable compound relationships/new migration only; do not fabricate user
+retention/deletion or family-compromise policy. Test exact sanitized event,
+same transaction rollback, foreign bridges/immutability and concurrent accepted
+credential change producing one event using a new owned disposable run. Existing
+session and financial evidence reused where untouched. Other finite ready tasks
+remain dispatch/worker scoping; policy-dependent family compromise response,
+accounting/FX/checker/recovery/history/infrastructure/RLS and clients stay open.
+
+Latest session-capacity handoff2026-10-03: actual HEAD
+1aaa780291b38fbe43281f41330d177f32c3bb75 on cargopilot/erp-foundation.
+Two coherent exact-reviewed local commits this continuation:
+de419d20d42a7d89cc0341ff0f6043a55f440256 (12files, durable refresh lineage
+and successor logout) and1aaa780291b38fbe43281f41330d177f32c3bb75 (9files,
+credential/session serialization). All intended implementation/tests/reports
+committed, index empty. After this handoff note, exact non-dist dirty scope is
+only docs/security/Security_Hardening_Backlog.md; original tracked/untracked dist
+preserved. No clients/private/dependency edits, push/deploy/existing-service use.
+
+Validation: lineage58distinct current unit/HTTP cases (22new,36affected); later
+credential slice47current cases (16new,31affected). These overlap and must not
+be added as105new cases. Distinct new unit cases this continuation38. Lineage
+native16cases (6new,10affected), credential native22cases (6new,16affected).
+Twelve distinct new PostgreSQL cases, not38. Both applied full99migration chain;
+owned d7080b7b8f27 and d75fab550424 removed only after exact name/run-label/
+tmpfs/no volume-bind ownership checks, filtered absence verified again at handoff.
+No test resources remain. Final no-emit passed after each final code change;
+offline Prisma WASM validate/generated ignored client for new lineage fields
+passed once, schema unchanged afterward. Selected source/SQL/default/FK manual
+review and native catalog/checks are not full semantic equivalence/historical
+certification. Staged whitespace/exact manifests passed; credential patterns
+reviewed two explicitly synthetic test literals by file/line, no secret values
+in diagnostics. Initial mock/tuple-inference/fixture failures were corrected,
+not counted as evidence or hidden. No real Redis/socket/device/provider proof.
+
+Tested source SHA256 at handoff: auth.service.ts
+6446A5FD812B413FAC6B62096A1C134822A94DF4C9F17F6F00FAC917E35903E7;
+credential-lock.ts 1D193096496C01B61144E0F83C5B7EA7001CBF7D9B879AFFA7D3CF0847B61BA5;
+refresh-lineage.ts D8FCBDCC38647375A8C9FE80CF0D700D5260CAA9DDA6384C19CE2BED63DDF764;
+identity-access.prisma AD4D7FAB199252860E646C9FA9E5CFA079CB2DCCCA5CDB00166C538D7CF4A396;
+refresh-rotation-postgres.integration.test.ts
+6A504A7053873A3D4C9ECB13D9D3A2F146426D96E242303F50190690880E729C.
+
+Exact next executable task, bounded source tracing completed (no edits): durable
+access-session revocation. All access JWT consumers are
+identity-access/transport/fastify-auth.ts and realtime-core/realtimeHub.ts;
+shared AccessTokenPayload lacks sid. issueAuthSession signs access before
+createRefreshSession generates its durable SID. HTTP and Socket.IO reload fresh
+membership, but cannot identify a revoked issuing session. Socket data also
+lacks SID/expiry. The three protected emitters emitDriverNotification,
+emitDriverOrderUpdate and emitDriverUnreadCount broadcast to a context room
+after recipient membership/resource rechecks; individual session revocation is
+not checked. Existing tenant/company/user room isolation is implemented and
+must remain; do not recreate it or claim this is cross-tenant delivery.
+
+Before implementing write the bounded additive contract plan: reuse the durable
+session identity and immutable recorded lineage rather than another generic
+authority bypass; sign access SID from the accepted transaction; fresh exact
+user/tenant/both-membership/company checks for live session at HTTP, connection
+and each individual protected delivery. Preserve normal authorized access across
+rotation only through provable recorded successor authority, or explicitly
+document any intentional change in rotation/socket compatibility. Never trust a
+caller SID/tenant or infer legacy links; legacy unbound access requires fresh
+login. Keep JWT expiry enforced on existing sockets and disconnect/suppress
+revoked recipients; preserve event payloads and durable notification persistence
+independently of online recipient delivery. No positive cache fallback, global
+broadcast, fabricated membership or connection-only immediate-revocation claim.
+Test actual issued tokens, logout/password cleanup, rotation/old-token behavior,
+missing/foreign SID/context, revoked/null/expired graph, two sockets sharing a
+membership with separate roots, selected tenants/companies, permissions, late
+revocation/expiry and rejection without content/effects. Reuse the guarded
+PostgreSQL harness for actual live-session SQL/races; mock Socket.IO evidence
+remains distinct from transport. Inspect affected HTTP token fixtures/consumers
+before broad milestone checks; do not repeat completed business suites.
+
+Remaining blocked/unavailable workflows stay finite: automatic compromise reuse
+response vs benign retries needs an explicit policy; distributed immediate
+access/cache/socket revocation, credential security audit coverage, dispatch and
+remaining workers are technically unfinished; financial pricing/FX/accounting/
+independent checker/acceptance, uncertain provider/reconciliation/cancellation/
+reacceptance/config retirement remain policy-contained. Analytics SSE/rebuild,
+platform metrics, driver provisioning/delegation/map, history/null/NOT VALID
+certification, RLS, Redis lifecycle/backpressure/native storage/provider/device/
+CI and deferred clients remain open. Containment is not restored functionality
+or production readiness. Stop reason is session capacity, not completion or a
+blocker of all ready tasks; continue under the standing authorization.
+
 Current continuation after local de419d20d42a7d89cc0341ff0f6043a55f440256:
 password/session serialization implemented in9 intended source/test/report
 files. See Password_Session_Serialization.md. Existing User row serializes
@@ -448,7 +558,8 @@ This is the current mission checklist; older next-task/handoff prose below is hi
 | Exact-token logout | implemented/tested | Logout_Exact_Token_Binding.md:14mocked/unit +2native cases; purpose/hash/exact selected stored context at conditional revoke, no replacement or business effects. Does not revoke successors/access tokens/sockets. |
 | Recorded refresh lineage / successor logout | implemented/tested | Existing pointer now published atomically; same-context immutable depth/acceptance constraints and bounded locked logout.58 current unit/HTTP cases and16native cases at99chain,6new native. Historical unrecorded chains not inferred/certified. See Refresh_Lineage_And_Logout.md. |
 | Password-change / login / refresh serialization | implemented/tested | Existing User-row lock, checked-hash/current selected context, atomic credential/refresh revocation;16new unit and6new actual PostgreSQL schedules at99chain, affected consumers/rotation/logout passed. See Password_Session_Serialization.md. |
-| Family compromise response / durable access-session revocation | technically unfinished / policy and verification outstanding | Reuse rejects without issuing tokens; automatic compromise response needs distinction from benign concurrent retries. Existing access tokens lack durable session ID and connected sockets/cache do not gain immediate distributed revocation from successor logout/password cleanup. This is next ready technical work, not a claim of complete invalidation. |
+| Durable access-session / protected socket revocation | implemented/tested / infrastructure and timing outstanding | Signed SID, exact current accepted lineage, HTTP and individual Socket.IO delivery; bounded finite idle sweep.122current mocked/unit/HTTP cases and7new native-backed cases including real websocket/two independent processes,99chain. Final-read races/load/cluster/client verification remain. See Durable_Access_Session_Revocation.md. |
+| Family compromise response / credential audit | contained awaiting policy / technically unfinished | Replay rejects without issuing tokens; automatic compromise response needs distinction from benign retries. Credential changes need protected durable security audit; no generic identity model exists. Current source does not claim instantaneous global invalidation. |
 | Nullable/historical constraint certification / provisioning | verification outstanding | NOT VALID and optional-null expansions are transitional. No existing DB mapping/reset/backfill authorized; synthetic fixture evidence does not certify existing rows. |
 | Redis lifecycle/backpressure, storage/native transport, CI/dependency/infrastructure/RLS | verification outstanding | Retain specific earlier release gates; isolated approved resource evidence only. No live AWS/services, dependency changes or RLS claims. |
 | Clients / real browser-device compatibility | verification outstanding | Deferred throughout backend phase; record API impacts, do not implement/rewrite clients. |

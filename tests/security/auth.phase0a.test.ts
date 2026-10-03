@@ -1,3 +1,4 @@
+jest.mock("../../src/modules/identity-access/application/access-session", () => ({ ...jest.requireActual("../../src/modules/identity-access/application/access-session"), hasLiveAccessSession: jest.fn(async () => true) }));
 import Fastify from "fastify";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
@@ -19,20 +20,20 @@ jest.mock("../../src/modules/identity-access/access-control", () => ({
 
 const keySecret = "synthetic-phase-0a-key-32-characters-long";
 const snapshot = {
-  userId: "10000000-0000-4000-8000-000000000001", membershipId: "membership-a", companyMembershipId: "membership-a",
-  companyId: "company-a", tenantId: "tenant-a", tenantMembershipId: "tenant-membership-a", branchId: null,
+  userId: "10000000-0000-4000-8000-000000000001", membershipId: "40000000-0000-4000-8000-000000000001", companyMembershipId: "40000000-0000-4000-8000-000000000001",
+  companyId: "50000000-0000-4000-8000-000000000001", tenantId: "20000000-0000-4000-8000-000000000001", tenantMembershipId: "30000000-0000-4000-8000-000000000001", branchId: null,
   name: "Alice", email: "alice@example.test", warehouseId: "warehouse-a", customerEntityId: null,
   roleCodes: ["worker"], permissionCodes: [], scopes: [{ scopeType: "warehouse" as const, scopeRefId: "warehouse-a" }],
 };
 const boundMembership = {
-  id: "membership-a", userId: "10000000-0000-4000-8000-000000000001", companyId: "company-a", branchId: null, status: "active",
-  tenantId: "tenant-a", tenantMembershipId: "tenant-membership-a",
-  tenant: { id: "tenant-a", name: "Tenant A", status: "active" },
-  tenantMembership: { id: "tenant-membership-a", tenantId: "tenant-a", userId: "10000000-0000-4000-8000-000000000001", status: "active" },
-  company: { id: "company-a", name: "Company A", tenantId: "tenant-a", isActive: true }, branch: null,
+  id: "40000000-0000-4000-8000-000000000001", userId: "10000000-0000-4000-8000-000000000001", companyId: "50000000-0000-4000-8000-000000000001", branchId: null, status: "active",
+  tenantId: "20000000-0000-4000-8000-000000000001", tenantMembershipId: "30000000-0000-4000-8000-000000000001",
+  tenant: { id: "20000000-0000-4000-8000-000000000001", name: "Tenant A", status: "active" },
+  tenantMembership: { id: "30000000-0000-4000-8000-000000000001", tenantId: "20000000-0000-4000-8000-000000000001", userId: "10000000-0000-4000-8000-000000000001", status: "active" },
+  company: { id: "50000000-0000-4000-8000-000000000001", name: "Company A", tenantId: "20000000-0000-4000-8000-000000000001", isActive: true }, branch: null,
 };
-const sessionToken = () => jwt.sign({ id: "10000000-0000-4000-8000-000000000001", membershipId: "membership-a", companyMembershipId: "membership-a",
-  companyId: "company-a", tenantId: "tenant-a", tenantMembershipId: "tenant-membership-a", tokenType: "access" }, process.env.JWT_SECRET!);
+const sessionToken = () => jwt.sign({ id: "10000000-0000-4000-8000-000000000001", membershipId: "40000000-0000-4000-8000-000000000001", companyMembershipId: "40000000-0000-4000-8000-000000000001",
+  companyId: "50000000-0000-4000-8000-000000000001", tenantId: "20000000-0000-4000-8000-000000000001", tenantMembershipId: "30000000-0000-4000-8000-000000000001", tokenType: "access", sid: "60000000-0000-4000-8000-000000000001" }, process.env.JWT_SECRET!, { expiresIn: "1h" });
 const hash = bcrypt.hashSync("test-password", 10);
 
 describe("Phase 0A identity routes (real services, mocked database)", () => {
@@ -61,7 +62,7 @@ describe("Phase 0A identity routes (real services, mocked database)", () => {
     const hashPassword = jest.spyOn(bcrypt, "hash");
     const payloads: unknown[] = [
       {}, { email: "existing@example.test" }, { email: "new@example.test" },
-      ...["company-a", "company-b"].flatMap((companyId) => ["super_admin", "owner", "manager"].map((role) => ({
+      ...["50000000-0000-4000-8000-000000000001", "company-b"].flatMap((companyId) => ["super_admin", "owner", "manager"].map((role) => ({
         name: "Attacker", email: "new@example.test", password: "test-password",
         companyId, tenantId: companyId, roleCodes: [role], role, isAdmin: true,
         permissions: ["*"], membershipId: "victim-membership", warehouseId: "warehouse-b",
@@ -107,11 +108,11 @@ describe("Phase 0A identity routes (real services, mocked database)", () => {
     const hashPassword = jest.spyOn(bcrypt, "hash");
     const bodies = [
       { name: "New worker", email: "new@example.test", password: "test-password", roleCodes: ["worker"] },
-      { companyId: "company-a", roleCodes: ["super_admin"], isAdmin: true, permissions: ["*"] },
+      { companyId: "50000000-0000-4000-8000-000000000001", roleCodes: ["super_admin"], isAdmin: true, permissions: ["*"] },
       { companyId: "company-b", tenantId: "tenant-b", roleCodes: ["owner"],
         membershipId: "membership-b", branchId: "branch-b", warehouseId: "warehouse-b", customerEntityId: "customer-b",
         scopes: [{ scopeType: "company", scopeRefId: "company-b" }, { scopeType: "warehouse", scopeRefId: "warehouse-b" }] },
-      { companyId: "company-a", warehouseId: "warehouse-a", roleCodes: ["worker"],
+      { companyId: "50000000-0000-4000-8000-000000000001", warehouseId: "warehouse-a", roleCodes: ["worker"],
         scopes: [{ scopeType: "warehouse", scopeRefId: "warehouse-a" }] },
     ];
     try {
@@ -176,7 +177,7 @@ describe("Phase 0A identity routes (real services, mocked database)", () => {
       expect(body.user).toEqual(snapshot);
       expect(body.accessTokenExpiresInSec).toBeGreaterThan(0);
       const access = jwt.verify(body.token, keySecret) as any;
-      expect(access).toMatchObject({ id: "10000000-0000-4000-8000-000000000001", companyId: "company-a", membershipId: "membership-a", tokenType: "access" });
+      expect(access).toMatchObject({ id: "10000000-0000-4000-8000-000000000001", companyId: "50000000-0000-4000-8000-000000000001", membershipId: "40000000-0000-4000-8000-000000000001", tokenType: "access" });
       const saved = database.userRefreshSession.create.mock.calls.slice(-1)[0][0].data;
       expect(saved.tokenHash).not.toBe(body.refreshToken);
       expect(saved.ipAddress).toBe("127.0.0.1");

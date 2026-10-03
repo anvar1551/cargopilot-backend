@@ -1,3 +1,4 @@
+jest.mock("../../src/modules/identity-access/application/access-session", () => ({ ...jest.requireActual("../../src/modules/identity-access/application/access-session"), hasLiveAccessSession: jest.fn(async () => true) }));
 jest.mock("../../src/config/prismaClient", () => ({__esModule:true,default:require("./fixtures").database}));
 jest.mock("../../src/config/redis", () => ({getRedisClient:jest.fn(async()=>null),getRedisPrefix:()=>"test",withRedisTimeout:async(_name:string,work:()=>Promise<unknown>)=>work()}));
 jest.mock("../../src/modules/identity-access/access-control",()=>({loadAccessSnapshot:jest.fn(),clearIdentityAccessCacheForUser:jest.fn(),authorize:jest.fn(async(actor:any,permission:string)=>{if(!actor.permissionCodes.includes(permission))throw Object.assign(new Error("Forbidden"),{statusCode:403});})}));
@@ -9,7 +10,7 @@ import {loadAccessSnapshot} from "../../src/modules/identity-access/access-contr
 import {createRoleForCompany,listPermissions,listRolesForCompany,seedSystemPermissions} from "../../src/modules/identity-access/application/iam.service";
 import {createUserByCompanyAdmin,updateUserAccessByCompanyAdmin,deleteUserMembershipFromCompany,listUsersForCompany} from "../../src/modules/identity-access/application/auth.service";
 import {BoundedLocalRateLimitStore,createAbuseRateLimiter} from "../../src/shared/http/abuseRateLimit";
-const actor:any={id:"user-a",membershipId:"cm-a",companyMembershipId:"cm-a",companyId:"company-a",tenantId:"tenant-a",tenantMembershipId:"tm-a",permissionCodes:["roles.read","membership.invite","role.bindPermissions","membership.suspend","policy.override"],scopes:[{scopeType:"company",scopeRefId:"company-a"}]};
+const actor:any={id:"10000000-0000-4000-8000-000000000001",membershipId:"40000000-0000-4000-8000-000000000001",companyMembershipId:"40000000-0000-4000-8000-000000000001",companyId:"50000000-0000-4000-8000-000000000001",tenantId:"20000000-0000-4000-8000-000000000001",tenantMembershipId:"30000000-0000-4000-8000-000000000001",permissionCodes:["roles.read","membership.invite","role.bindPermissions","membership.suspend","policy.override"],scopes:[{scopeType:"company",scopeRefId:"50000000-0000-4000-8000-000000000001"}]};
 const snapshot:any={...actor,userId:actor.id};
 const originalEnvironment={...process.env};const secret="synthetic-delegation-containment-32-characters";
 beforeEach(()=>{
@@ -22,7 +23,7 @@ beforeEach(()=>{
 afterEach(()=>{process.env={...originalEnvironment};});
 function noBusinessEffects(){for(const [model,methods] of Object.entries({role:["create"],rolePermission:["create","upsert"],membershipRole:["create","deleteMany"],membershipScope:["create","deleteMany"],companyMembership:["create","update"],user:["create","update","delete"],userRefreshSession:["create","updateMany"]}))for(const method of methods)expect(database[model][method]).not.toHaveBeenCalled();}
 async function server(){const app=Fastify();await app.register(routes,{rateLimiter:createAbuseRateLimiter({localStore:new BoundedLocalRateLimitStore()})});await app.ready();return app;}
-const token=()=>jwt.sign({...actor,tokenType:"access"},secret);
+const token=()=>jwt.sign({...actor,tokenType:"access",sid:"60000000-0000-4000-8000-000000000001"},secret,{expiresIn:"1h"});
 test.each([
  {method:"PATCH",url:"/user-a",payload:{roleCodes:["super_admin"],scopes:[{scopeType:"warehouse",scopeRefId:"foreign"}]}},
  {method:"PATCH",url:"/user-b",payload:{name:"Changed global identity",email:"synthetic@example.test",customerEntityId:"foreign"}},
@@ -35,12 +36,12 @@ test("malformed administrative request is contained before parsing or leaking pr
  const app=await server();try{const response=await app.inject({method:"PATCH",url:"/user-a",headers:{"content-type":"application/json"},payload:"{broken"});expect(response.statusCode).toBe(403);expectNoDatabaseCalls();}finally{await app.close();}
 });
 test.each([{roleCodes:["super_admin"]},{scopes:[]},{scopes:[{scopeType:"warehouse",scopeRefId:"foreign"}]},{branchId:"foreign"},{customerEntityId:"foreign"},{warehouseId:"foreign"},{name:"Changed",email:"synthetic@example.test"}])("alternate admin service caller cannot grant or mutate identity: %j",async(input:any)=>{
- await expect(updateUserAccessByCompanyAdmin({companyId:"company-a",userId:"user-a",...input})).rejects.toMatchObject({statusCode:403,code:"DELEGATION_POLICY_REQUIRED"});expectNoDatabaseCalls();
+ await expect(updateUserAccessByCompanyAdmin({companyId:"50000000-0000-4000-8000-000000000001",userId:"10000000-0000-4000-8000-000000000001",...input})).rejects.toMatchObject({statusCode:403,code:"DELEGATION_POLICY_REQUIRED"});expectNoDatabaseCalls();
 });
 test("role definition, enrollment and permanent user deletion have no context-free mutation bypass",async()=>{
  await expect(createRoleForCompany({companyId:"foreign",name:"Escalation",permissionKeys:["policy.override"],isOwnerRole:true})).rejects.toMatchObject({statusCode:403});
- await expect(createUserByCompanyAdmin({companyId:"company-a",name:"Synthetic",email:"synthetic@example.test",password:"synthetic-only",roleCodes:["super_admin"]})).rejects.toMatchObject({statusCode:403});
- await expect(deleteUserMembershipFromCompany({actorUserId:"user-a",targetUserId:"user-b",companyId:"company-a"})).rejects.toMatchObject({statusCode:403});expectNoDatabaseCalls();
+ await expect(createUserByCompanyAdmin({companyId:"50000000-0000-4000-8000-000000000001",name:"Synthetic",email:"synthetic@example.test",password:"synthetic-only",roleCodes:["super_admin"]})).rejects.toMatchObject({statusCode:403});
+ await expect(deleteUserMembershipFromCompany({actorUserId:"10000000-0000-4000-8000-000000000001",targetUserId:"user-b",companyId:"50000000-0000-4000-8000-000000000001"})).rejects.toMatchObject({statusCode:403});expectNoDatabaseCalls();
 });
 test.each([undefined,{...actor,tenantId:null},{...actor,membershipId:"other"}])("missing management selection fails before querying the catalog",async(value:any)=>{
  await expect(listRolesForCompany({actor:value})).rejects.toMatchObject({statusCode:403});expectNoDatabaseCalls();

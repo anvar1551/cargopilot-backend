@@ -1,5 +1,9 @@
 # Password change and session issuance serialization
 
+Subsequent durable access/session checks observe this committed refresh cleanup:
+see Durable_Access_Session_Revocation.md. The earlier no-access-binding limitation
+below is historical; in-flight read/delivery and sweep windows remain.
+
 Source-confirmed gap at de419d2: password update and all-user refresh revocation
 are separate writes; login checks a hash before session insertion; prechecked
 refresh can race cleanup. Existing selected-context lineage locking does not

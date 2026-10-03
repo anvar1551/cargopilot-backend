@@ -82,7 +82,7 @@ function resetDatabaseMocks() {
     database.order.create, database.customerEntity.create].forEach((mock) => mock.mockReset());
   database.user.findUnique.mockResolvedValue({ id: ids.user, password: passwordHash });
   database.$executeRaw.mockReset().mockResolvedValue(0);
-  database.$queryRaw.mockReset().mockImplementation(async (sql: any) => sql.text.includes('FROM "User"') ? [{ id: ids.user, password: passwordHash }] : []);
+  database.$queryRaw.mockReset().mockImplementation(async (sql: any) => sql.text.includes('FROM "User"') ? [{ id: ids.user, password: passwordHash }] : sql.text.includes('WITH RECURSIVE') ? [{ id: ids.user, userId: ids.user, tenantId: ids.tenantA, tenantMembershipId: ids.tenantMembershipA, companyMembershipId: ids.membershipA, rotationDepth: 0, replacementDepth: null, replacedBySessionId: null, revokedAt: null, expiresAt: new Date(Date.now()+3600000), hop: 0 }] : []);
   database.userRefreshSession.create.mockResolvedValue({});
   database.userRefreshSession.updateMany.mockResolvedValue({ count: 1 });
   database.$transaction.mockImplementation(async (run: (tx: typeof database) => Promise<unknown>) => run(database));
@@ -316,9 +316,9 @@ describe("tenant-bound authentication sessions (mocked database evidence)", () =
       response = await app.inject({ url: "/protected", headers: { authorization: `Bearer ${forgedCompany}` } });
       expect(response.statusCode).toBe(401);
 
-      const valid = jwt.sign({ id: ids.user, membershipId: ids.membershipA,
+      const valid = jwt.sign({ id: ids.user, sid: ids.user, membershipId: ids.membershipA,
         companyMembershipId: ids.membershipA, companyId: ids.companyA, tenantId: ids.tenantA,
-        tenantMembershipId: ids.tenantMembershipA, tokenType: "access" }, secret);
+        tenantMembershipId: ids.tenantMembershipA, tokenType: "access" }, secret, { expiresIn: "1h" });
       database.companyMembership.findFirst.mockResolvedValue(membership());
       response = await app.inject({ url: "/protected", headers: { authorization: `Bearer ${valid}` } });
       expect(response.statusCode).toBe(200);

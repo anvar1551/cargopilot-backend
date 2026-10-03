@@ -1,3 +1,4 @@
+jest.mock("../../src/modules/identity-access/application/access-session", () => ({ ...jest.requireActual("../../src/modules/identity-access/application/access-session"), hasLiveAccessSession: jest.fn(async () => true) }));
 import Fastify from "fastify";
 import jwt from "jsonwebtoken";
 import routes from "../../src/modules/warehouse-core/transport/fastify-routes";
@@ -21,11 +22,11 @@ const dirty = {
     assignedDriver: sensitiveUser, tracking: [{ actor: sensitiveUser }], senderPhone: "SENSITIVE-CANARY" }],
 };
 const snapshot = {
-  userId: "user-a", membershipId: "membership-a", companyMembershipId: "membership-a",
-  companyId: "company-a", tenantId: "tenant-a", tenantMembershipId: "tenant-membership-a", branchId: null,
+  userId: "10000000-0000-4000-8000-000000000001", membershipId: "40000000-0000-4000-8000-000000000001", companyMembershipId: "40000000-0000-4000-8000-000000000001",
+  companyId: "50000000-0000-4000-8000-000000000001", tenantId: "20000000-0000-4000-8000-000000000001", tenantMembershipId: "30000000-0000-4000-8000-000000000001", branchId: null,
   name: "Worker", email: "worker@example.test", warehouseId: "warehouse-a", customerEntityId: null,
   roleCodes: ["worker"], permissionCodes: ["shipment.view", "shipment.update", "warehouse.create"],
-  scopes: [{ scopeType: "warehouse" as const, scopeRefId: "warehouse-a" }, { scopeType: "company" as const, scopeRefId: "company-a" }],
+  scopes: [{ scopeType: "warehouse" as const, scopeRefId: "warehouse-a" }, { scopeType: "company" as const, scopeRefId: "50000000-0000-4000-8000-000000000001" }],
 };
 
 describe("warehouse recursive response boundary (mocked DB, real routes/repository)", () => {
@@ -47,8 +48,8 @@ describe("warehouse recursive response boundary (mocked DB, real routes/reposito
     return server;
   }
   function headers() {
-    return { authorization: `Bearer ${jwt.sign({ id: "user-a", membershipId: "membership-a", companyMembershipId: "membership-a",
-      companyId: "company-a", tenantId: "tenant-a", tenantMembershipId: "tenant-membership-a", tokenType: "access" }, secret)}` };
+    return { authorization: `Bearer ${jwt.sign({ id: "10000000-0000-4000-8000-000000000001", membershipId: "40000000-0000-4000-8000-000000000001", companyMembershipId: "40000000-0000-4000-8000-000000000001",
+      companyId: "50000000-0000-4000-8000-000000000001", tenantId: "20000000-0000-4000-8000-000000000001", tenantMembershipId: "30000000-0000-4000-8000-000000000001", tokenType: "access", sid: "60000000-0000-4000-8000-000000000001" }, secret, { expiresIn: "1h" })}` };
   }
 
   it.each([

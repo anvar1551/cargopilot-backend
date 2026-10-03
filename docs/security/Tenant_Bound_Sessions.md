@@ -1,5 +1,12 @@
 # Tenant-bound login and refresh session slice
 
+Current durable access/session revocation is documented in
+Durable_Access_Session_Revocation.md: access SID, live recorded lineage,
+HTTP/Socket.IO/per-delivery checks and bounded idle disconnects connect logout
+and password cleanup to access authentication. Older evidence below describes
+earlier checkpoints. Final-read races, sweep delay, compromise policy and
+deployed cluster/client verification remain open.
+
 ## Enforced behavior in this slice
 
 After credentials are verified, login resolves an active `CompanyMembership` for

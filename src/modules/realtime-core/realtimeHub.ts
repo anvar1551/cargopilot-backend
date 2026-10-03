@@ -7,6 +7,7 @@ import { Server, Socket } from "socket.io";
 import prisma from "../../config/prismaClient";
 import { loadAccessSnapshot } from "../../modules/identity-access/access-control";
 import type { AccessTokenPayload } from "../../modules/identity-access/types";
+import { hasLiveAccessSession, isBoundAccessSession } from "../identity-access/application/access-session";
 import {
   countUnreadUserNotifications,
   createUserNotification,
@@ -21,6 +22,8 @@ type AuthSocket = Socket & {
       tenantMembershipId: string;
       companyId: string;
       companyMembershipId: string;
+      sid: string;
+      expiresAt: number;
       audience: string;
       warehouseId?: string | null;
     };
@@ -44,6 +47,65 @@ type DriverOrderRealtimeUpdate = {
 };
 
 let io: Server | null = null;
+let pendingSocketAdmissions = 0;
+const MAX_PROCESS_SOCKETS = 1024;
+const SWEEP_BATCH = 64;
+const CHECK_CONCURRENCY = 4;
+
+async function revalidateSocket(socket: AuthSocket, permission?: string) {
+  const u = socket.data.user;
+  if (!u) return false;
+  const claims = { ...u, membershipId: u.companyMembershipId, exp: u.expiresAt, tokenType: "access" as const };
+  if (!isBoundAccessSession(claims)) return false;
+  const snapshot = await loadAccessSnapshot({ userId: u.id, membershipId: u.companyMembershipId,
+    companyMembershipId: u.companyMembershipId, companyId: u.companyId, tenantId: u.tenantId,
+    tenantMembershipId: u.tenantMembershipId, requireFresh: true });
+  return !!snapshot && (!permission || snapshot.permissionCodes.includes(permission)) && await hasLiveAccessSession(claims);
+}
+
+async function checkedSocketWork(sockets: AuthSocket[], work: (socket: AuthSocket) => Promise<void>) {
+  for (let offset = 0; offset < sockets.length; offset += CHECK_CONCURRENCY) {
+    await Promise.all(sockets.slice(offset, offset + CHECK_CONCURRENCY).map(work));
+  }
+}
+
+async function emitToLiveRecipients(server: Server, context: RealtimeRecipientContext, event: string, payload: unknown, permission?: string) {
+  const sockets: AuthSocket[] = [];
+  for (const socket of server.sockets.sockets.values()) {
+    const s = socket as AuthSocket, u = s.data.user;
+    if (u?.id === context.userId && u.tenantId === context.tenantId && u.companyId === context.companyId &&
+        u.companyMembershipId === context.companyMembershipId && u.tenantMembershipId === context.tenantMembershipId) sockets.push(s);
+  }
+  if (sockets.length > MAX_PROCESS_SOCKETS) {
+    recordSuppressedDelivery(event, "recipient_capacity_exceeded"); return;
+  }
+  await checkedSocketWork(sockets, async socket => {
+    try {
+      if (await revalidateSocket(socket, permission) && socket.connected !== false &&
+          (socket.data.user?.expiresAt ?? 0) * 1000 > Date.now()) { socket.emit(event, payload); return; }
+    } catch { /* Deny on database failure; no cached-authority fallback. */ }
+    recordSuppressedDelivery(event, "recipient_session_ineligible"); socket.disconnect(true);
+  });
+}
+
+function startSessionSweep(server: Server) {
+  let checking = false, pending: AuthSocket[] = [];
+  const timer = setInterval(async () => {
+    if (checking) return;
+    checking = true;
+    try {
+      // Finite cycle: connection churn cannot indefinitely postpone older sockets.
+      if (!pending.length) pending = Array.from(server.sockets.sockets.values()).slice(0, MAX_PROCESS_SOCKETS) as AuthSocket[];
+      const batch = pending.splice(0, SWEEP_BATCH);
+      await checkedSocketWork(batch, async socket => {
+        try { if (socket.connected !== false && await revalidateSocket(socket)) return; } catch { /* fail closed */ }
+        socket.disconnect(true);
+      });
+    } finally { checking = false; }
+  }, 5000);
+  timer.unref();
+  server.engine.on("close", () => clearInterval(timer));
+}
 
 function deriveProfileType(args: {
   warehouseId?: string | null;
@@ -228,6 +290,8 @@ export function initRealtimeHub(server: HttpServer, corsOrigins: string[]) {
   });
 
   io.use(async (socket, next) => {
+    if (io!.sockets.sockets.size + pendingSocketAdmissions >= MAX_PROCESS_SOCKETS) return next(new Error("Unauthorized"));
+    pendingSocketAdmissions++;
     try {
       const token = parseSocketToken(socket);
       if (!token) return next(new Error("Unauthorized"));
@@ -236,10 +300,7 @@ export function initRealtimeHub(server: HttpServer, corsOrigins: string[]) {
       if (!secret) return next(new Error("JWT_SECRET not configured"));
 
       const decoded = jwt.verify(token, secret) as AccessTokenPayload;
-      if (!decoded?.id || !decoded.membershipId || !decoded.companyMembershipId
-        || !decoded.companyId || !decoded.tenantId || !decoded.tenantMembershipId
-        || decoded.membershipId !== decoded.companyMembershipId
-        || decoded.tokenType !== "access") {
+      if (!isBoundAccessSession(decoded) || !await hasLiveAccessSession(decoded)) {
         return next(new Error("Unauthorized"));
       }
       const user = await loadAccessSnapshot({
@@ -267,12 +328,16 @@ export function initRealtimeHub(server: HttpServer, corsOrigins: string[]) {
         tenantMembershipId: user.tenantMembershipId,
         companyId: user.companyId,
         companyMembershipId: user.companyMembershipId,
+        sid: decoded.sid,
+        expiresAt: decoded.exp,
         audience,
         warehouseId: user.warehouseId ?? null,
       };
       return next();
     } catch {
       return next(new Error("Unauthorized"));
+    } finally {
+      pendingSocketAdmissions--;
     }
   });
 
@@ -302,6 +367,7 @@ export function initRealtimeHub(server: HttpServer, corsOrigins: string[]) {
     });
   });
 
+  startSessionSweep(io);
   return io;
 }
 
@@ -353,7 +419,7 @@ export async function emitDriverNotification(
 
   const server = getIo();
   if (!server) return;
-  server.to(recipientRoom(context)).emit("driver:notification", event);
+  await emitToLiveRecipients(server, context, "driver:notification", event, "drivers.telemetry");
   await emitDriverUnreadCount({
     id: context.userId,
     membershipId: context.companyMembershipId,
@@ -373,7 +439,7 @@ export async function emitDriverOrderUpdate(userId: string, payload: DriverOrder
     userId,
   });
   if (!context) return;
-  server.to(recipientRoom(context)).emit("driver:order-updated", payload);
+  await emitToLiveRecipients(server, context, "driver:order-updated", payload, "drivers.telemetry");
 }
 
 export async function emitDriverUnreadCount(context: NotificationAccessContext) {
@@ -381,12 +447,13 @@ export async function emitDriverUnreadCount(context: NotificationAccessContext) 
   if (!server) return;
   try {
     const unreadCount = await countUnreadUserNotifications(context);
-    server.to(recipientRoom({
+    await emitToLiveRecipients(server, {
       userId: context.id,
+      tenantMembershipId: context.tenantMembershipId,
       tenantId: context.tenantId,
       companyId: context.companyId,
       companyMembershipId: context.companyMembershipId,
-    })).emit("driver:notifications:unread-count", {
+    }, "driver:notifications:unread-count", {
       unreadCount,
       at: new Date().toISOString(),
     });
