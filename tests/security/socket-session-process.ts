@@ -22,8 +22,12 @@ async function main() {
   process.on("disconnect", () => void stop());
   process.on("message", async (message: any) => {
     if (message?.kind === "shutdown") { await stop(); return; }
-    if (message?.kind !== "emit-order") return;
-    try { await hub.emitDriverOrderUpdate(message.userId, message.payload); process.send?.({ kind: "done", request: message.request }); }
+    if (message?.kind !== "emit-order" && message?.kind !== "emit-notification") return;
+    try {
+      if (message.kind === "emit-notification") await hub.emitPersistedDriverNotification(message.notificationId);
+      else await hub.emitDriverOrderUpdate(message.userId, message.payload);
+      process.send?.({ kind: "done", request: message.request });
+    }
     catch { process.send?.({ kind: "failed", request: message.request }); }
   });
   await new Promise<void>(resolve => http.listen(0, "127.0.0.1", resolve));
