@@ -228,10 +228,37 @@ it("credential PostgreSQL password change waits for accepted rotation then revok
 }));
 it("credential PostgreSQL three preverified password changes accept one hash transition and reject stale competitors without session effects", async () => withCredentials(async () => {
   await accepted(); const before = await rows(), business = await sessionBusinessCounts(), originalTransaction = mockPrisma.$transaction.bind(mockPrisma);
+  const auditBefore=await mockPrisma.credentialSecurityEvent.count();
   let release!: () => void, calls = 0; const gate = new Promise<void>(resolve => { release = resolve; }); const deadline = setTimeout(() => release(), 5000);
   const spy = jest.spyOn(mockPrisma, "$transaction").mockImplementation(async (fn: any, options: any) => { if (++calls === 3) release(); await gate; return originalTransaction(fn, options); });
   try { const results = await Promise.allSettled([passwordChange(), passwordChange(), passwordChange()]); expect(calls).toBe(3); expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1); expect(results.filter(result => result.status === "rejected").every(result => String((result as PromiseRejectedResult).reason.message).includes("incorrect"))).toBe(true); const after = await rows(); expect(after).toHaveLength(before.length); expect(after.every(row => row.revokedAt !== null)).toBe(true); expect(await bcrypt.compare(newPassword, (await mockPrisma.user.findUniqueOrThrow({ where: { id: context.id } })).password)).toBe(true); expect(await sessionBusinessCounts()).toEqual(business); }
   finally { release(); clearTimeout(deadline); spy.mockRestore(); }
+  expect(await mockPrisma.credentialSecurityEvent.count()).toBe(auditBefore+1);
+}));
+
+const auditRows=()=>mockPrisma.credentialSecurityEvent.findMany({orderBy:{id:"asc"}});
+it("audit PostgreSQL accepted password event records exact selected owner and database time without credential/session metadata",async()=>withCredentials(async()=>{
+  const before=await auditRows(), sessions=await rows(), business=await sessionBusinessCounts(), start=await pool.query('SELECT clock_timestamp() AS now');
+  await passwordChange();const after=await auditRows(), end=await pool.query('SELECT clock_timestamp() AS now');expect(after).toHaveLength(before.length+1);
+  const event=after.find(row=>!before.some(old=>old.id===row.id))!;
+  expect(event).toMatchObject({actorUserId:context.id,tenantId:context.tenantId,tenantMembershipId:context.tenantMembershipId,companyMembershipId:context.companyMembershipId,companyId:context.companyId,action:"PASSWORD_CHANGED"});
+  expect(Object.keys(event).sort()).toEqual(["id","actorUserId","tenantId","tenantMembershipId","companyId","companyMembershipId","action","createdAt"].sort());
+  expect(event.createdAt.getTime()).toBeGreaterThanOrEqual(start.rows[0].now.getTime());expect(event.createdAt.getTime()).toBeLessThanOrEqual(end.rows[0].now.getTime());
+  expect(await rows()).toHaveLength(sessions.length);expect(await sessionBusinessCounts()).toEqual(business);
+}));
+it("audit PostgreSQL audit insertion failure rolls back credential, sessions, audit and business state",async()=>withCredentials(async()=>{
+  await accepted();const before=await auditRows(), sessions=await rows(), user=await mockPrisma.user.findUniqueOrThrow({where:{id:context.id}}),business=await sessionBusinessCounts();
+  await pool.query(`CREATE FUNCTION cp_audit_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic credential audit failure'; END $$; CREATE TRIGGER cp_audit_fail BEFORE INSERT ON "CredentialSecurityEvent" FOR EACH ROW EXECUTE FUNCTION cp_audit_fail();`);
+  try{await expect(passwordChange()).rejects.toThrow("synthetic credential audit failure");expect(await auditRows()).toEqual(before);expect(await rows()).toEqual(sessions);expect(await mockPrisma.user.findUniqueOrThrow({where:{id:context.id}})).toEqual(user);expect(await sessionBusinessCounts()).toEqual(business);}
+  finally{await pool.query('DROP TRIGGER cp_audit_fail ON "CredentialSecurityEvent"; DROP FUNCTION cp_audit_fail();');}
+}));
+it("audit PostgreSQL foreign owner/bridge references and mutation/deletion/truncate reject with validated compound constraints",async()=>withCredentials(async()=>{
+  await passwordChange();const before=await auditRows(), sessions=await rows(), business=await sessionBusinessCounts();
+  const data={actorUserId:context.id,tenantId:context.tenantId,tenantMembershipId:context.tenantMembershipId,companyId:context.companyId,companyMembershipId:context.companyMembershipId,action:"PASSWORD_CHANGED" as const};
+  for(const patch of [{actorUserId:ids.users.checker},{tenantId:ids.tenants.unrelated},{tenantMembershipId:ids.tenantMemberships.checkerTransAsia},{companyId:ids.organizations.transAsiaDe},{companyMembershipId:ids.companyMemberships.multiTransAsiaDe}]) await expect(mockPrisma.credentialSecurityEvent.create({data:{...data,...patch}})).rejects.toThrow();
+  const record=before[0];await expect(mockPrisma.credentialSecurityEvent.update({where:{id:record.id},data:{companyId:ids.organizations.transAsiaDe}})).rejects.toThrow("append-only");await expect(mockPrisma.credentialSecurityEvent.delete({where:{id:record.id}})).rejects.toThrow("append-only");await expect(pool.query('TRUNCATE "CredentialSecurityEvent"')).rejects.toThrow("append-only");
+  const catalog=await pool.query(`SELECT conname,convalidated,pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conname IN ('CredentialSecurityEvent_company_fkey','CredentialSecurityEvent_bridge_fkey')`);expect(catalog.rows).toHaveLength(2);expect(catalog.rows.every(row=>row.convalidated)).toBe(true);expect(catalog.rows.every(row=>row.definition.includes('ON UPDATE RESTRICT ON DELETE RESTRICT'))).toBe(true);
+  expect(await auditRows()).toEqual(before);expect(await rows()).toEqual(sessions);expect(await sessionBusinessCounts()).toEqual(business);
 }));
 
 async function protectedHttp(token: string) {

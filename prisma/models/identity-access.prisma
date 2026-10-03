@@ -68,6 +68,8 @@ model RolePermission {
 }
 
 model CompanyMembership {
+  credentialSecurityEvents CredentialSecurityEvent[] @relation("CredentialAuditCompany")
+  credentialSecurityBridges CredentialSecurityEvent[] @relation("CredentialAuditBridge")
   orderCreationIntents OrderCreationIntent[] @relation("OrderCreationCompany")
   orderCreationBridges OrderCreationIntent[] @relation("OrderCreationBridge")
   providerConfigurationActions IntegrationProviderConfigurationVersion[] @relation("ProviderConfigurationActor")
@@ -118,6 +120,25 @@ model CompanyMembership {
   @@index([tenantId, status])
   @@index([tenantMembershipId])
   @@index([branchId])
+}
+
+enum CredentialSecurityAction {
+  PASSWORD_CHANGED
+}
+
+model CredentialSecurityEvent {
+  id                  String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  actorUserId         String @db.Uuid
+  tenantId            String @db.Uuid
+  tenantMembershipId  String @db.Uuid
+  companyId           String @db.Uuid
+  companyMembershipId String @db.Uuid
+  companyMembership CompanyMembership @relation("CredentialAuditCompany", fields: [companyMembershipId, actorUserId, tenantId, companyId], references: [id, userId, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "CredentialSecurityEvent_company_fkey")
+  membershipBridge CompanyMembership @relation("CredentialAuditBridge", fields: [companyMembershipId, tenantMembershipId, actorUserId, tenantId], references: [id, tenantMembershipId, userId, tenantId], onDelete: Restrict, onUpdate: Restrict, map: "CredentialSecurityEvent_bridge_fkey")
+  action    CredentialSecurityAction
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, companyId, actorUserId, createdAt], map: "CredentialSecurityEvent_owner_time_idx")
 }
 
 model MembershipRole {

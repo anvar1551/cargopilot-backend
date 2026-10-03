@@ -460,6 +460,9 @@ export async function changeUserPassword(args: {
     const changed = await tx.user.updateMany({ where: { id: actor.id, password: user.password }, data: { password } });
     if (changed.count !== 1) throw new Error("Current password is incorrect");
     await tx.userRefreshSession.updateMany({ where: { userId: actor.id, revokedAt: null }, data: { revokedAt: new Date() } });
+    await tx.credentialSecurityEvent.create({ data: { actorUserId: context.userId,
+      tenantId: context.tenantId, tenantMembershipId: context.tenantMembershipId,
+      companyId: context.companyId, companyMembershipId: context.companyMembershipId, action: "PASSWORD_CHANGED" } });
   }, refreshLineageTransactionOptions);
   clearIdentityAccessCacheForUser(actor.id);
 }

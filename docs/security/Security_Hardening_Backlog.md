@@ -2,37 +2,15 @@
 
 ## Current state / resume
 
-Current continuation from verified1aaa780291b38fbe43281f41330d177f32c3bb75:
-durable access-session revocation implemented in18 intended files. See
-Durable_Access_Session_Revocation.md for plan/compatibility/window/evidence.
-SID issuance and exact accepted live lineage govern HTTP, Socket.IO connection
-and individual protected emits; finite bounded idle sweeps disconnect revoked/
-expired/ineligible contexts.122current unit/mock/HTTP cases passed across affected
-milestone suites and the added admission case (29new,93affected; no rerun sum).
-Actual99chain:22affected rotation/credential/logout +4new HTTP cases passed;
-3new real websocket cases passed after explicit synthetic grant correction,
-including two independent processes. Seven distinct new native-backed cases.
-All owned e6da72d1d2d3(zero tests/type defect),847940cc24b7(28passed/1fixture
-failure),c9ae49681282(final3transport cases) cleaned after ownership/storage
-checks and filtered absence. Final no-emit passed; schema unchanged/reused.
-Protected delivery denial leaves no payload; durable notification source writes
-remain independent of online sessions. Final-check/commit races, loaded sweep
-delay, snapshot pool behavior and configured cluster/browser/device verification
-remain open; no instantaneous global revocation or production readiness claim.
+Verified continuation baseline1aaa780291b38fbe43281f41330d177f32c3bb75; local checkpoint8e66aefd027e6c8ef5b7f36a64659a6087bad758 implements durable access/SID and socket revocation in18 reviewed files. See Durable_Access_Session_Revocation.md:122 distinct current unit/mock cases,7new native-backed cases at99migrations, including real websocket connections in two independent processes; final no-emit passed. All three owned disposable runs removed with ownership/storage checks and filtered absence. No instantaneous global revocation or readiness claim.
 
-Next ready backend task: protected credential-change security audit. Current
-password/revocation transactions are atomic but emit no durable security audit;
-there is no generic identity audit model (existing FinanceAuditEvent is finance
-specific and must not be repurposed). Plan a minimal append-only, tenant/company/
-actor-bound credential security event in the same password-change transaction,
-without passwords/hashes/tokens/session IDs/IP/header metadata or global read API.
-Add suitable compound relationships/new migration only; do not fabricate user
-retention/deletion or family-compromise policy. Test exact sanitized event,
-same transaction rollback, foreign bridges/immutability and concurrent accepted
-credential change producing one event using a new owned disposable run. Existing
-session and financial evidence reused where untouched. Other finite ready tasks
-remain dispatch/worker scoping; policy-dependent family compromise response,
-accounting/FX/checker/recovery/history/infrastructure/RLS and clients stay open.
+Next coherent seven-file slice: accepted password-change security audit, implemented/tested. See Credential_Security_Audit.md. Required selected actor/tenant/company/both-membership ownership, validated compound RESTRICT FKs and append-only triggers; writer participates in locked password/session transaction. No sensitive metadata, rejection audit, read endpoint or invented retention policy.17mocked password cases passed, final no-emit/offline WASM passed; full100migrations and11native cases passed (3new audit,8affected including HTTP and two-process real socket password cleanup). Owned7cb42c801e0c removed after exact name/label/tmpfs checks and absence verified. No resources remain. Reviewed schema/SQL selections plus native catalog are not complete semantic equivalence.
+
+Finite status corrections: durable accepted refresh lineage/successor logout, atomic credential/session serialization and durable access/connection/delivery/idle revocation are implemented/tested at their bounded evidence levels. PASSWORD_CHANGED audit is implemented/tested only; broader login/logout/rejection security telemetry is technically unfinished. Immediate distributed revocation/final-read races and deployed cluster/Redis/load verification remain verification/architecture gaps, not restored guarantees. Family compromise response, audit retention/erasure, financial pricing/FX/accounting/checker/acceptance, uncertain recovery/cancellation/reacceptance/config retirement remain contained awaiting explicit policy. Historical/null/NOT VALID certification, RLS, native storage/provider/device/CI and deferred clients remain release gates.
+
+Next executable dependency-ready task: bounded dispatch/order lifecycle authority tracing. Inspect orders-core/operations/order-status.ts and tasks.ts plus exact HTTP/direct callers; establish uncovered tenant/company/object and transition atomicity invariants before editing. Reuse established order authority and durable events; do not invent dispatch/cancellation policy or reopen protected order/finance paths without new evidence. Remaining worker scoping follows. Broad audit/client work stays deferred.
+
+## Historical handoff (superseded by current state above)
 
 Latest session-capacity handoff2026-10-03: actual HEAD
 1aaa780291b38fbe43281f41330d177f32c3bb75 on cargopilot/erp-foundation.

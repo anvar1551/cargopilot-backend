@@ -15,6 +15,7 @@ beforeEach(() => {
   jest.clearAllMocks(); (loadAccessSnapshot as jest.Mock).mockReset().mockResolvedValue(actor);
   db.user.findUnique.mockReset().mockResolvedValue({ id: actor.id, password: hash }); db.user.updateMany.mockReset().mockResolvedValue({ count: 1 });
   db.companyMembership.findFirst.mockReset().mockResolvedValue(record()); db.userRefreshSession.updateMany.mockReset().mockResolvedValue({ count: 2 });
+  db.credentialSecurityEvent.create.mockReset().mockResolvedValue({});
   db.userRefreshSession.create.mockReset().mockResolvedValue({}); db.$executeRaw.mockReset().mockResolvedValue(0);
   db.$queryRaw.mockReset().mockResolvedValue([{ id: actor.id, password: hash }]);
   db.$transaction.mockReset().mockImplementation(async (fn: any) => fn(db));
@@ -29,6 +30,7 @@ it("self-service password and all-user refresh revocation share bounded transact
   expect(db.userRefreshSession.updateMany).toHaveBeenCalledWith({ where: { userId: actor.id, revokedAt: null }, data: { revokedAt: expect.any(Date) } });
   expect(db.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(db.user.updateMany.mock.invocationCallOrder[0]); expect(db.user.updateMany.mock.invocationCallOrder[0]).toBeLessThan(db.userRefreshSession.updateMany.mock.invocationCallOrder[0]);
   expect(clearIdentityAccessCacheForUser).toHaveBeenCalledWith(actor.id); expect(db.userRefreshSession.create).not.toHaveBeenCalled();
+  expect(db.credentialSecurityEvent.create).toHaveBeenCalledWith({data:{actorUserId:actor.id,tenantId:actor.tenantId,tenantMembershipId:actor.tenantMembershipId,companyId:actor.companyId,companyMembershipId:actor.companyMembershipId,action:"PASSWORD_CHANGED"}});
 });
 it.each([undefined, { ...actor, tenantId: null }, { ...actor, membershipId: id(8) }])("missing/conflicting selected actor rejects before credential work", async invalid => { await expect(change({ actor: invalid })).rejects.toThrow("Unauthorized"); expect(db.user.findUnique).not.toHaveBeenCalled(); expect(db.$transaction).not.toHaveBeenCalled(); });
 it("revoked fresh context rejects before password/write work", async () => { (loadAccessSnapshot as jest.Mock).mockResolvedValue(null); await expect(change()).rejects.toThrow("Unauthorized"); expect(db.user.findUnique).not.toHaveBeenCalled(); expect(db.user.updateMany).not.toHaveBeenCalled(); });
@@ -40,3 +42,4 @@ it("failed revocation propagates and does not acknowledge or clear cache; atomic
 it("old-credential login held across password change cannot insert a session", async () => { db.$queryRaw.mockResolvedValue([{ id: actor.id, password: "synthetic-changed-hash" }]); await expect(loginUser({ email: "synthetic@example.test", password: "synthetic-old-password", companyMembershipId: actor.companyMembershipId })).rejects.toThrow("Invalid email or password"); expect(db.userRefreshSession.create).not.toHaveBeenCalled(); });
 it.each([{ rows: [] }, { rows: [{ id: id(8), password: hash }] }])("missing/wrong locked User fails closed", async ({ rows }) => { db.$queryRaw.mockResolvedValue(rows); await expect(lockCredentialUser(db, actor.id)).rejects.toThrow("Unauthorized"); expect(db.user.updateMany).not.toHaveBeenCalled(); });
 it("malformed identity never starts lock work", async () => { await expect(lockCredentialUser(db, "invalid")).rejects.toThrow("Unauthorized"); expect(db.$queryRaw).not.toHaveBeenCalled(); expect(db.$executeRaw).not.toHaveBeenCalled(); });
+it("audit failure rejects without success cache cleanup; database rollback separately verified",async()=>{db.credentialSecurityEvent.create.mockRejectedValue(Error("synthetic audit failure"));await expect(change()).rejects.toThrow("audit failure");expect(clearIdentityAccessCacheForUser).not.toHaveBeenCalled();});
