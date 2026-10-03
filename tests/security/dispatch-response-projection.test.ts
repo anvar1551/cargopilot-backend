@@ -1,16 +1,20 @@
 jest.mock("../../src/config/prismaClient", () => ({ __esModule: true, default: require("./fixtures").database }));
 jest.mock("../../src/modules/analytics-core/infrastructure/analyticsOutbox", () => ({ enqueueCargoPilotDomainEventsTx: jest.fn(async () => undefined) }));
+jest.mock("../../src/modules/identity-access/access-control", () => ({ loadAccessSnapshot: jest.fn(), buildMembershipOrderScopeWhere: jest.fn() }));
+import { loadAccessSnapshot, buildMembershipOrderScopeWhere } from "../../src/modules/identity-access/access-control";
 import { database as db } from "./fixtures";
 import { assignDriversBulk, updateOrdersStatusBulk, updateDriverOrderStatus } from "../../src/modules/orders-core/operations/order-status";
 import { enqueueCargoPilotDomainEventsTx } from "../../src/modules/analytics-core/infrastructure/analyticsOutbox";
-const actor = { id: "synthetic-actor", tenantId: "synthetic-tenant", companyId: "synthetic-company", scopes: [{ scopeType: "company" as const, scopeRefId: "synthetic-company" }] };
+const actor = { id: "synthetic-actor", membershipId:"synthetic-membership",companyMembershipId:"synthetic-membership",tenantMembershipId:"synthetic-tenant-member",tenantId: "synthetic-tenant", companyId: "synthetic-company", scopes: [{ scopeType: "company" as const, scopeRefId: "synthetic-company" }] };
 const summary = { id: "synthetic-order", orderNumber: "synthetic-number", status: "assigned", assignedDriverId: "synthetic-driver", currentWarehouseId: null, updatedAt: new Date("2026-10-03T00:00:00Z") };
 const summarySelect = { id: true, orderNumber: true, status: true, assignedDriverId: true, currentWarehouseId: true, updatedAt: true };
 beforeEach(() => {
   jest.clearAllMocks();
+  (loadAccessSnapshot as jest.Mock).mockResolvedValue({...actor,userId:actor.id,permissionCodes:["shipment.assignCourier","shipment.changeStatus"],roleCodes:[],warehouseId:null});
+  (buildMembershipOrderScopeWhere as jest.Mock).mockResolvedValue({tenantId:actor.tenantId,ownerOrgId:actor.companyId});
   db.$transaction.mockImplementation(async (fn: any) => fn(db));
   db.user.findUnique.mockResolvedValue({ id: summary.assignedDriverId, driverType: "local" });
-  db.companyMembership.findFirst.mockResolvedValue({ id: "synthetic-driver-membership" });
+  db.companyMembership.findFirst.mockResolvedValue({ id: "synthetic-driver-membership",roles:[{role:{companyId:actor.companyId,isSystem:false,rolePermissions:[{permission:{key:"drivers.telemetry"}}]}}] });
   db.order.updateMany.mockResolvedValue({ count: 1 });
   db.tracking.createMany.mockResolvedValue({ count: 1 }); db.tracking.create.mockResolvedValue({});
   db.order.findMany.mockReset(); db.order.findFirst.mockReset();
@@ -31,6 +35,7 @@ it.each([false, true])("bulk status includeFull=%s uses the same minimized respo
 });
 it("driver mutation retains its authorized summary contract", async () => {
   const driverActor = { ...actor, id: summary.assignedDriverId };
+  (loadAccessSnapshot as jest.Mock).mockResolvedValue({...driverActor,userId:driverActor.id,permissionCodes:["shipment.changeStatus"],roleCodes:[],warehouseId:null});
   db.order.findFirst.mockResolvedValueOnce({ ...summary, cashCollections: [], codAmount: null, serviceCharge: null }).mockImplementation(async (query: any) => { assertResponseQuery(query); return summary; });
   expect(await updateDriverOrderStatus({ orderId: summary.id, status: "pickup_in_progress", actor: driverActor })).toEqual(summary);
 });

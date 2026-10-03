@@ -12,6 +12,8 @@ import {
 } from "@prisma/client";
 import { OrderActor, orderError } from "../shared";
 
+import { requireDispatchAuthority, dispatchOrderWhere, type DispatchAuthority } from "../domain/dispatch-authority";
+
 type AssignmentType = "pickup" | "delivery" | "linehaul";
 
 const FINAL_ORDER_STATUSES: OrderStatus[] = [
@@ -158,62 +160,6 @@ function assertWarehouseScope(
   }
 }
 
-function scopedOrderWhere(actor: OrderActor, orderIds: string[]): Prisma.OrderWhereInput {
-  if (!actor.tenantId) {
-    return { id: "__no_access__" };
-  }
-  const scopes = Array.isArray(actor.scopes) ? actor.scopes : [];
-  const orgScopedIds = Array.from(
-    new Set(
-      scopes
-        .filter((item) =>
-          item.scopeType === "company" ||
-          item.scopeType === "branch" ||
-          item.scopeType === "agent" ||
-          item.scopeType === "pickup_point" ||
-          item.scopeType === "carrier" ||
-          item.scopeType === "client",
-        )
-        .map((item) => item.scopeRefId)
-        .filter(Boolean),
-    ),
-  );
-  const warehouseScopedIds = Array.from(
-    new Set(
-      scopes
-        .filter((item) => item.scopeType === "warehouse")
-        .map((item) => item.scopeRefId)
-        .filter(Boolean),
-    ),
-  );
-
-  const scopeClauses: Prisma.OrderWhereInput[] = [];
-  if (orgScopedIds.length > 0) {
-    scopeClauses.push({
-      OR: [{ ownerOrgId: { in: orgScopedIds } }, { assignedOrgId: { in: orgScopedIds } }],
-    });
-  }
-  if (warehouseScopedIds.length > 0) {
-    scopeClauses.push({ currentWarehouseId: { in: warehouseScopedIds } });
-  }
-  if (actor.warehouseId) {
-    scopeClauses.push({ currentWarehouseId: actor.warehouseId });
-  }
-  if (scopeClauses.length === 0 && actor.companyId) {
-    scopeClauses.push({
-      OR: [{ ownerOrgId: actor.companyId }, { assignedOrgId: actor.companyId }],
-    });
-  }
-
-  return {
-    AND: [
-      { tenantId: actor.tenantId },
-      { id: { in: orderIds } },
-      scopeClauses.length > 0 ? { OR: scopeClauses } : { id: "__no_access__" },
-    ],
-  };
-}
-
 function resolveWarehouseId(actor: OrderActor, provided?: string | null) {
   if (actor.warehouseId) return actor.warehouseId;
   return provided ?? null;
@@ -325,12 +271,12 @@ function hasCashDueForStage(order: {
 
 async function loadAssignedOrdersForResponse(
   orderIds: string[],
-  actor: OrderActor,
+  authority: DispatchAuthority,
   _includeFull?: boolean,
 ) {
   // Full mutation expansion is contained; use authorized detail endpoints.
   return prisma.order.findMany({
-    where: scopedOrderWhere(actor, orderIds),
+    where: dispatchOrderWhere(authority, orderIds),
     select: {
       id: true,
       orderNumber: true,
@@ -353,8 +299,10 @@ export async function assignDriversBulk(args: {
   actor: OrderActor;
   includeFull?: boolean;
 }) {
-  const { orderIds, driverId, warehouseId, note, region, actor, includeFull } =
+  const { orderIds, driverId, warehouseId, note, region, actor: requestedActor, includeFull } =
     args;
+  const authority = await requireDispatchAuthority(requestedActor, "shipment.assignCourier");
+  const { actor } = authority;
   const type = normalizeAssignmentType(args.type);
 
   if (!Array.isArray(orderIds) || orderIds.length === 0) {
@@ -382,14 +330,17 @@ export async function assignDriversBulk(args: {
       tenantMembership: { userId: driverId, tenantId: actor.tenantId, status: "active" },
       company: { id: actor.companyId, tenantId: actor.tenantId, isActive: true },
     },
-    select: { id: true },
+    select: { id: true, companyId: true, roles: { select: { role: { select: { companyId: true, isSystem: true,
+      rolePermissions: { select: { permission: { select: { key: true } } } } } } } } },
   });
-  if (!driverMembership) {
+  if (!driverMembership || !driverMembership.roles.some(({ role }) =>
+    (role.companyId === actor.companyId || (role.companyId === null && role.isSystem)) &&
+    role.rolePermissions.some(({ permission }) => permission.key === "drivers.telemetry"))) {
     throw orderError("Driver is outside the selected company context", 403);
   }
 
   const orders = await prisma.order.findMany({
-    where: scopedOrderWhere(actor, orderIds),
+    where: dispatchOrderWhere(authority, orderIds),
     select: {
       id: true,
       status: true,
@@ -432,7 +383,7 @@ export async function assignDriversBulk(args: {
   await requireWarehouseReference(actor, effectiveWarehouseId);
   await prisma.$transaction(async (tx) => {
     const assignment = await tx.order.updateMany({
-      where: scopedOrderWhere(actor, orderIds),
+      where: dispatchOrderWhere(authority, orderIds),
       data: { assignedDriverId: driverId },
     });
     if (assignment.count !== orderIds.length) {
@@ -442,7 +393,7 @@ export async function assignDriversBulk(args: {
     if (type === "pickup") {
       await tx.order.updateMany({
         where: {
-          AND: [scopedOrderWhere(actor, orderIds), { status: { in: [OrderStatus.pending, OrderStatus.exception] } }],
+          AND: [dispatchOrderWhere(authority, orderIds), { status: { in: [OrderStatus.pending, OrderStatus.exception] } }],
         },
         data: { status: OrderStatus.assigned },
       });
@@ -479,7 +430,7 @@ export async function assignDriversBulk(args: {
     );
   });
 
-  return loadAssignedOrdersForResponse(orderIds, actor, includeFull);
+  return loadAssignedOrdersForResponse(orderIds, authority, includeFull);
 }
 
 export async function assignOrderTasksBulk(args: {
@@ -512,9 +463,11 @@ export async function updateOrdersStatusBulk(args: {
     warehouseId,
     note,
     region,
-    actor,
+    actor: requestedActor,
     includeFull,
   } = args;
+  const authority = await requireDispatchAuthority(requestedActor, "shipment.changeStatus");
+  const { actor } = authority;
 
   const actorWarehouseType = await resolveActorWarehouseType(actor);
 
@@ -540,7 +493,7 @@ export async function updateOrdersStatusBulk(args: {
   }
 
   const orders = await prisma.order.findMany({
-    where: scopedOrderWhere(actor, orderIds),
+    where: dispatchOrderWhere(authority, orderIds),
     select: {
       id: true,
       status: true,
@@ -611,7 +564,7 @@ export async function updateOrdersStatusBulk(args: {
 
   await prisma.$transaction(async (tx) => {
     const changed = await tx.order.updateMany({
-      where: scopedOrderWhere(actor, orderIds),
+      where: dispatchOrderWhere(authority, orderIds),
       data: updateData,
     });
     if (changed.count !== orderIds.length) {
@@ -649,7 +602,7 @@ export async function updateOrdersStatusBulk(args: {
     );
   });
 
-  return loadAssignedOrdersForResponse(orderIds, actor, includeFull);
+  return loadAssignedOrdersForResponse(orderIds, authority, includeFull);
 }
 
 export async function updateDriverOrderStatus(args: {
@@ -660,14 +613,16 @@ export async function updateDriverOrderStatus(args: {
   region?: string | null;
   actor: OrderActor;
 }) {
-  const { orderId, status, reasonCode, note, region, actor } = args;
+  const { orderId, status, reasonCode, note, region, actor: requestedActor } = args;
+  const authority = await requireDispatchAuthority(requestedActor, "shipment.changeStatus");
+  const { actor } = authority;
 
   if (!orderId) {
     throw orderError("orderId is required", 400);
   }
 
   const order = await prisma.order.findFirst({
-    where: scopedOrderWhere(actor, [orderId]),
+    where: dispatchOrderWhere(authority, [orderId]),
     select: {
       id: true,
       status: true,
@@ -740,7 +695,7 @@ export async function updateDriverOrderStatus(args: {
 
   await prisma.$transaction(async (tx) => {
     const updated = await tx.order.updateMany({
-      where: scopedOrderWhere(actor, [orderId]),
+      where: dispatchOrderWhere(authority, [orderId]),
       data: updateData,
     });
     if (updated.count !== 1) {
@@ -778,7 +733,7 @@ export async function updateDriverOrderStatus(args: {
   });
 
   return prisma.order.findFirst({
-    where: scopedOrderWhere(actor, [orderId]),
+    where: dispatchOrderWhere(authority, [orderId]),
     select: {
       id: true,
       orderNumber: true,

@@ -53,7 +53,7 @@ const actor: any = {
   warehouseId: null,
   customerEntityId: null,
   roleCodes: ["dispatcher"],
-  permissionCodes: ["shipment.view", "shipment.changeStatus"],
+  permissionCodes: ["shipment.view", "shipment.changeStatus", "shipment.assignCourier"],
   scopes: [{ scopeType: "company", scopeRefId: ids.company }],
 };
 
@@ -209,7 +209,7 @@ it("rejects an unscoped warehouse reference without changing the order", async (
 
 it("rejects a driver without an active membership in the selected company", async () => {
   database.user.findUnique.mockResolvedValue({ id: "driver-b", driverType: "local" });
-  database.companyMembership.findFirst.mockResolvedValueOnce(null);
+  database.companyMembership.findFirst.mockResolvedValueOnce(accessRecord()).mockResolvedValueOnce(accessRecord()).mockResolvedValueOnce(null);
 
   await expect(assignDriversBulk({
     orderIds: [ids.order],
