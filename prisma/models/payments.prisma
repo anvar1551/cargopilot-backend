@@ -101,6 +101,17 @@ model PaymentProviderConfig {
 }
 
 model PaymentIntent {
+  reservationTenantId String? @db.Uuid
+  reservationInvoiceId String? @db.Uuid
+  reservationLegalEntityId String? @db.Uuid
+  reservationAcceptedAt DateTime?
+  reservationIssuedAt DateTime?
+  reservationRequestHash String? @db.VarChar(64)
+  reservationAuthorityHash String? @db.VarChar(64)
+  reservationOrder Order? @relation("PaymentReservationOrder", fields: [reservationTenantId, orderId, companyId], references: [tenantId, id, ownerOrgId], onDelete: Restrict, onUpdate: Restrict, map: "PaymentReservation_order_fkey")
+  reservationInvoice Invoice? @relation("PaymentReservationInvoice", fields: [reservationTenantId, reservationInvoiceId, orderId, companyId, currency], references: [tenantId, id, orderId, companyId, currency], onDelete: Restrict, onUpdate: Restrict, map: "PaymentReservation_invoice_fkey")
+  reservationEntity FinanceLegalEntity? @relation("PaymentReservationEntity", fields: [reservationLegalEntityId, reservationTenantId, companyId], references: [id, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "PaymentReservation_entity_fkey")
+  @@index([reservationTenantId, companyId, reservationLegalEntityId], map: "PaymentReservation_owner_idx")
   ownedOrder Order @relation("PaymentIntentOwnedOrder", fields: [orderId, companyId], references: [id, ownerOrgId], onDelete: Restrict, onUpdate: Restrict, map: "PaymentIntent_order_owner_fkey")
   ownedProviderConfig PaymentProviderConfig @relation("PaymentIntentOwnedConfig", fields: [providerConfigId, companyId, provider, environment], references: [id, companyId, provider, environment], onDelete: Restrict, onUpdate: Restrict, map: "PaymentIntent_provider_context_fkey")
   ownedRefunds PaymentRefund[] @relation("PaymentRefundOwnedIntent")
@@ -237,6 +248,8 @@ model PaymentLedgerEntry {
 }
 
 model Invoice {
+  paymentReservations PaymentIntent[] @relation("PaymentReservationInvoice")
+  @@unique([tenantId, id, orderId, companyId, currency], map: "Invoice_reservation_source_key")
   id               String        @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   tenantId         String?       @db.Uuid
   tenant           Tenant?       @relation(fields: [tenantId], references: [id], onDelete: Restrict)

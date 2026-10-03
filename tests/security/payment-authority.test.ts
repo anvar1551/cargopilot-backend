@@ -227,3 +227,9 @@ it("requires a stable retry key and rejects financial fields on the retry HTTP c
   expect(retryOrderPaymentSchema.safeParse({ idempotencyKey: key }).success).toBe(true);
   expect(createPaymentIntentSchema.safeParse({ orderId, idempotencyKey: key, amountMinor: "120025" }).success).toBe(true);
 });
+
+it.each(["reservationAcceptedAt","reservationTenantId","reservationInvoiceId","reservationLegalEntityId","reservationAuthorityHash","reservationRequestHash","reservationIssuedAt"])("retry rejects missing/conflicting typed %s before writes or provider replay",async field=>{
+ const f=fixture();await f.call();f.intents[0][field]=null;
+ [f.db.paymentIntent.create,f.db.paymentIntent.updateMany,f.db.paymentAttempt.create,f.db.order.update,f.createPayment].forEach((mock:any)=>mock.mockClear());
+ await expect(f.call()).rejects.toMatchObject({statusCode:409});f.noEffects();
+});

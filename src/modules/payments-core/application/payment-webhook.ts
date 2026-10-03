@@ -15,6 +15,8 @@ function boundedId(value: unknown): value is string { return typeof value === "s
 function minor(value: unknown) { if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) reject("PAYMENT_MONETARY_PROOF_REQUIRED"); return BigInt(value); }
 const sourceSelect = { id: true, companyId: true, orderId: true, provider: true, environment: true, providerConfigId: true,
   providerInvoiceId: true, providerPaymentId: true, amountMinor: true, currency: true, status: true, metadataJson: true,
+  reservationTenantId: true, reservationInvoiceId: true, reservationLegalEntityId: true, reservationAcceptedAt: true,
+  reservationIssuedAt: true, reservationRequestHash: true, reservationAuthorityHash: true,
   providerConfig: true } satisfies Prisma.PaymentIntentSelect;
 type Source = Prisma.PaymentIntentGetPayload<{ select: typeof sourceSelect }>;
 
@@ -32,7 +34,10 @@ async function authority(db: Prisma.TransactionClient | PrismaClient, intent: So
     !invoice.issuedAt || !invoice.issuedByUserId || !["issued", "paid"].includes(invoice.status) || !["CARD", "TRANSFER"].includes(order.paymentType ?? "") ||
     ["cancelled", "returned"].includes(order.status)) reject("PAYMENT_SOURCE_BINDING_REQUIRED");
   const amount = invoiceMinorUnits(invoice.amount, invoice.currency), metadata = record(intent.metadataJson);
-  if (amount !== intent.amountMinor || invoice.currency !== intent.currency || metadata.invoiceId !== invoice.id || metadata.legalEntityId !== entity.id ||
+  if (!intent.reservationAcceptedAt || intent.reservationTenantId !== company.tenantId || intent.reservationInvoiceId !== invoice.id ||
+    intent.reservationLegalEntityId !== entity.id || intent.reservationIssuedAt?.getTime() !== invoice.issuedAt.getTime() ||
+    !/^[a-f0-9]{64}$/.test(intent.reservationRequestHash ?? "") || intent.reservationAuthorityHash !== metadata.phase0bAuthorityDigest ||
+    amount !== intent.amountMinor || invoice.currency !== intent.currency || metadata.invoiceId !== invoice.id || metadata.legalEntityId !== entity.id ||
     metadata.phase0bAuthorityDigest !== invoicePaymentAuthorityDigest({ companyId: intent.companyId, orderId: order.id, invoiceId: invoice.id, legalEntityId: entity.id, amountMinor: amount, currency: invoice.currency, issuedAt: invoice.issuedAt })) reject("PAYMENT_INVOICE_AUTHORITY_REQUIRED");
   return { order, invoice, entity, tenantId: company.tenantId };
 }

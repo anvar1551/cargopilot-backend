@@ -19,13 +19,13 @@ const oldEnabled=process.env.PAYMENTS_ENABLED,oldEnvironment=process.env.PAYMENT
 beforeAll(async()=>{
   const marker=(await pool.query('SELECT "runId" FROM "_CPDisposableRun"')).rows;
   if(marker.length!==1 || marker[0].runId!==run)throw Error("Disposable ownership mismatch");
-  const client=await pool.connect();try{await client.query("BEGIN");await persistTenantDemoFixture(client,fixture);await client.query("COMMIT");}finally{await client.query("ROLLBACK");client.release();}
+  const client=await pool.connect();try{await client.query("BEGIN");if(!await db.tenant.findUnique({where:{id:fixture.tenants[0].id}}))await persistTenantDemoFixture(client,fixture);await client.query("COMMIT");}finally{await client.query("ROLLBACK");client.release();}
   const permission=await db.permission.create({data:{key:"payments.intents.create",resource:"synthetic",action:"create"}});
   const role=await db.role.create({data:{companyId:selected.companyId,code:randomUUID(),name:"Synthetic checkout",rolePermissions:{create:{permissionId:permission.id}}}});
   await db.membershipRole.create({data:{membershipId:selected.id,roleId:role.id}});
   await db.membershipScope.create({data:{membershipId:selected.id,scopeType:"company",scopeRefId:selected.companyId}});
   await db.companyPaymentSetting.create({data:{companyId:selected.companyId,defaultProvider:"STRIPE",allowProviderOverride:false}});
-  config=await db.paymentProviderConfig.create({data:{companyId:selected.companyId,provider:"STRIPE",environment:"TEST",secretEncrypted:"synthetic",secretMasked:"synthetic",callbackPath:"/synthetic"}});
+  config=await db.paymentProviderConfig.upsert({where:{companyId_provider_environment:{companyId:selected.companyId,provider:"STRIPE",environment:"TEST"}},update:{},create:{companyId:selected.companyId,provider:"STRIPE",environment:"TEST",secretEncrypted:"synthetic",secretMasked:"synthetic",callbackPath:"/synthetic"}});
   process.env.PAYMENTS_ENABLED="true";process.env.PAYMENTS_ENVIRONMENT="TEST";
 });
 afterAll(async()=>{await db.$disconnect();await pool.end();if(oldEnabled===undefined)delete process.env.PAYMENTS_ENABLED;else process.env.PAYMENTS_ENABLED=oldEnabled;if(oldEnvironment===undefined)delete process.env.PAYMENTS_ENVIRONMENT;else process.env.PAYMENTS_ENVIRONMENT=oldEnvironment;});
@@ -58,4 +58,37 @@ it("foreign company/null context and current revocation reject without business 
 it("injected failure after actual reservation work rolls back before provider dispatch",async()=>{
   const order=await document(),before=await snapshot();const failing=new Proxy(db,{get(target,property){if(property==="$transaction")return(work:any,options:any)=>target.$transaction(async tx=>{await work(tx);throw Error("synthetic-transaction-failure");},options);const value=(target as any)[property];return typeof value==="function"?value.bind(target):value;}});
   const {deps,createPayment}=dependencies(failing);await expect(createAuthorizedPayment({user,input:{orderId:order.id,idempotencyKey:randomUUID()}},deps)).rejects.toThrow("synthetic-transaction-failure");expect(await snapshot()).toEqual(before);expect(createPayment).not.toHaveBeenCalled();
+});
+
+it.each(["tenant","invoice","entity","amount","hash","issued","delete"])("accepted reservation %s mutation rejects without any business changes",async kind=>{
+ const order=await document(),{deps}=dependencies(),result=await createAuthorizedPayment({user,input:{orderId:order.id,idempotencyKey:randomUUID()}},deps),before=await snapshot();
+ const data:any=kind==="tenant"?{reservationTenantId:ids.tenants.unrelated}:kind==="invoice"?{reservationInvoiceId:randomUUID()}:kind==="entity"?{reservationLegalEntityId:fixture.financeLegalEntities[1].id}:kind==="amount"?{amountMinor:1n}:kind==="hash"?{reservationAuthorityHash:"b".repeat(64)}:{reservationIssuedAt:new Date(0)};
+ await expect(kind==="delete"?db.paymentIntent.delete({where:{id:result.paymentIntentId}}):db.paymentIntent.update({where:{id:result.paymentIntentId},data})).rejects.toThrow();expect(await snapshot()).toEqual(before);
+});
+it.each(["partial","tenant","invoice","entity","currency"])("new reservation %s bridge rejects atomically",async kind=>{
+ const order=await document(),invoice=await db.invoice.findUniqueOrThrow({where:{orderId:order.id}}),entity=fixture.financeLegalEntities.find(e=>e.companyId===selected.companyId)!;
+ const data:any={companyId:selected.companyId,orderId:order.id,provider:"STRIPE",providerConfigId:config.id,environment:"TEST",amountMinor:120025n,currency:"USD",idempotencyKey:randomUUID(),reservationTenantId:selected.tenantId,reservationInvoiceId:invoice.id,reservationLegalEntityId:entity.id,reservationAcceptedAt:new Date(),reservationIssuedAt:invoice.issuedAt,reservationRequestHash:"a".repeat(64),reservationAuthorityHash:"b".repeat(64)};
+ if(kind==="partial")data.reservationInvoiceId=null;if(kind==="tenant")data.reservationTenantId=ids.tenants.unrelated;if(kind==="invoice")data.reservationInvoiceId=ids.invoices.transAsiaDe;if(kind==="entity")data.reservationLegalEntityId=fixture.financeLegalEntities[1].id;if(kind==="currency")data.currency="UZS";
+ const before=await snapshot();await expect(db.paymentIntent.create({data})).rejects.toThrow();expect(await snapshot()).toEqual(before);
+});
+it("legacy reservations cannot be adopted or retried and changed intent conflicts without another provider call",async()=>{
+ const order=await document(),{deps,createPayment}=dependencies(),key=randomUUID(),legacy=await db.paymentIntent.create({data:{companyId:selected.companyId,orderId:order.id,provider:"STRIPE",providerConfigId:config.id,environment:"TEST",amountMinor:120025n,currency:"USD",idempotencyKey:key}}),before=await snapshot();
+ await expect(createAuthorizedPayment({user,input:{orderId:order.id,idempotencyKey:key}},deps)).rejects.toMatchObject({code:"PAYMENT_RECONCILIATION_REQUIRED"});await expect(db.paymentIntent.update({where:{id:legacy.id},data:{reservationAcceptedAt:new Date()}})).rejects.toThrow();expect(await snapshot()).toEqual(before);expect(createPayment).not.toHaveBeenCalled();
+ const second=await document(),next=randomUUID();await createAuthorizedPayment({user,input:{orderId:second.id,idempotencyKey:next}},deps);const confirmed=await snapshot();await expect(createAuthorizedPayment({user,input:{orderId:second.id,idempotencyKey:next,metadata:{different:true}}},deps)).rejects.toMatchObject({statusCode:409});expect(await snapshot()).toEqual(confirmed);expect(createPayment).toHaveBeenCalledTimes(1);
+});
+
+it("typed reservation catalog binds invoice/currency, order tenant/owner and entity without historical certification",async()=>{
+ const rows=(await pool.query(`SELECT conname,convalidated,pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conrelid='"PaymentIntent"'::regclass AND conname LIKE 'PaymentReservation_%'`)).rows;
+ expect(rows).toHaveLength(4);expect(rows.every(r=>!r.convalidated)).toBe(true);
+ const order=rows.find(r=>r.conname==='PaymentReservation_order_fkey');expect(order.definition).toContain('FOREIGN KEY ("reservationTenantId", "orderId", "companyId")');expect(order.definition).toContain('"Order"("tenantId", id, "ownerOrgId")');
+});
+
+it("typed order bridge rejects a deliberately simulated uncertified historical order and rolls back the simulation",async()=>{
+ const order=await document(),invoice=await db.invoice.findUniqueOrThrow({where:{orderId:order.id}}),entity=fixture.financeLegalEntities.find(e=>e.companyId===selected.companyId)!,before=await snapshot();
+ await expect(db.$transaction(async tx=>{
+  await tx.$executeRawUnsafe("SET LOCAL lock_timeout='2s'");await tx.$executeRawUnsafe("SET LOCAL statement_timeout='5s'");
+  // Exclusively owned disposable database: simulate a historical dangling tuple, then restore triggers before the tested insert.
+  await tx.$executeRawUnsafe('ALTER TABLE "Order" DISABLE TRIGGER ALL');await tx.order.update({where:{id:order.id},data:{tenantId:null}});await tx.$executeRawUnsafe('ALTER TABLE "Order" ENABLE TRIGGER ALL');
+  await tx.paymentIntent.create({data:{companyId:selected.companyId,orderId:order.id,provider:"STRIPE",providerConfigId:config.id,environment:"TEST",amountMinor:120025n,currency:"USD",idempotencyKey:randomUUID(),reservationTenantId:selected.tenantId,reservationInvoiceId:invoice.id,reservationLegalEntityId:entity.id,reservationAcceptedAt:new Date(),reservationIssuedAt:invoice.issuedAt,reservationRequestHash:"a".repeat(64),reservationAuthorityHash:"b".repeat(64)}});
+ },{maxWait:2000,timeout:10000})).rejects.toThrow("PaymentReservation_order_fkey");expect(await snapshot()).toEqual(before);
 });

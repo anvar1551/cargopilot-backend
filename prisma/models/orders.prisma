@@ -128,6 +128,7 @@ enum RecipientUnavailableAction {
 }
 
 model Order {
+  paymentReservations PaymentIntent[] @relation("PaymentReservationOrder")
   analyticsOutbox AnalyticsDomainEventOutbox[] @relation("AnalyticsOutboxOrder")
   creationReceipts OrderCreationReceipt[]
   financeJournalDimensions FinanceJournalLine[] @relation("JournalDimensionOrder")

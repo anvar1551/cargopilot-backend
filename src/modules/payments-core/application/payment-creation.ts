@@ -93,7 +93,7 @@ export async function createAuthorizedPayment(
       legalEntityId: legalEntity.id, amountMinor, currency, issuedAt: invoice.issuedAt });
     const existing = await tx.paymentIntent.findUnique({ where: { companyId_idempotencyKey: { companyId, idempotencyKey: input.idempotencyKey } } });
     if (existing) {
-      if (existing.provider !== "STRIPE" || order.serviceCharge !== 0 || order._count.cashCollections !== 0) {
+      if (!existing.reservationAcceptedAt || existing.provider !== "STRIPE" || order.serviceCharge !== 0 || order._count.cashCollections !== 0) {
         throw Object.assign(authorityError("Existing payment requires reconciliation", 409), { code: "PAYMENT_RECONCILIATION_REQUIRED" });
       }
       // NOT VALID expansion does not certify historical sources. Every retry
@@ -104,6 +104,9 @@ export async function createAuthorizedPayment(
       }, select: { id: true } });
       const binding = existing.metadataJson as Record<string, unknown> | null;
       if (!currentConfig || existing.orderId !== order.id || existing.companyId !== companyId || existing.amountMinor !== amountMinor || existing.currency !== currency ||
+          existing.reservationTenantId !== membership.tenantId || existing.reservationInvoiceId !== invoice.id ||
+          existing.reservationLegalEntityId !== legalEntity.id || existing.reservationIssuedAt?.getTime() !== invoice.issuedAt.getTime() ||
+          existing.reservationRequestHash !== requestDigest || existing.reservationAuthorityHash !== authorityDigest ||
           binding?.phase0bRequestDigest !== requestDigest || binding?.phase0bAuthorityDigest !== authorityDigest) {
         throw authorityError("Idempotency key conflicts with the existing payment request", 409);
       }
@@ -138,6 +141,9 @@ export async function createAuthorizedPayment(
     const intent = await tx.paymentIntent.create({ data: {
       orderId: order.id, companyId, provider, providerConfigId: config.id, environment,
       amountMinor, currency, status: "PENDING", idempotencyKey: input.idempotencyKey,
+      reservationTenantId: membership.tenantId, reservationInvoiceId: invoice.id, reservationLegalEntityId: legalEntity.id,
+      reservationAcceptedAt: new Date(), reservationIssuedAt: invoice.issuedAt,
+      reservationRequestHash: requestDigest, reservationAuthorityHash: authorityDigest,
       metadataJson: { phase0bRequestDigest: requestDigest, phase0bAuthorityDigest: authorityDigest, invoiceId: invoice.id, legalEntityId: legalEntity.id },
     } });
     return { intent, config };
