@@ -464,14 +464,14 @@ export async function updateDriverOrderStatus(args: {
   actor: OrderActor;
 }) {
   const { orderId, status, reasonCode, note, region, actor: requestedActor } = args;
-  const authority = await requireDispatchAuthority(requestedActor, "shipment.changeStatus");
-  const { actor } = authority;
+  let authority = await requireDispatchAuthority(requestedActor, "shipment.changeStatus");
+  let { actor } = authority;
 
   if (!orderId) {
     throw orderError("orderId is required", 400);
   }
 
-  await prisma.$transaction(async (tx) => {
+  return prisma.$transaction(async (tx) => {
     await tx.$executeRawUnsafe("SET LOCAL lock_timeout = '2s'");
     await tx.$executeRawUnsafe("SET LOCAL statement_timeout = '5s'");
     const stateQuery = {where:dispatchOrderWhere(authority,[orderId]),select:dispatchStateSelect} as const;
@@ -481,7 +481,9 @@ export async function updateDriverOrderStatus(args: {
       WHERE "id" = ${orderId}::uuid AND "tenantId" = ${actor.tenantId}::uuid
         AND ("ownerOrgId" = ${actor.companyId}::uuid OR "assignedOrgId" = ${actor.companyId}::uuid) FOR UPDATE`;
     if (locked.length !== 1) throw orderError("Order is no longer in scope", 409);
-    const order = await tx.order.findFirst(stateQuery);
+    authority = await requireDispatchAuthority(actor, "shipment.changeStatus");
+    actor = authority.actor;
+    const order = await tx.order.findFirst({...stateQuery,where:dispatchOrderWhere(authority,[orderId])});
     if (!order) {
       throw orderError("Order not found", 404);
     }
@@ -532,9 +534,7 @@ export async function updateDriverOrderStatus(args: {
         },
       },
     ]);
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, maxWait: 2000, timeout: 10000 });
-
-  return prisma.order.findFirst({
+    const response = await tx.order.findFirst({
     where: dispatchOrderWhere(authority, [orderId]),
     select: {
       id: true,
@@ -545,4 +545,7 @@ export async function updateDriverOrderStatus(args: {
       updatedAt: true,
     },
   });
+    if (!response) throw orderError("Order response unavailable",409);
+    return response;
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, maxWait: 2000, timeout: 10000 });
 }

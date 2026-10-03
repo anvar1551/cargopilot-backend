@@ -9,7 +9,7 @@ import {
   updateDriverOrderStatus,
   updateOrdersStatusBulk,
 } from "./order-status";
-import { normalizeBulkOrderIds } from "../shared";
+import { normalizeBulkOrderIds, orderError } from "../shared";
 import type { OrderActor } from "../shared";
 
 type AssignTaskInput = {
@@ -190,16 +190,17 @@ export async function updateDriverStatusForActor(input: UpdateDriverStatusInput)
     actor,
   });
 
-  const assignedDriverId = String(order?.assignedDriverId ?? actor.id ?? "").trim();
-  const eventOrderId = String(order?.id ?? requestOrderId ?? "").trim();
-  const orderNumber = String(order?.orderNumber ?? "").trim();
-  const nextStatus = String(order?.status ?? status);
+  if (!order) throw orderError("Order response unavailable",409);
+  const assignedDriverId = String(order.assignedDriverId ?? "").trim();
+  const eventOrderId = String(order.id).trim();
+  const orderNumber = String(order.orderNumber ?? "").trim();
+  const nextStatus = String(order.status);
   if (assignedDriverId) {
     void emitDriverOrderUpdate(assignedDriverId, {
       orderId: eventOrderId,
       orderNumber: orderNumber || null,
       status: nextStatus,
-      updatedAt: new Date().toISOString(),
+      updatedAt: new Date(order.updatedAt).toISOString(),
     }).catch(() => undefined);
   }
 

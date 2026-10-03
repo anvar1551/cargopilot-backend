@@ -41,7 +41,7 @@ it.each([false, true])("bulk status includeFull=%s uses the same minimized respo
 it("driver mutation retains its authorized summary contract", async () => {
   const driverActor = { ...actor, id: summary.assignedDriverId };
   (loadAccessSnapshot as jest.Mock).mockResolvedValue({...driverActor,userId:driverActor.id,permissionCodes:["shipment.changeStatus"],roleCodes:[],warehouseId:null});
-  db.order.findFirst.mockResolvedValueOnce({ ...summary, cashCollections: [], codAmount: null, serviceCharge: null }).mockResolvedValueOnce({ ...summary, cashCollections: [], codAmount: null, serviceCharge: null }).mockImplementation(async (query: any) => { assertResponseQuery(query); return summary; });
+  db.order.findFirst.mockResolvedValueOnce({ ...summary, cashCollections: [], codAmount: null, serviceCharge: null }).mockResolvedValueOnce({ ...summary, cashCollections: [], codAmount: null, serviceCharge: null }).mockImplementation(async (query: any) => { expect(insideTransaction).toBe(true); assertResponseQuery(query); return summary; });
   expect(await updateDriverOrderStatus({ orderId: summary.id, status: "pickup_in_progress", actor: driverActor })).toEqual(summary);
 });
 it("out-of-scope mutation never reads a response or writes business events", async () => {
