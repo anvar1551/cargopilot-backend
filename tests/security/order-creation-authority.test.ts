@@ -204,3 +204,83 @@ it.each(["codPaidStatus", "serviceChargePaidStatus", "paid", "payment_status", "
 it("rejects the legacy CSV customer argument without inferring ownership from the actor", async () => {
   await expect(importOrdersFromCsv({ actor, csvText: getOrderImportTemplateCsv(), customerEntityId: masterA })).rejects.toMatchObject({ statusCode: 403 }); noBusinessEffects();
 });
+
+
+describe("bounded order creation diagnostics", () => {
+  const canary = "UNTRUSTED-DIAGNOSTIC-CANARY";
+  const failure = () => Object.assign(new Error(canary), { stack: canary, payload: { credential: canary } });
+  let log: jest.SpyInstance;
+  const support = require("../../src/modules/support-core/application/autoTriage");
+  beforeEach(() => {
+    log = jest.spyOn(console, "error").mockImplementation(() => undefined);
+    (legs.seedInitialServiceChargePricing as jest.Mock).mockResolvedValue(undefined);
+    (legs.autoBookCarrierForOrder as jest.Mock).mockResolvedValue([]);
+    (labels.enqueueOrderLabelJob as jest.Mock).mockResolvedValue(undefined);
+    (labels.generateAndAttachParcelLabelsForOrder as jest.Mock).mockResolvedValue(undefined);
+    (labels.resolveOrderLabelMode as jest.Mock).mockReturnValue("queue");
+    (labels.isOrderLabelAutoFallbackEnabled as jest.Mock).mockReturnValue(false);
+    support.createSystemSupportTicket.mockResolvedValue(undefined);
+    support.createLabelFailureSupportTicket.mockResolvedValue(undefined);
+    process.env.ORDER_LABEL_BLOCKING = "true";
+  });
+  afterEach(() => { log.mockRestore(); delete process.env.ORDER_LABEL_BLOCKING; });
+  async function assertSafe(result: unknown, code: string) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(JSON.stringify([result, log.mock.calls, support.createSystemSupportTicket.mock.calls,
+      support.createLabelFailureSupportTicket.mock.calls])).not.toContain(canary);
+    expect(log).toHaveBeenCalledWith(code, { orderId: "order-a" });
+    expect(db.order.create).toHaveBeenCalledTimes(1);
+  }
+  it("sanitizes pricing warnings", async () => {
+    (legs.seedInitialServiceChargePricing as jest.Mock).mockRejectedValueOnce(failure());
+    const result = await createOrderForActor({ user: actor, body: body() });
+    expect(result.payload.warning).toBe("Failed to seed pricing components");
+    await assertSafe(result, "ORDER_PRICING_SEED_FAILED");
+  });
+  it("sanitizes carrier warnings and support summaries", async () => {
+    (legs.autoBookCarrierForOrder as jest.Mock).mockRejectedValueOnce(failure());
+    const result = await createOrderForActor({ user: actor, body: body() });
+    expect(result.payload.warning).toBe("Carrier routing auto-book failed");
+    expect(support.createSystemSupportTicket).toHaveBeenCalledWith(expect.objectContaining({ summary: result.payload.warning }));
+    await assertSafe(result, "ORDER_CARRIER_AUTOBOOK_FAILED");
+  });
+  it("preserves queued-to-inline fallback without logging the exception", async () => {
+    (labels.enqueueOrderLabelJob as jest.Mock).mockRejectedValueOnce(failure());
+    (labels.isOrderLabelAutoFallbackEnabled as jest.Mock).mockReturnValue(true);
+    const result = await createOrderForActor({ user: actor, body: body() });
+    expect(labels.generateAndAttachParcelLabelsForOrder).toHaveBeenCalledTimes(1);
+    expect(result.payload.warning).toBeNull();
+    await assertSafe(result, "ORDER_LABEL_ENQUEUE_INLINE_FALLBACK");
+  });
+  it.each([true, false])("sanitizes label failure with blocking=%s", async (blocking) => {
+    process.env.ORDER_LABEL_BLOCKING = String(blocking);
+    (labels.enqueueOrderLabelJob as jest.Mock).mockRejectedValueOnce(failure());
+    const result = await createOrderForActor({ user: actor, body: body() });
+    await assertSafe(result, "ORDER_LABEL_GENERATION_FAILED");
+    expect(support.createLabelFailureSupportTicket).toHaveBeenCalledWith({ orderId: "order-a", reason: blocking
+      ? "Order created, but parcel label generation failed" : "Order label generation failed" });
+    expect(result.payload.warning).toBe(blocking ? "Order created, but parcel label generation failed" : null);
+  });
+  it("sanitizes imported pricing failures", async () => {
+    (legs.seedInitialServiceChargePricing as jest.Mock).mockRejectedValueOnce(failure());
+    await assertSafe(await importOrdersFromCsv({ actor, csvText: getOrderImportTemplateCsv() }), "ORDER_IMPORT_PRICING_SEED_FAILED");
+  });
+  it("preserves imported queue fallback with sanitized diagnostics", async () => {
+    (labels.enqueueOrderLabelJob as jest.Mock).mockRejectedValueOnce(failure());
+    (labels.isOrderLabelAutoFallbackEnabled as jest.Mock).mockReturnValue(true);
+    await assertSafe(await importOrdersFromCsv({ actor, csvText: getOrderImportTemplateCsv() }), "ORDER_IMPORT_LABEL_ENQUEUE_INLINE_FALLBACK");
+    expect(labels.generateAndAttachParcelLabelsForOrder).toHaveBeenCalledTimes(1);
+  });
+  it("sanitizes imported background label failures", async () => {
+    (labels.resolveOrderLabelMode as jest.Mock).mockReturnValue("async");
+    (labels.generateAndAttachParcelLabelsForOrder as jest.Mock).mockRejectedValueOnce(failure());
+    await assertSafe(await importOrdersFromCsv({ actor, csvText: getOrderImportTemplateCsv() }), "ORDER_IMPORT_LABEL_GENERATION_FAILED");
+  });
+  it("does not expose unexpected preparation messages in preview", async () => {
+    (quoteTariffForOrder as jest.Mock).mockRejectedValueOnce(failure());
+    const result = await previewOrderImport({ actor, csvText: getOrderImportTemplateCsv() });
+    expect(result.rows[0].errors).toEqual(["Order import preparation failed"]);
+    expect(JSON.stringify(result)).not.toContain(canary);
+    noBusinessEffects();
+  });
+});

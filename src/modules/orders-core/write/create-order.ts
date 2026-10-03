@@ -292,9 +292,9 @@ export async function createOrderForActor(args: CreateOrderForActorArgs) {
       prepared.pricingSeed,
       actor,
     );
-  } catch (pricingErr: any) {
-    pricingWarning = pricingErr?.message ?? "Failed to seed pricing components";
-    console.error(`Pricing component seed failed for order ${order.id}:`, pricingErr);
+  } catch {
+    pricingWarning = "Failed to seed pricing components";
+    console.error("ORDER_PRICING_SEED_FAILED", { orderId: order.id });
   }
 
   let carrierRoutingWarning: string | null = null;
@@ -316,10 +316,10 @@ export async function createOrderForActor(args: CreateOrderForActorArgs) {
         routingKey: "carrier",
       }).catch(() => undefined);
     }
-  } catch (carrierRoutingErr: any) {
+  } catch {
     carrierRoutingWarning =
-      carrierRoutingErr?.message ?? "Carrier routing auto-book failed";
-    console.error(`Carrier auto-book failed for order ${order.id}:`, carrierRoutingErr);
+      "Carrier routing auto-book failed";
+    console.error("ORDER_CARRIER_AUTOBOOK_FAILED", { orderId: order.id });
     void createSystemSupportTicket({
       sourceKey: `carrier:auto-book:${order.id}:failed:v1`,
       orderId: order.id,
@@ -336,8 +336,8 @@ export async function createOrderForActor(args: CreateOrderForActorArgs) {
       } catch (queueErr) {
         if (!autoLabelFallback) throw queueErr;
         console.error(
-          `Label enqueue failed for order ${order.id}, falling back to inline generation:`,
-          queueErr,
+          "ORDER_LABEL_ENQUEUE_INLINE_FALLBACK",
+          { orderId: order.id },
         );
         await generateAndAttachParcelLabelsForOrder(order.id, actor);
         return;
@@ -356,22 +356,21 @@ export async function createOrderForActor(args: CreateOrderForActorArgs) {
   if (blockLabelWork) {
     try {
       await runLabelWork();
-    } catch (labelErr: any) {
+    } catch {
       labelWarning =
-        labelErr?.message ??
         "Order created, but parcel label generation failed";
-      console.error(`Label generation failed for order ${order.id}:`, labelErr);
+      console.error("ORDER_LABEL_GENERATION_FAILED", { orderId: order.id });
       void createLabelFailureSupportTicket({
         orderId: order.id,
         reason: labelWarning,
       }).catch(() => undefined);
     }
   } else {
-    void runLabelWork().catch((labelErr) => {
-      console.error(`Label generation failed for order ${order.id}:`, labelErr);
+    void runLabelWork().catch(() => {
+      console.error("ORDER_LABEL_GENERATION_FAILED", { orderId: order.id });
       void createLabelFailureSupportTicket({
         orderId: order.id,
-        reason: labelErr?.message ?? "Order label generation failed",
+        reason: "Order label generation failed",
       }).catch(() => undefined);
     });
   }

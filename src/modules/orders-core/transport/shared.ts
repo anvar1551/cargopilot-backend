@@ -52,24 +52,18 @@ export function parseNumber(value: unknown, fieldName: string, required = false)
 export async function emitMutationInvalidation(reason: "order_mutation" | "cash_mutation") {
   try {
     await emitAnalyticsInvalidationForMutation({ reason });
-  } catch (err) {
-    console.warn("[orders] analytics invalidation skipped", {
-      reason,
-      error: err instanceof Error ? err.message : String(err),
-    });
+  } catch {
+    console.warn("ORDER_ANALYTICS_INVALIDATION_SKIPPED", { reason });
   }
 }
 
 export function sendError(reply: any, err: any, fallback = "Failed") {
-  const statusCode = err?.statusCode ?? 500;
+  const statusCode = Number.isInteger(err?.statusCode) && err.statusCode >= 400 && err.statusCode <= 599
+    ? err.statusCode : 500;
   if (statusCode >= 500) {
-    console.error("[orders] request failed", {
-      fallback,
-      error: err instanceof Error ? err.message : String(err),
-      stack: err instanceof Error ? err.stack : undefined,
-    });
+    console.error("ORDER_REQUEST_FAILED", { statusCode });
   }
-  return reply.code(statusCode).send({ error: err?.message ?? fallback });
+  return reply.code(statusCode).send({ error: statusCode >= 500 ? fallback : err?.message ?? fallback });
 }
 
 export async function ensureOrderInScope(request: any, orderId: string) {

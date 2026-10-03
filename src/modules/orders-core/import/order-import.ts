@@ -267,7 +267,7 @@ async function buildPreviewRows(args: PreviewArgs) {
         return {
           rowNumber: row.rowNumber,
           valid: false,
-          errors: [(error as Error)?.message || "Order import authorization failed"],
+          errors: ["Order import preparation failed"],
           summary: {
             receiverName: String(validation.data.receiver?.name || ""),
             pickupAddress: validation.data.addresses.pickupAddress,
@@ -357,8 +357,8 @@ export async function importOrdersFromCsv(args: {
 
     try {
       await seedInitialServiceChargePricing(order.id, prepared.pricingSeed, prepared.actor);
-    } catch (pricingErr: any) {
-      console.error(`Pricing component seed failed for imported order ${order.id}:`, pricingErr);
+    } catch {
+      console.error("ORDER_IMPORT_PRICING_SEED_FAILED", { orderId: order.id });
     }
 
     if (labelMode === "queue") {
@@ -367,8 +367,8 @@ export async function importOrdersFromCsv(args: {
       } catch (queueErr) {
         if (!autoLabelFallback) throw queueErr;
         console.error(
-          `Label enqueue failed for imported order ${order.id}, falling back to inline generation:`,
-          queueErr,
+          "ORDER_IMPORT_LABEL_ENQUEUE_INLINE_FALLBACK",
+          { orderId: order.id },
         );
         await generateAndAttachParcelLabelsForOrder(order.id, actor);
         continue;
@@ -378,8 +378,8 @@ export async function importOrdersFromCsv(args: {
         await scheduleOrderLabelAutoFallback(order.id, actor);
       }
     } else if (labelMode === "async") {
-      void generateAndAttachParcelLabelsForOrder(order.id, actor).catch((labelErr) => {
-        console.error(`Label generation failed for imported order ${order.id}:`, labelErr);
+      void generateAndAttachParcelLabelsForOrder(order.id, actor).catch(() => {
+        console.error("ORDER_IMPORT_LABEL_GENERATION_FAILED", { orderId: order.id });
       });
     } else {
       await generateAndAttachParcelLabelsForOrder(order.id, actor);
