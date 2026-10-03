@@ -176,3 +176,59 @@ it.each(["chart","journal"])("foreign entity %s subject cannot be accepted",asyn
  accountId:null,installationId:kind==="chart"?subject.id:null,journalId:kind==="journal"?subject.id:null,capability:kind==="chart"?"chart_invalidation":"draft_invalidation",payloadJson:{},publicationState:"ready"};
  row.contentHash=financePublicationHash(row);const before=await snapshot();await expect(mockPrisma.financeDomainEventOutbox.create({data:row})).rejects.toThrow();expect(await snapshot()).toEqual(before);expect(mockXadd).not.toHaveBeenCalled();
 });
+
+async function isolatedChartContext(){
+ const company=await mockPrisma.organization.create({data:{tenantId:ids.tenants.unrelated,name:"SYNTHETIC CHART CONCURRENCY ONLY",type:"company"}});
+ const entity=await mockPrisma.financeLegalEntity.create({data:{tenantId:ids.tenants.unrelated,companyId:company.id,baseCurrency:"USD",timezone:"UTC",createdByUserId:ids.users.multiTenant,updatedByUserId:ids.users.multiTenant}});
+ const member=await mockPrisma.companyMembership.create({data:{userId:ids.users.multiTenant,tenantId:ids.tenants.unrelated,tenantMembershipId:ids.tenantMemberships.multiUnrelated,companyId:company.id}});
+ const role=await mockPrisma.role.create({data:{companyId:company.id,code:randomUUID(),name:"Synthetic only"}});
+ const permission=await mockPrisma.permission.findUniqueOrThrow({where:{key:"finance.accounts.manage"}});
+ await mockPrisma.rolePermission.create({data:{roleId:role.id,permissionId:permission.id}});await mockPrisma.membershipRole.create({data:{membershipId:member.id,roleId:role.id}});
+ await mockPrisma.membershipScope.create({data:{membershipId:member.id,scopeType:"company",scopeRefId:company.id}});
+ const who:any={id:member.userId,tenantId:member.tenantId,tenantMembershipId:member.tenantMembershipId,companyId:company.id,companyMembershipId:member.id,membershipId:member.id};
+ return {entity,member,who,input:{companyId:company.id,actorUserId:who.id,templateCode:"logistics_standard",templateVersion:1,accounts:[...LOGISTICS_STANDARD_CHART]}};
+}
+async function waitForAuthoringWaiter(){
+ const deadline=Date.now()+1500;
+ while(Date.now()<deadline){const result=await pool.query(`SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%FOR UPDATE OF e%'`);if(result.rows[0].n>0)return;await new Promise(resolve=>setTimeout(resolve,20));}
+ throw Error("Synthetic authoring lock waiter was not observed");
+}
+it("chart concurrency PostgreSQL matching installations return one durable graph and one audit/outbox fact",async()=>{
+ const {entity,who,input}=await isolatedChartContext();const results:any[]=await Promise.all([repo.bootstrapChart(input,who),repo.bootstrapChart(input,who),repo.bootstrapChart(input,who)]);
+ expect(results.filter(result=>!result.idempotent)).toHaveLength(1);expect(results.filter(result=>result.idempotent)).toHaveLength(2);
+ expect(new Set(results.map(result=>result.installation.id)).size).toBe(1);
+ expect(await mockPrisma.financeAccount.count({where:{legalEntityId:entity.id}})).toBe(LOGISTICS_STANDARD_CHART.length);
+ expect(await mockPrisma.financeChartTemplateInstallation.count({where:{legalEntityId:entity.id}})).toBe(1);
+ expect(await mockPrisma.financeAuditEvent.count({where:{legalEntityId:entity.id}})).toBe(1);expect(await mockPrisma.financeDomainEventOutbox.count({where:{legalEntityId:entity.id}})).toBe(1);
+ const before=await snapshot();await repo.bootstrapChart(input,who);expect(await snapshot()).toEqual(before);
+});
+it("chart concurrency PostgreSQL account accepted first makes the waiting empty-chart check reject without bootstrap effects",async()=>{
+ const {entity,who,input}=await isolatedChartContext(),real=mockPrisma.$transaction.bind(mockPrisma);let entered!:()=>void,release!:()=>void,calls=0;
+ const start=new Promise<void>(resolve=>{entered=resolve;}),gate=new Promise<void>(resolve=>{release=resolve;}),deadline=setTimeout(()=>release(),5000);
+ const spy=jest.spyOn(mockPrisma,"$transaction").mockImplementation(async(fn:any,options:any)=>real(async tx=>{
+  if(++calls!==1)return fn(tx);
+  return fn(new Proxy(tx,{get:(target,key)=>key==="$queryRaw"?async(...args:any[])=>{
+   const result=await (target.$queryRaw as any)(...args);if(Array.isArray(args[0])&&args[0].join("").includes("FOR UPDATE OF e")){entered();await gate;}return result;
+  }:typeof (target as any)[key]==="function"?(target as any)[key].bind(target):(target as any)[key]}));
+ },options));
+ const account=repo.createAccount(intent(who),who);account.catch(()=>undefined);let bootstrap:Promise<any>|undefined;
+ try{await start;bootstrap=repo.bootstrapChart(input,who);bootstrap.catch(()=>undefined);await waitForAuthoringWaiter();release();await account;await expect(bootstrap).rejects.toMatchObject({code:"FINANCE_CHART_NOT_EMPTY"});
+ expect(await mockPrisma.financeAccount.count({where:{legalEntityId:entity.id}})).toBe(1);expect(await mockPrisma.financeChartTemplateInstallation.count({where:{legalEntityId:entity.id}})).toBe(0);
+ expect(await mockPrisma.financeAuditEvent.count({where:{legalEntityId:entity.id}})).toBe(1);expect(await mockPrisma.financeDomainEventOutbox.count({where:{legalEntityId:entity.id}})).toBe(1);}
+ finally{release();clearTimeout(deadline);await Promise.allSettled([account,...(bootstrap?[bootstrap]:[])]);spy.mockRestore();}
+});
+it("chart concurrency PostgreSQL membership removed during lock wait rejects before configuration effects",async()=>{
+ const {entity,member,who,input}=await isolatedChartContext(),holder=await pool.connect();let pending:Promise<any>|undefined;
+ try{
+ await holder.query("BEGIN");await holder.query('SELECT id FROM "FinanceLegalEntity" WHERE id=$1 FOR UPDATE',[entity.id]);
+ pending=repo.bootstrapChart(input,who);pending.catch(()=>undefined);await waitForAuthoringWaiter();
+ await mockPrisma.companyMembership.update({where:{id:member.id},data:{status:"suspended"}});const before=await snapshot();
+ await holder.query("COMMIT");await expect(pending).rejects.toMatchObject({statusCode:403});expect(await snapshot()).toEqual(before);
+ }finally{await holder.query("ROLLBACK");holder.release();if(pending)await Promise.allSettled([pending]);}
+});
+it("chart concurrency PostgreSQL acceptance failure rolls back the complete graph, installation, audit and outbox",async()=>{
+ const {who,input}=await isolatedChartContext(),before=await snapshot();
+ await pool.query(`CREATE FUNCTION cp_chart_accept_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW."eventType"='finance.chart_template.installed' THEN RAISE EXCEPTION 'synthetic chart acceptance failure'; END IF;RETURN NEW;END $$;CREATE TRIGGER cp_chart_accept_fail BEFORE INSERT ON "FinanceDomainEventOutbox" FOR EACH ROW EXECUTE FUNCTION cp_chart_accept_fail();`);
+ try{await expect(repo.bootstrapChart(input,who)).rejects.toThrow("chart acceptance failure");expect(await snapshot()).toEqual(before);}
+ finally{await pool.query('DROP TRIGGER cp_chart_accept_fail ON "FinanceDomainEventOutbox";DROP FUNCTION cp_chart_accept_fail();');}
+});

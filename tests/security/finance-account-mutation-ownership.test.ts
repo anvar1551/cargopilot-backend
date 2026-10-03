@@ -18,7 +18,7 @@ const installedAccounts=()=>LOGISTICS_STANDARD_CHART.map(account=>({...account,i
 const installation=()=>({id:"installation-a",legalEntityId:"entity-a",templateCode:"logistics_standard",templateVersion:1,accountCount:LOGISTICS_STANDARD_CHART.length,metadataJson:{baseCurrency:"UZS"}});
 const mutations=[db.financeAccount.create,db.financeChartTemplateInstallation.create,db.financeAuditEvent.create,db.financeDomainEventOutbox.create];
 beforeEach(()=>{
- jest.clearAllMocks();jest.mocked(loadAccessSnapshot).mockResolvedValue(snapshot);db.membershipScope.findFirst.mockResolvedValue({id:"scope-a"});db.financeLegalEntity.findUnique.mockResolvedValue(entity);db.$transaction.mockImplementation((work:any)=>work(db));db.financeAccount.create.mockResolvedValue({id:"account-a",...command,legalEntityId:"entity-a"});db.financeAccount.findUnique.mockResolvedValue({id:"account-a",legalEntityId:"entity-a",status:"active",parentId:null});db.financeAccount.findFirst.mockResolvedValue(null);db.financeAuditEvent.create.mockResolvedValue({id:"audit-a"});db.financeDomainEventOutbox.create.mockResolvedValue({id:"outbox-a"});db.financeChartTemplateInstallation.findUnique.mockResolvedValue(installation());db.financeAccount.findMany.mockResolvedValue(installedAccounts());
+ jest.clearAllMocks();db.$executeRawUnsafe.mockResolvedValue(0);db.$queryRaw.mockResolvedValue([{id:"entity-a"}]);jest.mocked(loadAccessSnapshot).mockResolvedValue(snapshot);db.membershipScope.findFirst.mockResolvedValue({id:"scope-a"});db.financeLegalEntity.findUnique.mockResolvedValue(entity);db.$transaction.mockImplementation((work:any)=>work(db));db.financeAccount.create.mockResolvedValue({id:"account-a",...command,legalEntityId:"entity-a"});db.financeAccount.findUnique.mockResolvedValue({id:"account-a",legalEntityId:"entity-a",status:"active",parentId:null});db.financeAccount.findFirst.mockResolvedValue(null);db.financeAuditEvent.create.mockResolvedValue({id:"audit-a"});db.financeDomainEventOutbox.create.mockResolvedValue({id:"outbox-a"});db.financeChartTemplateInstallation.findUnique.mockResolvedValue(installation());db.financeAccount.findMany.mockResolvedValue(installedAccounts());
 });
 const denied=["missing-context","foreign-company","wrong-actor","permission","stored-scope","revoked-membership","null-tenant","foreign-tenant","inactive-company"];
 it.each(["account","chart"])("authorized %s operation uses exact selected ownership",async kind=>{
@@ -52,4 +52,19 @@ it.each(["changed-accounts","wrong-version","wrong-code"])("claimed template %s 
 it.each(["version","parent","posting","currency","entity","base-currency","count"])("inconsistent existing template %s is not acknowledged or repaired",async kind=>{
  const rows:any[]=installedAccounts(),receipt:any=installation();if(kind==="version")rows[0].metadataJson.templateVersion=2;if(kind==="parent")rows[1].parentId="foreign-parent";if(kind==="posting")rows[0].allowPosting=true;if(kind==="currency")rows[0].currency="USD";if(kind==="entity")rows[0].legalEntityId="foreign-entity";if(kind==="base-currency")receipt.metadataJson.baseCurrency="USD";if(kind==="count")receipt.accountCount+=1;db.financeAccount.findMany.mockResolvedValue(rows);db.financeChartTemplateInstallation.findUnique.mockResolvedValue(receipt);
  await expect(repo.bootstrapChart(chart,mockActor)).rejects.toMatchObject({code:kind==="count"?"FINANCE_CHART_TEMPLATE_INTEGRITY_ERROR":"FINANCE_CHART_TEMPLATE_SOURCE_REJECTED"});mutations.forEach(spy=>expect(spy).not.toHaveBeenCalled());
+});
+
+it("account and chart acquire the same database owner lock before reading/writing configuration",async()=>{
+ await repo.createAccount(command,mockActor);
+ const sql=db.$queryRaw.mock.calls[0][0].join("");expect(sql).toContain("FOR UPDATE OF e");expect(sql).toContain("FOR SHARE OF c,t");
+ expect(db.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(db.financeAccount.create.mock.invocationCallOrder[0]);expect(loadAccessSnapshot).toHaveBeenCalledTimes(2);
+ expect(db.$transaction).toHaveBeenCalledWith(expect.any(Function),{maxWait:2000,timeout:10000});
+});
+it.each(["account","chart"])("%s rechecks removed authority after acquiring the authoring lock",async kind=>{
+ jest.mocked(loadAccessSnapshot).mockResolvedValueOnce(snapshot).mockResolvedValueOnce({...snapshot,permissionCodes:[]});
+ await expect(kind==="account"?repo.createAccount(command,mockActor):repo.bootstrapChart(chart,mockActor)).rejects.toMatchObject({statusCode:403});
+ mutations.forEach(spy=>expect(spy).not.toHaveBeenCalled());expect(db.$queryRaw).toHaveBeenCalledTimes(1);
+});
+it("authoring lock failure rejects before account, installation, audit and outbox writes",async()=>{
+ db.$queryRaw.mockRejectedValue(Error("synthetic lock deadline"));await expect(repo.createAccount(command,mockActor)).rejects.toThrow("lock deadline");mutations.forEach(spy=>expect(spy).not.toHaveBeenCalled());
 });

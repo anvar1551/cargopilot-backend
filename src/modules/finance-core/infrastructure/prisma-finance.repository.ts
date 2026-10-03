@@ -45,6 +45,27 @@ import { projectFinanceSubledgerEvent } from "./finance-subledger.projector";
 
 type Tx = Prisma.TransactionClient;
 
+const accountAuthoringTransactionOptions = { maxWait: 2000, timeout: 10000 };
+/** Private, specific authoring boundary; no caller-controlled execution override. */
+async function requireLockedAccountEntity(tx: Tx, actor: AppUser, command: { companyId: string; actorUserId: string },
+  context: Awaited<ReturnType<typeof requireAccountMutation>>) {
+  await tx.$executeRawUnsafe("SET LOCAL lock_timeout='2s'");
+  await tx.$executeRawUnsafe("SET LOCAL statement_timeout='5s'");
+  const rows = await tx.$queryRaw<Array<{id:string}>>`SELECT e.id FROM "FinanceLegalEntity" e
+    JOIN "Organization" c ON c.id=e."companyId" JOIN "Tenant" t ON t.id=e."tenantId"
+    WHERE e."companyId"=${context.companyId}::uuid AND e."tenantId"=${context.tenantId}::uuid
+      AND e."isActive" AND c."isActive" AND c."tenantId"=t.id AND t.status='active'
+    FOR UPDATE OF e FOR SHARE OF c,t`;
+  if (rows.length !== 1) throw financeConflict("Active account owner required", "FINANCE_ACCOUNT_OWNERSHIP_REJECTED");
+  const current = await requireAccountMutation(actor, command);
+  if (current.userId !== context.userId || current.tenantId !== context.tenantId || current.companyId !== context.companyId
+    || current.companyMembershipId !== context.companyMembershipId || current.tenantMembershipId !== context.tenantMembershipId)
+    throw financeConflict("Account context changed", "FINANCE_ACCOUNT_OWNERSHIP_REJECTED");
+  const entity = await requireJournalEntity(tx, current.companyId);
+  if (entity.id !== rows[0].id || entity.tenantId !== current.tenantId) throw financeConflict("Account tenant context rejected", "FINANCE_ACCOUNT_OWNERSHIP_REJECTED");
+  return entity;
+}
+
 const journalInclude = {
   document: true,
   lines: {
@@ -362,7 +383,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
   async createAccount(command: CreateAccountCommand, actor: AppUser) {
     const context = await requireAccountMutation(actor, command);
     return prisma.$transaction(async (tx) => {
-      const entity = await requireJournalEntity(tx, context.companyId);
+      const entity = await requireLockedAccountEntity(tx, actor, command, context);
       if (entity.tenantId !== context.tenantId) throw financeConflict("Account tenant context rejected", "FINANCE_ACCOUNT_OWNERSHIP_REJECTED");
       if (command.parentId) {
         const parent = await tx.financeAccount.findFirst({
@@ -404,14 +425,14 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
         }),
       ]);
       return account;
-    });
+    }, accountAuthoringTransactionOptions);
   }
 
   async bootstrapChart(command: BootstrapChartCommand, actor: AppUser) {
     const context = await requireAccountMutation(actor, command);
     const templateAccounts = requireChartTemplateSource(command);
     return prisma.$transaction(async (tx) => {
-      const entity = await requireJournalEntity(tx, context.companyId);
+      const entity = await requireLockedAccountEntity(tx, actor, command, context);
       if (entity.tenantId !== context.tenantId) throw financeConflict("Account tenant context rejected", "FINANCE_ACCOUNT_OWNERSHIP_REJECTED");
       const installation = await tx.financeChartTemplateInstallation.findUnique({
         where: {
@@ -520,7 +541,7 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
         }),
       ]);
       return { installation: installed, accounts: createdAccounts, idempotent: false };
-    });
+    }, accountAuthoringTransactionOptions);
   }
 
   async listPeriods(actor: AppUser, page: CursorPage) {
