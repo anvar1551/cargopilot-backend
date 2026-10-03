@@ -21,6 +21,7 @@ enum DriverType {
 }
 
 model Organization {
+  analyticsOutbox AnalyticsDomainEventOutbox[] @relation("AnalyticsOutboxCompany")
   providerConfigurations IntegrationProviderConfigurationVersion[] @relation("ProviderConfigurationCompany")
   templateConfigurations RouteTemplateConfigurationVersion[] @relation("TemplateConfigurationCompany")
   routingConfigurations CarrierRoutingConfigurationVersion[] @relation("RoutingConfigurationCompany")

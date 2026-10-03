@@ -8,6 +8,7 @@ import { persistTenantDemoFixture } from "../tenancy/postgres-fixture.persistenc
 import { collectOrderCash, handoffOrderCash, settleOrderCash } from "../../src/modules/orders-core/cash/custody.service";
 import { ingestAcceptedCashOutbox } from "../../src/modules/finance-core/infrastructure/cash-finance-authority";
 import { ingestDurableFinanceEnvelope } from "../../src/modules/finance-core/infrastructure/finance-queue-ingestion";
+import { claimAnalyticsOutboxBatch, prepareAnalyticsDispatch, completeAnalyticsDispatch } from "../../src/modules/analytics-core/infrastructure/analyticsOutboxPublisher";
 import { prismaFinanceRepository } from "../../src/modules/finance-core/infrastructure/prisma-finance.repository";
 
 const url = process.env.CARGOPILOT_WORKER_TEST_DATABASE_URL;
@@ -91,8 +92,13 @@ it("concurrent unapproved posting produces no journal/document/outbox",async()=>
 it.each(["company", "legalEntity", "sourceId", "payload"])("conflicting durable %s rejects before journal effects", async kind => {
   const row = await source(); const before = await ledgerSnapshot();
   const foreign = await mockPrisma.financeLegalEntity.findUniqueOrThrow({ where: { companyId: ids.organizations.transAsiaDe } });
-  await mockPrisma.financeSourceEvent.update({ where: { id: row.id }, data: kind === "company" ? { companyId: ids.organizations.unrelated } :
-    kind === "legalEntity" ? { legalEntityId: foreign.id } : kind === "sourceId" ? { sourceId: randomUUID() } : { payloadJson: { ...(row.payloadJson as any), amounts: { cod_amount: "9999" } } } });
+  if (kind === "company" || kind === "legalEntity") {
+    const original=await mockPrisma.financeSourceEvent.findUniqueOrThrow({where:{id:row.id}});
+    await expect(mockPrisma.financeSourceEvent.update({where:{id:row.id},data:kind === "company"?{companyId:ids.organizations.unrelated}:{legalEntityId:foreign.id}})).rejects.toMatchObject({code:"P2003"});
+    expect(await mockPrisma.financeSourceEvent.findUniqueOrThrow({where:{id:row.id}})).toEqual(original);
+    expect(await ledgerSnapshot()).toEqual(before);return;
+  }
+  await mockPrisma.financeSourceEvent.update({ where: { id: row.id }, data: kind === "sourceId" ? { sourceId: randomUUID() } : { payloadJson: { ...(row.payloadJson as any), amounts: { cod_amount: "9999" } } } });
   const result: any = await prismaFinanceRepository.processSourceEvent(row.id); expect(result.exception).toBe(true); expect(await ledgerSnapshot()).toEqual(before);
 });
 it("disabled tenant prevents posting of previously accepted work", async () => {
@@ -111,8 +117,11 @@ it.each(["tenant", "money", "receipt"])("inconsistent acceptance %s prevents ing
     await mockPrisma.cashCollectionEvent.update({ where: { id: eventId }, data: { amount: 999 } });
   } else {
     const outbox = await mockPrisma.analyticsDomainEventOutbox.findUniqueOrThrow({ where: { eventId: outboxId } });
-    await mockPrisma.analyticsDomainEventOutbox.update({ where: { eventId: outboxId },
-      data: { payload: { ...(outbox.payload as any), tenantId: ids.tenants.unrelated } } });
+    await expect(mockPrisma.analyticsDomainEventOutbox.update({ where: { eventId: outboxId },
+      data: { payload: { ...(outbox.payload as any), tenantId: ids.tenants.unrelated } } })).rejects.toThrow("Analytics acceptance is immutable");
+    expect(await ledgerSnapshot()).toEqual(before);
+    expect(await mockPrisma.financeSourceEvent.count({where:{sourceEventId}})).toBe(0);
+    return;
   }
   await expect(ingestAcceptedCashOutbox(outboxId)).rejects.toMatchObject({ code: "FINANCE_CASH_AUTHORITY_REJECTED" });
   expect(await mockPrisma.financeSourceEvent.count({ where: { sourceEventId } })).toBe(0);
@@ -140,3 +149,17 @@ it("same-tenant foreign account in a cash rule is rejected", async () => {
 });
 
 it("validated historical cash posting receipt is immutable and does not authorize new execution",async()=>{const row=await source();const doc=await mockPrisma.financeDocument.create({data:{legalEntityId,documentNumber:randomUUID(),type:"cash_movement",status:"posted",documentDate:new Date(),postingDate:new Date(),currency:"USD",totalAmount:"100.25",baseAmount:"200.5",fxRate:"2",sourceEventId,sourceType:"cash_custody",sourceId:row.sourceId,idempotencyKey:randomUUID(),createdByUserId:maker.id}});const journal=await mockPrisma.financeJournalEntry.create({data:{legalEntityId,documentId:doc.id,journalNumber:randomUUID(),status:"posted",postingDate:new Date(),totalDebitBase:"200.5",totalCreditBase:"200.5",lines:{create:[{legalEntityId,lineNumber:1,accountId:accountIds[0],currency:"USD",fxRate:"2",debitAmount:"100.25",debitBase:"200.5"},{legalEntityId,lineNumber:2,accountId:accountIds[1],currency:"USD",fxRate:"2",creditAmount:"100.25",creditBase:"200.5"}]}}});await mockPrisma.financeSourceEvent.update({where:{id:row.id},data:{status:"posted",financeDocumentId:doc.id,financeJournalEntryId:journal.id}});const before=await ledgerSnapshot();for(const result of await Promise.all([1,2].map(()=>prismaFinanceRepository.processSourceEvent(row.id))))expect(result).toMatchObject({idempotent:true});expect(await ledgerSnapshot()).toEqual(before);});
+
+it("published cash reference reloads accepted exact source without queue monetary authority", async () => {
+  await mockPrisma.analyticsDomainEventOutbox.updateMany({where:{acceptedAt:{not:null},publishedAt:null,eventId:{not:outboxId}},data:{publicationState:"quarantined",claimToken:null,claimedAt:null,leaseExpiresAt:null}});
+  const before=await ledgerSnapshot();
+  const claims=await claimAnalyticsOutboxBatch();expect(claims).toHaveLength(1);
+  const envelope=await prepareAnalyticsDispatch(claims[0]);
+  expect(envelope).toMatchObject({id:outboxId,type:"finance_source_event",tenantScope:`tenant:${maker.tenantId}:company:${maker.companyId}`,payload:{sourceEventId}});
+  expect(Object.keys(envelope!.payload)).toEqual(["sourceEventId"]);
+  expect(await completeAnalyticsDispatch(claims[0])).toBe(true);
+  const result:any=await ingestDurableFinanceEnvelope(envelope!);
+  expect(result.event.payloadJson.amounts.cod_amount).toBe("100.2500");
+  expect(result.event.companyId).toBe(maker.companyId);expect(result.event.legalEntityId).toBe(legalEntityId);
+  expect(await ledgerSnapshot()).toEqual(before);
+});

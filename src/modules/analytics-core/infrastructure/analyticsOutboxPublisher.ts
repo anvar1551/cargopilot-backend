@@ -1,185 +1,99 @@
+import { randomUUID } from "crypto";
 import prisma from "../../../config/prismaClient";
-import { getRedisClient, getRedisPrefix, withRedisTimeout } from "../../../config/redis";
+import { withRedisTimeout } from "../../../config/redis";
 import { analyticsConfig } from "../config/analyticsConfig";
 import { analyticsLogger } from "../config/analyticsLogger";
-import {
-  appendCargoPilotDomainEvent,
-  type CargoPilotDomainEvent,
-  type CargoPilotDomainEventType,
-} from "../realtime/analyticsEvents";
-
-const OUTBOX_BATCH_SIZE = analyticsConfig.outbox.batchSize;
-const OUTBOX_IDLE_MS = analyticsConfig.outbox.idleMs;
-const OUTBOX_LOCK_KEY =
-  analyticsConfig.outbox.lockKey || `${getRedisPrefix()}:cp:analytics:outbox:publisher:lock`;
-const OUTBOX_LOCK_TTL_SEC = analyticsConfig.outbox.lockTtlSec;
-const OUTBOX_CONSUMER_ID =
-  analyticsConfig.outbox.consumerId || `${process.env.HOSTNAME || "api"}-${process.pid}`;
-const outboxRepo = (prisma as any).analyticsDomainEventOutbox;
-const OUTBOX_LOCK_TIMEOUT_MS = Math.max(
-  1000,
-  Number(process.env.ANALYTICS_OUTBOX_LOCK_TIMEOUT_MS || 4000),
-);
-
-const OUTBOX_LOCK_ACQUIRE_OR_REFRESH_SCRIPT = `
-local key = KEYS[1]
-local owner = ARGV[1]
-local ttl = tonumber(ARGV[2])
-local current = redis.call('GET', key)
-if not current then
-  redis.call('SET', key, owner, 'EX', ttl, 'NX')
-  current = redis.call('GET', key)
-  if current == owner then
-    return 1
-  end
-  return 0
-end
-if current == owner then
-  redis.call('EXPIRE', key, ttl)
-  return 1
-end
-return 0
-`;
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+import { appendCargoPilotDomainEvent, type CargoPilotDomainEvent } from "../realtime/analyticsEvents";
+import { analyticsAcceptanceHash, resolveAnalyticsSource } from "./analyticsOutbox";
+import { loadAcceptedCashFinance } from "../../finance-core/infrastructure/cash-finance-authority";
+const LEASE_SECONDS=30, MAX_ATTEMPTS=8;
+type Claim={id:string;claimToken:string};
+/** Row authority is PostgreSQL; a process name or Redis leader never authorizes a claim. */
+export async function claimAnalyticsOutboxBatch(size=1):Promise<Claim[]> {
+  if(!Number.isInteger(size)||size<1||size>10)throw new Error("Bounded analytics claim size required");
+  return prisma.$transaction(async tx=>{
+    await tx.$executeRawUnsafe("SET LOCAL lock_timeout='2s'");
+    await tx.$executeRawUnsafe("SET LOCAL statement_timeout='5s'");
+    await tx.$executeRaw`UPDATE "AnalyticsDomainEventOutbox" SET "publicationState"='reconciliation_required',
+      "claimToken"=NULL,"claimedAt"=NULL,"leaseExpiresAt"=NULL,"lastError"='ANALYTICS_DISPATCH_UNCERTAIN',"updatedAt"=NOW()
+      WHERE "publicationState"='dispatching' AND "leaseExpiresAt"<=NOW()`;
+    await tx.$executeRaw`UPDATE "AnalyticsDomainEventOutbox" SET "publicationState"='exhausted',
+      "claimToken"=NULL,"claimedAt"=NULL,"leaseExpiresAt"=NULL,"lastError"='ANALYTICS_ATTEMPTS_EXHAUSTED',"updatedAt"=NOW()
+      WHERE attempts>=${MAX_ATTEMPTS} AND ("publicationState"='ready' OR ("publicationState"='claimed' AND "leaseExpiresAt"<=NOW()))`;
+    const token=randomUUID();
+    return tx.$queryRaw<Claim[]>`UPDATE "AnalyticsDomainEventOutbox" e SET "publicationState"='claimed',"claimToken"=${token}::uuid,
+      "claimedAt"=NOW(),"leaseExpiresAt"=NOW()+make_interval(secs=>${LEASE_SECONDS}),attempts=attempts+1,"updatedAt"=NOW()
+      WHERE e.id IN (SELECT id FROM "AnalyticsDomainEventOutbox" WHERE "acceptedAt" IS NOT NULL AND "publishedAt" IS NULL
+        AND attempts<${MAX_ATTEMPTS} AND "nextAttemptAt"<=NOW()
+        AND ("publicationState"='ready' OR ("publicationState"='claimed' AND "leaseExpiresAt"<=NOW()))
+        ORDER BY "createdAt",id FOR UPDATE SKIP LOCKED LIMIT ${size}) RETURNING e.id,e."claimToken"`;
+  },{maxWait:2000,timeout:10000});
 }
-
-function parsePayload(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-}
-
-function toDomainEvent(row: {
-  eventId: string;
-  type: string;
-  tenantScope: string;
-  entityId: string | null;
-  schemaVersion: number;
-  occurredAt: Date;
-  payload: unknown;
-}): CargoPilotDomainEvent | null {
-  if (!row.eventId || !row.type || !row.tenantScope) return null;
-  const parsedType = row.type as CargoPilotDomainEventType;
-  return {
-    id: row.eventId,
-    type: parsedType,
-    tenantScope: row.tenantScope,
-    entityId: row.entityId ?? null,
-    schemaVersion: 1,
-    occurredAt: row.occurredAt.toISOString(),
-    payload: parsePayload(row.payload),
-  };
-}
-
-async function acquireLeaderLock() {
-  if (!analyticsConfig.outbox.leaderLockEnabled) return true;
-  try {
-    const redis = await getRedisClient();
-    if (!redis) return false;
-    const acquired = await withRedisTimeout(
-      "analytics:outbox:lock:acquire-or-refresh",
-      () =>
-        redis.eval(
-          OUTBOX_LOCK_ACQUIRE_OR_REFRESH_SCRIPT,
-          1,
-          OUTBOX_LOCK_KEY,
-          OUTBOX_CONSUMER_ID,
-          String(OUTBOX_LOCK_TTL_SEC),
-        ) as Promise<number>,
-      OUTBOX_LOCK_TIMEOUT_MS,
-    );
-    return Number(acquired) === 1;
-  } catch (err: any) {
-    const message = String(err?.message || "").toLowerCase();
-    if (message.includes("timed out")) {
-      analyticsLogger.throttledWarn("outbox-lock-timeout", "outbox leader lock timeout", {
-        error: err,
-        throttleMs: 120_000,
-      });
-      return false;
-    }
-    analyticsLogger.throttledWarn("outbox-lock-failed", "outbox leader lock failed", {
-      error: err,
-      throttleMs: 120_000,
-    });
-    return false;
-  }
-}
-
-export async function startAnalyticsOutboxPublisher() {
-  if (!analyticsConfig.outbox.enabled) {
-    analyticsLogger.info("outbox publisher disabled");
-    return;
-  }
-
-  analyticsLogger.info("outbox publisher started", { consumerId: OUTBOX_CONSUMER_ID });
-  while (true) {
+/** Every phase is fenced; a guessed/expired queue claim never grants an operation. */
+export async function prepareAnalyticsDispatch(claim:Claim):Promise<CargoPilotDomainEvent|null> {
+  return prisma.$transaction(async tx=>{
+    await tx.$executeRawUnsafe("SET LOCAL lock_timeout='2s'");await tx.$executeRawUnsafe("SET LOCAL statement_timeout='5s'");
+    const rows=await tx.$queryRaw<Array<{id:string}>>`SELECT id FROM "AnalyticsDomainEventOutbox" WHERE id=${claim.id}::uuid
+      AND "claimToken"=${claim.claimToken}::uuid AND "publicationState"='claimed' AND "leaseExpiresAt">NOW() FOR UPDATE`;
+    if(rows.length!==1)return null;
+    const row=await tx.analyticsDomainEventOutbox.findUniqueOrThrow({where:{id:claim.id}});
     try {
-      const leader = await acquireLeaderLock();
-      if (!leader) {
-        await sleep(2000);
-        continue;
-      }
-
-      const batch = await outboxRepo.findMany({
-        where: { publishedAt: null },
-        orderBy: { createdAt: "asc" },
-        take: OUTBOX_BATCH_SIZE,
-      });
-
-      if (batch.length === 0) {
-        await sleep(OUTBOX_IDLE_MS);
-        continue;
-      }
-
-      for (const row of batch) {
-        const event = toDomainEvent(row);
-        if (!event) {
-          await outboxRepo.update({
-            where: { id: row.id },
-            data: {
-              attempts: { increment: 1 },
-              publishedAt: new Date(),
-              lastError: "Invalid outbox payload shape",
-            },
-          });
-          continue;
-        }
-
-        try {
-          await appendCargoPilotDomainEvent(event);
-          await outboxRepo.update({
-            where: { id: row.id },
-            data: {
-              attempts: { increment: 1 },
-              publishedAt: new Date(),
-              lastError: null,
-            },
-          });
-        } catch (err: any) {
-          await outboxRepo.update({
-            where: { id: row.id },
-            data: {
-              attempts: { increment: 1 },
-              lastError: "ANALYTICS_OUTBOX_PUBLISH_FAILED",
-            },
-          });
-        }
-      }
-    } catch (err: any) {
-      const message = String(err?.message || "");
-      if (message.toLowerCase().includes("timed out")) {
-        analyticsLogger.throttledWarn("outbox-loop-timeout", "outbox publisher loop timeout", {
-          error: err,
-          throttleMs: 30_000,
-        });
-      } else {
-        analyticsLogger.throttledError("outbox-loop-error", "outbox publisher loop error", {
-          error: err,
-          throttleMs: 30_000,
-        });
-      }
-      await sleep(2000);
+      if(!row.acceptedAt||!row.tenantId||!row.companyId||row.eventId.length>200||Buffer.byteLength(JSON.stringify(row.payload))>65536||row.contentHash!==analyticsAcceptanceHash(row))throw new Error("Binding");
+      const owner=await resolveAnalyticsSource(tx,{id:row.eventId,type:row.type as any,tenantScope:row.tenantScope,entityId:row.entityId,
+        payload:row.payload as any,occurredAt:row.occurredAt.toISOString(),...(row.capability==="support_configuration"?{companySubjectId:row.companyId}:{})});
+      if(owner.tenantId!==row.tenantId||owner.companyId!==row.companyId||owner.orderId!==row.orderId||owner.ticketId!==row.ticketId||owner.capability!==row.capability)throw new Error("Binding");
+      if(row.capability==="cash_finance_source")await loadAcceptedCashFinance(tx,String((row.payload as any).sourceEventId));
+    } catch(error:any) {
+      // Known authority denial only. Database/lock failures roll back and remain safely pre-dispatch retryable.
+      if(error?.statusCode!==409&&error?.code!=="FINANCE_CASH_AUTHORITY_REJECTED"&&error?.message!=="Binding")throw error;
+      await tx.analyticsDomainEventOutbox.update({where:{id:row.id},data:{publicationState:"quarantined",claimToken:null,claimedAt:null,leaseExpiresAt:null,lastError:"ANALYTICS_SOURCE_REJECTED"}});return null;
     }
+    const started=await tx.$executeRaw`UPDATE "AnalyticsDomainEventOutbox" SET "publicationState"='dispatching',"dispatchStartedAt"=NOW(),"updatedAt"=NOW()
+      WHERE id=${claim.id}::uuid AND "claimToken"=${claim.claimToken}::uuid AND "publicationState"='claimed' AND "leaseExpiresAt">NOW()`;
+    if(started!==1)return null;
+    return {id:row.eventId,type:row.type as any,entityId:row.entityId,occurredAt:row.occurredAt.toISOString(),schemaVersion:1,
+      tenantScope:`tenant:${row.tenantId}:company:${row.companyId}`,
+      payload:row.capability==="cash_finance_source"?{sourceEventId:(row.payload as any).sourceEventId}:{}};
+  },{maxWait:2000,timeout:10000});
+}
+export async function completeAnalyticsDispatch(claim:Claim):Promise<boolean> {
+  const count=await prisma.$executeRaw`UPDATE "AnalyticsDomainEventOutbox" SET "publicationState"='published',"publishedAt"=NOW(),
+    "claimToken"=NULL,"claimedAt"=NULL,"leaseExpiresAt"=NULL,"lastError"=NULL,"updatedAt"=NOW()
+    WHERE id=${claim.id}::uuid AND "claimToken"=${claim.claimToken}::uuid AND "publicationState"='dispatching' AND "leaseExpiresAt">NOW()`;
+  return count===1;
+}
+async function failClaim(claim:Claim) {
+  await prisma.$executeRaw`UPDATE "AnalyticsDomainEventOutbox" SET "publicationState"=CASE WHEN "publicationState"='dispatching' THEN 'reconciliation_required'
+    WHEN attempts>=${MAX_ATTEMPTS} THEN 'exhausted' ELSE 'ready' END,
+    "lastError"=CASE WHEN "publicationState"='dispatching' THEN 'ANALYTICS_DISPATCH_UNCERTAIN' ELSE 'ANALYTICS_PRE_DISPATCH_FAILED' END,
+    "nextAttemptAt"=NOW()+make_interval(secs=>LEAST(300,POWER(2,LEAST(attempts-1,8)))::int),
+    "claimToken"=NULL,"claimedAt"=NULL,"leaseExpiresAt"=NULL,"updatedAt"=NOW()
+    WHERE id=${claim.id}::uuid AND "claimToken"=${claim.claimToken}::uuid AND "publicationState" IN ('claimed','dispatching')`;
+}
+let active=false;
+/** One underlying command per process. Timeout does not release admission until actual settlement. */
+export async function processAnalyticsOutboxBatchOnce() {
+  if(active)return {claimed:0,published:0,contained:0,busy:true};active=true;
+  let underlying:Promise<void>|undefined,settled=true,finished=false;let claimed=0,published=0,contained=0;
+  try {
+    const rows=await claimAnalyticsOutboxBatch();claimed=rows.length;
+    for(const claim of rows) {
+      try {
+        const event=await prepareAnalyticsDispatch(claim);if(!event){contained++;continue;}
+        settled=false;underlying=Promise.resolve().then(()=>appendCargoPilotDomainEvent(event));
+        void underlying.then(()=>{settled=true;if(finished)active=false;},()=>{settled=true;if(finished)active=false;});
+        await withRedisTimeout("analytics:outbox:append",()=>underlying!,5000);
+        if(await completeAnalyticsDispatch(claim))published++;else{await failClaim(claim);contained++;}
+      } catch {await failClaim(claim);contained++;}
+    }
+    return {claimed,published,contained,busy:false};
+  } finally {finished=true;if(settled)active=false;}
+}
+export async function startAnalyticsOutboxPublisher(options?:{signal?:AbortSignal}) {
+  if(!analyticsConfig.outbox.enabled)return;
+  while(!options?.signal?.aborted) {
+    try {await processAnalyticsOutboxBatchOnce();}
+    catch(error){analyticsLogger.throttledError("analytics-outbox-loop","Analytics outbox iteration failed",{error,throttleMs:30000});}
+    await new Promise<void>(resolve=>{const done=()=>{clearTimeout(timer);options?.signal?.removeEventListener("abort",done);resolve();};const timer=setTimeout(done,analyticsConfig.outbox.idleMs);options?.signal?.addEventListener("abort",done,{once:true});if(options?.signal?.aborted)done();});
   }
 }

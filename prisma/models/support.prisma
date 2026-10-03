@@ -42,6 +42,8 @@ enum SupportTicketEventType {
 }
 
 model SupportTicket {
+  analyticsOutbox AnalyticsDomainEventOutbox[] @relation("AnalyticsOutboxTicket")
+  @@unique([tenantId,id,ownerOrgId],map:"SupportTicket_analytics_owner_key")
   tenantId String? @db.Uuid
   tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   tenantOwnerOrg Organization? @relation("SupportTenantOwner", fields: [tenantId, ownerOrgId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "SupportTicket_tenant_owner_fkey")

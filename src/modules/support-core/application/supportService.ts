@@ -736,7 +736,7 @@ async function configMutation(model: keyof typeof configFields, id: string | nul
       ? await tx[model].update({ where: { id, companyId: actor.companyId }, data })
       : await tx[model].create({ data: { ...data, companyId: actor.companyId } });
     await enqueueCargoPilotDomainEventTx(tx, { type: "support_ticket_changed", tenantScope: `tenant:${actor.tenantId}:company:${actor.companyId}`,
-      entityId: null, payload: { reason: "configuration_changed" } });
+      entityId: null, companySubjectId: actor.companyId, payload: { reason: "configuration_changed" } });
     return remove ? { success: true } : model === "supportQueue" ? serializeSupportQueue(row) : serializeSupportAssignmentRule(row);
   });
 }

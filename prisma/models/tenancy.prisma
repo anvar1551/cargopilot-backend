@@ -7,6 +7,7 @@ enum TenantStatus {
 }
 
 model Tenant {
+  analyticsOutbox AnalyticsDomainEventOutbox[]
   id     String       @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   code   String       @unique
   name   String

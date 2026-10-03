@@ -12,6 +12,24 @@ model AnalyticsDomainEventOutbox {
   occurredAt    DateTime
   payload       Json
 
+  tenantId String? @db.Uuid
+  companyId String? @db.Uuid
+  orderId String? @db.Uuid
+  ticketId String? @db.Uuid
+  tenant Tenant? @relation(fields:[tenantId],references:[id],onDelete:Restrict,onUpdate:Restrict,map:"AnalyticsOutbox_tenant_fkey")
+  company Organization? @relation("AnalyticsOutboxCompany",fields:[tenantId,companyId],references:[tenantId,id],onDelete:Restrict,onUpdate:Restrict,map:"AnalyticsOutbox_company_fkey")
+  order Order? @relation("AnalyticsOutboxOrder",fields:[tenantId,orderId,companyId],references:[tenantId,id,ownerOrgId],onDelete:Restrict,onUpdate:Restrict,map:"AnalyticsOutbox_order_fkey")
+  ticket SupportTicket? @relation("AnalyticsOutboxTicket",fields:[tenantId,ticketId,companyId],references:[tenantId,id,ownerOrgId],onDelete:Restrict,onUpdate:Restrict,map:"AnalyticsOutbox_ticket_fkey")
+  acceptedAt DateTime?
+  capability String?
+  contentHash String?
+  publicationState String @default("unaccepted")
+  claimToken String? @db.Uuid
+  claimedAt DateTime?
+  leaseExpiresAt DateTime?
+  dispatchStartedAt DateTime?
+  nextAttemptAt DateTime @default(now())
+
   publishedAt DateTime?
   attempts    Int       @default(0)
   lastError   String?
@@ -19,6 +37,8 @@ model AnalyticsDomainEventOutbox {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@index([tenantId,companyId,publicationState,nextAttemptAt],map:"AnalyticsOutbox_owner_state_idx")
+  @@index([publicationState,nextAttemptAt,createdAt],map:"AnalyticsOutbox_claim_idx")
   @@index([publishedAt, createdAt])
   @@index([type, createdAt])
 }
