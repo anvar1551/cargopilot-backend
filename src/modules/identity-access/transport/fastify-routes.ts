@@ -1,3 +1,4 @@
+import { recordAuthRejection, AuthRejectionCode } from "./auth-rejection-diagnostics";
 import { ADMINISTRATIVE_CONTAINMENT } from "../application/managementAccess";
 import { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
@@ -67,9 +68,20 @@ const usersFastifyRoutes: FastifyPluginAsync<IdentityAccessRouteOptions> = async
   fastify,
   options,
 ) => {
+  const reportRejection = (code: AuthRejectionCode) => recordAuthRejection(code,
+    diagnostic => console.warn(JSON.stringify(diagnostic)));
+  const observedAuthLimit = (policy: Parameters<typeof createAbuseRateLimitPreHandler>[0]) => {
+    const hook = createAbuseRateLimitPreHandler(policy);
+    return async (request: Parameters<typeof hook>[0], reply: Parameters<typeof hook>[1]) => {
+      const result = await hook(request, reply);
+      if (reply.statusCode === 429) reportRejection("AUTH_ADMISSION_LIMITED");
+      else if (reply.statusCode === 503) reportRejection("AUTH_ADMISSION_UNAVAILABLE");
+      return result;
+    };
+  };
   const rateLimiter = options.rateLimiter ?? createAbuseRateLimiter();
   const authWindowMs = readPositiveIntegerEnv("AUTH_RATE_LIMIT_WINDOW_MS", 15 * 60 * 1_000);
-  const ipLimit = (purpose: string, limit: number) => createAbuseRateLimitPreHandler({
+  const ipLimit = (purpose: string, limit: number) => observedAuthLimit({
     purpose,
     limit,
     windowMs: authWindowMs,
@@ -78,7 +90,7 @@ const usersFastifyRoutes: FastifyPluginAsync<IdentityAccessRouteOptions> = async
   });
   const loginLimit = readAuthLimit("AUTH_LOGIN_RATE_LIMIT_MAX", 20);
   const refreshLimit = readAuthLimit("AUTH_REFRESH_RATE_LIMIT_MAX", 60);
-  const loginRateLimit = createAbuseRateLimitPreHandler({
+  const loginRateLimit = observedAuthLimit({
     purpose: "auth-login",
     limit: loginLimit,
     windowMs: authWindowMs,
@@ -89,7 +101,7 @@ const usersFastifyRoutes: FastifyPluginAsync<IdentityAccessRouteOptions> = async
       return [`principal:${email}`];
     },
   });
-  const refreshRateLimit = createAbuseRateLimitPreHandler({
+  const refreshRateLimit = observedAuthLimit({
     purpose: "auth-refresh",
     limit: refreshLimit,
     windowMs: authWindowMs,
@@ -138,11 +150,14 @@ const usersFastifyRoutes: FastifyPluginAsync<IdentityAccessRouteOptions> = async
         });
       }
       if (err instanceof InvalidMembershipSelectionError) {
+        reportRejection("LOGIN_SELECTION_REJECTED");
         return reply.code(403).send({ error: err.message, code: err.code });
       }
       if (message === "Invalid email or password" || message === "No active tenant membership found") {
+        reportRejection("LOGIN_CREDENTIALS_REJECTED");
         return reply.code(401).send(INVALID_CREDENTIALS_RESPONSE);
       }
+      reportRejection("LOGIN_UNAVAILABLE");
       return reply.code(500).send({ error: "Authentication failed" });
     }
   });
@@ -170,8 +185,10 @@ const usersFastifyRoutes: FastifyPluginAsync<IdentityAccessRouteOptions> = async
         "Refresh token expired", "Refresh token mismatch", "Refresh token context mismatch",
         "Refresh session requires fresh login", "Refresh membership is no longer eligible",
       ].includes(message)) {
+        reportRejection("REFRESH_REJECTED");
         return reply.code(401).send(INVALID_SESSION_RESPONSE);
       }
+      reportRejection("REFRESH_UNAVAILABLE");
       return reply.code(500).send({ error: "Session refresh failed" });
     }
   });
@@ -197,7 +214,7 @@ const usersFastifyRoutes: FastifyPluginAsync<IdentityAccessRouteOptions> = async
   fastify.post("/change-password", {
     bodyLimit: 16 * 1024,
     onRequest: ipLimit("auth-password-ip", readAuthLimit("AUTH_PASSWORD_RATE_LIMIT_MAX", 10)),
-    preHandler: [fastifyAuth(), createAbuseRateLimitPreHandler({
+    preHandler: [fastifyAuth(), observedAuthLimit({
       purpose: "auth-password-user",
       limit: readAuthLimit("AUTH_PASSWORD_RATE_LIMIT_MAX", 10),
       windowMs: authWindowMs,
