@@ -4,7 +4,8 @@ export const MAX_REFRESH_ROTATION_DEPTH = 256;
 const transactionOptions = { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, maxWait: 2000, timeout: 10000 };
 export { transactionOptions as refreshLineageTransactionOptions };
 const invalid = () => new Error("Refresh lineage unavailable");
-const identitySelect = { id: true, userId: true, tenantId: true, tenantMembershipId: true, companyMembershipId: true } as const;
+const identitySelect = { id: true, userId: true, tenantId: true, tenantMembershipId: true, companyMembershipId: true,
+  companyMembership: { select: { companyId: true } } } as const;
 type Identity = { userId: string; tenantId: string | null; tenantMembershipId: string | null; companyMembershipId: string | null };
 type Node = Identity & { id: string; rotationDepth: number; replacementDepth: number | null; replacedBySessionId: string | null; revokedAt: Date | null };
 
@@ -29,7 +30,8 @@ export async function revokeRecordedSuccessors(tx: Prisma.TransactionClient, cla
   const origin = await tx.userRefreshSession.findFirst({ where, select: identitySelect });
   if (!origin) return;
   if (origin.id !== claims.sid || origin.userId !== claims.id || origin.tenantId !== claims.tenantId ||
-      origin.tenantMembershipId !== claims.tenantMembershipId || origin.companyMembershipId !== claims.companyMembershipId) throw invalid();
+      origin.tenantMembershipId !== claims.tenantMembershipId || origin.companyMembershipId !== claims.companyMembershipId
+      || origin.companyMembership?.companyId !== claims.companyId) throw invalid();
   await lockRefreshContext(tx, origin);
   const load = async (id: string, exactHash?: string): Promise<Node | undefined> => {
     const rows = await tx.$queryRaw<Node[]>(Prisma.sql`
@@ -63,7 +65,11 @@ export async function revokeRecordedSuccessors(tx: Prisma.TransactionClient, cla
     if (!node) throw invalid();
   }
   // Validate the entire locked chain before mutating any leaf; retain published history.
-  await tx.userRefreshSession.updateMany({ where: { id: { in: ids }, userId: origin.userId,
+  const revoked = await tx.userRefreshSession.updateMany({ where: { id: { in: ids }, userId: origin.userId,
     tenantId: origin.tenantId, tenantMembershipId: origin.tenantMembershipId, companyMembershipId: origin.companyMembershipId,
     revokedAt: null, companyMembership: where.companyMembership }, data: { revokedAt: new Date() } });
+  // The lineage lock serializes competing accepted logouts. No-op retries emit no duplicate event.
+  if (revoked.count > 0) await tx.credentialSecurityEvent.create({ data: { actorUserId: origin.userId,
+    tenantId: origin.tenantId!, tenantMembershipId: origin.tenantMembershipId!, companyMembershipId: origin.companyMembershipId!,
+    companyId: origin.companyMembership!.companyId, action: "LOGOUT_ACCEPTED" } });
 }

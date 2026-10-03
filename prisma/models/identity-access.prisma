@@ -124,6 +124,8 @@ model CompanyMembership {
 
 enum CredentialSecurityAction {
   PASSWORD_CHANGED
+  LOGIN_ACCEPTED
+  LOGOUT_ACCEPTED
 }
 
 model CredentialSecurityEvent {

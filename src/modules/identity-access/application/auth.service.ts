@@ -305,7 +305,11 @@ export async function loginUser(args: {
     const locked = await lockCredentialUser(tx, user.id);
     if (locked.password !== user.password) throw new Error("Invalid email or password");
     if (!sameSelectedContext(await resolveStoredContext(user.id, context.companyMembershipId, tx), context)) throw new InvalidMembershipSelectionError();
-    return issueAuthSession({ ...context, userAgent: args.userAgent ?? null, ipAddress: args.ipAddress ?? null }, tx);
+    const accepted = await issueAuthSession({ ...context, userAgent: args.userAgent ?? null, ipAddress: args.ipAddress ?? null }, tx);
+    await tx.credentialSecurityEvent.create({ data: { actorUserId: context.userId,
+      tenantId: context.tenantId, tenantMembershipId: context.tenantMembershipId,
+      companyId: context.companyId, companyMembershipId: context.companyMembershipId, action: "LOGIN_ACCEPTED" } });
+    return accepted;
   }, refreshLineageTransactionOptions);
   return { ...session, user: access };
 }

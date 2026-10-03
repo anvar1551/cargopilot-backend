@@ -83,6 +83,7 @@ function resetDatabaseMocks() {
   database.user.findUnique.mockResolvedValue({ id: ids.user, password: passwordHash });
   database.$executeRaw.mockReset().mockResolvedValue(0);
   database.$queryRaw.mockReset().mockImplementation(async (sql: any) => sql.text.includes('FROM "User"') ? [{ id: ids.user, password: passwordHash }] : sql.text.includes('WITH RECURSIVE') ? [{ id: ids.user, userId: ids.user, tenantId: ids.tenantA, tenantMembershipId: ids.tenantMembershipA, companyMembershipId: ids.membershipA, rotationDepth: 0, replacementDepth: null, replacedBySessionId: null, revokedAt: null, expiresAt: new Date(Date.now()+3600000), hop: 0 }] : []);
+  database.credentialSecurityEvent.create.mockReset().mockResolvedValue({});
   database.userRefreshSession.create.mockResolvedValue({});
   database.userRefreshSession.updateMany.mockResolvedValue({ count: 1 });
   database.$transaction.mockImplementation(async (run: (tx: typeof database) => Promise<unknown>) => run(database));
@@ -348,4 +349,25 @@ describe("tenant-bound authentication sessions (mocked database evidence)", () =
     expect(second).toMatchObject({ companyMembershipId: ids.membershipB, companyId: ids.companyB });
     expect(database.companyMembership.findFirst).toHaveBeenCalledTimes(2);
   });
+});
+
+describe("accepted login security audit",()=>{
+ const previousEnv=process.env;
+ beforeEach(()=>{process.env={...previousEnv,NODE_ENV:"test",JWT_SECRET:secret,REFRESH_TOKEN_SECRET:secret};resetDatabaseMocks();database.companyMembership.findMany.mockResolvedValue([membership()]);database.companyMembership.findFirst.mockResolvedValue(membership());});
+ afterAll(()=>{process.env=previousEnv;});
+ it("accepted login appends exact selected ownership in the session transaction without sensitive fields",async()=>{
+  await loginUser({email:"user@example.test",password:"correct-password",companyMembershipId:ids.membershipA});
+  expect(database.credentialSecurityEvent.create).toHaveBeenCalledWith({data:{actorUserId:ids.user,tenantId:ids.tenantA,tenantMembershipId:ids.tenantMembershipA,companyId:ids.companyA,companyMembershipId:ids.membershipA,action:"LOGIN_ACCEPTED"}});
+  expect(database.$transaction).toHaveBeenCalledTimes(1);expect(database.userRefreshSession.create.mock.invocationCallOrder[0]).toBeLessThan(database.credentialSecurityEvent.create.mock.invocationCallOrder[0]);
+ });
+ it.each(["credentials","selection","foreign"])("%s rejection issues no accepted audit or session",async kind=>{
+  if(kind==="selection")database.companyMembership.findMany.mockResolvedValue([membership(),sameTenantMembershipB()]);
+  if(kind==="foreign")database.companyMembership.findFirst.mockResolvedValue(null);
+  await expect(loginUser({email:"user@example.test",password:kind==="credentials"?"wrong":"correct-password",...(kind==="foreign"?{companyMembershipId:ids.membershipB}:{})})).rejects.toBeDefined();
+  expect(database.credentialSecurityEvent.create).not.toHaveBeenCalled();expect(database.userRefreshSession.create).not.toHaveBeenCalled();
+ });
+ it("audit failure cannot return issued tokens; actual rollback is separately tested in PostgreSQL",async()=>{
+  database.credentialSecurityEvent.create.mockRejectedValue(Error("synthetic login audit failure"));
+  await expect(loginUser({email:"user@example.test",password:"correct-password",companyMembershipId:ids.membershipA})).rejects.toThrow("audit failure");
+ });
 });

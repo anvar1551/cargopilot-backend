@@ -351,3 +351,57 @@ it("socket transport PostgreSQL password change disconnects existing idle sessio
 it("socket transport PostgreSQL existing JWT expiry disconnects idle connection and legacy access cannot connect",async()=>withCredentials(async()=>{
   await withSocketPeers(async(peers,wires)=>{const login=await passwordLogin(),claims=accessClaims(login.token);await expect(connectWire(peers[0],jwt.sign({...claims,sid:undefined},secret))).rejects.toThrow("Unauthorized");wires.push(await connectWire(peers[0],jwt.sign({...claims,exp:Math.floor(Date.now()/1000)+2},secret)));await awaitClosed(wires[0]);expect(wires[0].events).toEqual(['driver:realtime:ready']);});
 }));
+
+it("accepted-session PostgreSQL login records exact server context/time and no credential metadata",async()=>withCredentials(async()=>{
+ const before=await auditRows(),sessions=await rows(),business=await sessionBusinessCounts(),start=await pool.query("SELECT clock_timestamp() AS now");
+ const result=await passwordLogin(),after=await auditRows(),end=await pool.query("SELECT clock_timestamp() AS now");
+ expect(after).toHaveLength(before.length+1);const event=after.find(row=>!before.some(old=>old.id===row.id))!;
+ expect(event).toMatchObject({actorUserId:context.id,tenantId:context.tenantId,tenantMembershipId:context.tenantMembershipId,companyId:context.companyId,companyMembershipId:context.companyMembershipId,action:"LOGIN_ACCEPTED"});
+ expect(Object.keys(event).sort()).toEqual(["id","actorUserId","tenantId","tenantMembershipId","companyId","companyMembershipId","action","createdAt"].sort());
+ expect(event.createdAt.getTime()).toBeGreaterThanOrEqual(start.rows[0].now.getTime());expect(event.createdAt.getTime()).toBeLessThanOrEqual(end.rows[0].now.getTime());
+ expect(await rows()).toHaveLength(sessions.length+1);expect((await rows()).find(row=>row.id===refreshSid(result.refreshToken))).toBeDefined();expect(await sessionBusinessCounts()).toEqual(business);
+}));
+it("accepted-session PostgreSQL failed credentials and foreign selection create no sessions or accepted events",async()=>withCredentials(async()=>{
+ const before=await auditRows(),sessions=await rows(),business=await sessionBusinessCounts();
+ await expect(passwordLogin("wrong")).rejects.toThrow("Invalid email or password");
+ await expect(loginUser({email:fixture.users.find(user=>user.id===context.id)!.email,password:oldPassword,companyMembershipId:ids.companyMemberships.multiUnrelated})).rejects.toThrow("Invalid membership selection");
+ expect(await auditRows()).toEqual(before);expect(await rows()).toEqual(sessions);expect(await sessionBusinessCounts()).toEqual(business);
+}));
+it("accepted-session PostgreSQL multi-membership choices do not create acceptance until verified selection",async()=>{
+ const user=await mockPrisma.user.findUniqueOrThrow({where:{id:ids.users.multiTenant}}),password="synthetic-multi-audit";
+ await mockPrisma.user.update({where:{id:user.id},data:{password:bcrypt.hashSync(password,4)}});
+ const sessions=await mockPrisma.userRefreshSession.findMany({orderBy:{id:"asc"}}),before=await auditRows();
+ try{
+  await expect(loginUser({email:user.email,password})).rejects.toMatchObject({code:"MEMBERSHIP_SELECTION_REQUIRED"});
+  expect(await mockPrisma.userRefreshSession.findMany({orderBy:{id:"asc"}})).toEqual(sessions);expect(await auditRows()).toEqual(before);
+  const result=await loginUser({email:user.email,password,companyMembershipId:ids.companyMemberships.multiUnrelated});
+  expect(result.user.tenantId).toBe(ids.tenants.unrelated);const after=await auditRows(),event=after.find(row=>!before.some(old=>old.id===row.id))!;
+  expect(event).toMatchObject({actorUserId:user.id,tenantId:ids.tenants.unrelated,tenantMembershipId:ids.tenantMemberships.multiUnrelated,companyId:ids.organizations.unrelated,companyMembershipId:ids.companyMemberships.multiUnrelated,action:"LOGIN_ACCEPTED"});
+ }finally{await mockPrisma.user.update({where:{id:user.id},data:{password:user.password}});}
+});
+it.each(["login","logout"])("accepted-session PostgreSQL %s audit failure rolls back all session and audit state",async operation=>withCredentials(async()=>{
+ const original=operation==="logout"?await accepted():null;
+ if(original)await refreshUserSession({refreshToken:original.token});
+ const before=await auditRows(),sessions=await rows(),business=await sessionBusinessCounts(),user=await mockPrisma.user.findUniqueOrThrow({where:{id:context.id}});
+ const action=operation==="login"?"LOGIN_ACCEPTED":"LOGOUT_ACCEPTED";
+ await pool.query(`CREATE FUNCTION cp_session_audit_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action='${action}'::"CredentialSecurityAction" THEN RAISE EXCEPTION 'synthetic accepted session audit failure'; END IF; RETURN NEW; END $$;CREATE TRIGGER cp_session_audit_fail BEFORE INSERT ON "CredentialSecurityEvent" FOR EACH ROW EXECUTE FUNCTION cp_session_audit_fail();`);
+ try{
+  await expect(operation==="login"?passwordLogin():revokeRefreshSession(original!.token)).rejects.toThrow("accepted session audit failure");
+  expect(await auditRows()).toEqual(before);expect(await rows()).toEqual(sessions);expect(await sessionBusinessCounts()).toEqual(business);expect(await mockPrisma.user.findUniqueOrThrow({where:{id:context.id}})).toEqual(user);
+ }finally{await pool.query('DROP TRIGGER cp_session_audit_fail ON "CredentialSecurityEvent";DROP FUNCTION cp_session_audit_fail();');}
+}));
+it("accepted-session PostgreSQL concurrent old-token logout revokes exact successors and appends one event",async()=>{
+ const origin=await accepted(),separate=await accepted(),replacement=await refreshUserSession({refreshToken:origin.token}),before=await auditRows(),sessions=await rows(),business=await sessionBusinessCounts();
+ await Promise.all([1,2,3].map(()=>revokeRefreshSession(origin.token)));const after=await auditRows(),final=await rows();
+ expect(after).toHaveLength(before.length+1);expect(after.find(row=>!before.some(old=>old.id===row.id))).toMatchObject({actorUserId:context.id,tenantId:context.tenantId,companyId:context.companyId,companyMembershipId:context.companyMembershipId,action:"LOGOUT_ACCEPTED"});
+ expect(final.find(row=>row.id===refreshSid(replacement.refreshToken))!.revokedAt).not.toBeNull();expect(final.find(row=>row.id===separate.sid)).toEqual(sessions.find(row=>row.id===separate.sid));
+ await revokeRefreshSession(origin.token);expect(await auditRows()).toEqual(after);expect(await rows()).toEqual(final);expect(await sessionBusinessCounts()).toEqual(business);
+});
+it("accepted-session PostgreSQL wrong possession creates no audit and suspension does not prevent exact logout",async()=>{
+ const origin=await accepted(),before=await auditRows(),sessions=await rows();
+ const forged=jwt.sign({...context,sid:origin.sid,tokenType:"refresh",companyId:ids.organizations.transAsiaDe},secret,{expiresIn:"1h"});
+ await revokeRefreshSession(forged);expect(await auditRows()).toEqual(before);expect(await rows()).toEqual(sessions);
+ await mockPrisma.companyMembership.update({where:{id:context.companyMembershipId},data:{status:"suspended"}});
+ try{await revokeRefreshSession(origin.token);expect(await auditRows()).toHaveLength(before.length+1);expect((await rows()).find(row=>row.id===origin.sid)!.revokedAt).not.toBeNull();}
+ finally{await mockPrisma.companyMembership.update({where:{id:context.companyMembershipId},data:{status:"active"}});}
+});
