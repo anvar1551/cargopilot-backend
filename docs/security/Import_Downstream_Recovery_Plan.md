@@ -1,6 +1,6 @@
-# Import downstream recovery — unimplemented plan
+# Import downstream recovery — visibility implemented, repairs unimplemented
 
-Source reviewed: orders-core/import/order-import.ts, write/create-order.ts, repo/order-write.repo.ts, orders-legs/pricing.ts, label/order-label.ts and integrations-core/application/outbox-dispatcher.ts. This document records the current contract and proposed next work. It implements no replay, reconciliation, cancellation or new worker.
+Source reviewed: orders-core/import/order-import.ts, write/create-order.ts, repo/order-write.repo.ts, orders-legs/pricing.ts, label/order-label.ts and integrations-core/application/outbox-dispatcher.ts. This document records the current contract and proposed next work. The read-only inventory is now implemented in Downstream_Recovery_Inventory.md; it implements no replay, reconciliation, cancellation or new worker.
 
 ## Current durable sources and boundaries
 
@@ -15,10 +15,13 @@ Import downstreamRecoveryRequired is a conservative replayedRows > 0 hint, not a
 
 ## Smallest proposed engineering step, not implemented
 
-1. Add a selected-context, read-only recovery inventory tied to accepted intent/ordinal/order. Reload scoped Order, pricing/leg rows, label jobs/attachments and existing carrier records; project only relevant state. Distinguish absent acceptance, known failure, processing, confirmed result and uncertain external outcome. Do not derive ownership from logs or userId alone.
+1. Completed: selected-context, read-only recovery inventory tied to accepted intent/ordinal/order (Downstream_Recovery_Inventory.md). Reload scoped Order, pricing/leg rows, label jobs/attachments and existing carrier records; project only relevant state. Distinguish absent acceptance, known failure, processing, confirmed result and uncertain external outcome. Do not derive ownership from logs or userId alone.
 2. Define a durable immutable post-commit work acceptance/receipt contract before enabling mutation: order/source/operation/version identity, frozen server-controlled inputs, compound ownership, one acceptance with business transaction, bounded fenced execution and transactional result publication. Stop at a reviewed plan until source-specific authority is known; do not invent a generic worker or use order receipt as downstream capability.
 3. Only resume work whose authority, original inputs and known absence of completed effects are provable. Preserve original records. Label storage requires object/attachment reconciliation; pricing regeneration requires an explicit approved choice between original frozen estimate and repricing; carrier ambiguity requires provider-specific outcome evidence. No blind replay, overwrite or manual receipt reset.
 
 Required business decisions: permitted repricing and quote expiry after partial commit; authorized reconciliation/checker and cancellation/reacceptance actors; treatment of partial label/storage and uncertain carrier outcomes. Existing retention and owner-company recipient policy remain unchanged. New invoice/finance approval and FX policy remain separately blocked.
 
 Completion criteria for later implementation: current scoped state inventory without writes; immutable accepted original operation; concurrent repair produces one result/event; fresh authorization and ownership; no provider replay after uncertainty; injected transaction/storage/publication failures leave distinguishable recoverable state. Validate each chosen mechanism with focused disposable PostgreSQL concurrency/rollback and mocked storage/provider boundaries, then separately authorized real transport checks. This batch executes no downstream repair.
+
+
+Selected next path (not implemented): repair missing canonical publication from a durably successful accepted create_shipment delivery attempt, preserving original outbox/source identity and never contacting the provider. Exact authority, eligibility, concurrency/rollback/uncertainty criteria and financial decisions are in Downstream_Recovery_Inventory.md. Pricing regeneration, label resets, cancellation/reacceptance and unknown external outcomes remain separately blocked.
