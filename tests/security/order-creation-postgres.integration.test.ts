@@ -18,7 +18,7 @@ import {randomUUID} from "crypto";
 import {createTenantDemoFixture,TENANT_DEMO_IDS as ids} from "../../src/modules/tenancy/demo-fixtures";
 import {persistTenantDemoFixture} from "../tenancy/postgres-fixture.persistence";
 import {createOrderForActor} from "../../src/modules/orders-core/write/create-order";
-import {importOrdersFromCsv,getOrderImportTemplateCsv} from "../../src/modules/orders-core/import/order-import";
+import {importOrdersFromCsv,getOrderImportTemplateCsv,previewOrderImport} from "../../src/modules/orders-core/import/order-import";
 import {enqueueOrderLabelJob} from "../../src/modules/orders-core/label";
 import {seedInitialServiceChargePricing,autoBookCarrierForOrder} from "../../src/modules/orders-legs";
 import {quoteTariffForOrder} from "../../src/modules/pricing-core";
@@ -47,7 +47,7 @@ beforeAll(async()=>{
   const permission=await mockPrisma.permission.create({data:{key:"shipment.create",resource:"synthetic-order",action:"create"}});
   const viewPermission=await mockPrisma.permission.create({data:{key:"shipment.view",resource:"synthetic-order",action:"view"}});
   for(const m of memberships){const role=await mockPrisma.role.create({data:{code:randomUUID(),name:"Synthetic creator",companyId:m.companyId}});roles.push(role.id);await mockPrisma.rolePermission.create({data:{roleId:role.id,permissionId:viewPermission.id}});await mockPrisma.rolePermission.create({data:{roleId:role.id,permissionId:permission.id}});await mockPrisma.membershipRole.create({data:{membershipId:m.id,roleId:role.id}});await mockPrisma.membershipScope.create({data:{membershipId:m.id,scopeType:"company",scopeRefId:m.companyId}});}
-  for(const key of ["drivers.telemetry","drivers.manage"]){const p=await mockPrisma.permission.create({data:{key,resource:"synthetic-driver",action:key.split(".")[1]}});for(const roleId of roles)await mockPrisma.rolePermission.create({data:{roleId,permissionId:p.id}});}
+  for(const key of ["drivers.telemetry","drivers.manage","customers.read"]){const p=await mockPrisma.permission.create({data:{key,resource:"synthetic-driver",action:key.split(".")[1]}});for(const roleId of roles)await mockPrisma.rolePermission.create({data:{roleId,permissionId:p.id}});}
   process.env.ORDER_LABEL_BLOCKING="true";
 });
 afterAll(async()=>{delete process.env.ORDER_LABEL_BLOCKING;await mockPrisma?.$disconnect();await pool.end();});
@@ -231,4 +231,43 @@ it("analytics ownership PostgreSQL fresh revocation and readonly snapshots leave
   await mockPrisma.tenant.update({ where: { id: actor().tenantId }, data: { status: "suspended" } });
   try { await expect(getAnalyticsSummaryV2({ actor: actor() })).rejects.toMatchObject({ statusCode: 403 }); } finally { await mockPrisma.tenant.update({ where: { id: actor().tenantId }, data: { status: "active" } }); }
   expect(await state()).toEqual(before); expect(enqueueOrderLabelJob).not.toHaveBeenCalled(); expect(autoBookCarrierForOrder).not.toHaveBeenCalled();
+});
+
+async function masterState() {
+  return { ...await state(), orderRows: await mockPrisma.order.findMany({orderBy:{id:"asc"}}), customerRows: await mockPrisma.customerEntity.findMany({orderBy:{id:"asc"}}), addressRows: await mockPrisma.address.findMany({orderBy:{id:"asc"}}) };
+}
+const masterBody=()=>({...body(),customerEntityId:ids.customers.transAsia,addresses:{...body().addresses,senderAddressId:ids.addresses.transAsiaSender,receiverAddressId:ids.addresses.transAsiaReceiver}});
+it("master references native owned creation and concurrent normalized retry preserve one authorized projection",async()=>{
+const input=masterBody(),before=await masterState();const results=await Promise.all([input,{...input,customerEntityId:input.customerEntityId.toUpperCase(),addresses:{...input.addresses,senderAddressId:input.addresses.senderAddressId.toUpperCase()}}].map(body=>createOrderForActor({user:actor(),body})));
+expect(new Set(results.map(r=>r.payload.order.id)).size).toBe(1);const order=results[0].payload.order;
+expect(order).toMatchObject({tenantId:actor().tenantId,ownerOrgId:actor().companyId,customerEntityId:input.customerEntityId,senderAddressId:input.addresses.senderAddressId,receiverAddressId:input.addresses.receiverAddressId});
+expect(order.senderAddressObj).not.toHaveProperty("passportNumber");expect(order.senderAddressObj).not.toHaveProperty("passportSeries");expect(await masterState()).toMatchObject({orders:before.orders+1,receipts:before.receipts+1,outbox:before.outbox+1});expect(enqueueOrderLabelJob).toHaveBeenCalledTimes(1);
+});
+it.each(["foreign customer","foreign address","wrong customer","missing customer","legacy customer"])("master references native %s rejects before business and downstream effects",async condition=>{
+const input=masterBody();if(condition==="foreign customer")input.customerEntityId=ids.customers.unrelated;
+if(condition==="foreign address")input.addresses.senderAddressId=ids.addresses.unrelatedSender;
+if(condition==="wrong customer"){const customer=await mockPrisma.customerEntity.create({data:{tenantId:actor().tenantId,name:"Synthetic other"}});const address=await mockPrisma.address.create({data:{tenantId:actor().tenantId,customerEntityId:customer.id,addressLine1:"Synthetic"}});input.addresses.senderAddressId=address.id;}
+if(condition==="missing customer")input.customerEntityId=null;
+if(condition==="legacy customer"){const customer=await mockPrisma.customerEntity.create({data:{name:"Synthetic legacy",tenantId:null}});input.customerEntityId=customer.id;}
+const before=await masterState();await expect(createOrderForActor({user:actor(),body:input})).rejects.toMatchObject({statusCode:403});expect(await masterState()).toEqual(before);expect(enqueueOrderLabelJob).not.toHaveBeenCalled();expect(seedInitialServiceChargePricing).not.toHaveBeenCalled();expect(autoBookCarrierForOrder).not.toHaveBeenCalled();
+});
+it("master references native changed reference conflicts and receipt still requires current master permission and scope",async()=>{
+const input=masterBody();await createOrderForActor({user:actor(),body:input});const before=await masterState();
+await expect(createOrderForActor({user:actor(),body:{...input,addresses:{...input.addresses,senderAddressId:input.addresses.receiverAddressId}}})).rejects.toMatchObject({statusCode:409});expect(await masterState()).toEqual(before);
+const permission=await mockPrisma.permission.findUniqueOrThrow({where:{key:"customers.read"}}),grant=await mockPrisma.rolePermission.findFirstOrThrow({where:{roleId:roles[0],permissionId:permission.id}});await mockPrisma.rolePermission.delete({where:{id:grant.id}});
+try{await expect(createOrderForActor({user:actor(),body:input})).rejects.toMatchObject({statusCode:403});expect(await masterState()).toEqual(before);}finally{await mockPrisma.rolePermission.create({data:grant});}
+const role=await mockPrisma.role.findUniqueOrThrow({where:{id:roles[0]}});await mockPrisma.role.update({where:{id:role.id},data:{code:"customer"}});
+try{await expect(createOrderForActor({user:actor(),body:input})).rejects.toMatchObject({statusCode:403});expect(await masterState()).toEqual(before);}finally{await mockPrisma.role.update({where:{id:role.id},data:{code:role.code}});}
+expect(enqueueOrderLabelJob).toHaveBeenCalledTimes(1);
+});
+it("master references native CSV preview/confirm shares customer/address resolution and immutable batch identity",async()=>{
+const header="receiverName,pickupAddress,dropoffAddress,currency,paymentType,customerEntityId,senderAddressId,receiverAddressId",row=`Synthetic,Pickup synthetic,Dropoff synthetic,UZS,CASH,${ids.customers.transAsia},${ids.addresses.transAsiaSender},${ids.addresses.transAsiaReceiver}`;
+const args={actor:actor(),operationId:randomUUID(),csvText:header+"\n"+row};const before=await masterState();const preview=await previewOrderImport(args);expect(preview.validRows).toBe(1);expect(await masterState()).toEqual(before);
+const result=await importOrdersFromCsv(args);expect(result.orders[0].customerEntityId).toBe(ids.customers.transAsia);expect(result.orders[0].senderAddressId).toBe(ids.addresses.transAsiaSender);const confirmed=await masterState();expect((await importOrdersFromCsv(args)).replayedRows).toBe(1);expect(await masterState()).toEqual(confirmed);
+await expect(importOrdersFromCsv({...args,csvText:args.csvText.replace(ids.addresses.transAsiaSender,ids.addresses.transAsiaReceiver)})).rejects.toMatchObject({statusCode:409});expect(await masterState()).toEqual(confirmed);
+await expect(importOrdersFromCsv({...args,operationId:randomUUID(),customerEntityId:ids.customers.unrelated})).rejects.toMatchObject({statusCode:403});expect(await masterState()).toEqual(confirmed);
+});
+it("master references native actual receipt failure rolls back linked order and emits nothing",async()=>{
+const input=masterBody(),before=await masterState();await pool.query(`CREATE FUNCTION cp_master_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic linked receipt failure'; END $$; CREATE TRIGGER cp_master_fail BEFORE INSERT ON "OrderCreationReceipt" FOR EACH ROW EXECUTE FUNCTION cp_master_fail();`);
+try{await expect(createOrderForActor({user:actor(),body:input})).rejects.toThrow("linked receipt failure");expect(await masterState()).toEqual(before);expect(enqueueOrderLabelJob).not.toHaveBeenCalled();expect(seedInitialServiceChargePricing).not.toHaveBeenCalled();}finally{await pool.query('DROP TRIGGER cp_master_fail ON "OrderCreationReceipt";DROP FUNCTION cp_master_fail();');}
 });

@@ -35,3 +35,10 @@ it("row, parcel, text and aggregate byte limits bound retained intent hashing",(
   const oversized=Array.from({length:100},()=>({...row(),pickupAddress:"x".repeat(2048),dropoffAddress:"x".repeat(2048),senderName:"x".repeat(2048),receiverName:"x".repeat(2048),senderPhone:"x".repeat(2048),receiverPhone:"x".repeat(2048)}));
   expect(()=>buildCreationRequest(actor,operationId,"import",oversized)).toThrow("byte limit");
 });
+
+it("master reference UUID normalization preserves identity and changed references conflict",()=>{
+const refs={customerEntityId:"ABCDEF00-0000-4000-8000-000000000001",senderAddressId:"ABCDEF00-0000-4000-8000-000000000002"};
+const a=buildCreationRequest(actor,operationId,"order",[{...row(),...refs}]);const b=buildCreationRequest(actor,operationId,"order",[{...row(),customerEntityId:refs.customerEntityId.toLowerCase(),senderAddressId:refs.senderAddressId.toLowerCase()}]);expect(a.fingerprint).toBe(b.fingerprint);
+expect(buildCreationRequest(actor,operationId,"order",[{...row(),...refs,senderAddressId:"ABCDEF00-0000-4000-8000-000000000003"}]).fingerprint).not.toBe(a.fingerprint);
+expect(()=>assertCreationPayload(actor,a,0,{...row(),...refs,customerEntityId:"ABCDEF00-0000-4000-8000-000000000004"})).toThrow("conflicts");
+});

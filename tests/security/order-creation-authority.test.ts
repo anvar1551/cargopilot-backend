@@ -103,12 +103,12 @@ it("defers online checkout until invoice issuance while preserving the created o
   expect(db.order.create).toHaveBeenCalledTimes(1); expect(db.paymentIntent.create).not.toHaveBeenCalled();
 });
 
-it.each([masterA, masterB])("rejects even an apparently owned/global customer reference %s before writes", async (customerEntityId) => {
+it.each([masterA, masterB])("rejects customer reference %s without current master permission before writes", async (customerEntityId) => {
   await expect(createOrderForActor({ user: actor, body: { ...body(), customerEntityId } })).rejects.toMatchObject({ statusCode: 403 });
   noBusinessEffects(); expect(db.customerEntity.findUnique).not.toHaveBeenCalled();
 });
 
-it.each(["senderAddressId", "receiverAddressId"])("rejects %s without ownership lookups or business effects", async (field) => {
+it.each(["senderAddressId", "receiverAddressId"])("rejects %s without an explicit customer or business effects", async (field) => {
   for (const id of [masterA, masterB]) {
     const input = body(); Object.assign(input.addresses, { [field]: id });
     await expect(createOrderForActor({ user: actor, body: input })).rejects.toMatchObject({ statusCode: 403 });
@@ -155,8 +155,8 @@ it("rejects foreign role grants on a selected company", async () => {
 
 it("contains direct repository reference/status bypasses before writes", async () => {
   const payload = await mapCreateOrderDtoToRepoPayload(body());
-  await expect(createOrder(actor.id, { ...payload, customerEntityId: masterA }, actor, undefined)).rejects.toMatchObject({ statusCode: 403 });
-  await expect(createOrder(actor.id, { ...payload, senderAddressId: masterB }, actor, undefined)).rejects.toMatchObject({ statusCode: 403 });
+  await expect(createOrder(actor.id, { ...payload, customerEntityId: masterA }, actor, undefined)).rejects.toThrow("Durable creation request required");
+  await expect(createOrder(actor.id, { ...payload, senderAddressId: masterB }, actor, undefined)).rejects.toThrow("Durable creation request required");
   await expect(createOrder(actor.id, { ...payload, codPaidStatus: "PAID" }, actor, undefined)).rejects.toMatchObject({ statusCode: 400 });
   noBusinessEffects();
 });

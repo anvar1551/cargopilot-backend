@@ -1,3 +1,4 @@
+import { normalizeCreationReferences, assertCreationDtoReferencePlacement } from "./creation-reference-input";
 import { assertCreationInputAuthority } from "./creation-authority";
 import { z } from "zod";
 import {
@@ -92,7 +93,7 @@ export const parcelInputSchema = z.object({
 export const createOrderPayloadSchema = z
   .object({
     // ✅ allow null/undefined until you actually have customer entity
-    customerEntityId: z.string().optional().nullable(),
+    customerEntityId: z.string().uuid().optional().nullable(),
 
     // ✅ allow missing objects (prevents "expected object, received undefined")
     sender: z
@@ -377,10 +378,11 @@ export async function mapCreateOrderDtoToRepoPayload(
   raw: unknown,
 ): Promise<CreateOrderRepoPayload> {
   assertCreationInputAuthority(raw);
+  assertCreationDtoReferencePlacement(raw);
   const dto = createOrderPayloadSchema.parse(raw);
 
-  const senderAddressId = dto.addresses.senderAddressId ?? null;
-  const receiverAddressId = dto.addresses.receiverAddressId ?? null;
+  const references = normalizeCreationReferences({ customerEntityId: dto.customerEntityId, senderAddressId: dto.addresses.senderAddressId, receiverAddressId: dto.addresses.receiverAddressId });
+  const { senderAddressId, receiverAddressId } = references;
 
   let pickupAddress = dto.addresses.pickupAddress;
   let dropoffAddress = dto.addresses.dropoffAddress;
@@ -468,7 +470,7 @@ export async function mapCreateOrderDtoToRepoPayload(
     senderAddress: null,
     receiverAddress: null,
 
-    customerEntityId: dto.customerEntityId ?? null,
+    customerEntityId: references.customerEntityId ?? null,
     senderAddressId,
     receiverAddressId,
 

@@ -10,6 +10,7 @@ const financialFields = new Set([
   "amount", "amountminor", "servicecharge", "total", "totalamount",
 ]);
 const masterReferences = new Set(["customerentityid", "senderaddressid", "receiveraddressid", "addressid"]);
+const supportedMasterFields = new Set(["customerEntityId", "senderAddressId", "receiverAddressId"]);
 const pricingAuthorityFields = new Set(["tariffplanid", "pricingplanid", "pricingruleid", "routetemplateid"]);
 const ownershipAuthorityFields = new Set([
   "tenantid", "ownerorgid", "assignedorgid", "currentwarehouseid", "assigneddriverid",
@@ -33,9 +34,9 @@ export function assertCreationInputAuthority(raw: unknown) {
       if (ownershipAuthorityFields.has(normalized) && child != null && child !== "") {
         throw authorityError("Client order ownership is not accepted", 403);
       }
-      if ((masterReferences.has(normalized) && child != null && child !== "") ||
+      if ((masterReferences.has(normalized) && !supportedMasterFields.has(key) && child != null && child !== "") ||
           ((normalized === "savepickuptoaddressbook" || normalized === "savedropofftoaddressbook") && child !== false && child != null)) {
-        throw authorityError("Customer/address ownership cannot be established; use address snapshots", 403);
+        throw authorityError("Unsupported master reference or address-book mutation", 403);
       }
       pending.push({ value: child, depth: depth + 1 });
     }

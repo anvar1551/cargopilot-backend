@@ -1,3 +1,4 @@
+import { validateCreationReferences } from "../domain/creation-references";
 import prisma from "../../../config/prismaClient";
 import { requireTenantBoundOrderCompanyAuthority, hasCompanyScope } from "../domain/company-authority";
 import { authorityError } from "../domain/creation-authority";
@@ -232,6 +233,7 @@ export async function prepareAuthorizedOrderCreation(
   const membership = await requireTenantBoundOrderCompanyAuthority(prisma, actor, "shipment.create");
   if (!hasCompanyScope(membership)) throw authorityError("Company creation scope required", 403);
 
+  await validateCreationReferences(prisma, user, mapped, false);
   const effectivePaymentType = mapped.paymentType ?? PaymentType.CASH;
   const requiresOnlineCheckout =
     effectivePaymentType === PaymentType.CARD ||

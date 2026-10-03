@@ -1,3 +1,5 @@
+import { validateCreationReferences } from "../domain/creation-references";
+import type { AppUser } from "../../../types/app-user";
 import { assertCreationInputAuthority, authorityError } from "../domain/creation-authority";
 import { requireTenantBoundOrderCompanyAuthority, hasCompanyScope } from "../domain/company-authority";
 import prisma from "../../../config/prismaClient";
@@ -11,11 +13,14 @@ import { OrderActor, orderError } from "../shared";
 import { userLiteSelect } from "./order-repo.shared";
 import { assertCreationRequest, assertCreationPayload, type CreationRequest } from "../domain/creation-request";
 
+const creationAddressSelect = { id: true, tenantId: true, customerEntityId: true, country: true, city: true,
+  neighborhood: true, street: true, latitude: true, longitude: true, addressLine1: true, addressLine2: true,
+  building: true, apartment: true, floor: true, landmark: true, postalCode: true, addressType: true } satisfies Prisma.AddressSelect;
 const orderCreationInclude = {
         customer: { select: userLiteSelect },
-        customerEntity: true,
-        senderAddressObj: true,
-        receiverAddressObj: true,
+        customerEntity: { select: { id: true, name: true, type: true, companyName: true } },
+        senderAddressObj: { select: creationAddressSelect },
+        receiverAddressObj: { select: creationAddressSelect },
         attachments: true,
         parcels: true,
         cashCollections: {
@@ -115,12 +120,13 @@ export const createOrder = async (
   return creationTransaction(async (tx) => {
     await lockCreation(tx, request);
     const membership = await creationAuthority(tx,actor);
+    const references = await validateCreationReferences(tx, actor as AppUser, payload, true);
     const intent = await resolveIntent(tx,actor,request,request.kind==="order");
     if(!intent) throw authorityError("Accepted import intent required",409);
-    const existing = await readReceipt(tx,request,intent.id,ordinal);
+    const existing = await readReceipt(tx,actor,request,intent.id,ordinal);
     if(existing) return {order:existing,replayed:true};
-    const senderAddressId: string | null = null;
-    const receiverAddressId: string | null = null;
+    const senderAddressId = references.senderAddressId ?? null;
+    const receiverAddressId = references.receiverAddressId ?? null;
     const createdAt = new Date();
     const orderNumber = await getNextOrderNumberTx(tx);
     const slaSnapshot = await resolveOrderSlaSnapshot({
@@ -193,7 +199,7 @@ export const createOrder = async (
         receiverPhone3: payload.receiverPhone3 ?? null,
         receiverAddress: payload.receiverAddress ?? null,
         ownerOrgId: membership.companyId,
-        customerEntityId: payload.customerEntityId ?? null,
+        customerEntityId: references.customerEntityId ?? null,
         senderAddressId,
         receiverAddressId,
         serviceType: payload.serviceType ?? null,
@@ -282,10 +288,14 @@ async function resolveIntent(tx: Prisma.TransactionClient, actor: OrderActor, re
   }
   return create ? tx.orderCreationIntent.create({data:{...request}}) : null;
 }
-async function readReceipt(tx: Prisma.TransactionClient, request: CreationRequest, intentId: string, ordinal: number) {
+async function readReceipt(tx: Prisma.TransactionClient, actor: OrderActor, request: CreationRequest, intentId: string, ordinal: number) {
   const receipt=await tx.orderCreationReceipt.findUnique({where:{intentId_ordinal:{intentId,ordinal}}});
   if(!receipt) return null;
-  const order=await tx.order.findFirst({where:{id:receipt.orderId,tenantId:request.tenantId,ownerOrgId:request.companyId,customerId:request.userId},include:orderCreationInclude});
+  await tx.$queryRaw`SELECT id FROM "Order" WHERE id=${receipt.orderId}::uuid AND "tenantId"=${request.tenantId}::uuid AND "ownerOrgId"=${request.companyId}::uuid FOR SHARE`;
+  const parent=await tx.order.findFirst({where:{id:receipt.orderId,tenantId:request.tenantId,ownerOrgId:request.companyId,customerId:request.userId},select:{id:true,customerEntityId:true,senderAddressId:true,receiverAddressId:true}});
+  if (!parent) throw authorityError("Confirmed order is not accessible",403);
+  await validateCreationReferences(tx,actor as AppUser,parent,true);
+  const order=await tx.order.findFirst({where:{id:parent.id,tenantId:request.tenantId,ownerOrgId:request.companyId,customerId:request.userId},include:orderCreationInclude});
   if(!order||receipt.tenantId!==request.tenantId||receipt.companyId!==request.companyId) throw authorityError("Confirmed order is not accessible",403);
   return order;
 }
@@ -301,7 +311,7 @@ export async function getOrderCreationRetry(actor:OrderActor,request:CreationReq
   return creationTransaction(async tx=>{
     await lockCreation(tx,request); await creationAuthority(tx,actor);
     const intent=await resolveIntent(tx,actor,request,false);
-    return intent ? readReceipt(tx,request,intent.id,ordinal) : null;
+    return intent ? readReceipt(tx,actor,request,intent.id,ordinal) : null;
   });
 }
 export async function acceptOrderImportIntent(actor:OrderActor,request:CreationRequest) {

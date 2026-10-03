@@ -56,6 +56,9 @@ const IMPORT_TEMPLATE_COLUMNS = [
   "originCountryCode",
   "destinationCountryCode",
   "transportMode",
+  "customerEntityId",
+  "senderAddressId",
+  "receiverAddressId",
 ] as const;
 
 type PreviewArgs = {
@@ -164,9 +167,10 @@ function mapCsvRowToCreateOrderDto(
   customerEntityId?: string | null,
 ) {
   const v = row.values;
+  if (customerEntityId && v.customerEntityId && customerEntityId.toLowerCase() !== v.customerEntityId.toLowerCase()) throw authorityError("Import customer selection conflicts with row reference",403);
 
   return {
-    customerEntityId: customerEntityId ?? undefined,
+    customerEntityId: customerEntityId ?? (v.customerEntityId || undefined),
     sender: {
       name: v.senderName || null,
       phone: v.senderPhone || null,
@@ -180,8 +184,8 @@ function mapCsvRowToCreateOrderDto(
       phone3: v.receiverPhone3 || null,
     },
     addresses: {
-      senderAddressId: null,
-      receiverAddressId: null,
+      senderAddressId: v.senderAddressId || null,
+      receiverAddressId: v.receiverAddressId || null,
       senderAddress:
         v.originCity || v.originCountryCode
           ? { city: v.originCity || null, country: v.originCountryCode || null }

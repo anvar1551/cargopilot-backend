@@ -1,3 +1,4 @@
+import { normalizeCreationReferences } from "./creation-reference-input";
 import { createHash } from "crypto";
 import type { CreateOrderRepoPayload } from "./orderCreate.mapper";
 import type { OrderActor } from "../shared";
@@ -41,6 +42,7 @@ function canonical(value: unknown, depth=0): string {
   throw authorityError("Unsupported creation intent value");
 }
 function normalizeRow(row: CreateOrderRepoPayload) {
+  row = { ...row, ...normalizeCreationReferences(row) };
   return Object.fromEntries(fields.map(key => {
     let value: unknown = row[key] ?? null;
     if (key==="senderAddressSnapshot" || key==="receiverAddressSnapshot") value = value == null ? null : Object.fromEntries(snapshotFields.map(k=>[k,(value as any)[k]??null]));
