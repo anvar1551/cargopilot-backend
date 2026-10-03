@@ -1,0 +1,11 @@
+# Finance outbox diagnostics
+
+Confirmed gap after analytics checkpoint8764bc9: the separate finance publisher persisted arbitrary Redis/DB exception messages, serialized them in loop logs, and the worker serialized fatal exception messages. Existing analytics diagnostics do not cover this module.
+
+Bounded plan: use fixed durable failure code and static loop/fatal diagnostic codes; omit configured consumer name from startup logs. Preserve current financial workflow/transaction/claim/retry behavior, no historical log/error rewrite, source or schema changes. Test actual publisher denial persistence and loop output plus shared fatal diagnostic formatter. Rollback retains redaction; never restore arbitrary exception serialization.
+
+Current enforcement: durable lastError FINANCE_OUTBOX_PUBLISH_FAILED; loop FINANCE_OUTBOX_LOOP_FAILED; fatal FINANCE_OUTBOX_WORKER_CRASHED. Exceptions, names, objects, endpoint/SQL values and consumer metadata are not passed to the formatter. Operator diagnosis uses fixed operation/time/code. This is not a generic finance logger audit.
+
+Remaining gaps: FinanceDomainEventOutbox still has legalEntity-only scope, no accepted typed tenant/company/aggregate capability/hash, claimedBy process-name rather than fencing token, automatic uncertain append retry and no verified exactly-once delivery. A successful append with zero completion update can still be reported published by the legacy implementation. These require the next durable publication slice; diagnostic containment does not restore safe ownership, recovery or approval. No new accounting/FX/approval policy or supported provider promise. Clients deferred.
+
+Validation: node node_modules/jest/bin/jest.js --runInBand --detectOpenHandles tests/finance/finance-outbox.publisher.test.ts passed6distinct cases (2existing publication/retry,4new static diagnostics/actual loop/persistence cases). node node_modules/typescript/bin/tsc --noEmit passed. Database/schema/financial transaction/claim predicates unchanged; prior native evidence reused only for unchanged paths, not claimed for new diagnostics. No new DB or transport run is warranted for fixed logging/constant storage text; real worker process startup was not executed. Fatal formatter tested directly and entrypoint reviewed. No dist/build emission, service access or dependencies.

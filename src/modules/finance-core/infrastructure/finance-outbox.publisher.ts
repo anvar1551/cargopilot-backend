@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import prisma from "../../../config/prismaClient";
+import { logFinanceOutboxFailure } from "./finance-outbox-diagnostics";
 import { getRedisClient, getRedisPrefix, withRedisTimeout } from "../../../config/redis";
 
 const STREAM_MAX_LENGTH = 100_000;
@@ -135,7 +136,7 @@ export async function processFinanceOutboxBatchOnce(options?: {
           claimedBy: null,
           attempts: { increment: 1 },
           nextAttemptAt: retryAt(attempts),
-          lastError: String(error?.message || "Unknown finance outbox error").slice(0, 1000),
+          lastError: "FINANCE_OUTBOX_PUBLISH_FAILED",
         },
       });
       failed += 1;
@@ -146,14 +147,14 @@ export async function processFinanceOutboxBatchOnce(options?: {
 }
 
 export async function startFinanceOutboxPublisher() {
-  log("info", "finance outbox worker started", { consumerId: CONSUMER_ID, batchSize: BATCH_SIZE });
+  log("info", "finance outbox worker started", { batchSize: BATCH_SIZE });
   while (true) {
     try {
       const result = await processFinanceOutboxBatchOnce();
       if (result.claimed === 0) await sleep(IDLE_MS);
       else if (result.failed > 0) log("warn", "finance outbox batch completed with failures", result);
     } catch (error: any) {
-      log("error", "finance outbox loop failed", { error: String(error?.message || error) });
+      logFinanceOutboxFailure("loop");
       await sleep(Math.max(IDLE_MS, 2000));
     }
   }

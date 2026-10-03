@@ -16,7 +16,8 @@ jest.mock("../../src/config/redis", () => ({
   withRedisTimeout: jest.fn(async (_name: string, operation: () => Promise<unknown>) => operation()),
 }));
 
-import { processFinanceOutboxBatchOnce } from "../../src/modules/finance-core/infrastructure/finance-outbox.publisher";
+import { logFinanceOutboxFailure } from "../../src/modules/finance-core/infrastructure/finance-outbox-diagnostics";
+import { startFinanceOutboxPublisher, processFinanceOutboxBatchOnce } from "../../src/modules/finance-core/infrastructure/finance-outbox.publisher";
 
 const event = {
   id: "00000000-0000-7000-8000-000000000001",
@@ -76,9 +77,24 @@ describe("finance outbox publisher", () => {
           claimedAt: null,
           claimedBy: null,
           nextAttemptAt: expect.any(Date),
-          lastError: "redis down",
+          lastError: "FINANCE_OUTBOX_PUBLISH_FAILED",
         }),
       }),
     );
   });
+});
+
+it.each(["loop", "crash"] as const)("%s diagnostics expose only static codes", phase => {
+  const output=jest.spyOn(console,"error").mockImplementation(()=>undefined);
+  try {logFinanceOutboxFailure(phase);expect(JSON.parse(String(output.mock.calls[0][0]))).toMatchObject({scope:"finance-outbox",error:{code:phase === "crash" ? "FINANCE_OUTBOX_WORKER_CRASHED" : "FINANCE_OUTBOX_LOOP_FAILED"}});expect(JSON.parse(String(output.mock.calls[0][0]))).not.toHaveProperty("meta");}
+  finally {output.mockRestore();}
+});
+it("loop exception and configurable consumer name never enter diagnostics",async()=>{
+  jest.useFakeTimers();const output=jest.spyOn(console,"error").mockImplementation(()=>undefined),info=jest.spyOn(console,"info").mockImplementation(()=>undefined);queryRaw.mockRejectedValueOnce(Error("synthetic-private-SQL-endpoint-credential"));
+  try {void startFinanceOutboxPublisher();for(let n=0;n<12;n++)await Promise.resolve();expect(output).toHaveBeenCalledTimes(1);expect(JSON.stringify(output.mock.calls)).not.toContain("synthetic-private");expect(JSON.stringify(info.mock.calls)).not.toContain("consumerId");expect(JSON.parse(String(output.mock.calls[0][0]))).toMatchObject({error:{code:"FINANCE_OUTBOX_LOOP_FAILED"}});expect(jest.getTimerCount()).toBe(1);}
+  finally {jest.clearAllTimers();jest.useRealTimers();output.mockRestore();info.mockRestore();}
+});
+it("publication exceptions cannot persist arbitrary message or name",async()=>{
+  queryRaw.mockResolvedValue([event]);xadd.mockRejectedValue({message:"synthetic-private-endpoint",name:"synthetic-private-token"});updateMany.mockResolvedValue({count:1});
+  expect(await processFinanceOutboxBatchOnce()).toMatchObject({published:0,failed:1});expect(JSON.stringify(updateMany.mock.calls)).not.toContain("synthetic-private");expect(updateMany.mock.calls[0][0].data.lastError).toBe("FINANCE_OUTBOX_PUBLISH_FAILED");
 });
