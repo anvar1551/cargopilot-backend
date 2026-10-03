@@ -70,6 +70,10 @@ const usersFastifyRoutes: FastifyPluginAsync<IdentityAccessRouteOptions> = async
 ) => {
   const reportRejection = (code: AuthRejectionCode) => recordAuthRejection(code,
     diagnostic => console.warn(JSON.stringify(diagnostic)));
+  fastify.addHook("onError", async (_request, _reply, error) => {
+    if (["FST_ERR_CTP_INVALID_JSON_BODY", "FST_ERR_CTP_EMPTY_JSON_BODY", "FST_ERR_CTP_INVALID_MEDIA_TYPE", "FST_ERR_CTP_BODY_TOO_LARGE"].includes(error.code ?? ""))
+      reportRejection("AUTH_INPUT_REJECTED");
+  });
   const observedAuthLimit = (policy: Parameters<typeof createAbuseRateLimitPreHandler>[0]) => {
     const hook = createAbuseRateLimitPreHandler(policy);
     return async (request: Parameters<typeof hook>[0], reply: Parameters<typeof hook>[1]) => {
@@ -202,7 +206,11 @@ const usersFastifyRoutes: FastifyPluginAsync<IdentityAccessRouteOptions> = async
       await revokeRefreshSession(dto.refreshToken);
       return reply.send({ ok: true });
     } catch (err: any) {
-      if (err instanceof z.ZodError) return reply.code(400).send(INVALID_SESSION_RESPONSE);
+      if (err instanceof z.ZodError) {
+        reportRejection("LOGOUT_INPUT_REJECTED");
+        return reply.code(400).send(INVALID_SESSION_RESPONSE);
+      }
+      reportRejection("LOGOUT_UNAVAILABLE");
       return reply.code(500).send({ error: "Logout failed" });
     }
   });
@@ -224,6 +232,7 @@ const usersFastifyRoutes: FastifyPluginAsync<IdentityAccessRouteOptions> = async
   }, async (request, reply) => {
     try {
       if (!request.user?.id) {
+        reportRejection("PASSWORD_CHANGE_REJECTED");
         return reply.code(401).send({ error: "Unauthorized" });
       }
       const dto = changePasswordSchema.parse(request.body ?? {});
@@ -234,10 +243,20 @@ const usersFastifyRoutes: FastifyPluginAsync<IdentityAccessRouteOptions> = async
       });
       return reply.send({ message: "Password updated successfully" });
     } catch (err: any) {
-      if (err instanceof z.ZodError) return reply.code(400).send({ error: "Invalid password change request" });
+      if (err instanceof z.ZodError) {
+        reportRejection("PASSWORD_CHANGE_REJECTED");
+        return reply.code(400).send({ error: "Invalid password change request" });
+      }
       const message = String(err?.message ?? "");
-      if (message === "Unauthorized") return reply.code(401).send({ error: "Unauthorized" });
-      if (message === "Current password is incorrect") return reply.code(400).send({ error: message });
+      if (message === "Unauthorized") {
+        reportRejection("PASSWORD_CHANGE_REJECTED");
+        return reply.code(401).send({ error: "Unauthorized" });
+      }
+      if (message === "Current password is incorrect") {
+        reportRejection("PASSWORD_CHANGE_REJECTED");
+        return reply.code(400).send({ error: message });
+      }
+      reportRejection("PASSWORD_CHANGE_UNAVAILABLE");
       return reply.code(500).send({ error: "Failed to update password" });
     }
   });
