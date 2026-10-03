@@ -16,15 +16,9 @@ function enabled(level: Level) {
   return levelWeight[level] >= levelWeight[analyticsConfig.logLevel];
 }
 
+/** Exception text, names and arbitrary objects can contain endpoints, SQL values or credentials. */
 function normalizeError(err: unknown) {
-  if (!err) return undefined;
-  if (err instanceof Error) {
-    return {
-      message: err.message,
-      name: err.name,
-    };
-  }
-  return { message: String(err) };
+  return err == null ? undefined : { code: "ANALYTICS_OPERATION_FAILED" };
 }
 
 function write(level: Level, message: string, meta?: Record<string, unknown>, error?: unknown) {

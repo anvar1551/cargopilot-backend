@@ -161,10 +161,7 @@ export async function startAnalyticsOutboxPublisher() {
             where: { id: row.id },
             data: {
               attempts: { increment: 1 },
-              lastError: String(err?.message || "Unknown outbox publish error").slice(
-                0,
-                1000,
-              ),
+              lastError: "ANALYTICS_OUTBOX_PUBLISH_FAILED",
             },
           });
         }
