@@ -1,12 +1,7 @@
-import { publishCargoPilotDomainEvent } from "../modules/analytics-core/realtime/analyticsEvents";
-
-export async function emitAnalyticsInvalidationForMutation(args: {
+/** Compatibility hook only. Covered reads are uncached; legacy global invalidation has no durable ownership. */
+export async function emitAnalyticsInvalidationForMutation(_args: {
   reason: "order_mutation" | "cash_mutation";
 }) {
-  await publishCargoPilotDomainEvent({
-    type: "manual_refresh",
-    tenantScope: "global",
-    entityId: null,
-    payload: { reason: args.reason },
-  });
+  // Do not create an event, contact Redis, infer a tenant or acknowledge downstream processing.
+  // Typed owned transactional outbox records are retained separately; rebuild/SSE remain contained.
 }
