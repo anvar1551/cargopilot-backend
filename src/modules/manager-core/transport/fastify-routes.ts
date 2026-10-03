@@ -1,7 +1,7 @@
 import { FastifyPluginAsync } from "fastify";
-import { getRedisHealthSnapshot } from "../../../config/redis";
+import { ZodError } from "zod";
+import { requireAnalyticsScope } from "../../analytics-core/application/analyticsScope";
 import { fastifyAuth } from "../../../modules/identity-access/transport/fastify-auth";
-import { getOpsMetricsSnapshot } from "../../../modules/observability-core/application/opsMetrics";
 import { getManagerOverviewPayload, listDriversPayload } from "../application/managerController";
 
 const managerFastifyRoutes: FastifyPluginAsync = async (fastify) => {
@@ -27,16 +27,14 @@ const managerFastifyRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get(
     "/ops/metrics",
     { preHandler: fastifyAuth({ permission: "shipment.view" }) },
-    async (_request, reply) => {
+    async (request, reply) => {
+      reply.header("Cache-Control", "no-store");
       try {
-        const snapshot = getOpsMetricsSnapshot();
-        const redis = await getRedisHealthSnapshot();
-        return reply.send({
-          ...snapshot,
-          redis,
-        });
-      } catch (err: any) {
-        return reply.code(500).send({ error: err?.message || "Failed to load ops metrics" });
+        if (!request.user) return reply.code(401).send({ error: "Authentication required" });
+        await requireAnalyticsScope(request.user);
+        return reply.code(409).send({ error: "Platform operational metrics are unavailable through tenant APIs", code: "PLATFORM_METRICS_UNAVAILABLE" });
+      } catch (error: any) {
+        return reply.code([401, 403].includes(error?.statusCode) ? error.statusCode : 500).send({ error: "Operational metrics unavailable" });
       }
     },
   );
@@ -45,23 +43,18 @@ const managerFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     "/drivers",
     { preHandler: fastifyAuth({ permission: "drivers.read" }) },
     async (request, reply) => {
+      reply.header("Cache-Control", "no-store");
       try {
+        if (!request.user) return reply.code(401).send({ error: "Authentication required" });
         const result = await listDriversPayload({
-          actor: {
-            id: request.user?.id ?? null,
-            roleCodes: Array.isArray(request.user?.roleCodes) ? request.user.roleCodes : [],
-            permissionCodes: Array.isArray(request.user?.permissionCodes)
-              ? request.user.permissionCodes
-              : [],
-            warehouseId: request.user?.warehouseId ?? null,
-          },
+          actor: request.user,
+          query: request.query,
         });
 
         reply.header("X-Drivers-Cache", result.cache);
-        reply.header("Cache-Control", `private, max-age=${Math.floor(result.ttlMs / 1000)}`);
         return reply.send(result.payload);
       } catch (err: any) {
-        return reply.code(500).send({ error: err?.message || "Failed to load drivers" });
+        return reply.code(err instanceof ZodError ? 400 : [401, 403, 404].includes(err?.statusCode) ? err.statusCode : 500).send({ error: "Selected driver directory unavailable" });
       }
     },
   );
