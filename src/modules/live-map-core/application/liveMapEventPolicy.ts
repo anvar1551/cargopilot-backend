@@ -1,35 +1,9 @@
-import type {
-  LiveMapActor,
-  LiveMapEvent,
-  LiveMapViewport,
-} from "./liveMap.types";
+import type { LiveMapActor, LiveMapEvent, LiveMapViewport } from "./liveMap.types";
 
-function isInViewport(lat: number, lng: number, viewport: LiveMapViewport) {
-  return (
-    lat >= viewport.minLat &&
-    lat <= viewport.maxLat &&
-    lng >= viewport.minLng &&
-    lng <= viewport.maxLng
-  );
-}
-
-export function canDeliverLiveMapEvent(args: {
-  actor: LiveMapActor;
-  event: LiveMapEvent;
-  viewport?: LiveMapViewport | null;
-}) {
-  const { actor, event, viewport } = args;
-  if (actor.permissionCodes.includes("drivers.manage")) return true;
-  if (!actor.warehouseId || event.type !== "driver_location_upsert") return false;
-
-  if (
-    event.payload.warehouseId &&
-    event.payload.warehouseId !== actor.warehouseId
-  ) {
-    return false;
-  }
-
-  return viewport
-    ? isInViewport(event.payload.lat, event.payload.lng, viewport)
-    : true;
+/** Current legacy events have no authoritative tenant/company execution context.
+ * Warehouse/user IDs or manager permissions cannot establish event ownership.
+ * Restore delivery only with server-owned evidence and fresh recipient checks.
+ */
+export function canDeliverLiveMapEvent(_args: {actor:LiveMapActor;event:LiveMapEvent;viewport?:LiveMapViewport|null}) {
+  return false;
 }

@@ -47,13 +47,13 @@ const warehouseActor: LiveMapActor = {
 };
 
 describe("live-map event policy", () => {
-  it("allows managers to discover drivers outside the current viewport", () => {
+  it("denies legacy unowned events even to managers", () => {
     expect(
       canDeliverLiveMapEvent({ actor: manager, event: locationEvent(), viewport: tashkentViewport }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
-  it("keeps warehouse streams constrained to their viewport", () => {
+  it("denies an unowned warehouse event outside its viewport", () => {
     expect(
       canDeliverLiveMapEvent({
         actor: warehouseActor,
@@ -63,7 +63,7 @@ describe("live-map event policy", () => {
     ).toBe(false);
   });
 
-  it("rejects another warehouse's driver event", () => {
+  it("denies an event naming another warehouse", () => {
     expect(
       canDeliverLiveMapEvent({
         actor: warehouseActor,
@@ -76,4 +76,9 @@ describe("live-map event policy", () => {
       }),
     ).toBe(false);
   });
+});
+
+
+it.each([null,warehouseActor.warehouseId])("denies unowned in-viewport events with claimed warehouse %s",warehouseId=>{
+  expect(canDeliverLiveMapEvent({actor:warehouseActor,event:locationEvent({warehouseId,lat:41.2995,lng:69.2401}),viewport:tashkentViewport})).toBe(false);
 });

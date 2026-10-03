@@ -1,3 +1,5 @@
+jest.mock("../../src/modules/live-map-core/infrastructure/liveMapStore",()=>({publishLiveMapEvent:jest.fn(),readDriverLocation:jest.fn(),readDriverIdsInViewport:jest.fn(),readDriverLocations:jest.fn(),readDriverLocationsInViewport:jest.fn(),readDriverPresences:jest.fn(),touchDriverPresenceHeartbeat:jest.fn(),upsertDriverLocation:jest.fn(),upsertDriverPresence:jest.fn()}));
+import {getLiveMapSnapshot} from "../../src/modules/live-map-core/application/liveMapService";
 jest.mock("../../src/config/prismaClient",()=>({__esModule:true,default:new Proxy({}, {get:(_t,name)=>{const value=(mockPrisma as any)[name];return typeof value==="function"?value.bind(mockPrisma):value;}})}));
 jest.mock("../../src/modules/orders-core/cash",()=>({buildInitialOrderCashCollections:jest.requireActual("../../src/modules/orders-core/cash/collection.shared").buildInitialOrderCashCollections}));
 jest.mock("../../src/modules/orders-core/sla",()=>({resolveOrderSlaSnapshot:jest.fn(async()=>({}))}));
@@ -39,7 +41,8 @@ beforeAll(async()=>{
   const client=await pool.connect();try{await client.query("BEGIN");await persistTenantDemoFixture(client,fixture);await client.query("COMMIT");}finally{await client.query("ROLLBACK");client.release();}
   mockPrisma=new PrismaClient({adapter:new PrismaPg({connectionString:url,max:4,connectionTimeoutMillis:3000,options:"-c statement_timeout=5000 -c lock_timeout=2000 -c idle_in_transaction_session_timeout=5000"})});
   const permission=await mockPrisma.permission.create({data:{key:"shipment.create",resource:"synthetic-order",action:"create"}});
-  for(const m of memberships){const role=await mockPrisma.role.create({data:{code:randomUUID(),name:"Synthetic creator",companyId:m.companyId}});roles.push(role.id);await mockPrisma.rolePermission.create({data:{roleId:role.id,permissionId:permission.id}});await mockPrisma.membershipRole.create({data:{membershipId:m.id,roleId:role.id}});await mockPrisma.membershipScope.create({data:{membershipId:m.id,scopeType:"company",scopeRefId:m.companyId}});}
+  const viewPermission=await mockPrisma.permission.create({data:{key:"shipment.view",resource:"synthetic-order",action:"view"}});
+  for(const m of memberships){const role=await mockPrisma.role.create({data:{code:randomUUID(),name:"Synthetic creator",companyId:m.companyId}});roles.push(role.id);await mockPrisma.rolePermission.create({data:{roleId:role.id,permissionId:viewPermission.id}});await mockPrisma.rolePermission.create({data:{roleId:role.id,permissionId:permission.id}});await mockPrisma.membershipRole.create({data:{membershipId:m.id,roleId:role.id}});await mockPrisma.membershipScope.create({data:{membershipId:m.id,scopeType:"company",scopeRefId:m.companyId}});}
   process.env.ORDER_LABEL_BLOCKING="true";
 });
 afterAll(async()=>{delete process.env.ORDER_LABEL_BLOCKING;await mockPrisma?.$disconnect();await pool.end();});
@@ -126,4 +129,16 @@ it("failed second import transaction preserves the first receipt and resumes onl
   try{await expect(importOrdersFromCsv(args)).rejects.toThrow("synthetic second row failure");const after=await state();expect(after.orders).toBe(before.orders+1);expect(after.receipts).toBe(before.receipts+1);expect(after.outbox).toBe(before.outbox+1);expect(after.counter).toBe((before.counter??0)+1);expect(enqueueOrderLabelJob).toHaveBeenCalledTimes(1);}
   finally{await pool.query('DROP TRIGGER cp_test_import_failure ON "OrderCreationReceipt"; DROP FUNCTION cp_test_import_failure();');}
   const result=await importOrdersFromCsv(args);expect(result).toMatchObject({count:2,replayedRows:1});const after=await state();expect(after.orders).toBe(before.orders+2);expect(after.receipts).toBe(before.receipts+2);expect(after.outbox).toBe(before.outbox+2);expect(enqueueOrderLabelJob).toHaveBeenCalledTimes(2);expect(seedInitialServiceChargePricing).toHaveBeenCalledTimes(2);
+});
+
+
+it("live-map PostgreSQL selected markers isolate companies/tenants and hide legacy tenant-null rows",async()=>{
+  await mockPrisma.order.create({data:{orderNumber:"synthetic-legacy-"+randomUUID(),customerId:memberships[0].userId,ownerOrgId:memberships[0].companyId,pickupAddress:"Synthetic legacy",dropoffAddress:"Synthetic legacy",status:"pending"}});
+  const before=await state();
+  for(const m of memberships){const snapshot=await getLiveMapSnapshot({actor:actor(m)});const expected=fixture.orders.filter(order=>order.tenantId===m.tenantId&&order.ownerOrgId===m.companyId).map(order=>order.id).sort();expect(snapshot.orders.map(order=>order.id).sort()).toEqual(expected);expect(snapshot).toMatchObject({drivers:[],warehouses:[],isPartial:true});expect(snapshot.orders.every(order=>order.assignedDriverId===null&&order.warehouseId===null&&order.region===null)).toBe(true);}
+  expect(await state()).toEqual(before);
+});
+it("live-map PostgreSQL fresh permission removal denies the next read without changing business state",async()=>{
+  await getLiveMapSnapshot({actor:actor()});const grant=await mockPrisma.rolePermission.findFirstOrThrow({where:{roleId:roles[0],permission:{key:"shipment.view"}}});const before=await state();await mockPrisma.rolePermission.delete({where:{id:grant.id}});
+  try{await expect(getLiveMapSnapshot({actor:actor()})).rejects.toMatchObject({statusCode:403});expect(await state()).toEqual(before);}finally{await mockPrisma.rolePermission.create({data:grant});}
 });

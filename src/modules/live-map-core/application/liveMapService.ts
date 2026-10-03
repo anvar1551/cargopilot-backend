@@ -1,6 +1,8 @@
 import { DriverType, MembershipStatus, OrderStatus, Prisma } from "@prisma/client";
 import { z } from "zod";
 import prisma from "../../../config/prismaClient";
+import { buildOrderScopeWhere } from "../../identity-access/access-control";
+import type { AppUser } from "../../../types/app-user";
 import {
   publishLiveMapEvent,
   readDriverLocation,
@@ -405,374 +407,31 @@ function resolveTargetDriverId(args: {
   return actor.userId;
 }
 
+/** Fresh selected order visibility; unowned telemetry must not enter this projection. */
 export async function getLiveMapSnapshot(args: {
-  actor: LiveMapActor;
+  actor: AppUser;
   viewport?: LiveMapViewport | null;
 }): Promise<ManagerLiveMapSnapshot> {
-  const actor = args.actor;
-  const viewport = args.viewport ?? null;
-  const maxOrders = readIntEnv("LIVE_MAP_SNAPSHOT_ORDER_LIMIT", 180, 20, 1000);
-  const maxDrivers = readIntEnv("LIVE_MAP_SNAPSHOT_DRIVER_LIMIT", 180, 20, 500);
-  const maxWarehouses = readIntEnv("LIVE_MAP_SNAPSHOT_WAREHOUSE_LIMIT", 250, 20, 1000);
-  const recentHours = readIntEnv("LIVE_MAP_RECENT_HOURS", 24, 1, 24 * 14);
-  const recentFrom = new Date(Date.now() - recentHours * 60 * 60 * 1000);
-
-  const warehouseScoped =
-    Boolean(actor.warehouseId) && !hasPermission(actor, "drivers.manage");
-  const warehouseScope: Prisma.OrderWhereInput =
-    warehouseScoped
-      ? actor.warehouseId
-        ? { currentWarehouseId: actor.warehouseId }
-        : { currentWarehouseId: "__warehouse_scope_no_access__" }
-      : {};
-  const driverScope: Prisma.UserWhereInput =
-    warehouseScoped
-      ? actor.warehouseId
-        ? {
-            OR: [
-              { driverType: DriverType.linehaul },
-              { warehouseId: actor.warehouseId },
-              { warehouseAccesses: { some: { warehouseId: actor.warehouseId } } },
-            ],
-          }
-        : { id: "__warehouse_scope_no_access__" }
-      : {};
-  const orderViewportWhere = getOrderViewportWhere(viewport);
-  const viewportDriverIds = viewport ? await readDriverIdsInViewport(viewport) : [];
-  const orderSelect = {
-    id: true,
-    orderNumber: true,
-    status: true,
-    pickupLat: true,
-    pickupLng: true,
-    dropoffLat: true,
-    dropoffLng: true,
-    assignedDriverId: true,
-    currentWarehouseId: true,
-    updatedAt: true,
-    currentWarehouse: {
-      select: {
-        region: true,
-      },
-    },
-  } satisfies Prisma.OrderSelect;
-
-  const [orderRowsRaw, warehouseRows] = await Promise.all([
-    prisma.order.findMany({
-      where: {
-        AND: [
-          warehouseScope,
-          orderViewportWhere,
-          {
-            OR: [
-              { status: { in: liveMapOrderStatuses } },
-              { updatedAt: { gte: recentFrom } },
-            ],
-          },
-        ],
-      },
-      select: orderSelect,
-      orderBy: {
-        updatedAt: "desc",
-      },
-      take: maxOrders,
-    }),
-    prisma.warehouse.findMany({
-      // This legacy actor lacks selected membership/tenant context. Contain its
-      // warehouse directory rather than treating user-global assignments as scope.
-      where: { id: { in: [] } },
-      select: {
-        id: true,
-        name: true,
-        location: true,
-        region: true,
-        type: true,
-        latitude: true,
-        longitude: true,
-      },
-      orderBy: {
-        createdAt: "desc",
-      },
-      take: maxWarehouses,
-    }),
-  ]);
-
-  const orderRows = orderRowsRaw
-    .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
-    .slice(0, maxOrders);
-  const orders = orderRows.map(mapOrderRecord);
-  const orderByAssignedDriver = new Map<string, ManagerLiveMapOrder>();
-  const warehouseSeed = new Map<string, { latSum: number; lngSum: number; count: number }>();
-  for (const order of orders) {
-    if (order.assignedDriverId && !orderByAssignedDriver.has(order.assignedDriverId)) {
-      orderByAssignedDriver.set(order.assignedDriverId, order);
-    }
-
-    if (order.pickupLat != null && order.pickupLng != null) {
-      if (order.warehouseId) {
-        const current = warehouseSeed.get(order.warehouseId) ?? {
-          latSum: 0,
-          lngSum: 0,
-          count: 0,
-        };
-        current.latSum += order.pickupLat;
-        current.lngSum += order.pickupLng;
-        current.count += 1;
-        warehouseSeed.set(order.warehouseId, current);
-      }
-    }
-  }
-
-  const warehouses: ManagerLiveMapWarehouse[] = warehouseRows.map((row) => {
-    const seed = warehouseSeed.get(row.id);
-    return {
-      id: row.id,
-      name: row.name,
-      location: row.location ?? null,
-      region: row.region ?? null,
-      type: row.type ?? null,
-      lat: toLatitude(row.latitude) ?? (seed && seed.count > 0 ? seed.latSum / seed.count : null),
-      lng: toLongitude(row.longitude) ?? (seed && seed.count > 0 ? seed.lngSum / seed.count : null),
-    };
-  });
-  const warehouseRegionById = new Map<string, string | null>(
-    warehouses.map((warehouse) => [warehouse.id, warehouse.region ?? null]),
-  );
-
-  const orderAssignedDriverIds = Array.from(
-    new Set(orderRows.map((order) => order.assignedDriverId).filter((id): id is string => Boolean(id))),
-  );
-  const prioritizedDriverIds = Array.from(new Set([...viewportDriverIds, ...orderAssignedDriverIds])).slice(
-    0,
-    maxDrivers,
-  );
-  const driverEligibilityWhere: Prisma.UserWhereInput = {
-    OR: [
-      { driverType: { not: null } },
-      {
-        AND: [
-          {
-            memberships: {
-              some: {
-                status: MembershipStatus.active,
-                roles: {
-                  some: {
-                    role: {
-                      rolePermissions: {
-                        some: {
-                          permission: {
-                            key: { in: [...DRIVER_PERMISSION_KEYS] },
-                          },
-                        },
-                      },
-                    },
-                  },
-                },
-              },
-            },
-          },
-          {
-            NOT: {
-              memberships: {
-                some: {
-                  status: MembershipStatus.active,
-                  roles: {
-                    some: {
-                      role: {
-                        rolePermissions: {
-                          some: {
-                            permission: {
-                              key: { in: [...DRIVER_EXCLUDED_PERMISSION_KEYS] },
-                            },
-                          },
-                        },
-                      },
-                    },
-                  },
-                },
-              },
-            },
-          },
-        ],
-      },
-    ],
-  };
-
-  let driverRows: Array<{
-    id: string;
-    name: string;
-    email: string;
-    createdAt: Date;
-    warehouseId: string | null;
-    driverType: DriverType | null;
-    liveLocationEnabled: boolean;
-    liveLocationUpdatedAt: Date;
-  }> = [];
-
-  if (!viewport) {
-    driverRows = await prisma.user.findMany({
-      where: {
-        AND: [driverEligibilityWhere, driverScope],
-      },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        createdAt: true,
-        warehouseId: true,
-        driverType: true,
-        liveLocationEnabled: true,
-        liveLocationUpdatedAt: true,
-      },
-      orderBy: {
-        createdAt: "desc",
-      },
-      take: maxDrivers,
-    });
-  } else {
-    const prioritizedDriverRows =
-      prioritizedDriverIds.length > 0
-        ? await prisma.user.findMany({
-            where: {
-              AND: [driverEligibilityWhere, driverScope, { id: { in: prioritizedDriverIds } }],
-            },
-            select: {
-              id: true,
-              name: true,
-              email: true,
-              createdAt: true,
-              warehouseId: true,
-              driverType: true,
-              liveLocationEnabled: true,
-              liveLocationUpdatedAt: true,
-            },
-            orderBy: {
-              createdAt: "desc",
-            },
-            take: maxDrivers,
-          })
-        : [];
-
-    if (prioritizedDriverRows.length > 0) {
-      driverRows = prioritizedDriverRows;
-    } else {
-      // Viewport fallback: include eligible drivers even before their first location ping
-      // so operators can still discover and monitor newly onboarded drivers.
-      driverRows = await prisma.user.findMany({
-        where: {
-          AND: [driverEligibilityWhere, driverScope],
-        },
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          createdAt: true,
-          warehouseId: true,
-          driverType: true,
-          liveLocationEnabled: true,
-          liveLocationUpdatedAt: true,
-        },
-        orderBy: {
-          createdAt: "desc",
-        },
-        take: maxDrivers,
-      });
-    }
-  }
-
-  const driverIds = driverRows.map((driver) => driver.id);
-  const [driverLocations, driverPresences] = await Promise.all([
-    readDriverLocations(driverIds),
-    readDriverPresences(driverIds),
-  ]);
-
-  const drivers: ManagerLiveMapDriver[] = driverRows.flatMap((driver) => {
-    const seed = hashString(driver.id);
-    const assignedOrder = orderByAssignedDriver.get(driver.id) ?? null;
-    const location = driverLocations.get(driver.id) ?? null;
-    const presence = driverPresences.get(driver.id) ?? null;
-
-    const warehouseIds = driver.warehouseId ? [driver.warehouseId] : [];
-
-    // In RBAC mode, telemetry-capable non-driver profiles are included only after
-    // they publish a real location (or are explicitly assigned), to avoid showing
-    // admin/operator users as pseudo-drivers.
-    if (driver.driverType == null && !location && !assignedOrder) {
-      return [];
-    }
-
-    const liveEnabled = presence?.enabled ?? driver.liveLocationEnabled ?? true;
-    const heartbeatAt = pickLatestIso([location?.recordedAt ?? null, presence?.heartbeatAt ?? null]);
-    const status = deriveDriverStatus(heartbeatAt, liveEnabled);
-    const lastSeenAt =
-      heartbeatAt ??
-      driver.liveLocationUpdatedAt?.toISOString() ??
-      driver.createdAt.toISOString();
-
-    return [{
-      id: driver.id,
-      name: driver.name,
-      email: driver.email,
-      warehouseId: driver.warehouseId ?? null,
-      liveEnabled,
-      lat: location?.lat ?? null,
-      lng: location?.lng ?? null,
-      headingDeg: Math.round(location?.headingDeg ?? (seed % 360)),
-      speedKmh: Math.round(location?.speedKmh ?? 0),
-      lastSeenAt,
-      status,
-      region:
-        (driver.warehouseId ? (warehouseRegionById.get(driver.warehouseId) ?? null) : null) ??
-        (warehouseIds.length > 0
-          ? (warehouseRegionById.get(warehouseIds[0]) ?? null)
-          : null),
-      warehouseIds,
-      driverType: driver.driverType === DriverType.linehaul ? "linehaul" : "local",
-      activeOrderId: location?.orderId ?? assignedOrder?.id ?? null,
-      seed,
-    }];
-  });
-
-  const viewportFilteredOrders = viewport
-    ? orders.filter((order) => {
-        const pickupVisible =
-          order.pickupLat != null &&
-          order.pickupLng != null &&
-          isInViewport(order.pickupLat, order.pickupLng, viewport);
-        const dropoffVisible =
-          order.dropoffLat != null &&
-          order.dropoffLng != null &&
-          isInViewport(order.dropoffLat, order.dropoffLng, viewport);
-        return pickupVisible || dropoffVisible;
-      })
-    : orders;
-
-  const viewportFilteredDrivers = viewport
-    ? drivers.filter(
-        (driver) =>
-          driver.lat == null ||
-          driver.lng == null ||
-          driverLocations.has(driver.id) ||
-          isInViewport(driver.lat, driver.lng, viewport),
-      )
-    : drivers;
-
-  const viewportFilteredWarehouses = viewport
-    ? warehouses.filter(
-        (warehouse) =>
-          warehouse.lat != null &&
-          warehouse.lng != null &&
-          isInViewport(warehouse.lat, warehouse.lng, viewport),
-      )
-    : warehouses;
-
-  return {
-    generatedAt: new Date().toISOString(),
-    drivers: viewportFilteredDrivers,
-    orders: viewportFilteredOrders,
-    warehouses: viewportFilteredWarehouses,
-    isMock: false,
-  };
+  const actor=args.actor;
+  if(!actor?.id || !actor.tenantId || !actor.companyId || !actor.companyMembershipId ||
+      !actor.tenantMembershipId || actor.membershipId!==actor.companyMembershipId)
+    throw Object.assign(new Error("Tenant-bound live map context required"),{statusCode:403});
+  const viewport=args.viewport??null;
+  if(viewport && (!Object.values(viewport).every(Number.isFinite) || viewport.minLat < -90 ||
+      viewport.maxLat>90 || viewport.minLng < -180 || viewport.maxLng>180 ||
+      viewport.minLat>=viewport.maxLat || viewport.minLng>=viewport.maxLng))
+    throw Object.assign(new Error("Invalid live map viewport"),{statusCode:400});
+  const scope=await buildOrderScopeWhere(actor,"shipment.view");
+  if(!scope || scope.id==="__no_access__") throw Object.assign(new Error("Order permission and scope required"),{statusCode:403});
+  const recentFrom=new Date(Date.now()-readIntEnv("LIVE_MAP_RECENT_HOURS",24,1,24*14)*60*60*1000);
+  const rows=await prisma.order.findMany({where:{AND:[
+    {tenantId:actor.tenantId},scope,getOrderViewportWhere(viewport),
+    {OR:[{status:{in:liveMapOrderStatuses}},{updatedAt:{gte:recentFrom}}]},
+  ]},select:{id:true,orderNumber:true,status:true,pickupLat:true,pickupLng:true,dropoffLat:true,dropoffLng:true},
+    orderBy:[{updatedAt:"desc"},{id:"desc"}],take:readIntEnv("LIVE_MAP_SNAPSHOT_ORDER_LIMIT",180,20,1000)});
+  return {generatedAt:new Date().toISOString(),
+    orders:rows.map(row=>mapOrderRecord({...row,assignedDriverId:null,currentWarehouseId:null,currentWarehouse:null})),
+    drivers:[],warehouses:[],isMock:false,isPartial:true};
 }
 
 export async function ingestDriverLocation(args: {
