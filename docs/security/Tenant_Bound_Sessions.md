@@ -97,14 +97,16 @@ remain tied to the selected `CompanyMembership`; tenant membership alone grants
 no access to other companies in the tenant. Refresh rotation uses a conditional
 single-row update and creates the replacement in one transaction, but concurrent
 reuse behavior has now been validated for the focused disposable PostgreSQL schedules recorded below. It still does not
-implement refresh-token-family reuse detection or revoke descendant sessions.
+implement automatic refresh-token-family compromise response. Recorded successor
+logout is now implemented as described in Refresh_Lineage_And_Logout.md.
 A membership-status change committed before the consuming UPDATE now prevents
 rotation: that statement repeats expiry, selected-company membership, tenant
 membership, tenant and company eligibility. This does not lock all membership
 rows or demonstrate revocation after the statement snapshot; subsequent HTTP
-authentication still reloads the membership. Concurrent logout and refresh can
-also leave the newly rotated session active because logout targets only the
-presented session identifier (now also bound to exact refresh purpose, hash, user and selected context; see Logout_Exact_Token_Binding.md).
+authentication still reloads the membership. Rotation and logout now serialize
+and retain same-context replacement links; logout reloads and revokes recorded
+successors. Unrecorded historical successors cannot be inferred. Existing access
+tokens and sockets are not immediately revoked by this refresh-session cleanup.
 
 ## Focused PostgreSQL rotation evidence (mission continuation)
 

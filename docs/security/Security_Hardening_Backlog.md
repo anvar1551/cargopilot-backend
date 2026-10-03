@@ -2,6 +2,42 @@
 
 ## Current state / resume
 
+Active continuation2026-10-03 from verified5c40ba6a3225539a25ca0a15ac0706cdce320859:
+refresh lineage/successor logout implemented and reviewed in12 intended files.
+See Refresh_Lineage_And_Logout.md. Existing pointer reused, same-context/depth
+compound FK and immutable/deferred acceptance protect new/changed records;
+atomic consume/create/link and bounded locked successor logout preserve exact
+possession. No historical successor inference or access/socket revocation claim.
+54 current unit/HTTP cases passed (18new chain,14affected logout,22affected
+session), plus4new depth cases passed with22unchanged skipped;58 distinct
+current unit cases,22new. Full99migration disposable run passed16native cases
+(8affected rotation,2affected logout,6new lineage), not16new cases. Owned
+cp-refresh-lineage-d7080b7b8f27 name/label/tmpfs/no bound-storage verified before
+removal and filtered absence confirmed. Offline Prisma WASM validation passed,
+required ignored node_modules generation only; selected SQL/Prisma manual
+comparison is not complete semantic equivalence. Final no-emit passed.
+
+Next ready executable task: password-change/session issuance concurrency. Current
+changeUserPassword updates password then revokes refresh sessions in separate
+operations; login checks a password before unconstrained session insertion.
+An old-credential login or prechecked refresh can escape password-change cleanup.
+Inspect exact sole HTTP consumer and current hash/session writers; plan a shared
+bounded server-derived user transaction lock, credential recheck and atomic
+password/revocation transaction while preserving selected context and lineage
+locks. Do not invent family compromise policy or claim access-token revocation.
+Family reuse response, distributed cache/socket revocation, dispatch/other
+workers, financial acceptance/recovery/history/RLS/infrastructure and deferred
+clients remain open. Continue under standing authorization after this checkpoint.
+
+Saved session-capacity handoff2026-10-03: actual HEAD 5c40ba6a3225539a25ca0a15ac0706cdce320859, branch cargopilot/erp-foundation, index empty. Three coherent exact-reviewed local checkpoints this continuation: ea781fe294482fbe2a85355877044df5adfd1cca (14analytics scope/query/HTTP/worker-consumer/evidence files),70e44e29a84d342f7f863f1249bd23fff449e62b (5manager alias/metrics files),5c40ba6a3225539a25ca0a15ac0706cdce320859 (6exact-token logout files). Staged manifests/whitespace/added-line credential scans passed. All implementation/tests/reports committed; after this note exact non-dist dirty scope is only this backlog. Preserved original dist scope untouched. No clients/private/dependency edits or push/deploy/existing-service access.
+
+Evidence: analytics56 distinct new unit/mock boundaries, manager13new alias/metrics boundaries, logout14new boundaries (83distinct new unit/mock cases);31affected order/session shared-helper cases and16affected analytics/overview HTTP reruns are reused/rerun evidence, not additional new cases. Native4distinct analytics cases at98chain passed initially and reran4after optional SLA lookup moved inside readonly transaction;2new exact-logout native cases at98chain. Six distinct new native cases, not10. Final no-emit passed for each coherent source slice; schema unchanged, no generation or redundant schema validation. Owned cached-image --pull never/loopback/synthetic/bounded tmpfs resources2419049feeb5,543625ce0639,0fae4d1c01d4 removed after exact name/run-label/storage/no volume-bind checks and filtered absence. No resource active at handoff. Redis/SSE/browser/device/storage/provider evidence remains unavailable.
+
+Exact next executable task: bounded refresh replacement lineage publication and successor logout. Read current UserRefreshSession.replacedBySessionId/replacedBySession (already exists, never written by current source/tests), refreshUserSession/createRefreshSession/issueAuthSession and logout binding; inspect only its committed migration targets/current token consumers. Do not invent a parallel lineage model or infer legacy successors from times/user/context. Write the additive plan: same-user/tenant/both-membership replacement constraints, atomic successor link publication in existing consume/create transaction, owned link traversal/row locking for concurrent logout-versus-refresh, bounded chain/cycle handling and explicit legacy-unlinked behavior. Preserve current exact hash/purpose/context revocation and consuming eligibility; do not redesign accounting, JWT business scopes or weaken tests. Combine relevant native concurrency/rollback/foreign-link schedules in one new owned full98-plus-new-migration run, reuse unchanged72/95-chain consumption and latest exact logout evidence where code remains unchanged. Family reuse detection, access-token/distributed cache/socket revocation and password-change rotation remain separate finite unfinished work, not claimed fixed by pointer publication. No implementation edits for this next slice started.
+
+Remaining required unavailable workflows: analytics SSE/background rebuild without durable execution authority; platform operational metrics pending explicit platform authority; full driver map/delegation/provisioning, financial issuance/pricing/FX/accounting/checker acceptance and uncertain provider/reconciliation/reacceptance/version-retirement recovery. Nullable/NOT VALID historical certification, RLS, Redis backpressure/lifecycle/native transport/infrastructure and deferred client contracts remain open. Containment is not restored functionality or production readiness. Dispatch/remaining worker paths and session lineage/revocation are still dependency-ready; stopping reason is session capacity, not mission completion/all-task blocker. Continue under standing authorization without asking for renewal or repeating completed audits/unchanged tests.
+
+
 Current continuation: manager alias checkpoint70e44e29a84d342f7f863f1249bd23fff449e62b committed5 exact-reviewed files after13new +16affected HTTP/consumer cases and no-emit. Exact-token logout gap now implemented/tested without touching refresh consumption: refresh-purpose/UUID identity/hash/selected ownership repeated at actual conditional update,14new mocked/unit +2distinct actual PostgreSQL cases at98chain. Owned0fae4d1c01d4 removed after name/run-label/storage ownership checks and filtered absence. Final no-emit passed;8unchanged native refresh cases skipped. See Logout_Exact_Token_Binding.md. Next source-confirmed technical dependency: existing UserRefreshSession.replacedBySessionId is never published by current refresh/source callers. Plan additive same-context replacement-link constraints and atomic pointer publication before bounded descendant logout; never guess historical chains from user/context/timestamps or duplicate existing lineage fields. Family reuse detection/distributed revocation and password-change rotation timing remain separate unfinished items.
 
 
@@ -381,7 +417,8 @@ This is the current mission checklist; older next-task/handoff prose below is hi
 | Order/import failure diagnostics and normalization privacy | implemented/tested within covered paths | Static warnings/support reasons and code-only or authoritative ID logs; shared HTTP server errors and invalidation sanitized.46creation/import +8shared-helper passing cases, plus1distinct mapper privacy case; reruns not added. Expected4xx caller messages outside covered preparation remain uncertified. |
 | Refresh single-use rotation | implemented/tested / timing verification outstanding | Atomic exact-selection consumption and replacement already had3native cases; correction repeats expiry/current tenant/company/membership graph at consuming UPDATE. See Tenant_Bound_Sessions.md and current evidence. No first-membership fallback or changed API. Revocation after statement snapshot remains a timing boundary. |
 | Exact-token logout | implemented/tested | Logout_Exact_Token_Binding.md:14mocked/unit +2native cases; purpose/hash/exact selected stored context at conditional revoke, no replacement or business effects. Does not revoke successors/access tokens/sockets. |
-| Refresh families / successor logout / distributed revocation | technically unfinished | Existing replacedBySessionId is not published by current rotation. Next same-context lineage constraints/atomic publication and concurrency-safe descendant logout; no timestamp inference. Reuse detection, password-change rotation and distributed invalidation remain separate; existing atomic consume is not missing. |
+| Recorded refresh lineage / successor logout | implemented/tested | Existing pointer now published atomically; same-context immutable depth/acceptance constraints and bounded locked logout.58 current unit/HTTP cases and16native cases at99chain,6new native. Historical unrecorded chains not inferred/certified. See Refresh_Lineage_And_Logout.md. |
+| Family compromise response / password-change rotation / distributed revocation | technically unfinished / policy and verification outstanding | Reuse rejects without issuing tokens; automatic compromise response needs distinction from benign concurrent retries. Password change and login/refresh concurrency remains ready technical work. Existing access tokens/cache/sockets do not gain immediate distributed revocation from successor logout. |
 | Nullable/historical constraint certification / provisioning | verification outstanding | NOT VALID and optional-null expansions are transitional. No existing DB mapping/reset/backfill authorized; synthetic fixture evidence does not certify existing rows. |
 | Redis lifecycle/backpressure, storage/native transport, CI/dependency/infrastructure/RLS | verification outstanding | Retain specific earlier release gates; isolated approved resource evidence only. No live AWS/services, dependency changes or RLS claims. |
 | Clients / real browser-device compatibility | verification outstanding | Deferred throughout backend phase; record API impacts, do not implement/rewrite clients. |

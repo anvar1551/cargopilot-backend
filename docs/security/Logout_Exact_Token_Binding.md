@@ -1,5 +1,10 @@
 # Exact refresh-token logout binding
 
+Current successor behavior supersedes this checkpoint's single-session limit:
+see Refresh_Lineage_And_Logout.md. Exact possession/purpose/context checks are
+retained, with atomic publication and bounded recorded-successor revocation.
+Historical evidence below remains evidence for the earlier exact-binding slice.
+
 Confirmed after70e44e2: logout/revokeRefreshSession verifies the refresh signing key but updates by sid alone, without purpose, token hash, user or selected ownership. Existing atomic refresh consumption does not protect this separate revocation entry point. The current signer can share access/refresh keys by configuration, making purpose validation material even though ordinary access tokens currently omit sid.
 
 Bounded plan: keep the existing non-enumerating logout ok response. Require verified refresh purpose and complete UUID identity/context; at the actual atomic update repeat sid, userId, hash, tenant, tenant membership, company membership and server membership company/user/tenant bridge. Do not require active membership for security cleanup: removing an exact token's authority remains safe after membership suspension. Do not grant access, return a receipt or query business content. No schema/client contract change and no family-wide semantics inferred. Wrong/legacy/unverifiable tokens remain no-op, no writes. Duplicate/concurrent exact revocation updates at most one row without replacing sessions.

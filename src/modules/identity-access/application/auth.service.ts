@@ -6,6 +6,7 @@ import { randomUUID, createHash } from "crypto";
 import { MembershipStatus, Prisma } from "@prisma/client";
 import prisma from "../../../config/prismaClient";
 import { RefreshTokenPayload } from "../types";
+import { lockRefreshContext, revokeRecordedSuccessors, MAX_REFRESH_ROTATION_DEPTH, refreshLineageTransactionOptions } from "./refresh-lineage";
 import { clearIdentityAccessCacheForUser, loadAccessSnapshot } from "../access-control";
 
 // Synthetic credential, never an account: missing users still incur a password check.
@@ -191,6 +192,7 @@ async function resolveStoredContext(userId: string, companyMembershipId: string)
 }
 
 async function createRefreshSession(args: TenantSessionContext & {
+  predecessor?: { id: string; depth: number };
   userAgent?: string | null;
   ipAddress?: string | null;
 }, tx: Prisma.TransactionClient | typeof prisma = prisma) {
@@ -212,16 +214,27 @@ async function createRefreshSession(args: TenantSessionContext & {
       tenantId: args.tenantId,
       tenantMembershipId: args.tenantMembershipId,
       companyMembershipId: args.companyMembershipId,
+      rotationDepth: args.predecessor ? args.predecessor.depth + 1 : 0,
+      replacementDepth: null, replacedBySessionId: null,
       tokenHash: hashToken(refreshToken),
       expiresAt: getTokenExpiryDate(refreshToken),
       userAgent: args.userAgent ?? null,
       ipAddress: args.ipAddress ?? null,
     },
   });
+  if (args.predecessor) {
+    const published = await tx.userRefreshSession.updateMany({ where: {
+      id: args.predecessor.id, userId: args.userId, tenantId: args.tenantId,
+      tenantMembershipId: args.tenantMembershipId, companyMembershipId: args.companyMembershipId,
+      rotationDepth: args.predecessor.depth, revokedAt: { not: null }, replacedBySessionId: null, replacementDepth: null,
+    }, data: { replacedBySessionId: sessionId, replacementDepth: args.predecessor.depth + 1 } });
+    if (published.count !== 1) throw new Error("Refresh lineage unavailable");
+  }
   return refreshToken;
 }
 
 async function issueAuthSession(args: TenantSessionContext & {
+  predecessor?: { id: string; depth: number };
   userAgent?: string | null;
   ipAddress?: string | null;
 }, tx: Prisma.TransactionClient | typeof prisma = prisma) {
@@ -347,7 +360,10 @@ export async function refreshUserSession(args: {
     requireFresh: true,
   });
   if (!access) throw new Error("Refresh membership is no longer eligible");
+  if (!Number.isInteger(session.rotationDepth) || session.rotationDepth < 0 || session.rotationDepth >= MAX_REFRESH_ROTATION_DEPTH ||
+      session.replacedBySessionId || session.replacementDepth !== null) throw new Error("Refresh session requires fresh login");
   const next = await prisma.$transaction(async (tx) => {
+    await lockRefreshContext(tx, context);
     const consumedAt = new Date();
     const revoked = await tx.userRefreshSession.updateMany({
       where: {
@@ -357,6 +373,7 @@ export async function refreshUserSession(args: {
         tenantMembershipId: context.tenantMembershipId,
         companyMembershipId: context.companyMembershipId,
         tokenHash: hashToken(rawToken),
+        rotationDepth: session.rotationDepth, replacedBySessionId: null, replacementDepth: null,
         revokedAt: null,
         expiresAt: { gt: consumedAt },
         tenant: { is: { id: context.tenantId, status: "active" } },
@@ -382,10 +399,11 @@ export async function refreshUserSession(args: {
     if (revoked.count !== 1) throw new Error("Refresh token revoked");
     return issueAuthSession({
       ...context,
+      predecessor: { id: session.id, depth: session.rotationDepth },
       userAgent: args.userAgent ?? null,
       ipAddress: args.ipAddress ?? null,
     }, tx);
-  });
+  }, refreshLineageTransactionOptions);
   return { ...next, user: access };
 }
 
@@ -402,20 +420,7 @@ export async function revokeRefreshSession(refreshToken: string) {
     decoded?.companyMembershipId, decoded?.companyId];
   if (decoded?.tokenType !== "refresh" || ids.some(value => typeof value !== "string" ||
       !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value))) return;
-  // Security cleanup may revoke this exact token even after membership suspension.
-  // The predicate binds possession to stored identity; it does not authorize business access.
-  await prisma.userRefreshSession.updateMany({
-    where: {
-      id: decoded.sid, userId: decoded.id, tokenHash: hashToken(token), revokedAt: null,
-      tenantId: decoded.tenantId, tenantMembershipId: decoded.tenantMembershipId,
-      companyMembershipId: decoded.companyMembershipId,
-      companyMembership: { is: {
-        id: decoded.companyMembershipId, userId: decoded.id, tenantId: decoded.tenantId,
-        tenantMembershipId: decoded.tenantMembershipId, companyId: decoded.companyId,
-      } },
-    },
-    data: { revokedAt: new Date() },
-  });
+  await prisma.$transaction(tx => revokeRecordedSuccessors(tx, decoded, hashToken(token)), refreshLineageTransactionOptions);
 }
 
 export async function changeUserPassword(args: {

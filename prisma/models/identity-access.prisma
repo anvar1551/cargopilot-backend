@@ -205,8 +205,10 @@ model UserRefreshSession {
   expiresAt DateTime
   revokedAt DateTime?
 
-  replacedBySessionId String?              @db.Uuid
-  replacedBySession   UserRefreshSession?  @relation("RefreshSessionReplacement", fields: [replacedBySessionId], references: [id])
+  rotationDepth       Int                 @default(0)
+  replacementDepth    Int?
+  replacedBySessionId String?              @unique(map: "UserRefreshSession_successor_key") @db.Uuid
+  replacedBySession   UserRefreshSession?  @relation("RefreshSessionReplacement", fields: [replacedBySessionId, userId, tenantId, tenantMembershipId, companyMembershipId, replacementDepth], references: [id, userId, tenantId, tenantMembershipId, companyMembershipId, rotationDepth], onDelete: Restrict, onUpdate: Restrict, map: "UserRefreshSession_lineage_fkey")
   replacedSessions    UserRefreshSession[] @relation("RefreshSessionReplacement")
 
   userAgent String?
@@ -219,5 +221,6 @@ model UserRefreshSession {
   @@index([tenantId, userId, revokedAt])
   @@index([companyMembershipId])
   @@index([expiresAt])
+  @@unique([id, userId, tenantId, tenantMembershipId, companyMembershipId, rotationDepth], map: "UserRefreshSession_lineage_identity_key")
   @@index([userId, revokedAt, expiresAt])
 }

@@ -81,6 +81,8 @@ function resetDatabaseMocks() {
     database.userRefreshSession.updateMany, database.$transaction,
     database.order.create, database.customerEntity.create].forEach((mock) => mock.mockReset());
   database.user.findUnique.mockResolvedValue({ id: ids.user, password: passwordHash });
+  database.$executeRaw.mockReset().mockResolvedValue(0);
+  database.$queryRaw.mockReset().mockResolvedValue([]);
   database.userRefreshSession.create.mockResolvedValue({});
   database.userRefreshSession.updateMany.mockResolvedValue({ count: 1 });
   database.$transaction.mockImplementation(async (run: (tx: typeof database) => Promise<unknown>) => run(database));
@@ -277,6 +279,19 @@ describe("tenant-bound authentication sessions (mocked database evidence)", () =
 
     await expect(refreshUserSession({ refreshToken: login.refreshToken }))
       .rejects.toThrow("no longer eligible");
+    expect(database.$transaction).not.toHaveBeenCalled();
+    expect(database.userRefreshSession.updateMany).not.toHaveBeenCalled();
+    expect(database.userRefreshSession.create).not.toHaveBeenCalled();
+  });
+
+  it.each([256, 257, -1, 0.5])("requires fresh login at invalid/exhausted rotation depth %s without consuming or creating", async rotationDepth => {
+    database.companyMembership.findMany.mockResolvedValue([membership()]);
+    database.companyMembership.findFirst.mockResolvedValue(membership());
+    const login = await loginUser({ email: "user@example.test", password: "correct-password" });
+    const saved = database.userRefreshSession.create.mock.calls[0][0].data;
+    database.userRefreshSession.create.mockClear();
+    database.userRefreshSession.findUnique.mockResolvedValue({ ...saved, rotationDepth, revokedAt: null, user: { id: ids.user } });
+    await expect(refreshUserSession({ refreshToken: login.refreshToken })).rejects.toThrow("fresh login");
     expect(database.$transaction).not.toHaveBeenCalled();
     expect(database.userRefreshSession.updateMany).not.toHaveBeenCalled();
     expect(database.userRefreshSession.create).not.toHaveBeenCalled();
