@@ -147,6 +147,7 @@ enum FinanceBankReconciliationTargetType {
 }
 
 model FinanceLegalEntity {
+  accountCreationReceipts FinanceAccountCreationReceipt[] @relation("AccountReceiptOwner")
   paymentReservations PaymentIntent[] @relation("PaymentReservationEntity")
   id        String       @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   tenantId  String?      @db.Uuid
@@ -260,6 +261,7 @@ model FinanceChartTemplateInstallation {
 }
 
 model FinanceAccount {
+  creationReceipt FinanceAccountCreationReceipt? @relation("AccountReceiptResult")
   publications FinanceDomainEventOutbox[] @relation("FinancePublicationAccount")
   id            String               @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   legalEntityId String               @db.Uuid
@@ -291,6 +293,26 @@ model FinanceAccount {
   @@unique([legalEntityId, id], map: "FinanceAccount_entity_identity_key")
   @@index([legalEntityId, type, status])
   @@index([parentId])
+}
+
+model FinanceAccountCreationReceipt {
+  operationId String @id @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  legalEntityId String @db.Uuid
+  actorUserId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  companyMembershipId String @db.Uuid
+  requestHash String @db.VarChar(64)
+  accountId String @db.Uuid
+  resultJson Json
+  createdAt DateTime @default(now())
+  owner FinanceLegalEntity @relation("AccountReceiptOwner", fields: [legalEntityId, tenantId, companyId], references: [id, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "AccountReceipt_owner_fkey")
+  membership CompanyMembership @relation("AccountReceiptCompany", fields: [companyMembershipId, actorUserId, tenantId, companyId], references: [id, userId, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "AccountReceipt_company_membership_fkey")
+  tenantMembership TenantMembership @relation("AccountReceiptTenant", fields: [tenantMembershipId, actorUserId, tenantId], references: [id, userId, tenantId], onDelete: Restrict, onUpdate: Restrict, map: "AccountReceipt_tenant_membership_fkey")
+  account FinanceAccount @relation("AccountReceiptResult", fields: [legalEntityId, accountId], references: [legalEntityId, id], onDelete: Restrict, onUpdate: Restrict, map: "AccountReceipt_account_fkey")
+  @@unique([legalEntityId, accountId])
+  @@index([tenantId, companyId, createdAt])
 }
 
 model FinanceFiscalPeriod {

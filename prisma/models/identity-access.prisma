@@ -68,6 +68,7 @@ model RolePermission {
 }
 
 model CompanyMembership {
+  accountCreationReceipts FinanceAccountCreationReceipt[] @relation("AccountReceiptCompany")
   credentialSecurityEvents CredentialSecurityEvent[] @relation("CredentialAuditCompany")
   credentialSecurityBridges CredentialSecurityEvent[] @relation("CredentialAuditBridge")
   orderCreationIntents OrderCreationIntent[] @relation("OrderCreationCompany")

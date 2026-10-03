@@ -48,6 +48,7 @@ export const configureLegalEntitySchema = z.object({
 }).strict();
 
 export const createAccountSchema = z.object({
+  operationId: uuid,
   code: z.string().trim().min(1).max(50),
   name: z.string().trim().min(1).max(200),
   type: z.enum(["asset", "liability", "equity", "revenue", "expense"]),
@@ -57,7 +58,7 @@ export const createAccountSchema = z.object({
   currency: z.enum(FINANCE_CURRENCIES).nullable().optional(),
   description: z.string().trim().max(1000).nullable().optional(),
   metadata: metadata.optional(),
-});
+}).strict();
 
 export const bootstrapChartSchema = z.object({
   templateCode: z.literal("logistics_standard"),

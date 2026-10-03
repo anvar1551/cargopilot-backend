@@ -16,6 +16,7 @@ export type ConfigureLegalEntityCommand = {
 };
 
 export type CreateAccountCommand = {
+  operationId: string;
   companyId: string;
   actorUserId: string;
   code: string;

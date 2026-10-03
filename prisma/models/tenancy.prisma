@@ -34,6 +34,7 @@ model Tenant {
 }
 
 model TenantMembership {
+  accountCreationReceipts FinanceAccountCreationReceipt[] @relation("AccountReceiptTenant")
   draftDocuments FinanceDocument[] @relation("DraftTenant")
   id       String           @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   tenantId String           @db.Uuid

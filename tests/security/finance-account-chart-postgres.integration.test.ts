@@ -14,7 +14,7 @@ const target=new URL(url);if(target.hostname!=="127.0.0.1"||target.username!=="c
 const pool=new Pool({connectionString:url,max:2,connectionTimeoutMillis:3000,idleTimeoutMillis:1000,options:"-c statement_timeout=5000"});let mockPrisma:PrismaClient;
 const actor=(companyId:string,membershipId:string):any=>({id:ids.users.multiTenant,tenantId:ids.tenants.transAsia,tenantMembershipId:ids.tenantMemberships.multiTransAsia,companyId,companyMembershipId:membershipId,membershipId});
 const uz=actor(ids.organizations.transAsiaUz,ids.companyMemberships.multiTransAsiaUz),de=actor(ids.organizations.transAsiaDe,ids.companyMemberships.multiTransAsiaDe);
-const intent=(who:any)=>({companyId:who.companyId,actorUserId:who.id,code:randomUUID(),name:"SYNTHETIC ONLY",type:"asset" as const,allowPosting:false,isControlAccount:false});
+const intent=(who:any)=>({operationId:randomUUID(),companyId:who.companyId,actorUserId:who.id,code:randomUUID(),name:"SYNTHETIC ONLY",type:"asset" as const,allowPosting:false,isControlAccount:false});
 const snapshot=async()=>({accounts:await mockPrisma.financeAccount.findMany({orderBy:{id:"asc"}}),installations:await mockPrisma.financeChartTemplateInstallation.findMany({orderBy:{id:"asc"}}),audit:await mockPrisma.financeAuditEvent.findMany({orderBy:{id:"asc"}}),outbox:await mockPrisma.financeDomainEventOutbox.findMany({orderBy:{id:"asc"}}),journals:await mockPrisma.financeJournalEntry.findMany({orderBy:{id:"asc"}})});
 beforeAll(async()=>{
  const proof=await pool.query('SELECT "runId" FROM "_CPDisposableRun"');if(proof.rows.length!==1||proof.rows[0].runId!==runId)throw Error("Disposable storage ownership mismatch");

@@ -1,4 +1,5 @@
 import { enqueueAcceptedFinancePublication } from "./finance-outbox-authority";
+import { normalizeAccountIntent, accountIntentHash, projectCreatedAccount } from "../domain/account-intent";
 import { requireChartTemplateSource, assertChartInstallationSource } from "../domain/chart-template-authority";
 import { listOwnedSourceEvents } from "./source-event-read";
 import { listOwnedPostingRules, getOwnedPostingRule } from "./posting-rule-read";
@@ -382,9 +383,34 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
 
   async createAccount(command: CreateAccountCommand, actor: AppUser) {
     const context = await requireAccountMutation(actor, command);
+    const intent = normalizeAccountIntent(command);
+    command = { ...intent, metadata: intent.metadata ?? undefined };
     return prisma.$transaction(async (tx) => {
       const entity = await requireLockedAccountEntity(tx, actor, command, context);
       if (entity.tenantId !== context.tenantId) throw financeConflict("Account tenant context rejected", "FINANCE_ACCOUNT_OWNERSHIP_REJECTED");
+      const requestHash = accountIntentHash(intent, context, entity.id);
+      // Entity serialization is shared with chart installation. This second lock binds a UUID even across entities.
+      await tx.$queryRaw`SELECT true AS locked FROM (SELECT pg_advisory_xact_lock(hashtextextended(${intent.operationId}, 41016))) AS account_intent_lock`;
+      const current = await requireAccountMutation(actor, command);
+      if (current.userId !== context.userId || current.tenantId !== context.tenantId || current.companyId !== context.companyId
+        || current.companyMembershipId !== context.companyMembershipId || current.tenantMembershipId !== context.tenantMembershipId)
+        throw financeConflict("Account context changed", "FINANCE_ACCOUNT_OWNERSHIP_REJECTED");
+      const receipt = await tx.financeAccountCreationReceipt.findUnique({ where: { operationId: intent.operationId } });
+      if (receipt) {
+        if (receipt.requestHash !== requestHash || receipt.tenantId !== context.tenantId || receipt.companyId !== context.companyId
+          || receipt.legalEntityId !== entity.id || receipt.actorUserId !== context.userId || receipt.companyMembershipId !== context.companyMembershipId
+          || receipt.tenantMembershipId !== context.tenantMembershipId)
+          throw financeConflict("Account operation identity conflicts", "FINANCE_ACCOUNT_IDEMPOTENCY_CONFLICT");
+        const account = await tx.financeAccount.findFirst({ where: { id: receipt.accountId, legalEntityId: entity.id }, select: { id: true } });
+        const result = receipt.resultJson;
+        if (!account || !result || typeof result !== "object" || Array.isArray(result)
+          || result.id !== receipt.accountId || result.legalEntityId !== entity.id)
+          throw financeConflict("Account receipt result is unavailable", "FINANCE_ACCOUNT_RECEIPT_INCONSISTENT");
+        if (result.parentId != null && (typeof result.parentId !== "string" || !await tx.financeAccount.findFirst({
+          where: { id: result.parentId, legalEntityId: entity.id }, select: { id: true },
+        }))) throw financeConflict("Original account parent is no longer owned", "FINANCE_ACCOUNT_RECEIPT_INCONSISTENT");
+        return projectCreatedAccount(result);
+      }
       if (command.parentId) {
         const parent = await tx.financeAccount.findFirst({
           where: { id: command.parentId, legalEntityId: entity.id },
@@ -424,7 +450,12 @@ export class PrismaFinanceRepository implements FinanceRepositoryPort {
           payload: { companyId: command.companyId, code: account.code, type: account.type },
         }),
       ]);
-      return account;
+      const result = projectCreatedAccount(account);
+      await tx.financeAccountCreationReceipt.create({ data: { operationId: intent.operationId, requestHash,
+        tenantId: context.tenantId, companyId: context.companyId, legalEntityId: entity.id, actorUserId: context.userId,
+        companyMembershipId: context.companyMembershipId, tenantMembershipId: context.tenantMembershipId,
+        accountId: account.id, resultJson: result as Prisma.InputJsonValue } });
+      return result;
     }, accountAuthoringTransactionOptions);
   }
 
