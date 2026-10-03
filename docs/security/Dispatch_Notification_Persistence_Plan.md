@@ -1,6 +1,8 @@
 # Atomic dispatch notification persistence plan
 
-Status: **Planned; unimplemented.** This document does not describe an enforced or validated implementation.
+Status: **Implemented within the bounded covered dispatch paths.** See [Atomic_Dispatch_Notifications.md](Atomic_Dispatch_Notifications.md) for current behavior, evidence, rollout and limitations. Realtime transport remains best-effort.
+
+The original plan below is historical; its baseline “no implementation started” statement is superseded by the implementation report.
 
 Baseline f9ddd46fb81e74005a4bfbbc34124b79182c1e8b; no implementation started. Confirmed bounded gap: operations/order-status.ts commits current-authorized conditional Order changes, Tracking and accepted analytics facts together. operations/tasks.ts then fire-and-forgets emitDriverNotification and suppresses failure. realtimeHub.ts separately resolves current owner-company/assigned-driver context and calls createUserNotification. The latter's populated tenant/company/order/recipient compound constraints prevent foreign links, but its separate create can be lost after a crash or duplicated on repeated emission. Existing notification reads/realtime revocation are not atomic source acceptance. Analytics payload contains assignment information but its generic order-event capability is not a dedicated notification authority; do not treat payload or free-form Tracking.note as permission.
 

@@ -1,4 +1,5 @@
 import prisma from "../../../config/prismaClient";
+import { persistDispatchNotification, withDispatchNotifications } from "../domain/dispatch-notification";
 import { enqueueCargoPilotDomainEventsTx } from "../../analytics-core/infrastructure/analyticsOutbox";
 import {
   CashCollectionKind,
@@ -389,6 +390,7 @@ export async function assignDriversBulk(args: {
     const warehouseId = resolveWarehouseId(actor,args.warehouseId);
     await requireWarehouseReference(actor,warehouseId,tx);
     const changed: string[] = [];
+    const notificationIds: string[] = [];
     for (const order of orders) {
       const status = type === "pickup" ? OrderStatus.assigned : order.status;
       if (order.assignedDriverId === driverId && order.status === status) continue;
@@ -396,13 +398,15 @@ export async function assignDriversBulk(args: {
         data:{assignedDriverId:driverId,status,updatedAt:nextDispatchTime(order.updatedAt)}});
       if (result.count !== 1) throw orderError("Order is no longer in scope",409);
       changed.push(order.id);
-      await tx.tracking.create({data:{orderId:order.id,status:type === "pickup" ? status : null,reasonCode:null,
+      const tracking = await tx.tracking.create({data:{orderId:order.id,status:type === "pickup" ? status : null,reasonCode:null,
         note:args.note ?? `Driver assigned (${type}) to ${driverId}`,region:args.region ?? null,warehouseId,
         actorId:actor.id,actorRole:null,parcelId:null}});
+      const notificationId = await persistDispatchNotification(tx, tracking.id, "assignment");
+      if (notificationId) notificationIds.push(notificationId);
     }
     if (changed.length) await enqueueCargoPilotDomainEventsTx(tx,changed.map(id=>({type:type === "pickup" ? "order_status_changed" : "manual_refresh",
       tenantScope:resolveActorTenantScope(actor),entityId:id,payload:{source:"assignDriversBulk",assignmentType:type,driverId,actorId:actor.id,actorRole:null}})));
-    return withDispatchChanges(await loadAssignedOrdersForResponse(orderIds,authority,args.includeFull,tx),changed);
+    return withDispatchNotifications(withDispatchChanges(await loadAssignedOrdersForResponse(orderIds,authority,args.includeFull,tx),changed), notificationIds);
   },dispatchTransactionOptions);
 }
 
@@ -438,6 +442,7 @@ export async function updateOrdersStatusBulk(args: {
     const warehouseType = await resolveActorWarehouseType(actor,tx);
     if (warehouseType && !WAREHOUSE_ALLOWED_MANUAL_STATUSES[warehouseType].has(args.status)) throw orderError("Warehouse target status forbidden",403);
     // The warehouse target allowlist does not establish a manual transition matrix.
+    const notificationIds: string[] = [];
     for (const order of orders) {
       assertDriverStatusTransition(actor,order,args.status,args.reasonCode);
       if (args.warehouseId && args.warehouseId !== order.currentWarehouseId) throw orderError("Warehouse does not belong to current order state",403);
@@ -446,12 +451,14 @@ export async function updateOrdersStatusBulk(args: {
       const result = await tx.order.updateMany({where:{AND:[dispatchOrderWhere(authority,[order.id]),{status:order.status,assignedDriverId:actor.id,updatedAt:order.updatedAt}]},
         data:{status:args.status,updatedAt:nextDispatchTime(order.updatedAt),...(args.status === OrderStatus.exception ? {lastExceptionReason:args.reasonCode ?? null,lastExceptionAt:new Date()} : {})}});
       if (result.count !== 1) throw orderError("Order is no longer in scope",409);
-      await tx.tracking.create({data:{orderId:order.id,status:args.status,reasonCode:args.reasonCode ?? null,note:args.note ?? null,region:args.region ?? null,
+      const tracking = await tx.tracking.create({data:{orderId:order.id,status:args.status,reasonCode:args.reasonCode ?? null,note:args.note ?? null,region:args.region ?? null,
         warehouseId:order.currentWarehouseId,actorId:actor.id,actorRole:null,parcelId:null}});
+      const notificationId = await persistDispatchNotification(tx, tracking.id, "status");
+      if (notificationId) notificationIds.push(notificationId);
     }
     await enqueueCargoPilotDomainEventsTx(tx,orders.map(order=>({type:"order_status_changed",tenantScope:resolveActorTenantScope(actor),entityId:order.id,
       payload:{source:"updateOrdersStatusBulk",status:args.status,reasonCode:args.reasonCode ?? null,actorId:actor.id,actorRole:null}})));
-    return withDispatchChanges(await loadAssignedOrdersForResponse(orderIds,authority,args.includeFull,tx),orderIds);
+    return withDispatchNotifications(withDispatchChanges(await loadAssignedOrdersForResponse(orderIds,authority,args.includeFull,tx),orderIds), notificationIds);
   },dispatchTransactionOptions);
 }
 
@@ -506,7 +513,7 @@ export async function updateDriverOrderStatus(args: {
       throw orderError("Order is no longer in scope", 409);
     }
 
-    await tx.tracking.create({
+    const tracking = await tx.tracking.create({
       data: {
         orderId,
         status,
@@ -520,6 +527,7 @@ export async function updateDriverOrderStatus(args: {
       },
     });
 
+    const notificationId = await persistDispatchNotification(tx, tracking.id, "status");
     await enqueueCargoPilotDomainEventsTx(tx, [
       {
         type: "order_status_changed",
@@ -546,6 +554,6 @@ export async function updateDriverOrderStatus(args: {
     },
   });
     if (!response) throw orderError("Order response unavailable",409);
-    return response;
+    return withDispatchNotifications(response, notificationId ? [notificationId] : []);
   }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, maxWait: 2000, timeout: 10000 });
 }

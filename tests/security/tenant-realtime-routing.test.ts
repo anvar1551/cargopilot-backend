@@ -29,7 +29,7 @@ jest.mock("../../src/modules/identity-access/application/access-session", () => 
 import { database } from "./fixtures";
 import { clearIdentityAccessCacheForUser } from "../../src/modules/identity-access/access-control";
 import {
-  emitDriverNotification,
+  emitPersistedDriverNotification,
   emitDriverOrderUpdate,
   emitDriverUnreadCount,
   initRealtimeHub,
@@ -166,6 +166,8 @@ describe("tenant-bound realtime routing (mocked emitter evidence)", () => {
       ["c",ids.tenantA,ids.companySameTenant,ids.membershipSameTenant]]) {
       socketIoMock.__mockServer.sockets.sockets.set(key, trackedSocket({ data: { user: { id:ids.user,tenantId,companyId,companyMembershipId } } }));
     }
+    database.userNotification.findUnique.mockReset().mockResolvedValue({id:"70000000-0000-4000-8000-000000000001",dispatchTrackingId:"tracking-a",userId:ids.user,tenantId:ids.tenantA,companyId:ids.companyA,companyMembershipId:ids.membershipA,type:"order",title:"Order updated",body:"Current status: Assigned",createdAt:new Date("2026-09-13T12:00:00.000Z"),orderId:ids.orderA});
+    database.tracking.findFirst.mockReset().mockResolvedValue({id:"tracking-a"});
     database.order.findUnique.mockReset();
     database.companyMembership.findUnique.mockReset();
     database.companyMembership.findFirst.mockReset();
@@ -225,12 +227,7 @@ describe("tenant-bound realtime routing (mocked emitter evidence)", () => {
       assignedDriverId: ids.user,
     });
 
-    await emitDriverNotification(ids.user, {
-      type: "order",
-      orderId: ids.orderA,
-      title: "Order updated",
-      body: "Current status: Assigned",
-    });
+    await emitPersistedDriverNotification("70000000-0000-4000-8000-000000000001");
 
     expect(socketIoMock.__deliveries).toHaveLength(0);
     expect(database.companyMembership.findUnique).not.toHaveBeenCalled();
@@ -310,14 +307,9 @@ describe("tenant-bound realtime routing (mocked emitter evidence)", () => {
     prepareOwnedOrder({ tenantId: ids.tenantA, tenantMembershipId: ids.tenantMembershipA,
       membershipId: ids.membershipA, companyId: ids.companyA, orderId: ids.orderA });
 
-    await emitDriverNotification(ids.user, {
-      type: "order",
-      orderId: ids.orderA,
-      title: "Order updated",
-      body: "Current status: Assigned",
-    });
+    await emitPersistedDriverNotification("70000000-0000-4000-8000-000000000001");
 
-    expect(createUserNotification).toHaveBeenCalledTimes(1);
+    expect(createUserNotification).not.toHaveBeenCalled();
     expect(socketIoMock.__deliveries).toEqual([expect.objectContaining({
       room: room(ids.tenantA, ids.membershipA, ids.companyA),
       event: "driver:notification",
@@ -371,5 +363,19 @@ describe("tenant-bound realtime routing (mocked emitter evidence)", () => {
     prepareOwnedOrder({tenantId:ids.tenantA,tenantMembershipId:ids.tenantMembershipA,membershipId:ids.membershipA,companyId:ids.companyA,orderId:ids.orderA});
     (hasLiveAccessSession as jest.Mock).mockRejectedValue(Error("synthetic read deadline"));
     await emitDriverOrderUpdate(ids.user,{orderId:ids.orderA,status:"assigned",updatedAt:new Date().toISOString()});expect(socketIoMock.__deliveries).toHaveLength(0);expect(socketIoMock.__mockServer.to).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing", "legacy", "foreign-company", "wrong-child"])("persisted notification %s produces no delivery or creation",async kind=>{
+    prepareOwnedOrder({tenantId:ids.tenantA,tenantMembershipId:ids.tenantMembershipA,membershipId:ids.membershipA,companyId:ids.companyA,orderId:ids.orderA});
+    if(kind==="missing")database.userNotification.findUnique.mockResolvedValue(null);
+    if(kind==="legacy")database.userNotification.findUnique.mockResolvedValue({id:"notification",dispatchTrackingId:null});
+    if(kind==="foreign-company"){const original=await database.userNotification.findUnique({});database.userNotification.findUnique.mockResolvedValue({...original,companyId:ids.companySameTenant});}
+    if(kind==="wrong-child")database.tracking.findFirst.mockResolvedValue(null);
+    await emitPersistedDriverNotification("70000000-0000-4000-8000-000000000001");expect(socketIoMock.__deliveries).toHaveLength(0);expect(createUserNotification).not.toHaveBeenCalled();
+  });
+  it("removed recipient permission prevents delivery of a persisted notification",async()=>{
+    prepareOwnedOrder({tenantId:ids.tenantA,tenantMembershipId:ids.tenantMembershipA,membershipId:ids.membershipA,companyId:ids.companyA,orderId:ids.orderA});
+    const read=database.companyMembership.findFirst.getMockImplementation()!;database.companyMembership.findFirst.mockImplementation(async(query:any)=>{const row=await read(query);return row?{...row,roles:[]}:row;});
+    await emitPersistedDriverNotification("70000000-0000-4000-8000-000000000001");expect(socketIoMock.__deliveries).toHaveLength(0);expect(createUserNotification).not.toHaveBeenCalled();
   });
 });

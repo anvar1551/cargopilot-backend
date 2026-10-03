@@ -19,7 +19,7 @@ beforeEach(() => {
   db.user.findUnique.mockResolvedValue({ id: summary.assignedDriverId, driverType: "local" });
   db.companyMembership.findFirst.mockResolvedValue({ id: "synthetic-driver-membership",roles:[{role:{companyId:actor.companyId,isSystem:false,rolePermissions:[{permission:{key:"drivers.telemetry"}}]}}] });
   db.order.updateMany.mockResolvedValue({ count: 1 });
-  db.tracking.createMany.mockResolvedValue({ count: 1 }); db.tracking.create.mockResolvedValue({});
+  db.tracking.createMany.mockResolvedValue({ count: 1 }); db.tracking.create.mockResolvedValue({id:"tracking-a"}); db.tracking.findUnique.mockResolvedValue(null);
   db.order.findMany.mockReset(); db.order.findFirst.mockReset();
 });
 let insideTransaction = false;

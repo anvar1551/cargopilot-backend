@@ -1,7 +1,8 @@
+import { committedDispatchNotifications } from "../domain/dispatch-notification";
 import { committedDispatchChanges } from "../domain/dispatch-batch";
 import { OrderStatus, ReasonCode } from "@prisma/client";
 import {
-  emitDriverNotification,
+  emitPersistedDriverNotification,
   emitDriverOrderUpdate,
 } from "../../../modules/realtime-core/realtimeHub";
 import {
@@ -51,13 +52,6 @@ type UpdateDriverStatusInput = {
   };
 };
 
-function humanizeStatus(status: string) {
-  return String(status ?? "")
-    .trim()
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (char) => char.toUpperCase());
-}
-
 export async function assignTasksBulkForActor(input: AssignTaskInput) {
   const { actor, body, includeFull } = input;
   const { driverId, type, warehouseId, note, region } = body;
@@ -95,13 +89,9 @@ export async function assignTasksBulkForActor(input: AssignTaskInput) {
       updatedAt: new Date(order.updatedAt).toISOString(),
     }).catch(() => undefined);
 
-    void emitDriverNotification(assignedDriverId, {
-      type: "order",
-      orderId: eventOrderId,
-      title: `Order ${orderNumber || eventOrderId} assigned`,
-      body: `Current status: ${humanizeStatus(nextStatus || "assigned")}`,
-    }).catch(() => undefined);
   }
+
+  for (const id of committedDispatchNotifications(orders)) void emitPersistedDriverNotification(id).catch(() => undefined);
 
   return {
     success: true,
@@ -150,13 +140,9 @@ export async function updateStatusBulkForActor(input: UpdateStatusBulkInput) {
       updatedAt: new Date(order.updatedAt).toISOString(),
     }).catch(() => undefined);
 
-    void emitDriverNotification(assignedDriverId, {
-      type: "order",
-      orderId,
-      title: `Order ${orderNumber || orderId} status updated`,
-      body: `New status: ${humanizeStatus(nextStatus)}`,
-    }).catch(() => undefined);
   }
+
+  for (const id of committedDispatchNotifications(orders)) void emitPersistedDriverNotification(id).catch(() => undefined);
 
   return {
     success: true,
@@ -203,6 +189,8 @@ export async function updateDriverStatusForActor(input: UpdateDriverStatusInput)
       updatedAt: new Date(order.updatedAt).toISOString(),
     }).catch(() => undefined);
   }
+
+  for (const id of committedDispatchNotifications(order)) void emitPersistedDriverNotification(id).catch(() => undefined);
 
   return {
     success: true,

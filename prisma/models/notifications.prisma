@@ -9,6 +9,8 @@ enum NotificationType {
 }
 
 model UserNotification {
+  dispatchTrackingId String? @db.Uuid
+  dispatchTracking Tracking? @relation("DispatchNotificationSource", fields: [dispatchTrackingId, orderId], references: [id, orderId], onDelete: Restrict, onUpdate: Restrict, map: "UserNotification_dispatch_source_fkey")
   id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   userId String @db.Uuid
@@ -34,6 +36,7 @@ model UserNotification {
   readAt    DateTime?
 
   @@index([userId, createdAt])
+  @@unique([dispatchTrackingId, companyMembershipId], map: "UserNotification_dispatch_recipient_key")
   @@index([userId, readAt])
   @@index([userId, type, createdAt])
   @@index([tenantId, companyId, companyMembershipId, userId, createdAt], map: "UserNotification_tenant_company_membership_user_createdAt_idx")

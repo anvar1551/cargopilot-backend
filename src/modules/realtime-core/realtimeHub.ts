@@ -1,7 +1,5 @@
-import { randomUUID } from "crypto";
 import type { Server as HttpServer } from "http";
 import jwt from "jsonwebtoken";
-import { NotificationType } from "@prisma/client";
 import { Server, Socket } from "socket.io";
 
 import prisma from "../../config/prismaClient";
@@ -10,7 +8,6 @@ import type { AccessTokenPayload } from "../../modules/identity-access/types";
 import { hasLiveAccessSession, isBoundAccessSession } from "../identity-access/application/access-session";
 import {
   countUnreadUserNotifications,
-  createUserNotification,
   type NotificationAccessContext,
 } from "../../modules/notifications-core/application/notificationService";
 
@@ -375,46 +372,20 @@ function getIo() {
   return io;
 }
 
-export async function emitDriverNotification(
-  userId: string,
-  payload: Omit<DriverRealtimeNotification, "id" | "at"> & Partial<Pick<DriverRealtimeNotification, "id" | "at">>,
-) {
-  const cleanUserId = String(userId ?? "").trim();
-  if (!cleanUserId) return;
-
-  const cleanTitle = String(payload.title ?? "").trim();
-  const cleanBody = String(payload.body ?? "").trim();
-  if (!cleanTitle || !cleanBody) return;
-
-  const notificationType =
-    payload.type === "order" || payload.type === "cash" || payload.type === "system"
-      ? payload.type
-      : "system";
-
-  const context = await resolveOrderRecipientContext({
-    eventType: "driver:notification",
-    orderId: String(payload.orderId ?? ""),
-    userId: cleanUserId,
-  });
-  if (!context) return;
-
-  const created = await createUserNotification({
-    userId: cleanUserId,
-    type: notificationType as NotificationType,
-    title: cleanTitle,
-    body: cleanBody,
-    source: { kind: "order", orderId: String(payload.orderId ?? "") },
-    data: null,
-  });
-  if (!created) return;
-
+export async function emitPersistedDriverNotification(notificationId: string) {
+  if (!notificationId) return;
+  const created = await prisma.userNotification.findUnique({ where: { id: notificationId } });
+  if (created?.type !== "order" || !created.dispatchTrackingId || !created.orderId || !created.tenantId || !created.companyId || !created.companyMembershipId) {
+    recordSuppressedDelivery("driver:notification", "missing_persisted_dispatch_source");
+    return;
+  }
+  const source = await prisma.tracking.findFirst({ where: { id: created.dispatchTrackingId, orderId: created.orderId }, select: { id: true } });
+  if (!source) return;
+  const context = await resolveOrderRecipientContext({ eventType: "driver:notification", orderId: created.orderId, userId: created.userId });
+  if (!context || context.tenantId !== created.tenantId || context.companyId !== created.companyId || context.companyMembershipId !== created.companyMembershipId) return;
   const event: DriverRealtimeNotification = {
-    id: created.id || payload.id || randomUUID(),
-    type: notificationType,
-    title: created.title,
-    body: created.body,
-    at: created.createdAt.toISOString(),
-    orderId: created.orderId ?? payload.orderId ?? null,
+    id: created.id, type: created.type, title: created.title, body: created.body,
+    at: created.createdAt.toISOString(), orderId: created.orderId,
   };
 
   const server = getIo();

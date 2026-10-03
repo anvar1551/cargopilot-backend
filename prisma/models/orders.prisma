@@ -302,6 +302,7 @@ model Order {
 }
 
 model Tracking {
+  dispatchNotifications UserNotification[] @relation("DispatchNotificationSource")
   id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   orderId String @db.Uuid
@@ -330,6 +331,7 @@ model Tracking {
   timestamp DateTime @default(now())
 
   @@index([orderId, timestamp])
+  @@unique([id, orderId], map: "Tracking_order_identity_key")
   @@index([actorId])
   @@index([parcelId])
   @@index([orderLegId, timestamp])
