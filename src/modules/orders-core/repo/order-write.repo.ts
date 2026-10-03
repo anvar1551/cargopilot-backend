@@ -9,6 +9,39 @@ import { resolveOrderSlaSnapshot } from "../sla";
 import { CreateOrderRepoPayload } from "../domain/orderCreate.mapper";
 import { OrderActor, orderError } from "../shared";
 import { userLiteSelect } from "./order-repo.shared";
+import { assertCreationRequest, assertCreationPayload, type CreationRequest } from "../domain/creation-request";
+
+const orderCreationInclude = {
+        customer: { select: userLiteSelect },
+        customerEntity: true,
+        senderAddressObj: true,
+        receiverAddressObj: true,
+        attachments: true,
+        parcels: true,
+        cashCollections: {
+          include: {
+            currentHolderUser: { select: userLiteSelect },
+            currentHolderWarehouse: true,
+            events: {
+              include: {
+                actor: { select: userLiteSelect },
+              },
+              orderBy: { createdAt: "asc" },
+            },
+          },
+        },
+        currentWarehouse: true,
+        assignedDriver: { select: userLiteSelect },
+        invoice: true,
+        trackingEvents: {
+          include: {
+            actor: { select: userLiteSelect },
+            warehouse: true,
+            parcel: true,
+          },
+          orderBy: { timestamp: "asc" },
+        },
+      } satisfies Prisma.OrderInclude;
 
 
 function sanitizeSnapshot(s: any) {
@@ -63,7 +96,9 @@ async function getNextOrderNumberTx(tx: Prisma.TransactionClient): Promise<strin
 export const createOrder = async (
   customerId: string,
   payload: CreateOrderRepoPayload,
-  actor?: OrderActor,
+  actor: OrderActor,
+  request: CreationRequest | undefined,
+  ordinal = 0,
 ) => {
   assertCreationInputAuthority({
     customerEntityId: payload.customerEntityId,
@@ -75,10 +110,15 @@ export const createOrder = async (
       (payload.serviceChargePaidStatus != null && payload.serviceChargePaidStatus !== "NOT_PAID") ||
       payload.amount != null) throw authorityError("Client financial authority is not accepted");
   if (actor?.id !== customerId) throw authorityError("Order creator must be the authenticated identity", 403);
-  return prisma.$transaction(async (tx) => {
-    const membership = await requireTenantBoundOrderCompanyAuthority(tx, actor, "shipment.create");
-    if (!hasCompanyScope(membership)) throw authorityError("Company creation scope required", 403);
-    if (!membership.tenantId) throw authorityError("Tenant ownership is required", 403);
+  if (!request) throw authorityError("Durable creation request required");
+  assertCreationPayload(actor,request,ordinal,payload);
+  return creationTransaction(async (tx) => {
+    await lockCreation(tx, request);
+    const membership = await creationAuthority(tx,actor);
+    const intent = await resolveIntent(tx,actor,request,request.kind==="order");
+    if(!intent) throw authorityError("Accepted import intent required",409);
+    const existing = await readReceipt(tx,request,intent.id,ordinal);
+    if(existing) return {order:existing,replayed:true};
     const senderAddressId: string | null = null;
     const receiverAddressId: string | null = null;
     const createdAt = new Date();
@@ -200,37 +240,7 @@ export const createOrder = async (
           },
         },
       },
-      include: {
-        customer: { select: userLiteSelect },
-        customerEntity: true,
-        senderAddressObj: true,
-        receiverAddressObj: true,
-        attachments: true,
-        parcels: true,
-        cashCollections: {
-          include: {
-            currentHolderUser: { select: userLiteSelect },
-            currentHolderWarehouse: true,
-            events: {
-              include: {
-                actor: { select: userLiteSelect },
-              },
-              orderBy: { createdAt: "asc" },
-            },
-          },
-        },
-        currentWarehouse: true,
-        assignedDriver: { select: userLiteSelect },
-        invoice: true,
-        trackingEvents: {
-          include: {
-            actor: { select: userLiteSelect },
-            warehouse: true,
-            parcel: true,
-          },
-          orderBy: { timestamp: "asc" },
-        },
-      },
+      include: orderCreationInclude,
     });
 
     await enqueueCargoPilotDomainEventsTx(tx, [
@@ -247,6 +257,58 @@ export const createOrder = async (
       },
     ]);
 
-    return created;
+    await tx.orderCreationReceipt.create({data:{intentId:intent.id,ordinal,tenantId:request.tenantId,companyId:request.companyId,orderId:created.id}});
+    return {order:created,replayed:false};
   });
 };
+
+
+async function creationAuthority(tx: Prisma.TransactionClient, actor: OrderActor) {
+  const membership=await requireTenantBoundOrderCompanyAuthority(tx,actor,"shipment.create");
+  if(!hasCompanyScope(membership)||!membership.tenantId) throw authorityError("Company creation scope required",403);
+  return membership;
+}
+async function lockCreation(tx: Prisma.TransactionClient, request: CreationRequest) {
+  // Cast void result to text so Prisma never deserializes PostgreSQL void.
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${request.tenantId+":order-creation:"+request.operationId},0))::text`;
+}
+async function resolveIntent(tx: Prisma.TransactionClient, actor: OrderActor, request: CreationRequest, create: boolean) {
+  assertCreationRequest(actor,request,0);
+  const existing=await tx.orderCreationIntent.findUnique({where:{tenantId_operationId:{tenantId:request.tenantId,operationId:request.operationId}}});
+  if(existing){
+    for(const key of ["userId","tenantId","companyId","tenantMembershipId","companyMembershipId","kind","fingerprint","normalizationVersion","rowCount"] as const)
+      if(existing[key]!==request[key]) throw authorityError("Operation identity conflict",409);
+    return existing;
+  }
+  return create ? tx.orderCreationIntent.create({data:{...request}}) : null;
+}
+async function readReceipt(tx: Prisma.TransactionClient, request: CreationRequest, intentId: string, ordinal: number) {
+  const receipt=await tx.orderCreationReceipt.findUnique({where:{intentId_ordinal:{intentId,ordinal}}});
+  if(!receipt) return null;
+  const order=await tx.order.findFirst({where:{id:receipt.orderId,tenantId:request.tenantId,ownerOrgId:request.companyId,customerId:request.userId},include:orderCreationInclude});
+  if(!order||receipt.tenantId!==request.tenantId||receipt.companyId!==request.companyId) throw authorityError("Confirmed order is not accessible",403);
+  return order;
+}
+function creationTransaction<T>(fn:(tx:Prisma.TransactionClient)=>Promise<T>) {
+  return prisma.$transaction(async tx=>{
+    await tx.$executeRawUnsafe("SET LOCAL statement_timeout = '3000ms'");
+    await tx.$executeRawUnsafe("SET LOCAL lock_timeout = '2000ms'");
+    return fn(tx);
+  },{maxWait:2000,timeout:8000});
+}
+export async function getOrderCreationRetry(actor:OrderActor,request:CreationRequest,ordinal=0) {
+  assertCreationRequest(actor,request,ordinal);
+  return creationTransaction(async tx=>{
+    await lockCreation(tx,request); await creationAuthority(tx,actor);
+    const intent=await resolveIntent(tx,actor,request,false);
+    return intent ? readReceipt(tx,request,intent.id,ordinal) : null;
+  });
+}
+export async function acceptOrderImportIntent(actor:OrderActor,request:CreationRequest) {
+  assertCreationRequest(actor,request,0);
+  if(request.kind!=="import") throw authorityError("Import identity required");
+  return creationTransaction(async tx=>{
+    await lockCreation(tx,request); await creationAuthority(tx,actor);
+    return resolveIntent(tx,actor,request,true);
+  });
+}

@@ -219,3 +219,12 @@ it("rejects a driver without an active membership in the selected company", asyn
   expect(database.order.updateMany).not.toHaveBeenCalled();
   expect(database.tracking.createMany).not.toHaveBeenCalled();
 });
+
+
+it("rejects hard deletion of a receipted order before child queries, writes or storage cleanup",async()=>{
+  const deleteActor={...actor,permissionCodes:[...actor.permissionCodes,"shipment.delete"]};
+  database.companyMembership.findFirst.mockResolvedValue(accessRecord({roles:[{role:{code:"dispatcher",rolePermissions:deleteActor.permissionCodes.map((key:string)=>({permission:{key}}))}}]}));
+  database.order.findFirst.mockResolvedValue({id:ids.order,tenantId:ids.tenant,orderNumber:"synthetic-number",labelKey:null,creationReceipts:[{intentId:"synthetic-intent"}]});
+  await expect(deleteOrderForActor({actor:deleteActor,orderId:ids.order})).rejects.toMatchObject({statusCode:409});
+  expect(database.orderLeg.findMany).not.toHaveBeenCalled();expect(database.order.deleteMany).not.toHaveBeenCalled();expect(database.tracking.deleteMany).not.toHaveBeenCalled();expect(deleteS3ObjectsBestEffort).not.toHaveBeenCalled();
+});

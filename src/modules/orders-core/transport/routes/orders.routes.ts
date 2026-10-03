@@ -80,7 +80,7 @@ const ordersRoutes: FastifyPluginAsync = async (fastify) => {
   }, async (request, reply) => {
     try {
       const result = await createOrderForActor({ user: request.user, body: request.body });
-      await emitMutationInvalidation("order_mutation");
+      if (!result.payload.creationReplay) await emitMutationInvalidation("order_mutation");
       return reply.code(result.statusCode).send(result.payload);
     } catch (err: any) {
       return sendError(reply, err, "Failed to create order");

@@ -22,12 +22,14 @@ export async function deleteOrderForActor(args: {
   const result = await prisma.$transaction(async (tx) => {
     const order = await tx.order.findFirst({
       where: { AND: [{ id: orderId }, scopeWhere ?? { id: "__no_access__" }] },
-      select: { id: true, tenantId: true, orderNumber: true, labelKey: true },
+      select: { id: true, tenantId: true, orderNumber: true, labelKey: true, creationReceipts: { take: 1, select: { intentId: true } } },
     });
 
     if (!order) {
       throw orderError("Order not found", 404);
     }
+
+    if (order.creationReceipts?.length) throw orderError("Confirmed creation receipts require order retention; hard deletion is unavailable", 409);
 
     const legs = await tx.orderLeg.findMany({
       where: { orderId },

@@ -1,6 +1,6 @@
 # Durable order/import creation: bounded execution plan
 
-Status: planned, not implemented. Baseline diagnostic checkpoint `0a4d0ef23b2c3f6ad22abcb973dd3eedd1676a94`. No schema, API or persistence change is made by this plan. Clients remain deferred.
+Status: executed for bounded creation/import confirmation; see Order_Creation_Idempotency.md for current enforcement and evidence. Downstream uncertain recovery remains contained. Original execution plan follows. Baseline diagnostic checkpoint `0a4d0ef23b2c3f6ad22abcb973dd3eedd1676a94`. No schema, API or persistence change is made by this plan. Clients remain deferred.
 
 ## Confirmed uncovered invariant
 
@@ -31,6 +31,8 @@ Exact affected files: `prisma/models/orders.prisma`, `identity-access.prisma` an
 
 ## Migration / compatibility / recovery
 
-Additive empty tables only; no existing rows backfilled or rewritten. Nullable business ownership remains transitional. The API cutover rejects ID-less creation; deferred clients need durable persistence-before-send IDs, original intent/context retention and receipt-aware outcomes. Until implemented, current creation/import remains non-idempotent; this plan does not contain or fix that runtime gap.
+Additive empty tables only; no existing rows backfilled or rewritten. Nullable business ownership remains transitional. The API cutover rejects ID-less creation; deferred clients need durable persistence-before-send IDs, original intent/context retention and receipt-aware outcomes. Implementation status and remaining downstream recovery gaps are recorded in Order_Creation_Idempotency.md.
 
 Rollback must preserve durable receipt enforcement or disable affected creation; never restore an unrestricted non-idempotent retry path. Receipts must survive recovery and cannot be deleted to enable reuse. Downstream durable recovery, partial-import presentation, current storage/provider uncertainties and accepted-job policy remain distinct unresolved work. Do not invent automatic replay, exactly-once delivery, pricing acceptance or FX guarantees.
+
+Execution correction: confirmation validates all normalized rows, but does not invoke quote-based preview for already confirmed rows. Receipts are freshly authorized before any new quote; only missing rows are prepared. This preserves safe partial recovery if current pricing has changed. Receipted order retention now rejects hard deletion explicitly before child writes or storage work.

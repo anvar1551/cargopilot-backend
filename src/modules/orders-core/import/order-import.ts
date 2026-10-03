@@ -1,4 +1,4 @@
-import { assertCreationInputAuthority } from "../domain/creation-authority";
+import { assertCreationInputAuthority, authorityError } from "../domain/creation-authority";
 import { DEFAULT_SERVICE_TYPE, normalizeServiceTypeInput } from "../domain/order.constants";
 
 import {
@@ -6,7 +6,8 @@ import {
   createOrderPayloadSchema,
   mapCreateOrderDtoToRepoPayload,
 } from "../domain/orderCreate.mapper";
-import { createOrder } from "../repo";
+import { createOrder, getOrderCreationRetry, acceptOrderImportIntent } from "../repo/order-write.repo";
+import { buildCreationRequest } from "../domain/creation-request";
 import { requireOrderActor } from "../shared";
 import { prepareAuthorizedOrderCreation } from "../write/create-order";
 import { seedInitialServiceChargePricing } from "../../orders-legs";
@@ -98,6 +99,7 @@ function parseBoolean(value?: string) {
 }
 
 function parseCsv(text: string): ParsedCsvRow[] {
+  if (Buffer.byteLength(text)>1024*1024) throw Object.assign(new Error("CSV byte limit exceeded"),{statusCode:413});
   const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
   if (!normalized) return [];
 
@@ -142,6 +144,7 @@ function parseCsv(text: string): ParsedCsvRow[] {
 
   if (rows.length < 2) return [];
 
+  if (rows.length>101) throw Object.assign(new Error("CSV row limit exceeded"),{statusCode:413});
   const headers = rows[0];
   return rows.slice(1).map((cells, index) => {
     const values: Record<string, string> = {};
@@ -324,36 +327,40 @@ export async function importOrdersFromCsv(args: {
   actor: AppUser;
   csvText: string;
   customerEntityId?: string | null;
+  operationId: unknown;
 }) {
   const actor = requireOrderActor(args.actor);
-  const preview = await previewOrderImport({
-    actor: args.actor,
-    csvText: args.csvText,
-    customerEntityId: args.customerEntityId,
-  });
-
-  const invalidRows = preview.rows.filter((row) => !row.valid);
-  if (invalidRows.length > 0) {
-    const first = invalidRows[0];
-    const message = `Import contains invalid rows. First issue: row ${first.rowNumber} - ${first.errors[0]}`;
-    const error = new Error(message) as Error & { statusCode: number };
-    error.statusCode = 400;
-    throw error;
-  }
-
+  assertCreationInputAuthority({ customerEntityId: args.customerEntityId });
   const parsedRows = parseCsv(args.csvText);
+  const mappedRows: CreateOrderRepoPayload[]=[];
+  for(const row of parsedRows) {
+    assertCreationInputAuthority(row.values);
+    const validation=createOrderPayloadSchema.safeParse(mapCsvRowToCreateOrderDto(row,args.customerEntityId));
+    if(!validation.success) throw authorityError(`Invalid import row ${row.rowNumber}`);
+    mappedRows.push(await mapCreateOrderDtoToRepoPayload(validation.data));
+  }
+  const request=buildCreationRequest(actor,args.operationId,"import",mappedRows);
+  // Validate/price only missing rows before accepting a new batch. Prior receipts
+  // are freshly authorized and never reprice their committed order.
+  const preparedRows=[];
+  for(let ordinal=0;ordinal<mappedRows.length;ordinal++) {
+    const prior=await getOrderCreationRetry(actor,request,ordinal);
+    preparedRows.push(prior ? null : await prepareAuthorizedOrderCreation(args.actor,{...mappedRows[ordinal]}));
+  }
+  await acceptOrderImportIntent(actor,request);
   const createdOrders = [];
   const labelMode = resolveOrderLabelMode(process.env.ORDER_LABEL_MODE, "sync");
   const autoLabelFallback = isOrderLabelAutoFallbackEnabled();
 
-  for (const row of parsedRows) {
-    const dto = mapCsvRowToCreateOrderDto(row, args.customerEntityId);
-    const repoPayload = (await mapCreateOrderDtoToRepoPayload(
-      dto,
-    )) as CreateOrderRepoPayload;
-    const prepared = await prepareAuthorizedOrderCreation(args.actor, repoPayload);
-    const order = await createOrder(actor.id, prepared.payload, prepared.actor);
+  let replayedRows=0;
+  for (let ordinal=0;ordinal<parsedRows.length;ordinal++) {
+    const prior=await getOrderCreationRetry(actor,request,ordinal);
+    if(prior) {createdOrders.push(prior);replayedRows++;continue;}
+    const prepared=preparedRows[ordinal] ?? await prepareAuthorizedOrderCreation(args.actor,{...mappedRows[ordinal]});
+    const created=await createOrder(actor.id,prepared.payload,prepared.actor,request,ordinal);
+    const order=created.order;
     createdOrders.push(order);
+    if(created.replayed) {replayedRows++;continue;}
 
     try {
       await seedInitialServiceChargePricing(order.id, prepared.pricingSeed, prepared.actor);
@@ -389,6 +396,8 @@ export async function importOrdersFromCsv(args: {
   return {
     count: createdOrders.length,
     orders: createdOrders,
+    replayedRows,
+    downstreamRecoveryRequired: replayedRows>0,
   };
 }
 

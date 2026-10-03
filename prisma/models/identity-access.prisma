@@ -68,6 +68,8 @@ model RolePermission {
 }
 
 model CompanyMembership {
+  orderCreationIntents OrderCreationIntent[] @relation("OrderCreationCompany")
+  orderCreationBridges OrderCreationIntent[] @relation("OrderCreationBridge")
   providerConfigurationActions IntegrationProviderConfigurationVersion[] @relation("ProviderConfigurationActor")
   templateConfigurationActions RouteTemplateConfigurationVersion[] @relation("TemplateConfigurationActor")
   routingConfigurationActions CarrierRoutingConfigurationVersion[] @relation("RoutingConfigurationActor")

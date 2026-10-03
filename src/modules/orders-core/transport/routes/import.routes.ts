@@ -35,9 +35,9 @@ const importRoutes: FastifyPluginAsync = async (fastify) => {
       const csvText = typeof body.csvText === "string" ? body.csvText : "";
       const customerEntityId = typeof body.customerEntityId === "string" ? body.customerEntityId : null;
       if (!csvText.trim()) return reply.code(400).send({ error: "csvText is required" });
-      const result = await importOrdersFromCsv({ actor: request.user, csvText, customerEntityId });
-      await emitMutationInvalidation("order_mutation");
-      return reply.code(201).send({ success: true, count: result.count, orders: result.orders });
+      const result = await importOrdersFromCsv({ actor: request.user, csvText, customerEntityId, operationId: body.operationId });
+      if (result.replayedRows < result.count) await emitMutationInvalidation("order_mutation");
+      return reply.code(201).send({ success: true, count: result.count, orders: result.orders, replayedRows: result.replayedRows, downstreamRecoveryRequired: result.downstreamRecoveryRequired });
     } catch (err: any) {
       return sendError(reply, err, "Failed to import orders");
     }

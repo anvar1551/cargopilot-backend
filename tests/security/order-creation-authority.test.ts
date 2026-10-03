@@ -44,6 +44,7 @@ const actor: any = {
   scopes: [{ scopeType: "company", scopeRefId: companyA }],
 };
 const body = () => ({
+  operationId: "50000000-0000-4000-8000-000000000001",
   sender: { name: "Sender", phone: "+49111" }, receiver: { name: "Receiver", phone: "+49222" },
   addresses: { pickupAddress: "Pickup Street 1", dropoffAddress: "Dropoff Street 2",
     senderAddress: { city: "Bremen" }, receiverAddress: { city: "Hamburg" } },
@@ -51,6 +52,7 @@ const body = () => ({
   payment: { paymentType: "CASH" },
 });
 
+const intentRows = new Map<string,any>(), receiptRows = new Map<string,any>(), confirmedOrders = new Map<string,any>();
 beforeEach(() => {
   jest.clearAllMocks();
   db.$transaction.mockImplementation(async (fn: any) => fn(db));
@@ -59,12 +61,26 @@ beforeEach(() => {
     scopes: [{ scopeType: "company", scopeRefId: companyA }],
     roles: [{ role: { companyId: companyA, isSystem: false, rolePermissions: [{ permission: { key: "shipment.create" } }] } }],
   });
+  db.$executeRawUnsafe.mockResolvedValue(0);
+  db.$queryRaw.mockResolvedValue([]);
+  intentRows.clear(); receiptRows.clear(); confirmedOrders.clear();
+  db.orderCreationIntent.findUnique.mockImplementation(async ({where}:any)=>intentRows.get(where.tenantId_operationId.operationId)??null);
+  db.orderCreationIntent.create.mockImplementation(async ({data}:any)=>{
+    const result={id:"intent-"+data.operationId,...data};intentRows.set(data.operationId,result);return result;
+  });
+  db.orderCreationReceipt.findUnique.mockImplementation(async ({where}:any)=>receiptRows.get(where.intentId_ordinal.intentId+":"+where.intentId_ordinal.ordinal)??null);
+  db.orderCreationReceipt.create.mockImplementation(async ({data}:any)=>{receiptRows.set(data.intentId+":"+data.ordinal,data);return data;});
+  db.order.findFirst.mockImplementation(async ({where}:any)=>{
+    const order=confirmedOrders.get(where.id);
+    return order && order.tenantId===where.tenantId && order.ownerOrgId===where.ownerOrgId && order.customerId===where.customerId ? order : null;
+  });
   db.counter.upsert.mockResolvedValue({ value: 1 });
-  db.order.create.mockImplementation(async ({ data }: any) => ({ id: "order-a", ...data }));
-  (quoteTariffForOrder as jest.Mock).mockResolvedValue({ quoteAvailable: false, reason: "no_rule" });
+  db.order.create.mockImplementation(async ({ data }: any) => {const result={id:confirmedOrders.size ? "order-"+(confirmedOrders.size+1) : "order-a",...data};confirmedOrders.set(result.id,result);return result;});
+  (quoteTariffForOrder as jest.Mock).mockReset().mockResolvedValue({ quoteAvailable: false, reason: "no_rule" });
 });
 
 function noBusinessEffects() {
+  expect(db.orderCreationIntent.create).not.toHaveBeenCalled(); expect(db.orderCreationReceipt.create).not.toHaveBeenCalled();
   expect(db.order.create).not.toHaveBeenCalled(); expect(db.address.create).not.toHaveBeenCalled(); expect(db.counter.upsert).not.toHaveBeenCalled();
   expect(labels.enqueueOrderLabelJob).not.toHaveBeenCalled(); expect(labels.generateAndAttachParcelLabelsForOrder).not.toHaveBeenCalled();
   expect(legs.autoBookCarrierForOrder).not.toHaveBeenCalled(); expect(legs.seedInitialServiceChargePricing).not.toHaveBeenCalled();
@@ -139,9 +155,9 @@ it("rejects foreign role grants on a selected company", async () => {
 
 it("contains direct repository reference/status bypasses before writes", async () => {
   const payload = await mapCreateOrderDtoToRepoPayload(body());
-  await expect(createOrder(actor.id, { ...payload, customerEntityId: masterA }, actor)).rejects.toMatchObject({ statusCode: 403 });
-  await expect(createOrder(actor.id, { ...payload, senderAddressId: masterB }, actor)).rejects.toMatchObject({ statusCode: 403 });
-  await expect(createOrder(actor.id, { ...payload, codPaidStatus: "PAID" }, actor)).rejects.toMatchObject({ statusCode: 400 });
+  await expect(createOrder(actor.id, { ...payload, customerEntityId: masterA }, actor, undefined)).rejects.toMatchObject({ statusCode: 403 });
+  await expect(createOrder(actor.id, { ...payload, senderAddressId: masterB }, actor, undefined)).rejects.toMatchObject({ statusCode: 403 });
+  await expect(createOrder(actor.id, { ...payload, codPaidStatus: "PAID" }, actor, undefined)).rejects.toMatchObject({ statusCode: 400 });
   noBusinessEffects();
 });
 
@@ -149,7 +165,7 @@ it("ships a usable CSV template without financial-authority fields or required c
   const csvText = getOrderImportTemplateCsv();
   expect(csvText.split("\n")[0]).not.toMatch(/serviceCharge|PaidStatus/);
   await expect(previewOrderImport({ actor, csvText })).resolves.toMatchObject({ validRows: 1, invalidRows: 0 });
-  await expect(importOrdersFromCsv({ actor, csvText })).resolves.toMatchObject({ count: 1 });
+  await expect(importOrdersFromCsv({ actor, operationId: "50000000-0000-4000-8000-000000000002", csvText })).resolves.toMatchObject({ count: 1 });
   expect(quoteTariffForOrder).toHaveBeenCalledWith(
     expect.objectContaining({ tenantId: actor.tenantId, companyId: actor.companyId }),
     expect.not.objectContaining({ companyId: expect.anything(), tariffPlanId: expect.anything() }),
@@ -163,7 +179,7 @@ it("uses an authoritative tenant quote for imported service charge and pricing c
     currency: "UZS",
     tariffPlan: { id: "tenant-plan", pricingStrategy: "FIXED_LANE", routeTemplateId: null },
   });
-  await expect(importOrdersFromCsv({ actor, csvText: getOrderImportTemplateCsv() }))
+  await expect(importOrdersFromCsv({ actor, operationId: "50000000-0000-4000-8000-000000000002", csvText: getOrderImportTemplateCsv() }))
     .resolves.toMatchObject({ count: 1 });
   expect(db.order.create).toHaveBeenCalledWith(expect.objectContaining({
     data: expect.objectContaining({ serviceCharge: 875.5, currency: "UZS" }),
@@ -181,7 +197,7 @@ it("rejects an online-payment import without an authoritative tariff before writ
     quoteAvailable: false,
     reason: "no_matching_tariff",
   });
-  await expect(importOrdersFromCsv({ actor, csvText })).rejects.toMatchObject({ statusCode: 400 });
+  await expect(importOrdersFromCsv({ actor, operationId: "50000000-0000-4000-8000-000000000002", csvText })).rejects.toMatchObject({ statusCode: 400 });
   noBusinessEffects();
 });
 
@@ -197,12 +213,12 @@ it("fails import preview closed when current tenant pricing context is rejected"
 it.each(["codPaidStatus", "serviceChargePaidStatus", "paid", "payment_status", "amount", "serviceCharge", "tariffPlanId", "routeTemplateId", "customerEntityId", "receiverAddressId"])(
   "rejects the entire CSV before creating earlier rows when a forbidden %s column exists", async (field) => {
     const csvText = `receiverName,pickupAddress,dropoffAddress,${field}\nReceiver,Pickup Street,Dropoff Street,${masterB}\n`;
-    await expect(importOrdersFromCsv({ actor, csvText })).rejects.toBeDefined(); noBusinessEffects();
+    await expect(importOrdersFromCsv({ actor, operationId: "50000000-0000-4000-8000-000000000002", csvText })).rejects.toBeDefined(); noBusinessEffects();
   },
 );
 
 it("rejects the legacy CSV customer argument without inferring ownership from the actor", async () => {
-  await expect(importOrdersFromCsv({ actor, csvText: getOrderImportTemplateCsv(), customerEntityId: masterA })).rejects.toMatchObject({ statusCode: 403 }); noBusinessEffects();
+  await expect(importOrdersFromCsv({ actor, operationId: "50000000-0000-4000-8000-000000000002", csvText: getOrderImportTemplateCsv(), customerEntityId: masterA })).rejects.toMatchObject({ statusCode: 403 }); noBusinessEffects();
 });
 
 
@@ -263,18 +279,18 @@ describe("bounded order creation diagnostics", () => {
   });
   it("sanitizes imported pricing failures", async () => {
     (legs.seedInitialServiceChargePricing as jest.Mock).mockRejectedValueOnce(failure());
-    await assertSafe(await importOrdersFromCsv({ actor, csvText: getOrderImportTemplateCsv() }), "ORDER_IMPORT_PRICING_SEED_FAILED");
+    await assertSafe(await importOrdersFromCsv({ actor, operationId: "50000000-0000-4000-8000-000000000002", csvText: getOrderImportTemplateCsv() }), "ORDER_IMPORT_PRICING_SEED_FAILED");
   });
   it("preserves imported queue fallback with sanitized diagnostics", async () => {
     (labels.enqueueOrderLabelJob as jest.Mock).mockRejectedValueOnce(failure());
     (labels.isOrderLabelAutoFallbackEnabled as jest.Mock).mockReturnValue(true);
-    await assertSafe(await importOrdersFromCsv({ actor, csvText: getOrderImportTemplateCsv() }), "ORDER_IMPORT_LABEL_ENQUEUE_INLINE_FALLBACK");
+    await assertSafe(await importOrdersFromCsv({ actor, operationId: "50000000-0000-4000-8000-000000000002", csvText: getOrderImportTemplateCsv() }), "ORDER_IMPORT_LABEL_ENQUEUE_INLINE_FALLBACK");
     expect(labels.generateAndAttachParcelLabelsForOrder).toHaveBeenCalledTimes(1);
   });
   it("sanitizes imported background label failures", async () => {
     (labels.resolveOrderLabelMode as jest.Mock).mockReturnValue("async");
     (labels.generateAndAttachParcelLabelsForOrder as jest.Mock).mockRejectedValueOnce(failure());
-    await assertSafe(await importOrdersFromCsv({ actor, csvText: getOrderImportTemplateCsv() }), "ORDER_IMPORT_LABEL_GENERATION_FAILED");
+    await assertSafe(await importOrdersFromCsv({ actor, operationId: "50000000-0000-4000-8000-000000000002", csvText: getOrderImportTemplateCsv() }), "ORDER_IMPORT_LABEL_GENERATION_FAILED");
   });
   it("does not expose unexpected preparation messages in preview", async () => {
     (quoteTariffForOrder as jest.Mock).mockRejectedValueOnce(failure());
@@ -302,4 +318,72 @@ it("does not log private addresses or coordinates during snapshot normalization"
     expect(warning.mock.calls).toEqual([["ORDER_ADDRESS_COORDINATES_CONFLICT"]]);
     noBusinessEffects();
   } finally { warning.mockRestore(); }
+});
+
+
+describe("durable order/import identity (mocked boundaries)",()=>{
+  beforeEach(()=>{
+    (legs.seedInitialServiceChargePricing as jest.Mock).mockResolvedValue(undefined);
+    (legs.autoBookCarrierForOrder as jest.Mock).mockResolvedValue([]);
+    (labels.enqueueOrderLabelJob as jest.Mock).mockResolvedValue(undefined);
+    (labels.resolveOrderLabelMode as jest.Mock).mockReturnValue("queue");
+    (labels.isOrderLabelAutoFallbackEnabled as jest.Mock).mockReturnValue(false);
+    process.env.ORDER_LABEL_BLOCKING="true";
+  });
+  afterEach(()=>{delete process.env.ORDER_LABEL_BLOCKING;});
+  it("requires a UUID before creation and rejects a caller-forged receipt object",async()=>{
+    for(const operationId of [undefined,"not-a-uuid"]){await expect(createOrderForActor({user:actor,body:{...body(),operationId}})).rejects.toMatchObject({statusCode:400});}
+    const mapped=await mapCreateOrderDtoToRepoPayload(body());
+    await expect(createOrder(actor.id,mapped,actor,{...actor,operationId:body().operationId} as any)).rejects.toMatchObject({statusCode:409});
+    noBusinessEffects();
+  });
+  it("returns the original order without repricing or repeating completed effects",async()=>{
+    const first=await createOrderForActor({user:actor,body:body()});
+    const quotes=(quoteTariffForOrder as jest.Mock).mock.calls.length;
+    (quoteTariffForOrder as jest.Mock).mockRejectedValueOnce(new Error("Changed pricing must not be read"));
+    const retry=await createOrderForActor({user:actor,body:body()});
+    expect(retry.payload).toMatchObject({order:{id:first.payload.order.id},creationReplay:true,downstreamRecoveryRequired:true});
+    expect(quoteTariffForOrder).toHaveBeenCalledTimes(quotes);
+    expect(db.order.create).toHaveBeenCalledTimes(1);expect(db.orderCreationReceipt.create).toHaveBeenCalledTimes(1);
+    expect(db.counter.upsert).toHaveBeenCalledTimes(1);expect(legs.seedInitialServiceChargePricing).toHaveBeenCalledTimes(1);
+    expect(legs.autoBookCarrierForOrder).toHaveBeenCalledTimes(1);expect(labels.enqueueOrderLabelJob).toHaveBeenCalledTimes(1);
+  });
+  it("rejects changed content and changed selected membership without new effects",async()=>{
+    await createOrderForActor({user:actor,body:body()});
+    const changed=body();changed.receiver.name="Changed";
+    await expect(createOrderForActor({user:actor,body:changed})).rejects.toMatchObject({statusCode:409});
+    await expect(createOrderForActor({user:{...actor,tenantMembershipId:"another-membership"},body:body()})).rejects.toMatchObject({statusCode:409});
+    expect(db.order.create).toHaveBeenCalledTimes(1);expect(labels.enqueueOrderLabelJob).toHaveBeenCalledTimes(1);
+  });
+  it("revalidates authorization before returning an existing receipt",async()=>{
+    await createOrderForActor({user:actor,body:body()});
+    db.companyMembership.findFirst.mockResolvedValue(null);
+    await expect(createOrderForActor({user:actor,body:body()})).rejects.toMatchObject({statusCode:403});
+    expect(db.order.create).toHaveBeenCalledTimes(1);expect(labels.enqueueOrderLabelJob).toHaveBeenCalledTimes(1);
+  });
+  it("recovers remaining import rows without replaying effects of committed rows",async()=>{
+    const sample=getOrderImportTemplateCsv().trim();const csvText=sample+"\n"+sample.split("\n")[1];
+    const args={actor,csvText,operationId:"50000000-0000-4000-8000-000000000003"};
+    (labels.enqueueOrderLabelJob as jest.Mock).mockRejectedValueOnce(new Error("Ambiguous label enqueue"));
+    await expect(importOrdersFromCsv(args)).rejects.toThrow("Ambiguous label enqueue");
+    expect(db.order.create).toHaveBeenCalledTimes(1);
+    await expect(importOrdersFromCsv(args)).resolves.toMatchObject({count:2,replayedRows:1,downstreamRecoveryRequired:true});
+    expect(db.order.create).toHaveBeenCalledTimes(2);expect(labels.enqueueOrderLabelJob).toHaveBeenCalledTimes(2);
+    expect(legs.seedInitialServiceChargePricing).toHaveBeenCalledTimes(2);
+  });
+  it("rejects changed later import rows and kind reuse against the immutable batch",async()=>{
+    const csvText=getOrderImportTemplateCsv();const operationId=body().operationId;
+    await importOrdersFromCsv({actor,csvText,operationId});
+    await expect(importOrdersFromCsv({actor,csvText:csvText.replace("Alex Morgan","Changed"),operationId})).rejects.toMatchObject({statusCode:409});
+    await expect(createOrderForActor({user:actor,body:body()})).rejects.toMatchObject({statusCode:409});
+    expect(db.order.create).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+it("rejects invalid later import rows before accepting the batch or any earlier order",async()=>{
+  const sample=getOrderImportTemplateCsv().trim();
+  const csvText=sample+"\n"+sample.split("\n")[1].replace("14 Harbor Street, District 5, Bremen, Germany","");
+  await expect(importOrdersFromCsv({actor,csvText,operationId:"50000000-0000-4000-8000-000000000008"})).rejects.toMatchObject({statusCode:400});
+  noBusinessEffects();
 });

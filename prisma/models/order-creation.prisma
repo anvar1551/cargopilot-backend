@@ -1,0 +1,33 @@
+// New durable creation identity. No historical acceptance or business ownership inference.
+model OrderCreationIntent {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  userId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  companyMembershipId String @db.Uuid
+  operationId String @db.Uuid
+  kind String @db.VarChar(10)
+  fingerprint String @db.Char(64)
+  normalizationVersion Int @default(1)
+  rowCount Int
+  acceptedAt DateTime @default(now())
+  membership CompanyMembership @relation("OrderCreationCompany", fields: [companyMembershipId, userId, tenantId, companyId], references: [id, userId, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "OrderCreationIntent_company_context_fkey")
+  bridge CompanyMembership @relation("OrderCreationBridge", fields: [companyMembershipId, tenantMembershipId, userId, tenantId], references: [id, tenantMembershipId, userId, tenantId], onDelete: Restrict, onUpdate: Restrict, map: "OrderCreationIntent_membership_bridge_fkey")
+  receipts OrderCreationReceipt[]
+  @@unique([tenantId, operationId], map: "OrderCreationIntent_tenant_operation_key")
+  @@unique([id, tenantId, companyId], map: "OrderCreationIntent_owner_key")
+  @@index([tenantId, companyId, acceptedAt])
+}
+model OrderCreationReceipt {
+  intentId String @db.Uuid
+  ordinal Int
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  orderId String @unique @db.Uuid
+  confirmedAt DateTime @default(now())
+  intent OrderCreationIntent @relation(fields: [intentId, tenantId, companyId], references: [id, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "OrderCreationReceipt_intent_owner_fkey")
+  order Order @relation(fields: [tenantId, orderId, companyId], references: [tenantId, id, ownerOrgId], onDelete: Restrict, onUpdate: Restrict, map: "OrderCreationReceipt_order_owner_fkey")
+  @@id([intentId, ordinal])
+  @@index([tenantId, companyId, confirmedAt])
+}

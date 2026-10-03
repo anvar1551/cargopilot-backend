@@ -2,7 +2,8 @@ import prisma from "../../../config/prismaClient";
 import { requireTenantBoundOrderCompanyAuthority, hasCompanyScope } from "../domain/company-authority";
 import { authorityError } from "../domain/creation-authority";
 import { PaymentType, TransportMode } from "@prisma/client";
-import { createOrder } from "../repo";
+import { createOrder, getOrderCreationRetry } from "../repo/order-write.repo";
+import { buildCreationRequest } from "../domain/creation-request";
 import {
   CreateOrderRepoPayload,
   mapCreateOrderDtoToRepoPayload,
@@ -280,9 +281,15 @@ export async function createOrderForActor(args: CreateOrderForActorArgs) {
   const autoLabelFallback = isOrderLabelAutoFallbackEnabled();
 
   const mapped = await mapCreateOrderDtoToRepoPayload(body);
+  const requestedActor = requireOrderActor(user);
+  const request = buildCreationRequest(requestedActor, (body as any)?.operationId, "order", [mapped]);
+  const prior = await getOrderCreationRetry(requestedActor, request);
+  if (prior) return creationReplay(prior);
   const prepared = await prepareAuthorizedOrderCreation(user, mapped);
   const { actor, requiresOnlineCheckout } = prepared;
-  const order = await createOrder(user!.id, prepared.payload, actor);
+  const created = await createOrder(user!.id, prepared.payload, actor, request);
+  if (created.replayed) return creationReplay(created.order);
+  const order = created.order;
   let labelWarning: string | null = null;
   let pricingWarning: string | null = null;
 
@@ -380,6 +387,7 @@ export async function createOrderForActor(args: CreateOrderForActorArgs) {
     statusCode: 201,
     payload: {
       order,
+      creationReplay: false,
       paymentUrl: null,
       paymentPendingInvoice: requiresOnlineCheckout,
       warning: labelWarning ?? pricingWarning ?? carrierRoutingWarning,
@@ -388,4 +396,12 @@ export async function createOrderForActor(args: CreateOrderForActorArgs) {
         : "Order created (manual payment)",
     },
   };
+}
+
+
+function creationReplay(order: any) {
+  return {statusCode:201,payload:{order,paymentUrl:null,
+    paymentPendingInvoice:!order.invoice && (order.paymentType===PaymentType.CARD || order.paymentType===PaymentType.TRANSFER),
+    warning:null,creationReplay:true,downstreamRecoveryRequired:true,
+    message:"Order already confirmed; downstream work is not replayed"}};
 }
