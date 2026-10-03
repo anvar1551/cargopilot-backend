@@ -438,19 +438,7 @@ export async function mapCreateOrderDtoToRepoPayload(
       dropoffLat = receiverPreferredLat;
       dropoffLng = receiverPreferredLng;
     } else {
-      console.warn(
-        "[orders] pickup/dropoff coordinates are identical while addresses differ",
-        {
-          pickupAddress,
-          dropoffAddress,
-          senderAddressId,
-          receiverAddressId,
-          pickupLat,
-          pickupLng,
-          dropoffLat,
-          dropoffLng,
-        },
-      );
+      console.warn("ORDER_ADDRESS_COORDINATES_CONFLICT");
     }
   }
 

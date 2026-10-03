@@ -284,3 +284,22 @@ describe("bounded order creation diagnostics", () => {
     noBusinessEffects();
   });
 });
+
+
+it("does not log private addresses or coordinates during snapshot normalization", async () => {
+  const warning = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+  try {
+    const input = body();
+    input.addresses.pickupAddress = "PRIVATE-ADDRESS-CANARY pickup";
+    input.addresses.dropoffAddress = "PRIVATE-ADDRESS-CANARY dropoff";
+    Object.assign(input.addresses.senderAddress, { latitude: 53.1, longitude: 8.2 });
+    Object.assign(input.addresses.receiverAddress, { latitude: 53.1, longitude: 8.2 });
+    const mapped = await mapCreateOrderDtoToRepoPayload(input);
+    expect(mapped.pickupAddress).toBe(input.addresses.pickupAddress);
+    expect(mapped.dropoffAddress).toBe(input.addresses.dropoffAddress);
+    expect(mapped.pickupLat).toBe(53.1);
+    expect(mapped.dropoffLat).toBe(53.1);
+    expect(warning.mock.calls).toEqual([["ORDER_ADDRESS_COORDINATES_CONFLICT"]]);
+    noBusinessEffects();
+  } finally { warning.mockRestore(); }
+});
