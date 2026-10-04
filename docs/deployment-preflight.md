@@ -38,13 +38,11 @@ Critical stable secrets:
 
 Do not casually rotate `PAYMENT_CONFIG_MASTER_KEY` or `INTEGRATION_CONFIG_MASTER_KEY`; encrypted provider credentials in the database depend on them.
 
-First owner bootstrap env:
-
-- `ERP_OWNER_EMAIL`
-- `ERP_OWNER_PASSWORD`
-- `ERP_OWNER_NAME`
-
-Use a temporary strong password for first deploy, login once, then rotate it from the UI/database process.
+Legacy owner bootstrap is disabled. `ERP_OWNER_*` does not establish operator
+authority or grant any access. Follow the controlled contract in
+[Tenant_Onboarding_Foundation.md](security/Tenant_Onboarding_Foundation.md).
+Real onboarding requires separately authorized operator-key registration,
+explicit signed-intent review and database access; no real registry is provided.
 
 ## Network Exposure
 
@@ -102,13 +100,10 @@ docker compose --env-file .env.docker ps
 docker compose --env-file .env.docker logs -f api
 ```
 
-Post-deploy bootstrap for a fresh database:
-
-```bash
-docker compose --env-file .env.docker exec api node dist/src/scripts/seed-permissions.js
-docker compose --env-file .env.docker exec api node dist/src/scripts/bootstrap-erp-access.js
-docker compose --env-file .env.docker exec api node dist/src/scripts/bootstrap-support.js
-```
+Do not execute old `dist` ERP/support bootstrap scripts. Both npm bootstrap
+aliases are now disabled; retained historical output may still contain unsafe
+code. Permission-catalog installation is separate from granting tenant access.
+No automatic tenant, administrator or support configuration provisioning runs.
 
 Frontend:
 

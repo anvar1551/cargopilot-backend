@@ -1,0 +1,24 @@
+// Accepted creation receipt and immutable operator audit fact; no credentials.
+model TenantOnboardingReceipt {
+  operationId String @id @db.Uuid
+  operatorId String
+  keyFingerprint String
+  profileRevision String
+  intentFingerprint String
+  reason String
+  tenantId String @unique @db.Uuid
+  companyId String @unique @db.Uuid
+  userId String @unique @db.Uuid
+  tenantMembershipId String @unique @db.Uuid
+  companyMembershipId String @unique @db.Uuid
+  roleId String @unique @db.Uuid
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "OnboardingReceipt_tenant_fkey")
+  company Organization @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "OnboardingReceipt_company_fkey")
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "OnboardingReceipt_user_fkey")
+  tenantMembership TenantMembership @relation(fields: [tenantMembershipId, userId, tenantId], references: [id, userId, tenantId], onDelete: Restrict, onUpdate: Restrict, map: "OnboardingReceipt_tm_fkey")
+  membershipBridge CompanyMembership @relation("OnboardingBridge", fields: [companyMembershipId, tenantMembershipId, userId, tenantId], references: [id, tenantMembershipId, userId, tenantId], onDelete: Restrict, onUpdate: Restrict, map: "OnboardingReceipt_bridge_fkey")
+  membershipOwner CompanyMembership @relation("OnboardingOwner", fields: [companyMembershipId, userId, tenantId, companyId], references: [id, userId, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "OnboardingReceipt_owner_fkey")
+  role Role @relation(fields: [roleId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict, map: "OnboardingReceipt_role_fkey")
+}

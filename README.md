@@ -4,6 +4,11 @@ Backend API for CargoPilot.
 
 ## Prerequisites
 - Node.js 22.12 or later within 22.x (Prisma 7 requirement; locally checked on 22.13.0)
+- Package and lockfile root metadata declare `>=22.12.0 <23`. npm engines may
+  warn rather than block unsupported installations; this is not a runtime guard.
+  Docker/CI select Node 22 without a patch pin; built/deployed images are unverified.
+  Use a currently supported patched 22.x release for deployment; 22.12 is a
+  compatibility floor, not a recommended patch pin.
 - Docker (optional, for containerized runs)
 
 ## Setup

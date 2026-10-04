@@ -7,6 +7,7 @@ enum TenantStatus {
 }
 
 model Tenant {
+  onboardingReceipts TenantOnboardingReceipt[]
   analyticsOutbox AnalyticsDomainEventOutbox[]
   id     String       @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   code   String       @unique
@@ -34,6 +35,7 @@ model Tenant {
 }
 
 model TenantMembership {
+  onboardingReceipts TenantOnboardingReceipt[]
   accountCreationReceipts FinanceAccountCreationReceipt[] @relation("AccountReceiptTenant")
   draftDocuments FinanceDocument[] @relation("DraftTenant")
   id       String           @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid

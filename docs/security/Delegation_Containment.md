@@ -1,5 +1,10 @@
 # Administrative delegation containment
 
+Historical evidence below: the broad manual ERP/support bootstrap described
+here is now disabled by Tenant_Onboarding_Foundation.md. Controlled signed-permit
+provisioning grants only the approved six-key profile; invitations/delegation and
+role-management mutations remain contained. No generic administrator bypass.
+
 ## Plan / current enforced behavior
 
 Baseline 3d7f4915382c391d3eb52b371a388dcfe8effa3b. Inspect public identity routes, service exports, role/permission/scope writers, provisioning scripts and actual frontend consumers. Contain unapproved grant paths before any business reads or effects; retain fresh scoped management reads and existing login/refresh/password contracts. No schema/migration, client rewrite, existing-data cleanup or invented delegation policy.

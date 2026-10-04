@@ -18,6 +18,7 @@ enum MembershipScopeType {
 }
 
 model Role {
+  onboardingReceipts TenantOnboardingReceipt[]
   id   String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   code String
   name String
@@ -34,6 +35,7 @@ model Role {
   membershipRoles MembershipRole[]
 
   @@unique([companyId, code])
+  @@unique([id, companyId], map: "Role_onboarding_company_key")
   @@index([code])
   @@index([companyId, isSystem])
 }
@@ -68,6 +70,8 @@ model RolePermission {
 }
 
 model CompanyMembership {
+  onboardingBridges TenantOnboardingReceipt[] @relation("OnboardingBridge")
+  onboardingOwners TenantOnboardingReceipt[] @relation("OnboardingOwner")
   custodyActions OrderCustodyAction[] @relation("CustodyActor")
   custodyBridges OrderCustodyAction[] @relation("CustodyBridge")
   custodyDrivers OrderCustodyAction[] @relation("CustodyDriver")
@@ -196,6 +200,7 @@ model MembershipScope {
 }
 
 model User {
+  onboardingReceipts TenantOnboardingReceipt[]
   id       String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   name     String
   email    String @unique
