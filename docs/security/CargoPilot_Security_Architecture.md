@@ -2,6 +2,14 @@
 
 ## 1. Purpose and evidence baseline
 
+### Owner-approved first-version pricing policy (2026-10-04)
+
+Standard prices must be calculated server-side from approved versioned route/zone tariffs. Internal standard-price acceptance requires an explicit selected-company capability; finance does not approve every standard shipment. Discounts/manual exceptions require a different authorized approver before acceptance. Tariff publication/change also requires independent authorized approval bound to exact immutable content; draft tariffs cannot supply accepted invoice authority.
+
+Accepted prices must be immutable exact-amount/currency snapshots bound to tariff version, calculation inputs, accepting identity, order and issuing legal entity. Internal acceptance records operational commitment, not customer consent. Later changes are reasoned independently approved revisions that preserve original history; issued invoices cannot be silently rewritten. First-version invoices use the accepted currency; cross-currency invoicing and FX remain deferred. Each tenant appoints company/legal-entity-scoped finance makers/checkers; overlapping permissions never permit self-approval. Audit publication, acceptance, approval, rejection, supersession and issuance with server-derived ownership/identities/times/reasons. Keep untrusted rejection diagnostics separate from accepted facts.
+
+This is approved business policy, not a claim of restored implementation. It does not approve tax treatment, currency precision/rounding, invoice eligibility, charge composition, accounting mappings/correction rules or shared region/zone/SLA governance. See Pricing_To_Invoice_Policy.md for the bounded execution plan and precise dependent gaps. Existing finance execution and configuration guards remain until their own authoritative contracts exist.
+
 This document defines CargoPilot's approved target security architecture, review contract and release-safety expectations. It is authoritative for future design and security review, but it does not claim that every target control is currently implemented.
 
 The source-evidence baseline for this document is local checkpoint:

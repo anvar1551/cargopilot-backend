@@ -36,6 +36,8 @@ export const SYSTEM_PERMISSIONS: SeedPermission[] = [
 
   permission("pricing.read", "pricing", "read", "Read pricing configuration"),
   permission("pricing.write", "pricing", "update", "Write pricing configuration"),
+  permission("pricing.tariffs.propose", "pricing", "propose", "Propose an immutable selected-company tariff version"),
+  permission("pricing.tariffs.approve", "pricing", "approve", "Independently publish or reject another person's tariff version"),
 
   permission("customers.read", "customers", "read", "Read customer entities"),
   permission("customers.write", "customers", "update", "Write customer entities"),

@@ -68,6 +68,10 @@ model RolePermission {
 }
 
 model CompanyMembership {
+  tariffVersions TariffConfigurationVersion[] @relation("TariffVersionActor")
+  tariffVersionBridges TariffConfigurationVersion[] @relation("TariffVersionBridge")
+  tariffDecisions TariffPublicationDecision[] @relation("TariffDecisionActor")
+  tariffDecisionBridges TariffPublicationDecision[] @relation("TariffDecisionBridge")
   publicationRepairs CarrierPublicationRepair[] @relation("PublicationRepairCompany")
   publicationRepairBridges CarrierPublicationRepair[] @relation("PublicationRepairBridge")
   accountCreationReceipts FinanceAccountCreationReceipt[] @relation("AccountReceiptCompany")

@@ -64,6 +64,12 @@ model ZoneMatrixEntry {
 }
 
 model TariffPlan {
+  contentGeneration Int @default(0)
+  approvedVersionId String? @db.Uuid
+  approvedDecision TariffPublicationDecisionKind?
+  approvedPublication TariffPublicationDecision? @relation("TariffPublishedPointer", fields: [approvedVersionId, id, tenantId, companyId, approvedDecision], references: [versionId, planId, tenantId, companyId, decision], onDelete: Restrict, onUpdate: Restrict, map: "TariffPlan_approved_pointer_fkey")
+  versions TariffConfigurationVersion[]
+  @@unique([id, tenantId, companyId], map: "TariffPlan_version_owner_key")
   id                     String                @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   tenantId               String?               @db.Uuid
   tenant                 Tenant?               @relation(fields: [tenantId], references: [id], onDelete: Restrict)
@@ -98,6 +104,68 @@ model TariffPlan {
   @@index([coverageType, transportMode, status])
   @@index([originCountryCode, destinationCountryCode])
   @@index([routeTemplateId, status])
+}
+
+enum TariffPublicationDecisionKind {
+  approved
+  rejected
+}
+
+model TariffConfigurationVersion {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  planId String @db.Uuid
+  sourceGeneration Int
+  contentSha256 String @db.Char(64)
+  content Json
+  actorUserId String @db.Uuid
+  companyMembershipId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  operationId String @db.Uuid
+  intentSha256 String @db.Char(64)
+  reason String
+  proposedAt DateTime @default(now())
+  plan TariffPlan @relation(fields: [planId, tenantId, companyId], references: [id, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "TariffVersion_owner_fkey")
+  actor CompanyMembership @relation("TariffVersionActor", fields: [companyMembershipId, actorUserId, tenantId, companyId], references: [id, userId, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "TariffVersion_actor_fkey")
+  bridge CompanyMembership @relation("TariffVersionBridge", fields: [companyMembershipId, tenantMembershipId, actorUserId, tenantId], references: [id, tenantMembershipId, userId, tenantId], onDelete: Restrict, onUpdate: Restrict, map: "TariffVersion_bridge_fkey")
+  decisions TariffPublicationDecision[] @relation("TariffDecisionSource")
+  makerDecisions TariffPublicationDecision[] @relation("TariffDecisionMaker")
+  supersedingDecisions TariffPublicationDecision[] @relation("TariffDecisionPrevious")
+  @@unique([tenantId, operationId], map: "TariffVersion_operation_key")
+  @@unique([planId, sourceGeneration], map: "TariffVersion_generation_key")
+  @@unique([id, planId, tenantId, companyId, sourceGeneration, contentSha256], map: "TariffVersion_content_key")
+  @@unique([id, planId, tenantId, companyId], map: "TariffVersion_owner_key")
+  @@unique([id, actorUserId], map: "TariffVersion_maker_key")
+  @@index([tenantId, companyId, planId, proposedAt], map: "TariffVersion_owner_idx")
+}
+
+model TariffPublicationDecision {
+  versionId String @id @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  planId String @db.Uuid
+  sourceGeneration Int
+  contentSha256 String @db.Char(64)
+  decision TariffPublicationDecisionKind
+  makerUserId String @db.Uuid
+  actorUserId String @db.Uuid
+  companyMembershipId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  operationId String @db.Uuid
+  intentSha256 String @db.Char(64)
+  reason String
+  previousVersionId String? @db.Uuid
+  decidedAt DateTime @default(now())
+  source TariffConfigurationVersion @relation("TariffDecisionSource", fields: [versionId, planId, tenantId, companyId, sourceGeneration, contentSha256], references: [id, planId, tenantId, companyId, sourceGeneration, contentSha256], onDelete: Restrict, onUpdate: Restrict, map: "TariffDecision_content_fkey")
+  makerProof TariffConfigurationVersion @relation("TariffDecisionMaker", fields: [versionId, makerUserId], references: [id, actorUserId], onDelete: Restrict, onUpdate: Restrict, map: "TariffDecision_maker_fkey")
+  actor CompanyMembership @relation("TariffDecisionActor", fields: [companyMembershipId, actorUserId, tenantId, companyId], references: [id, userId, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "TariffDecision_actor_fkey")
+  bridge CompanyMembership @relation("TariffDecisionBridge", fields: [companyMembershipId, tenantMembershipId, actorUserId, tenantId], references: [id, tenantMembershipId, userId, tenantId], onDelete: Restrict, onUpdate: Restrict, map: "TariffDecision_bridge_fkey")
+  previous TariffConfigurationVersion? @relation("TariffDecisionPrevious", fields: [previousVersionId, planId, tenantId, companyId], references: [id, planId, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "TariffDecision_previous_fkey")
+  publishedPlans TariffPlan[] @relation("TariffPublishedPointer")
+  @@unique([tenantId, operationId], map: "TariffDecision_operation_key")
+  @@unique([versionId, planId, tenantId, companyId, decision], map: "TariffDecision_pointer_key")
+  @@index([tenantId, companyId, decidedAt], map: "TariffDecision_owner_idx")
 }
 
 model TariffRate {

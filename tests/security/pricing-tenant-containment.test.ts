@@ -196,6 +196,8 @@ describe("pricing tenant containment (mocked repository evidence)", () => {
 
   it("derives ownership for plan creation and validates route and customer", async () => {
     database.routeTemplate.findFirst.mockResolvedValue({ id: ids.routeA });
+    database.$executeRaw.mockResolvedValue(0);
+    database.$queryRaw.mockResolvedValue([]);
     database.$transaction.mockImplementation(async (run: any) => run(database));
     database.tariffPlan.updateMany.mockResolvedValue({ count: 0 });
     database.tariffPlan.create.mockResolvedValue({ id: ids.planA });

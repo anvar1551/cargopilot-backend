@@ -1,4 +1,5 @@
 import prisma from "../../../config/prismaClient";
+import { lockTariffAuthoring } from "./tariff-versions";
 import { OrderSlaSource, OrderStatus, ServiceType } from "@prisma/client";
 import { orderError } from "../../orders-core/shared";
 import { resolveOrderSlaSnapshot as resolveOrderSlaSnapshotForOrder } from "../../orders-core/sla";
@@ -836,6 +837,7 @@ export async function createTariffPlan(context: PricingAccessContext, input: Cre
       : null;
 
   return db.$transaction(async (tx: any) => {
+    await lockTariffAuthoring(tx, access.tenantId, access.companyId);
     if (input.isDefault) {
       await tx.tariffPlan.updateMany({
         where: {
@@ -934,6 +936,7 @@ export async function updateTariffPlan(
       : null;
 
   return db.$transaction(async (tx: any) => {
+    await lockTariffAuthoring(tx, access.tenantId, access.companyId);
     if (input.isDefault) {
       await tx.tariffPlan.updateMany({
         where: {
@@ -1020,6 +1023,7 @@ export async function deleteTariffPlan(context: PricingAccessContext, id: string
   }
 
   return db.$transaction(async (tx: any) => {
+    await lockTariffAuthoring(tx, access.tenantId, access.companyId);
     const ratesDeleted = (
       await tx.tariffRate.deleteMany({
         where: { tariffPlanId: id, tariffPlan: { tenantId: access.tenantId, companyId: access.companyId } },
