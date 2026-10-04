@@ -1,4 +1,24 @@
-# Current controlled onboarding readiness (2026-10-04)
+# Current company invitation/delegation readiness (2026-10-05)
+
+Implementation `69d73bb59614886bd6531c65db06aa590080c45e`;
+see [Company_Invitation_Delegation.md](Company_Invitation_Delegation.md).
+
+| Workflow | Current behavior and exact remaining gate |
+|---|---|
+| First operational delegator | Owner-signed new initial-operational-admin.v2 creates an eight-key role and durable selected-company ceiling atomically. V1 stays six keys; existing admins require exact separately signed owner authorization. Real key registration/concrete intent/invocation remain unperformed, not a restored real deployment workflow. |
+| Company invitations | Authorized delegator can create/cancel owned pending invitations and grant only approved clerk/dispatcher/warehouse profiles. Hashed random single-use72-hour tokens, one-time raw return, normalized durable retries. Matching create retry returns metadata without token; lost delivery requires explicit cancel/new intent. No email sending; approved private delivery channel remains necessary. |
+| Recipient enrollment | Synthetic actual new-user enrollment/login and authenticated existing-user binding work. Existing identity must present verified current access context; rotated live lineage supported. No reset/adoption by email. Acceptance issues no session; normal login/explicit company selection follows. Other-company sessions survive company-specific grant revocation. |
+| Managed profile changes | Only workflow-managed roles/scopes within accepted company/resource ceiling; self, delegator, foreign/null/unmanaged references denied. Journal/version/session effects atomic, concurrent acceptance/grants and rollback tested. Scope equality does not replace resource permissions or workflow state. |
+| Revocation | Fresh HTTP and live protected socket checks consume durable revocation. Actual two-process loopback Socket.IO disconnection verified, bounded sweep batches/time window remain. In-flight authorization-to-effect races remain; not instantaneous global revocation. |
+| Unavailable capabilities | Driver enrollment/profiles explicitly deferred; shared User.driverType needs its own approved binding contract. No new driver telemetry/proof permissions. Financial/checker delegation, generic overrides, arbitrary role/user edits, warehouse provisioning/assignment redesign and real token/credential delivery remain unavailable or outside this batch. |
+
+Evidence:20 distinct final-schema PostgreSQL/HTTP/transport cases,55 offline/mock
+cases; earlier15-case affected onboarding regression, final schema/no-emit passed.
+All disposable resources cleaned. No existing-service/real provider/device/Redis,
+frontend or deployed-infrastructure verification. Historical readiness below retains
+its original evidence; v1 capability claims must not be read as the new v2 profile.
+
+## Historical controlled onboarding readiness (2026-10-04)
 
 Implemented internal foundation at `9162596e8cb42395615c5f128eba5ba43e2198df`;
 see [Tenant_Onboarding_Foundation.md](Tenant_Onboarding_Foundation.md).

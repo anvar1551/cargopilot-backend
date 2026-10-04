@@ -1,4 +1,27 @@
-# Current checkpoint — onboarding audit TRUNCATE correction (2026-10-05)
+# Current checkpoint — company invitations and operational delegation (2026-10-05)
+
+Implementation `69d73bb59614886bd6531c65db06aa590080c45e`, from
+`87da9b7ae3830bd69db425b09ee7c1d264674a94`.
+[Company_Invitation_Delegation.md](Company_Invitation_Delegation.md) records exact
+profiles/API/rollout, evidence and limits; its linked plan records owner approvals.
+
+| Classification | Current state |
+|---|---|
+| Implemented/tested — DELEGATION-01 | Separate membership.delegateOperational plus durable company-bound operational-delegation.v1 ceiling. Approved immutable clerk/dispatcher/warehouse profiles only. Signed owner onboarding v2 and exact existing-member owner authorization; v1 remains six keys, no automatic upgrades. Initial warehouse ceiling empty; owner must explicitly authorize owned warehouse IDs. |
+| Implemented/tested — INVITATION-01 | Three explicit company mutation routes plus recipient acceptance. 32-byte random hashed tokens, 72-hour expiry, one-time delivery, normalized operation receipts/conflicts, single-use acceptance, existing identity verified through signed live session lineage. No email adoption/password replacement, self/delegator/foreign/unmanaged grant mutation, token recovery or legacy enrollment bypass. |
+| Implemented/tested — DELEGATION-02 | Profile/scope replacement and managed revocation, authorizationVersion and exact selected-membership session revocation commit with append-only audit. Owner revocation also cancels pending invitations. Recipient/target compound audit constraint, rollback and competing matching requests verified. Fresh HTTP and two-process real Socket.IO disconnection; another company of the same human retains access/refresh. Existing timing races remain documented. |
+| Evidence | Final20 distinct real PostgreSQL/actual HTTP/transport cases passed under final combined schema; 115 migrations as isolated setup. 55 focused offline/mock cases passed (8 new,19 onboarding,28 legacy containment); affected earlier15-case onboarding PostgreSQL regression passed. Targeted reruns are not extra distinct cases. Final offline schema validation and 4GiB no-emit passed; all ten owned instances verified removed, final cp-verification-c12a0eb968ce. No Redis/deployed transport claim. |
+| Deliberately unavailable | Real onboarding/invitation invocation: no registered real owner key/concrete signed intent or approved private credential/token delivery performed. No email sending or operator CLI. Financial/checker delegation needs separate independent approval. Driver profiles/identity provisioning explicitly deferred. Legacy arbitrary user/role/PATCH/DELETE remain denied; unmanaged legacy access cannot be silently replaced. Clients unchanged. |
+| Existing release gates | Real registry/ACL/credential handoff/DB invocation, infrastructure/deployment/source-artifact, Redis/provider/S3/device, nullable/historical constraints and legacy grant certification remain unresolved. Customer masters and warehouses remain tenant-owned; no company-owner relationship invented. No production-readiness or absolute immutability claim. |
+
+Finite batch complete; stop. Possible next work requires a separate bounded scope:
+secure operator/token delivery integration after explicit real-key/invocation
+authorization; driver identity provisioning contract; financial delegation approval
+policy. None started. No tenant cutover, real invitations, client changes, push,
+deployment or existing-service access. Authored implementation committed; preserve
+pre-existing dist and policy-blocked cleanup directory recorded below.
+
+## Historical checkpoint — onboarding audit TRUNCATE correction (2026-10-05)
 
 Baseline `985ab2f5a70ea6208ee9a472e669c71a49a67f37`. ONBOARD-AUDIT-01
 implemented/tested: additive `20261005200000_onboarding_receipt_no_truncate`

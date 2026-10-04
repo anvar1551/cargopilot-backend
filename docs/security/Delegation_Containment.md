@@ -1,5 +1,17 @@
 # Administrative delegation containment
 
+Current bounded exception (2026-10-05):
+[Company_Invitation_Delegation.md](Company_Invitation_Delegation.md) implements only
+the owner-approved clerk/dispatcher/warehouse invitation and managed grant contract.
+It requires separately accepted company-bound delegation authority, not role names
+or permission possession. V1 admins stay unchanged; v2/existing-member acceptance
+is owner-signed. Legacy arbitrary user/role/PATCH/DELETE endpoints below stay denied.
+Driver profiles, financial/checker delegation and real delivery remain unavailable.
+Historical statements about all invitations being disabled, absent version columns
+or process-local-only revocation below are superseded only by that focused slice
+and the existing durable session revocation implementation. No general IAM bypass
+or retrospective certification/removal of legacy grants is claimed.
+
 Historical evidence below: the broad manual ERP/support bootstrap described
 here is now disabled by Tenant_Onboarding_Foundation.md. Controlled signed-permit
 provisioning grants only the approved six-key profile; invitations/delegation and

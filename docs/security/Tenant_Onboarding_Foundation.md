@@ -1,5 +1,14 @@
 # Controlled tenant onboarding foundation
 
+Version boundary update (2026-10-05): initial-operational-admin.v1 below remains
+exactly six keys. [Company_Invitation_Delegation.md](Company_Invitation_Delegation.md)
+adds explicitly approved v2 (the six keys plus membership.invite and
+membership.delegateOperational) and durable company-bound delegation authority
+through a new additive migration. No v1 or existing administrator is upgraded.
+Registry and signed permit must explicitly select the accepted revision. Real key
+registration/signing/invocation remains unperformed; old v1 evidence is historical,
+not a claim of real provisioning or general tenant-administrator authority.
+
 ## Focused audit correction — 2026-10-05
 
 Review of published baseline `985ab2f5a70ea6208ee9a472e669c71a49a67f37`
