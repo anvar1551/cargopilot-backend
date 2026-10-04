@@ -1,4 +1,24 @@
-# Current checkpoint — controlled tenant-onboarding foundation (2026-10-04)
+# Current checkpoint — onboarding audit TRUNCATE correction (2026-10-05)
+
+Baseline `985ab2f5a70ea6208ee9a472e669c71a49a67f37`. ONBOARD-AUDIT-01
+implemented/tested: additive `20261005200000_onboarding_receipt_no_truncate`
+adds BEFORE TRUNCATE statement rejection using the existing audit function.
+Published migration unchanged. Three distinct PostgreSQL UPDATE/DELETE/TRUNCATE
+cases passed, preserving the complete onboarding graph/receipt and matching
+authorized retry result; 12 unchanged cases skipped. 114 migrations applied as
+isolated setup, final 4GiB no-emit passed. Schema unchanged; earlier schema,
+permit/login/grant/concurrency evidence reused. Run-owned instance
+`cp-verification-ffbb3c8d5731` ownership/tmpfs checked, removed and absence verified.
+See [Tenant_Onboarding_Foundation.md](Tenant_Onboarding_Foundation.md) for commands.
+
+Database-owner/schema-administrator powers can disable/drop this protection:
+absolute immutability is not claimed. Deploy the additive migration before claiming
+TRUNCATE protection. Real registration, intent signing, credential handoff/operator
+invocation remain unavailable pending ONBOARD-02 authorization/verification below;
+no grants or workflow enablement added. Existing release gates and blocked cleanup
+remain unchanged. Stop after this finite correction; no automatic next task.
+
+## Historical checkpoint — controlled tenant-onboarding foundation (2026-10-04)
 
 Implementation checkpoint `9162596e8cb42395615c5f128eba5ba43e2198df`, from
 `1d01f19a3aa7ffa1096ab419144c01d60e6e73e0`.

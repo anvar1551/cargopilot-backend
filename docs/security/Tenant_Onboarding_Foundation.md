@@ -1,5 +1,40 @@
 # Controlled tenant onboarding foundation
 
+## Focused audit correction — 2026-10-05
+
+Review of published baseline `985ab2f5a70ea6208ee9a472e669c71a49a67f37`
+confirmed that row-level BEFORE UPDATE/DELETE protection did not reject TRUNCATE.
+New additive migration `20261005200000_onboarding_receipt_no_truncate` installs
+a statement-level BEFORE TRUNCATE trigger using the existing rejection function,
+consistent with the other append-only journals. The published onboarding migration
+is unchanged; apply the new migration before claiming TRUNCATE protection.
+No Prisma model, API, permit, profile, credential or login behavior changes.
+
+This protects ordinary statements with triggers enabled, not absolute immutability:
+database owners/schema administrators can disable/drop triggers or replace the
+function/schema. Privileged database access, role/DDL controls, backups and external
+audit protection remain separate infrastructure verification requirements.
+Do not roll back this protection to permit destructive audit cleanup.
+
+Executed correction evidence: `node "$env:TEMP/cp-onboarding-audit-run.cjs"`
+reused the isolated harness with Jest `--testNamePattern="audit tamper"` selecting
+only three new distinct cases (UPDATE, DELETE, TRUNCATE); **3 passed, 12 unchanged
+cases skipped**. All 114 migrations applied as disposable setup. Each statement
+rejects with SQLSTATE P0001 and the exact audit rejection message; full graph/receipt
+digest is unchanged, and a freshly authorized matching retry returns the original
+IDs without mutation. Catalog assertions verify BEFORE/statement/TRUNCATE flags.
+Snapshots never print credentials. Test-only keys stay in memory; no real signing
+or provisioning occurred. Existing 19 offline and 12 PostgreSQL cases remain prior
+evidence, not reruns or additional cases in this correction.
+
+`NODE_OPTIONS=--max-old-space-size=4096 node node_modules/typescript/bin/tsc --noEmit`
+passed. Prisma schema/client are unchanged; prior validation reused, no regeneration.
+Focused migration/source review confirms only the additional trigger, not complete
+historical schema-to-SQL equivalence. Cleanup verified label/name and exclusively
+owned tmpfs for `cp-verification-ffbb3c8d5731`, removed it and confirmed absence;
+no volume/bind storage or existing services used. Real key registration/credential
+handoff, deployment and privileged-database protections remain unverified.
+
 Baseline: `1d01f19a3aa7ffa1096ab419144c01d60e6e73e0`.
 
 Owner clarification in this batch approved the signed-permit contract and exact

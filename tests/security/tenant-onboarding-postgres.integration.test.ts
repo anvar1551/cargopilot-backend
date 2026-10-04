@@ -124,6 +124,36 @@ it("receipt insertion failure rolls back all identities, grants and audit togeth
   try { await expect(onboardTenant(mockDb, request())).rejects.toThrow("ONBOARDING_TRANSACTION_FAILED"); expect(await counts()).toEqual(before); }
   finally { await pool.query('DROP TRIGGER cp_onboarding_fail ON "TenantOnboardingReceipt"; DROP FUNCTION cp_onboarding_fail();'); }
 });
+it.each(["UPDATE", "DELETE", "TRUNCATE"])("audit tamper %s rejects, preserves graph and permits matching authorized retry", async operation => {
+  const args = request(), original = await onboardTenant(mockDb, args);
+  // Complete graph snapshots stay inside the test process, including credentials;
+  // compare a digest so a failed assertion cannot print sensitive row values.
+  async function snapshot() {
+    const graph: Record<string, unknown> = {};
+    for (const table of tables) {
+      graph[table] = (await pool.query(`SELECT to_jsonb(record) AS row FROM "${table}" AS record ORDER BY to_jsonb(record)::text`)).rows;
+    }
+    return createHash("sha256").update(JSON.stringify(graph)).digest("hex");
+  }
+  const before = await snapshot();
+  const statement = operation === "UPDATE"
+    ? 'UPDATE "TenantOnboardingReceipt" SET "reason"=\'altered\' WHERE "operationId"=$1'
+    : operation === "DELETE"
+      ? 'DELETE FROM "TenantOnboardingReceipt" WHERE "operationId"=$1'
+      : 'TRUNCATE TABLE "TenantOnboardingReceipt"';
+  await expect(pool.query(statement, operation === "TRUNCATE" ? [] : [args.intent.operationId]))
+    .rejects.toMatchObject({ code: "P0001", message: "Accepted onboarding audit is immutable" });
+  expect(await snapshot()).toBe(before);
+  expect(await onboardTenant(mockDb, { ...args, initialCredentialHash: undefined })).toEqual(original);
+  expect(await snapshot()).toBe(before);
+  if (operation === "TRUNCATE") {
+    const trigger = await pool.query(`SELECT (tgtype & 32) <> 0 AS truncate_event,
+      (tgtype & 2) <> 0 AS before_event, (tgtype & 1) = 0 AS statement_level
+      FROM pg_trigger WHERE tgrelid='"TenantOnboardingReceipt"'::regclass
+      AND tgname='TenantOnboardingReceipt_no_truncate' AND NOT tgisinternal`);
+    expect(trigger.rows).toEqual([{ truncate_event: true, before_event: true, statement_level: true }]);
+  }
+});
 it("database audit is immutable and cross-tenant receipt references cannot be forged", async () => {
   const a = request(); await onboardTenant(mockDb, a);
   await expect(pool.query('UPDATE "TenantOnboardingReceipt" SET "reason"=$1 WHERE "operationId"=$2', ["altered", a.intent.operationId])).rejects.toThrow("immutable");
