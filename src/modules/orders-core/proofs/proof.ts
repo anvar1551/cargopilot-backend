@@ -1,7 +1,7 @@
 import { acceptProof, findProofRetry, markProofStored, confirmProof, sha256 } from "./submission";
 import { MAX_PROOF_BYTES, processProofRaster, proofSignaturePoints, validateProofPng } from "./raster-processing";
 import { requireCustodyProofOrder } from "../domain/custody-access";
-import { requireAuthorizedOrder } from "../domain/order-access";
+import { requireAuthorizedOrder, requireExplicitlyScopedOrder } from "../domain/order-access";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
 
 import prisma from "../../../config/prismaClient";
@@ -208,7 +208,7 @@ async function buildProofBundlesForOrder(args: {
 
 export async function requireProofSubmissionContext(actor: OrderActor, orderId: string) {
   let order;
-  try { order = await requireAuthorizedOrder(actor, orderId, "shipment.update"); }
+  try { order = await requireExplicitlyScopedOrder(actor, orderId, "shipment.update"); }
   catch (error) {
     if (![403, 404].includes((error as {statusCode?:number}).statusCode ?? 0)) throw error;
     order = await requireCustodyProofOrder(actor, orderId);

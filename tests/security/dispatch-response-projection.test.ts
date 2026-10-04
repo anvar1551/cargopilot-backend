@@ -18,7 +18,7 @@ beforeEach(() => {
   (buildMembershipOrderScopeWhere as jest.Mock).mockResolvedValue({tenantId:actor.tenantId,ownerOrgId:actor.companyId});
   db.$transaction.mockImplementation(async (fn: any) => { insideTransaction=true; try { return await fn(db); } finally { insideTransaction=false; } });
   db.user.findUnique.mockResolvedValue({ id: summary.assignedDriverId, driverType: "local" });
-  db.companyMembership.findFirst.mockResolvedValue({ id: "synthetic-driver-membership",roles:[{role:{companyId:actor.companyId,isSystem:false,rolePermissions:[{permission:{key:"drivers.telemetry"}}]}}] });
+  db.companyMembership.findFirst.mockResolvedValue({ id: "synthetic-driver-membership", userId:summary.assignedDriverId, tenantMembership:{userId:summary.assignedDriverId},roles:[{role:{companyId:actor.companyId,isSystem:false,rolePermissions:[{permission:{key:"drivers.telemetry"}},{permission:{key:"shipment.changeStatus"}}]}}] });
   db.order.updateMany.mockResolvedValue({ count: 1 });
   db.tracking.createMany.mockResolvedValue({ count: 1 }); db.tracking.create.mockResolvedValue({id:"tracking-a"}); db.tracking.findUnique.mockResolvedValue(null);
   db.order.findMany.mockReset(); db.order.findFirst.mockReset();

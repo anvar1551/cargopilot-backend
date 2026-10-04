@@ -8,7 +8,7 @@ import { orderError, type OrderActor } from "../shared";
 const pageSchema = z.object({ kind: z.enum(["warehouse", "driver"]), limit: z.coerce.number().int().min(1).max(50).default(25),
   cursor: z.string().min(1).max(1024).optional() }).strict();
 const cursorSchema = z.object({ v: z.literal(1), context: z.string().regex(/^[a-f0-9]{64}$/), after: z.string().uuid() }).strict();
-type WorkRow = { orderId: string; orderNumber: string; status: string; expectedUpdatedAt: Date; expectedEventId: string;
+type WorkRow = { orderId: string; orderNumber: string; status: string; expectedUpdatedAt: Date; expectedEventId: string | null;
   phase: string; currentWarehouseId: string | null; destinationWarehouseId: string | null; legId: string | null };
 
 export async function listCustodyWork(requested: OrderActor, raw: unknown) {
@@ -47,6 +47,10 @@ export async function listCustodyWork(requested: OrderActor, raw: unknown) {
     } else {
       // No company/global order scope substitutes for the exact eligible driver membership.
       const user = await tx.user.findUnique({ where: { id: actor.id }, select: { driverType: true } });
+      if (user?.driverType === "local" && permissions.includes("shipment.changeStatus")) {
+        await requireCustodyDriver(tx, actor, actor.companyMembershipId!, "local", "shipment.changeStatus");
+        conditions.push(Prisma.sql`(c.id IS NULL AND NOT EXISTS (SELECT 1 FROM "OrderCustodyAction" history WHERE history."orderId"=o.id) AND o.status IN ('assigned','pickup_in_progress','picked_up') AND o."currentWarehouseId" IS NULL AND o."assignedDriverId"=${actor.id}::uuid)`);
+      }
       const actions = user?.driverType === "linehaul" ? ["transport-accept"] : user?.driverType === "local" ? ["pickup-offer", "last-mile-accept", "deliver"] : [];
       for (const action of actions.filter(allowed)) {
         await requireCustodyDriver(tx, actor, actor.companyMembershipId!, user!.driverType as "local" | "linehaul", `shipment.custody.${action}`);
@@ -58,19 +62,19 @@ export async function listCustodyWork(requested: OrderActor, raw: unknown) {
     }
     if (!conditions.length) throw orderError("Custody work action permission required", 403);
     const rows = await tx.$queryRaw<WorkRow[]>`SELECT o.id AS "orderId", o."orderNumber", o.status, o."updatedAt" AS "expectedUpdatedAt",
-      c.id AS "expectedEventId", c.phase, o."currentWarehouseId", c."destinationWarehouseId", c."legId"
-      FROM "Order" o JOIN LATERAL (SELECT a.id, a.phase, a."warehouseId", a."destinationWarehouseId", a."driverUserId", a."driverMembershipId",
+      c.id AS "expectedEventId", COALESCE(c.phase, 'pickup-assigned') AS phase, o."currentWarehouseId", c."destinationWarehouseId", c."legId"
+      FROM "Order" o LEFT JOIN LATERAL (SELECT a.id, a.phase, a."warehouseId", a."destinationWarehouseId", a."driverUserId", a."driverMembershipId",
         a."legId", a."actorUserId", a."companyMembershipId" FROM "OrderCustodyAction" a
         WHERE a."orderId"=o.id AND a."tenantId"=${actor.tenantId}::uuid AND a."companyId"=${actor.companyId}::uuid ORDER BY a.sequence DESC LIMIT 1) c ON true
       WHERE o."tenantId"=${actor.tenantId}::uuid AND o."ownerOrgId"=${actor.companyId}::uuid
         AND (o."assignedOrgId" IS NULL OR o."assignedOrgId"=${actor.companyId}::uuid)
         AND (${after}::uuid IS NULL OR o.id>${after}::uuid)
         AND (${Prisma.join(conditions, " OR ")})
-        AND (c.phase NOT IN ('pickup-offered','transport') OR (c."actorUserId"=c."driverUserId" AND c."companyMembershipId"=c."driverMembershipId"))
-        AND (c.phase NOT IN ('transport-offered','transport') OR EXISTS (SELECT 1 FROM "OrderLeg" l WHERE l.id=c."legId" AND l."orderId"=o.id
+        AND (c.id IS NULL OR c.phase NOT IN ('pickup-offered','transport') OR (c."actorUserId"=c."driverUserId" AND c."companyMembershipId"=c."driverMembershipId"))
+        AND (c.id IS NULL OR c.phase NOT IN ('transport-offered','transport') OR EXISTS (SELECT 1 FROM "OrderLeg" l WHERE l.id=c."legId" AND l."orderId"=o.id
           AND l."fromWarehouseId"=c."warehouseId" AND l."toWarehouseId"=c."destinationWarehouseId" AND l."carrierProviderId" IS NULL AND l."carrierBookingStatus"='not_requested'
           AND ((c.phase='transport-offered' AND l.status='planned') OR (c.phase='transport' AND l.status IN ('departed','in_transit','arrived')))))
-        AND ${page.kind === "driver" ? Prisma.sql`c."driverUserId"=${actor.id}::uuid AND c."driverMembershipId"=${actor.companyMembershipId}::uuid` : Prisma.sql`true`}
+        AND ${page.kind === "driver" ? Prisma.sql`(c.id IS NULL OR (c."driverUserId"=${actor.id}::uuid AND c."driverMembershipId"=${actor.companyMembershipId}::uuid))` : Prisma.sql`true`}
       ORDER BY o.id ASC LIMIT ${page.limit + 1}`;
     const items = rows.slice(0, page.limit).map(row => ({ ...row, expectedUpdatedAt: row.expectedUpdatedAt.toISOString() }));
     const nextCursor = rows.length > page.limit ? Buffer.from(JSON.stringify({ v: 1, context, after: items[items.length - 1].orderId })).toString("base64url") : null;

@@ -1,3 +1,4 @@
+import { requireInitialPickupAuthority } from "../domain/custody-access";
 import prisma from "../../../config/prismaClient";
 import { persistDispatchNotification, withDispatchNotifications } from "../domain/dispatch-notification";
 import { enqueueCargoPilotDomainEventsTx } from "../../analytics-core/infrastructure/analyticsOutbox";
@@ -474,7 +475,10 @@ export async function updateDriverOrderStatus(args: {
   actor: OrderActor;
 }) {
   const { orderId, status, reasonCode, note, region, actor: requestedActor } = args;
-  let authority = await requireDispatchAuthority(requestedActor, "shipment.changeStatus");
+  // Only existing forward pickup transitions use the exact owned assignment alternative.
+  const pickup = status === OrderStatus.pickup_in_progress || status === OrderStatus.picked_up;
+  const resolve = (actor: OrderActor) => pickup ? requireInitialPickupAuthority(actor) : requireDispatchAuthority(actor, "shipment.changeStatus");
+  let authority = await resolve(requestedActor);
   let { actor } = authority;
 
   if (!orderId) {
@@ -491,7 +495,7 @@ export async function updateDriverOrderStatus(args: {
       WHERE "id" = ${orderId}::uuid AND "tenantId" = ${actor.tenantId}::uuid
         AND ("ownerOrgId" = ${actor.companyId}::uuid OR "assignedOrgId" = ${actor.companyId}::uuid) FOR UPDATE`;
     if (locked.length !== 1) throw orderError("Order is no longer in scope", 409);
-    authority = await requireDispatchAuthority(actor, "shipment.changeStatus");
+    authority = await resolve(actor);
     actor = authority.actor;
     const order = await tx.order.findFirst({...stateQuery,where:dispatchOrderWhere(authority,[orderId])});
     if (!order) {
@@ -509,7 +513,7 @@ export async function updateDriverOrderStatus(args: {
     }
 
     const updated = await tx.order.updateMany({
-      where: dispatchOrderWhere(authority, [orderId]),
+      where: { AND: [dispatchOrderWhere(authority, [orderId]), { status: order.status, updatedAt: order.updatedAt, assignedDriverId: actor.id }] },
       data: updateData,
     });
     if (updated.count !== 1) {

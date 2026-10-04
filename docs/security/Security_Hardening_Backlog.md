@@ -1,3 +1,20 @@
+# Current checkpoint — restricted initial pickup (2026-10-04)
+
+Baseline 7df9595baeba499f7dbf6bb67002c42e12407518. This finite backend batch addresses the initial broad-scope/journal-discovery gap. Restricted_Initial_Pickup.md records exact API/evidence and demonstrated proof-scope/sentinel corrections. Older handoffs below are historical where superseded; no further implementation batch is authorized by this finite request.
+
+| Classification | Current boundary |
+|---|---|
+| Implemented | Dispatcher-provisioned, authoritative owned initial assignments are discoverable/preflightable under fresh selected driver context without company/warehouse scope or assignCourier. Existing forward pickup transitions serialize on Order locks and reauthorize after waiting; cash/assignment/state/transaction guards remain. Proof submission uses explicit scope or exact current driver assignment/custody; no implicit company fallback. |
+| Partially implemented | Backend operational discovery/snapshot only; initial entries have phase pickup-assigned and null expectedEventId before a custody journal. Generic order/address/contact/detail/file APIs are unchanged. Live keyset pages are not a fixed snapshot or production query-volume certification. |
+| Deliberately unavailable | Self-assignment, unowned/foreign/conflicting work, stale assignments, inactive actors, new exception/return/cancellation/override and cross-company/partial custody policies. Existing accounting/FX and uncertain provider workflows remain contained. |
+| Awaiting external verification / decisions | Deferred client adoption, real device/S3/provider/Redis/native transport, historical/null certification, source-to-dist/deployment and production-volume gates. Existing financial and source-specific exceptional recovery policies remain pending. |
+
+Final evidence: two DISTINCT actual PostgreSQL journey cases passed (72.321s); the prior onward competing-dispatch case skipped/reused. Driver restricted before first transition; discovery, exact assignment, proof, competing pickup, cash denial, stale reassignment, foreign/suspended denial and rollback proven. 91 distinct focused mocked/unit/HTTP cases passed across affected suites (overlapping reruns excluded); final no-emit passed. 112 unchanged migrations were disposable setup only. All failed and successful owned runs cleaned up, final cp-verification-d284070208e1 absence verified. Exact commands/results and failed-attempt attribution are in Restricted_Initial_Pickup.md. No new migration/schema generation/dependency/client/build output. Preexisting dist is preserved. Stop after local reviewed commit; no push/deployment.
+
+---
+
+# Historical handoff — prior receiving/discovery batch
+
 # Current checkpoint — suspension-safe receipt and restricted custody discovery (2026-10-04)
 
 Baseline 7458edd078f4f873ac8f9eb9afc559d96e4630ad. Receiving checkpoint fa03351f38df7a420ac601edd8790128b2c7ce9b; this following discovery/evidence checkpoint completes the finite batch. Custody_Receiving_And_Work_Lists.md records exact contracts, policy boundary and executed/reused results. Older handoffs/blockers below are historical where superseded. No work remains underway; only pre-existing dist remains dirty after checkpoint. No push/deployment or automatic next task.

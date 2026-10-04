@@ -1,22 +1,23 @@
 import prisma from "../../../config/prismaClient";
-import { buildOrderScopeWhere, loadAccessSnapshot } from "../../identity-access/access-control";
+import { buildOrderScopeWhere, buildMembershipOrderScopeWhere, loadAccessSnapshot } from "../../identity-access/access-control";
 import type { AppUser } from "../../../types/app-user";
 import type { OrderActor } from "../shared/actor";
 import { orderError } from "../shared/actor";
 
 /** Uses the established fresh membership and object-scope policy at service boundaries. */
-export async function requireAuthorizedOrder(
+async function requireOrderWithScope(
   actor: OrderActor | null | undefined,
   orderId: string,
   permission: string,
+  explicit: boolean,
 ) {
   if (!actor?.id || !actor.tenantId || !actor.tenantMembershipId ||
       !actor.companyId || !actor.companyMembershipId ||
       actor.membershipId !== actor.companyMembershipId) {
     throw orderError("Tenant-bound membership context required", 403);
   }
-  const scope = await buildOrderScopeWhere(actor as AppUser, permission);
-  if (!scope || scope.id === "__no_access__") {
+  const scope = await (explicit ? buildMembershipOrderScopeWhere : buildOrderScopeWhere)(actor as AppUser, permission);
+  if (!scope || scope.id === "__no_access__" || (Array.isArray(scope.AND) && scope.AND.some(item => item.id === "__no_access__"))) {
     throw orderError("Order permission and scope required", 403);
   }
   const order = await prisma.order.findFirst({
@@ -28,6 +29,13 @@ export async function requireAuthorizedOrder(
   }
   return order;
 }
+
+/** Existing compatibility callers retain their current policy. */
+export const requireAuthorizedOrder = (actor: OrderActor | null | undefined, orderId: string, permission: string) =>
+  requireOrderWithScope(actor, orderId, permission, false);
+/** Protected proof submission cannot inherit an implicit default company scope. */
+export const requireExplicitlyScopedOrder = (actor: OrderActor | null | undefined, orderId: string, permission: string) =>
+  requireOrderWithScope(actor, orderId, permission, true);
 
 export async function requireOrderWarehouseReference(actor: OrderActor, warehouseId: string) {
   const snapshot = await loadAccessSnapshot({

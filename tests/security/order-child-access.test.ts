@@ -7,7 +7,7 @@ jest.mock("../../src/utils/s3Presign", () => ({ presignGetObject: jest.fn(async 
 import { getOrderLabelUrls } from "../../src/modules/labels-core/application/labelAccess";
 import { presignGetObject } from "../../src/utils/s3Presign";
 import { database as db } from "./fixtures";
-import { requireAuthorizedOrder } from "../../src/modules/orders-core/domain/order-access";
+import { requireAuthorizedOrder, requireExplicitlyScopedOrder } from "../../src/modules/orders-core/domain/order-access";
 import { applyCarrierIntegrationEvent } from "../../src/modules/orders-legs/carrier-events";
 import { listOrderLegs, upsertOrderLeg } from "../../src/modules/orders-legs/legs";
 import { bookCarrierForOrderLeg } from "../../src/modules/orders-legs/carrier-booking";
@@ -115,4 +115,12 @@ it("allows a warehouse only with current membership scope and authoritative tena
  db.orderLeg.findFirst.mockResolvedValue({ id: "leg-a", carrierBookingStatus: "booked" });
  await expect(upsertOrderLeg("order-a", { sequence: 1, fromWarehouseId: "warehouse-a" }, actor)).resolves.toMatchObject({ id: "leg-a" });
  expect(db.warehouse.findFirst).toHaveBeenCalledWith({ where: { id: "warehouse-a", tenantId: "tenant-a" }, select: { id: true } });
+});
+
+it("explicit proof scope rejects nested deny sentinel before an invalid UUID query or business effects", async () => {
+  const stored=await db.companyMembership.findFirst();
+  db.companyMembership.findFirst.mockResolvedValue({...stored,scopes:[]});
+  db.order.findFirst.mockClear();
+  await expect(requireExplicitlyScopedOrder(actor,"order-a","shipment.update")).rejects.toMatchObject({statusCode:403});
+  expect(db.order.findFirst).not.toHaveBeenCalled();expect(db.order.updateMany).not.toHaveBeenCalled();
 });

@@ -48,3 +48,16 @@ it("scope, permission, membership and list-kind changes invalidate an existing c
   await expect(listCustodyWork(actor as any,{kind:"driver",limit:1,cursor:first.nextCursor})).rejects.toThrow("cursor");
   expect(db.$queryRaw).not.toHaveBeenCalled();
 });
+
+it("initial pickup discovery keeps the existing fields with null journal identity and owned assignment predicates", async () => {
+  (requireCustodyActor as jest.Mock).mockResolvedValue({...actor,scopes:[],permissionCodes:["shipment.view","shipment.changeStatus"]});
+  db.user.findUnique.mockResolvedValue({driverType:"local"});
+  db.$queryRaw.mockResolvedValue([{orderId:id(21),orderNumber:"Synthetic",status:"assigned",expectedUpdatedAt:new Date(0),expectedEventId:null,phase:"pickup-assigned",currentWarehouseId:null,destinationWarehouseId:null,legId:null}]);
+  const result=await listCustodyWork(actor as any,{kind:"driver"});
+  expect(result.items[0]).toMatchObject({phase:"pickup-assigned",expectedEventId:null,status:"assigned"});
+  const call=(requireCustodyDriver as jest.Mock).mock.calls[0];
+  expect(call[0]).toBe(db);expect(call[1]).toMatchObject({companyMembershipId:actor.companyMembershipId});expect(call.slice(2)).toEqual([actor.companyMembershipId,"local","shipment.changeStatus"]);
+  const query=db.$queryRaw.mock.calls[0];
+  const sql=query[0].join("?")+query.slice(1).filter((v:any)=>v && typeof v === "object" && typeof v.sql === "string").map((v:any)=>v.sql).join("?");
+  expect(sql).toContain("LEFT JOIN LATERAL");expect(sql).toContain('o."assignedDriverId"');expect(sql).toContain('o."ownerOrgId"');expect(sql).toContain("NOT EXISTS");
+});

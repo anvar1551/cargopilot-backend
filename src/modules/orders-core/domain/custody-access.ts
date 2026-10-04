@@ -27,6 +27,19 @@ export async function loadCustodySource(tx: Prisma.TransactionClient, actor: Ord
   const latest = await tx.orderCustodyAction.findFirst({ where: { orderId, tenantId: actor.tenantId!, companyId: actor.companyId! }, orderBy: { sequence: "desc" } });
   return { order, latest };
 }
+/** Initial assignment is authoritative only in the selected owning company (unique user/company membership).
+ * No custody history, warehouse custody, first-membership selection or self-assignment is admitted. */
+export function initialPickupWhere(actor: OrderActor): Prisma.OrderWhereInput {
+  return { tenantId: actor.tenantId!, ownerOrgId: actor.companyId!, assignedDriverId: actor.id,
+    currentWarehouseId: null, status: { in: ["assigned", "pickup_in_progress", "picked_up"] },
+    OR: [{ assignedOrgId: null }, { assignedOrgId: actor.companyId! }], custodyActions: { none: {} } };
+}
+export async function requireInitialPickupAuthority(requested: OrderActor) {
+  const actor = await requireCustodyActor(requested, "shipment.changeStatus");
+  await requireCustodyDriver(prisma, actor, actor.companyMembershipId!, "local", "shipment.changeStatus");
+  return { actor, scope: initialPickupWhere(actor) };
+}
+
 type Source = Awaited<ReturnType<typeof loadCustodySource>>;
 
 /** Receiving authority belongs to staff, not the outgoing actor's continuing login/permissions. */
@@ -75,7 +88,7 @@ export async function authorizeCustodyAction(tx: Prisma.TransactionClient, actor
   }
   const pickup = action === "pickup-offer";
   const phase = action === "transport-accept" ? "transport-offered" : action === "last-mile-accept" ? "last-mile-offered" : "last-mile";
-  if (pickup ? (!!latest || order.status !== "picked_up" || order.assignedDriverId !== actor.id) :
+  if (pickup ? (!!latest || order.currentWarehouseId !== null || order.status !== "picked_up" || order.assignedDriverId !== actor.id) :
       (latest?.phase !== phase || latest.driverUserId !== actor.id || latest.driverMembershipId !== actor.companyMembershipId)) {
     throw orderError("Exact custody driver membership required", 403);
   }
@@ -94,6 +107,11 @@ export async function authorizeCustodyRetry(tx: Prisma.TransactionClient, actor:
 }
 
 export async function authorizeCustodyRead(tx: Prisma.TransactionClient, actor: OrderActor, source: Source) {
+  if (!source.latest && actor.permissionCodes?.includes("shipment.changeStatus") &&
+      await tx.order.findFirst({ where: { AND: [initialPickupWhere(actor), { id: source.order.id }] }, select: { id: true } })) {
+    await requireCustodyDriver(tx, actor, actor.companyMembershipId!, "local", "shipment.changeStatus");
+    return;
+  }
   if (source.latest?.driverUserId === actor.id && source.latest.driverMembershipId === actor.companyMembershipId) {
     const action = source.latest.phase === "pickup-offered" ? "pickup-offer" :
       ["transport-offered", "transport"].includes(source.latest.phase) ? "transport-accept" :
@@ -122,7 +140,10 @@ export async function requireCustodyProofOrder(requested: OrderActor, orderId: s
   const actor = await requireCustodyActor(requested, "shipment.update");
   const source = await loadCustodySource(prisma, actor, orderId);
   if (source.order.assignedDriverId !== actor.id) throw orderError("Assigned proof driver required", 403);
-  if (!source.latest) await authorizeCustodyAction(prisma, actor, source, "pickup-offer");
+  if (!source.latest) {
+    if (!await prisma.order.findFirst({ where: { AND: [initialPickupWhere(actor), { id: orderId }] }, select: { id: true } })) throw orderError("Current initial pickup assignment required", 403);
+    await requireCustodyDriver(prisma, actor, actor.companyMembershipId!, "local", "shipment.custody.pickup-offer");
+  }
   else {
     if (!["last-mile", "delivered"].includes(source.latest.phase) || source.latest.driverUserId !== actor.id || source.latest.driverMembershipId !== actor.companyMembershipId) throw orderError("Accepted proof driver membership required", 403);
     await requireCustodyDriver(prisma, actor, actor.companyMembershipId!, "local", "shipment.custody.deliver");
