@@ -144,10 +144,9 @@ describe("Phase 0A abuse limiter (unit/mocked storage only)", () => {
 describe("trusted proxy configuration", () => {
   it("defaults to socket IP and rejects trust-all/invalid configuration", () => {
     expect(loadAppEnv({}).TRUST_PROXY).toBe(false);
-    for (const value of ["true", "yes", "on", "0.0.0.0/0", "::/0", "garbage", "999999999999999999999"]) {
+    for (const value of ["true", "yes", "on", "1", "2", "0.0.0.0/0", "::/0", "garbage", "999999999999999999999"]) {
       expect(() => parseTrustedProxy(value)).toThrow();
     }
-    expect(parseTrustedProxy("1")).toBe(1);
     expect(parseTrustedProxy("127.0.0.1,10.0.0.0/8")).toEqual(["127.0.0.1", "10.0.0.0/8"]);
   });
 
@@ -156,7 +155,7 @@ describe("trusted proxy configuration", () => {
     [parseTrustedProxy("10.0.0.1"), "192.0.2.10", "192.0.2.10"],
     [parseTrustedProxy("10.0.0.1"), "10.0.0.1", "198.51.100.8"],
   ])("resolves only the configured proxy chain", async (trustProxy, remoteAddress, expected) => {
-    const app = Fastify({ trustProxy: trustProxy as any });
+    const app = Fastify({ trustProxy });
     app.get("/", async (req) => ({ ip: req.ip }));
     try {
       const result = await app.inject({ url: "/", remoteAddress: remoteAddress as string,

@@ -1,4 +1,27 @@
-# Current checkpoint — restricted initial pickup (2026-10-04)
+# Current checkpoint — bounded dependency remediation (2026-10-04)
+
+Baseline bb65c504397ea6734ae4a1c15a7020532f5952df. This completed finite batch
+changes three direct families: AWS S3 v3, Fastify/multipart v5, Jest/ts-jest.
+Evidence and exact commands: [Dependency_Security_Batch.md](Dependency_Security_Batch.md).
+Current audit evidence is 30 full-tree findings (0 critical / 21 high / 8 moderate /
+1 low), 23 production-tree findings (0 critical / 15 high / 8 moderate / 0 low).
+Audit aggregation is not exploit proof; older counts below are historical.
+
+| Classification | Current state |
+|---|---|
+| Implemented with evidence | Compatible resolved versions remove XML-parser/Handlebars critical paths and selected HTTP/tooling high findings. 218 distinct affected cases passed; 22 and 65-case reruns are not new cases. Final no-emit and dependency-tree checks passed. |
+| Partially implemented | Three-family remediation, not a clean dependency bill of health. Numeric TRUST_PROXY now rejects startup; explicit verified proxy addresses required. Cold install/native hooks and deployed Node runtime remain unverified. |
+| Deliberately unavailable | Existing accounting/payment/FX, unsupported recovery/manual transitions and other policy-dependent guards remain contained; no new workflow enabled by dependency work. |
+| Awaiting verification / decisions | Remaining current dependency findings; existing S3/native device/provider/Redis/deployment/history/NOT VALID and deferred client gates. No production-readiness, complete isolation or external-integration claim. |
+
+Exact finite next task **DEP-NEXT-01**: inspect and compatibly patch JWT/JWS and
+Socket.IO engine/parser/ws paths, then affected token/HTTP and isolated socket
+verification, no-emit and fresh audits. Preserve session/tenant revocation and
+scope contracts. Completion requires affected versions absent and focused checks
+passing; no logistics expansion. Not started in this batch. No live services,
+database run, client changes, push or deployment; dist/unrelated work preserved.
+
+## Historical checkpoint — restricted initial pickup (2026-10-04)
 
 Baseline 7df9595baeba499f7dbf6bb67002c42e12407518. This finite backend batch addresses the initial broad-scope/journal-discovery gap. Restricted_Initial_Pickup.md records exact API/evidence and demonstrated proof-scope/sentinel corrections. Older handoffs below are historical where superseded; no further implementation batch is authorized by this finite request.
 

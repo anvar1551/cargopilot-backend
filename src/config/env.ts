@@ -18,7 +18,7 @@ const EnvSchema = z.object({
   ADDITIONAL_ALLOWED_ORIGINS: z.string().optional().default(""),
 });
 
-export type TrustedProxyConfig = false | number | string[];
+export type TrustedProxyConfig = false | string[];
 
 export type AppEnv = Omit<z.infer<typeof EnvSchema>, "TRUST_PROXY"> & {
   TRUST_PROXY: TrustedProxyConfig;
@@ -47,13 +47,11 @@ export function parseTrustedProxy(value: string | undefined): TrustedProxyConfig
   }
   if (["true", "yes", "on"].includes(normalized.toLowerCase())) {
     throw new Error(
-      "TRUST_PROXY must name trusted IP/CIDR proxies or a positive trusted-hop count; trust-all is prohibited",
+      "TRUST_PROXY must name trusted IP/CIDR proxies; trust-all is prohibited",
     );
   }
   if (/^\d+$/.test(normalized)) {
-    const hops = Number(normalized);
-    if (Number.isSafeInteger(hops) && hops > 0) return hops;
-    throw new Error("TRUST_PROXY hop count must be a positive integer");
+    throw new Error("TRUST_PROXY hop-count-only trust is unsupported; configure verified proxy IP/CIDR addresses");
   }
 
   const addresses = normalized

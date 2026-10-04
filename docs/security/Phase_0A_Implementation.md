@@ -159,12 +159,13 @@ also no-store. Login/refresh/logout/password bodies are capped at 16 KiB.
 | AUTH_LOGOUT_RATE_LIMIT_MAX | 60 per IP |
 | AUTH_PASSWORD_RATE_LIMIT_MAX | 10 per IP and authenticated identity |
 | AUTH_RATE_LIMIT_MAX | Legacy fallback for unset route-specific auth maxima remains supported. |
-| TRUST_PROXY | false default; explicit IP/CIDR list, named ranges or positive fixed hop count. true/yes/on, /0 and invalid input reject startup. |
+| TRUST_PROXY | false default; explicit IP/CIDR list or named ranges. Numeric hop-only trust, true/yes/on, /0 and invalid input reject startup after the 2026-10-04 dependency correction. |
 
 HTTP IP identity uses request.ip under [Fastify trusted-proxy semantics](https://fastify.dev/docs/latest/Reference/Server/#trustproxy),
-never manual X-Forwarded-For/X-Real-IP extraction. A fixed hop count needs a verified
-network path with shorter bypass paths blocked. Source configuration cannot prove
-that topology. Fixed-window bursts, shared-NAT throttling, principal lockout abuse,
+never manual X-Forwarded-For/X-Real-IP extraction. Fastify 5.12.5 deliberately denies
+hop-only trust; deployments previously using a number must configure verified
+proxy addresses. Source configuration cannot prove network topology.
+Fixed-window bursts, shared-NAT throttling, principal lockout abuse,
 Redis counter loss on restart/eviction and operational tuning remain risks.
 
 Removed sample PUBLIC_RATE_LIMIT_WINDOW_MS, PUBLIC_CALLBACK_RATE_LIMIT_MAX and
