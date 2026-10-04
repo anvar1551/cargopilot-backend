@@ -1,5 +1,7 @@
 # Warehouse-assisted lifecycle — execution plan
 
+Current follow-up: Custody_Receiving_And_Work_Lists.md records owner-approved suspension-safe intake/receipt (bounded reason, immutable outgoing observation; no driver reactivation) and restricted `/api/orders/custody-work` discovery. The previous outgoing-driver suspension/discovery limitations are superseded only by that specific contract. Original state/actor/custody transitions, expected-state/normalized operation IDs, whole-parcel/cash/PNG/company restrictions and other release gates remain unchanged.
+
 Baseline 49539d438370dc35dcc44e930d2b8b3088e5c159. Approved first version is same tenant and same operating company, per-order whole-parcel-set custody; partial consignments/bulk manifests, subcontractors and cross-company transfers are unsupported. No historical assignment/warehouse association is adopted as custody.
 
 | Action | Required state / actor | Custody after acceptance |

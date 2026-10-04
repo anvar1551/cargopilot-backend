@@ -4,8 +4,12 @@ import { executeWarehouseCustody, readWarehouseCustody } from "../../operations/
 import { sendError, emitMutationInvalidation } from "../shared";
 import prisma from "../../../../config/prismaClient";
 import { emitPersistedDriverNotification } from "../../../realtime-core/realtimeHub";
+import { listCustodyWork } from "../../read/custody-work";
 
 const routes: FastifyPluginAsync = async fastify => {
+  fastify.get("/custody-work", { preHandler: fastifyAuth() }, async (request, reply) => {
+    try { return await listCustodyWork(request.user!, request.query); } catch (error) { return sendError(reply, error); }
+  });
   fastify.get<{Params:{id:string}}>("/:id/custody", {preHandler:fastifyAuth()}, async (request,reply) => {
     try{return await readWarehouseCustody(request.user!,request.params.id);}catch(error){return sendError(reply,error);}
   });

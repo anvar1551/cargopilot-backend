@@ -26,6 +26,7 @@ import { assignDriversBulk, updateDriverOrderStatus, updateOrdersStatusBulk } fr
 import { submitProofForActor, requireProofSubmissionContext } from "../../src/modules/orders-core/proofs/proof";
 import { issueOrderInvoiceForActor } from "../../src/modules/invoice-core/application/invoiceRepo";
 import { executeWarehouseCustody, readWarehouseCustody } from "../../src/modules/orders-core/operations/warehouse-custody";
+import { listCustodyWork } from "../../src/modules/orders-core/read/custody-work";
 import { createWarehouse } from "../../src/modules/warehouse-core/application/warehouseRepo";
 import { upsertOrderLeg } from "../../src/modules/orders-legs/legs";
 
@@ -306,6 +307,10 @@ it("warehouse-only recipients and exact nominated drivers without company/assign
   await assignDriversBulk({ actor: operator, orderIds: [orderId], expectedStates: await expected(orderId), driverId: driver.id, type: "pickup" });
   await updateDriverOrderStatus({ actor: driver, orderId, status: "pickup_in_progress" });
   await updateDriverOrderStatus({ actor: driver, orderId, status: "picked_up" });
+  const sibling = await createOrderForActor({user:operator,body:{...savedBody,operationId:randomUUID()}}), siblingId=sibling.payload.order.id;
+  await assignDriversBulk({actor:operator,orderIds:[siblingId],expectedStates:await expected(siblingId),driverId:driver.id,type:"pickup"});
+  await updateDriverOrderStatus({actor:driver,orderId:siblingId,status:"pickup_in_progress"});
+  await updateDriverOrderStatus({actor:driver,orderId:siblingId,status:"picked_up"});
   await mockPrisma.membershipScope.deleteMany({ where: { membershipId: { in: [driver.companyMembershipId, transport.companyMembershipId] } } });
   for (const who of [origin, destination, driver, transport]) {
     expect(await mockPrisma.membershipScope.count({ where: { membershipId: who.companyMembershipId, scopeType: "company" } })).toBe(0);
@@ -327,38 +332,87 @@ it("warehouse-only recipients and exact nominated drivers without company/assign
   expect(pickup.pickupTrackingId).toBeTruthy();
   const offer = await next(driver, "pickup-offer", { pickupTrackingId: pickup.pickupTrackingId, destinationWarehouseId: ownedWarehouseIds[0] });
   const offerResult = await executeWarehouseCustody(driver, orderId, offer);
-  const intake = await next(origin, "intake", { warehouseId: ownedWarehouseIds[0] });
+  let intake = await next(origin, "intake", { warehouseId: ownedWarehouseIds[0] });
   await expect(readWarehouseCustody(destination, orderId)).rejects.toThrow();
   await denied(destination, intake); await denied(actor(1), intake); await denied(actor(2), intake);
-  // Outgoing-driver revocation remains a deliberate recovery blocker, not relaxed by recipient access.
-  await mockPrisma.companyMembership.update({ where: { id: driver.companyMembershipId }, data: { status: "suspended" } });
-  try { await denied(origin, intake); await denied(driver, offer); } finally {
-    await mockPrisma.companyMembership.update({ where: { id: driver.companyMembershipId }, data: { status: "active" } });
-  }
-  const intakeResult = await executeWarehouseCustody(origin, orderId, intake);
+  const siblingSnapshot=await readWarehouseCustody(driver,siblingId);
+  await executeWarehouseCustody(driver,siblingId,{operationId:randomUUID(),action:"pickup-offer",expectedEventId:null,
+    expectedUpdatedAt:siblingSnapshot.updatedAt,parcelIds:siblingSnapshot.parcelIds,pickupTrackingId:siblingSnapshot.pickupTrackingId,destinationWarehouseId:ownedWarehouseIds[0]});
+  const page=await listCustodyWork(origin,{kind:"warehouse",limit:1});expect(page.items).toHaveLength(1);expect(page.nextCursor).toBeTruthy();
+  const pages=[...page.items];let cursor=page.nextCursor;
+  while(cursor){const more=await listCustodyWork(origin,{kind:"warehouse",limit:1,cursor});expect(more.items.length).toBeLessThanOrEqual(1);pages.push(...more.items);cursor=more.nextCursor;if(pages.length>10)throw Error("Pagination did not terminate");}
+  expect(new Set(pages.map(p=>p.orderId)).size).toBe(pages.length);expect(pages.map(p=>p.orderId)).toEqual(expect.arrayContaining([orderId,siblingId]));
+  expect(Object.keys(page.items[0]).sort()).toEqual(["orderId","orderNumber","status","expectedUpdatedAt","expectedEventId","phase","currentWarehouseId","destinationWarehouseId","legId"].sort());
+  for(const query of [{kind:"warehouse",limit:0},{kind:"warehouse",limit:51},{kind:"warehouse",limit:2,cursor:page.nextCursor},{kind:"warehouse",limit:1,cursor:"invalid"}]) await expect(listCustodyWork(origin,query)).rejects.toThrow();
+  await expect(listCustodyWork(destination,{kind:"warehouse",limit:1,cursor:page.nextCursor})).rejects.toThrow("cursor");
+  expect((await listCustodyWork(destination,{kind:"warehouse"})).items.map(p=>p.orderId)).not.toContain(orderId);
+  await mockPrisma.membershipScope.create({data:{membershipId:actor(1).companyMembershipId,scopeType:"warehouse",scopeRefId:ownedWarehouseIds[0]}});
+  expect((await listCustodyWork(actor(1),{kind:"warehouse"})).items).toEqual([]);
+  await expect(listCustodyWork(actor(2),{kind:"warehouse",limit:1,cursor:page.nextCursor})).rejects.toThrow();
+  expect((await listCustodyWork(unrelated,{kind:"driver"})).items).toEqual([]);
+  // Suspension denies the outgoing actor, but permits exact destination staff to attest physical receipt with reason.
+  await mockPrisma.companyMembership.update({where:{id:driver.companyMembershipId},data:{status:"suspended"}});
+  let intakeResult:any;
+  try {
+    await denied(origin,intake);await denied(driver,offer);await expect(listCustodyWork(driver,{kind:"driver"})).rejects.toThrow();
+    await denied(origin,{...intake,outgoingDriverReason:"short"});await denied(origin,{...intake,outgoingDriverReason:"Synthetic receipt\ncontrol"});
+    const intents=[{...intake,outgoingDriverReason:"Synthetic physical receipt after driver suspension"},{...intake,operationId:randomUUID(),outgoingDriverReason:"Synthetic physical receipt after driver suspension"}];
+    const before=await mockPrisma.tracking.count({where:{orderId}});
+    const results=await Promise.allSettled(intents.map(i=>executeWarehouseCustody(origin,orderId,i)));
+    expect(results.filter(v=>v.status==="fulfilled")).toHaveLength(1);expect(results.filter(v=>v.status==="rejected")).toHaveLength(1);
+    const winner=results.findIndex(v=>v.status==="fulfilled");intake=intents[winner];intakeResult=(results[winner] as PromiseFulfilledResult<any>).value;
+    expect(await mockPrisma.tracking.count({where:{orderId}})).toBe(before+1);
+    expect(await executeWarehouseCustody(origin,orderId,intake)).toEqual(intakeResult);
+    const audit=await mockPrisma.orderCustodyAction.findUniqueOrThrow({where:{id:intakeResult.eventId}});
+    expect(audit.beforeState).toMatchObject({outgoing:{predecessorEventId:(offerResult as any).eventId,userId:driver.id,companyMembershipId:driver.companyMembershipId,membershipStatus:"suspended",suspended:true,reason:intake.outgoingDriverReason}});
+    expect((await mockPrisma.companyMembership.findUniqueOrThrow({where:{id:driver.companyMembershipId}})).status).toBe("suspended");
+  }finally{await mockPrisma.companyMembership.update({where:{id:driver.companyMembershipId},data:{status:"active"}});}
+  await denied(origin,{...intake,outgoingDriverReason:"Different physical receipt intent"});
+  expect((await listCustodyWork(origin,{kind:"warehouse"})).items.map(p=>p.orderId)).toContain(orderId);
+  expect((await listCustodyWork(driver,{kind:"driver"})).items.map(p=>p.orderId)).not.toContain(orderId);
   const leg = await upsertOrderLeg(orderId, { sequence: 1, fromWarehouseId: ownedWarehouseIds[0], toWarehouseId: ownedWarehouseIds[1] }, operator);
   const dispatch = await next(origin, "dispatch", { warehouseId: ownedWarehouseIds[0], destinationWarehouseId: ownedWarehouseIds[1], driverMembershipId: transport.companyMembershipId, legId: leg.id });
   await executeWarehouseCustody(origin, orderId, dispatch);
   const acceptance = await next(transport, "transport-accept");
+  expect((await listCustodyWork(transport,{kind:"driver"})).items.map(p=>p.orderId)).toContain(orderId);
+  expect((await listCustodyWork(destination,{kind:"warehouse"})).items.map(p=>p.orderId)).not.toContain(orderId);
+  await denied(destination,{...acceptance,action:"receive",warehouseId:ownedWarehouseIds[1]});
   await expect(readWarehouseCustody(unrelated, orderId)).rejects.toThrow();
   await denied(unrelated, acceptance); await denied(driver, acceptance);
   await denied({ ...transport, companyMembershipId: actor(1).companyMembershipId, membershipId: actor(1).membershipId }, acceptance);
   const accepted = await executeWarehouseCustody(transport, orderId, acceptance);
   expect(await executeWarehouseCustody(transport, orderId, acceptance)).toEqual(accepted);
   expect((await readWarehouseCustody(transport, orderId)).custody?.phase).toBe("transport");
-  const receipt = await next(destination, "receive", { warehouseId: ownedWarehouseIds[1] });
+  let receipt = await next(destination, "receive", { warehouseId: ownedWarehouseIds[1] });
+  expect((await listCustodyWork(destination,{kind:"warehouse"})).items.map(p=>p.orderId)).toContain(orderId);
+  // Invalid current fixtures demonstrate cancellation/conflict containment; no runtime cancellation policy is invented.
+  await mockPrisma.orderLeg.update({where:{id:leg.id},data:{status:"cancelled"}});
+  try{await denied(destination,receipt);expect((await listCustodyWork(destination,{kind:"warehouse"})).items.map(p=>p.orderId)).not.toContain(orderId);}
+  finally{await mockPrisma.orderLeg.update({where:{id:leg.id},data:{status:"departed"}});}
+  await mockPrisma.orderLeg.update({where:{id:leg.id},data:{carrierBookingStatus:"cancelled"}});
+  try{await denied(destination,receipt);expect((await listCustodyWork(destination,{kind:"warehouse"})).items.map(p=>p.orderId)).not.toContain(orderId);}
+  finally{await mockPrisma.orderLeg.update({where:{id:leg.id},data:{carrierBookingStatus:"not_requested"}});}
   await denied(origin, receipt); await denied(destination, { ...receipt, warehouseId: ownedWarehouseIds[0] });
   await mockPrisma.companyMembership.update({ where: { id: destination.companyMembershipId }, data: { status: "suspended" } });
   try { await denied(destination, receipt); await expect(readWarehouseCustody(destination, orderId)).rejects.toThrow(); } finally {
     await mockPrisma.companyMembership.update({ where: { id: destination.companyMembershipId }, data: { status: "active" } });
   }
-  await mockPrisma.companyMembership.update({ where: { id: transport.companyMembershipId }, data: { status: "suspended" } });
-  try { await denied(destination, receipt); } finally {
-    await mockPrisma.companyMembership.update({ where: { id: transport.companyMembershipId }, data: { status: "active" } });
-  }
-  await executeWarehouseCustody(destination, orderId, receipt);
+  await mockPrisma.companyMembership.update({where:{id:transport.companyMembershipId},data:{status:"suspended"}});
+  try {
+    await denied(destination,receipt);await denied(transport,acceptance);await expect(listCustodyWork(transport,{kind:"driver"})).rejects.toThrow();
+    receipt={...receipt,outgoingDriverReason:"Synthetic physical receipt after linehaul suspension"};
+    const before=await businessState();
+    await pool.query(`CREATE FUNCTION cp_receipt_test_failure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'Synthetic receipt rollback'; END $$; CREATE TRIGGER cp_receipt_test_failure BEFORE INSERT ON "AnalyticsDomainEventOutbox" FOR EACH ROW EXECUTE FUNCTION cp_receipt_test_failure()`);
+    try{await expect(executeWarehouseCustody(destination,orderId,receipt)).rejects.toThrow();expect(await businessState()).toEqual(before);}
+    finally{await pool.query('DROP TRIGGER cp_receipt_test_failure ON "AnalyticsDomainEventOutbox"; DROP FUNCTION cp_receipt_test_failure()');}
+    const results=await Promise.all([executeWarehouseCustody(destination,orderId,receipt),executeWarehouseCustody(destination,orderId,receipt)]);expect(results[0]).toEqual(results[1]);
+    const audit=await mockPrisma.orderCustodyAction.findUniqueOrThrow({where:{id:(results[0] as any).eventId}});
+    expect(audit.beforeState).toMatchObject({outgoing:{predecessorEventId:(accepted as any).eventId,companyMembershipId:transport.companyMembershipId,membershipStatus:"suspended",suspended:true}});
+  }finally{await mockPrisma.companyMembership.update({where:{id:transport.companyMembershipId},data:{status:"active"}});}
+  expect((await listCustodyWork(transport,{kind:"driver"})).items.map(p=>p.orderId)).not.toContain(orderId);
   await executeWarehouseCustody(destination, orderId, await next(destination, "last-mile-offer", { warehouseId: ownedWarehouseIds[1], driverMembershipId: driver.companyMembershipId }));
   const last = await next(driver, "last-mile-accept");
+  expect((await listCustodyWork(driver,{kind:"driver"})).items.map(p=>p.orderId)).toContain(orderId);
   await denied(transport, last); await executeWarehouseCustody(driver, orderId, last);
   expect(await requireProofSubmissionContext(driver, orderId)).toMatchObject({ assignedDriverId: driver.id });
   const { PNG } = require("pngjs"), bytes = PNG.sync.write({ width: 2, height: 2, data: Buffer.alloc(16, 255) });
@@ -366,6 +420,7 @@ it("warehouse-only recipients and exact nominated drivers without company/assign
   const proof = await submitProofForActor(proofIntent);
   await executeWarehouseCustody(driver, orderId, await next(driver, "deliver", { proofSubmissionId: proof.proof.submissionId }));
   expect((await readWarehouseCustody(driver, orderId)).custody?.phase).toBe("delivered");
+  expect((await listCustodyWork(driver,{kind:"driver"})).items.map(p=>p.orderId)).not.toContain(orderId);
   const confirmed = await businessState(), puts = mockStorage.mock.calls.length;
   expect(await executeWarehouseCustody(origin, orderId, intake)).toEqual(intakeResult);
   expect(await executeWarehouseCustody(driver, orderId, offer)).toEqual(offerResult);
