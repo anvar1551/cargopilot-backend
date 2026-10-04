@@ -577,3 +577,11 @@ The checkpoint baseline is a preservation baseline, not release approval. Major 
 - unverified deployed infrastructure controls.
 
 Release readiness requires evidence-based remediation and validation. No individual unit-test result, audit count or architecture document is sufficient proof of production security.
+
+## 23. Approved bounded pricing-to-invoice extension (2026-10-04)
+
+Owner-approved target: configurable separately recorded base/fees/discounts/tax, explicitly enabled arbitrary currency codes with approved precision/rounding, versioned issuing-entity billing, initially one order per invoice in accepted selling currency, and future consolidation by payer/entity/currency rather than recipient. Merchant COD goods money remains separate. No real tax rate, currency metadata, volumetric/fractional weight policy, accounting mapping or production default is inferred.
+
+Current enforced behavior for the new configured path is documented in Configured_Pricing_Invoice_Workflow.md: owned independent immutable configuration approval; bucket tariff plus explicit city/country/recorded-weight inputs; separate exact components; durable bill-to instruction; standard acceptance and independent discount/revision approval; current accepted-price-linked manual Invoice, receipt/number/audit/held fact atomically committed. Synthetic native tests prove the stated database cases, not real customer consent or tax compliance. New invoice issuance is limited to entity-base currency equality; foreign-base FX, correction/credit, automatic/consolidated issuance and accounting remain contained. BillingInvoiceOutbox has no consumer and grants no finance execution authority.
+
+The original baseline blocker list above is historical threat inventory, not a claim that every listed defect remains open unchanged. Current implemented protection, containment and remaining release gates are in the backlog dashboard and Backend_Workflow_Readiness.md. Nullable ownership/history certification, policy-dependent finance, unsafe provisioning/assignment paths, deferred clients, Redis/provider/storage/device/infrastructure and source-to-artifact verification remain unresolved. No full isolation or production readiness claim.

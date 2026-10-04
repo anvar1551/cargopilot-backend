@@ -1,6 +1,7 @@
 import { FastifyPluginAsync } from "fastify";
 import { ZodError } from "zod";
 import { registerTariffVersionRoutes } from "./tariff-version.routes";
+import { registerBillingPolicyRoutes } from "./billing.routes";
 import { fastifyAuth } from "../../../modules/identity-access/transport/fastify-auth";
 import {
   backfillOrderSlaSnapshots,
@@ -62,6 +63,7 @@ function sendError(reply: any, error: unknown, fallback: string) {
 
 const pricingFastifyRoutes: FastifyPluginAsync = async (fastify) => {
   registerTariffVersionRoutes(fastify);
+  registerBillingPolicyRoutes(fastify);
   fastify.get(
     "/catalog",
     { preHandler: fastifyAuth({ permission: "pricing.read" }) },

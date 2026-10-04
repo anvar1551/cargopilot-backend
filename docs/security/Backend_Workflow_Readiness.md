@@ -1,3 +1,20 @@
+# Current configured pricing / invoice update (2026-10-04)
+
+New bounded backend functionality: approved owned bucket tariff plus independently approved explicit calculation/billing settings -> immutable exact service-price components and explicit bill-to -> authorized manual same-base-currency invoice -> original matching retry. See Configured_Pricing_Invoice_Workflow.md for the exact API, supported policy modes, evidence and rollout. The older rows below describing acceptance/new issuance as entirely missing are historical for this new path; legacy estimate-only issuance remains blocked.
+
+| Classification | Current boundary |
+|---|---|
+| Working with evidence | Explicit company/entity currency policy (no default), terminal independent publication, source/input-bound accepted standard price, independent discounts/revisions, immutable payer instruction and one-order invoice. 25 distinct actual PostgreSQL cases, 111 migrations; 63 affected calculation/legacy invoice and nine mocked HTTP cases. Final corrected read workflow rerun separately, not added as a new case. |
+| Implemented but externally unverified | Durable held invoice.issued fact, receipt/number/audit atomicity and source-linked invoice history are database evidence; no provider, accounting delivery, real tax compliance, legal payer consent, S3 or infrastructure claim. |
+| Deliberately unavailable | Unconfigured currencies/tax/rounding/zones/weight/eligible states; ambiguous buckets; master/address-incomplete financial route; foreign-base invoice FX; automatic/consolidated issuance; issued correction/credit; unsupported linear/transit/volumetric rules; accounting, refunds and uncertain real-provider recovery. Ordinary scoped free-text logistics remains available. |
+| Missing implementation / deferred | Controlled invoice correction and consolidation contracts, source-specific accepted finance execution, held invoice-fact publication after accounting approval, reconciliation tools and client configuration/payer/price-review/issuance UX. No new policy inferred. |
+
+Production prerequisites: explicit scoped capability provisioning and independent TransAsia configuration approval; actual owned master/address/entity and payer instructions; accepted currency equal to entity base for issuance. Test VAT/ZZ/fees are synthetic examples, not company policy. Future provider minor-unit support must be verified separately; no hardcoded provider expansion here. Existing legacy issued receipt/read and supported checkout contracts stay in place, without enabling new financial posting.
+
+The finite remaining backend checklist is now: (1) source-specific approved financial configuration/execution and controlled correction, requiring exact policy/mapping decisions; (2) ownership-proven reconciliation and supported provider/storage evidence; (3) bounded safe provisioning/version-authoring/assignment contracts already recorded in the backlog. Linear/transit/volumetric, consolidation and automatic billing are future capabilities, not inferred current obligations. Production non-null/history certification, source-to-artifact, Redis/native transport/provider/device and dependency gates remain. RLS remains deferred defense in depth. Clients deferred.
+
+## Historical workflow assessment and unchanged evidence
+
 # Backend workflow readiness — bounded current inventory
 
 Initial assessment baseline b1fd80e208301332930df22248eab403b4d8c074; updated by the finite master-reference/local-proof/recovery batch starting at 14c3e82cf6cf9c033371d18c7b5e45962f3e099a, 2026-10-04. Only optional scoped creation/import master linking is restored; financial and uncertain-recovery guards remain. This is the five-chain assessment, not a new whole-system audit. W = working with stated source/unit/PostgreSQL evidence; E = implemented but externally unverified; B = deliberately blocked; M = missing restoration implementation. A chain with W steps is not thereby operational end to end. Earlier evidence reused only for unchanged source/schema/dependencies/configuration; this batch's affected checks are recorded in the new focused reports.

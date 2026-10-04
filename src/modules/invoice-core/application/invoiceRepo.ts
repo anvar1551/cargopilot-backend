@@ -2,6 +2,7 @@ import { authorizedInvoiceWhere } from "./invoiceAccess";
 import { InvoiceStatus, Prisma } from "@prisma/client";
 import prisma from "../../../config/prismaClient";
 import type { AppUser } from "../../../types/app-user";
+import { issueAcceptedOrderInvoice } from "./accepted-issuance";
 
 function invoiceError(message: string, statusCode: number) {
   return Object.assign(new Error(message), { statusCode });
@@ -10,6 +11,8 @@ function invoiceError(message: string, statusCode: number) {
 function publicInvoice(invoice: any) {
   return {
     id: invoice.id, companyId: invoice.companyId, orderId: invoice.orderId,
+    ...(invoice.billingPriceApprovalId ? { billing: { priceApprovalId:invoice.billingPriceApprovalId, policyVersionId:invoice.billingPolicyVersionId,
+      payerCustomerEntityId:invoice.billingPayerCustomerEntityId, legalEntityId:invoice.billingLegalEntityId } } : {}),
     customerId: invoice.customerId, customerEntityId: invoice.customerEntityId,
     invoiceNumber: invoice.invoiceNumber, amount: invoice.amount.toFixed(4), currency: invoice.currency,
     fxRate: invoice.fxRate.toFixed(10), fxRateAsOf: invoice.fxRateAsOf,
@@ -26,7 +29,14 @@ export async function issueOrderInvoiceForActor(args: {
   user: AppUser;
   orderId: string;
   dueAt?: Date | null;
+  operationId?: string;
+  priceApprovalId?: string;
+  reason?: string;
 }) {
+  if(args.operationId!==undefined || args.priceApprovalId!==undefined || args.reason!==undefined){
+    const {user,...input}=args;
+    return publicInvoice(await issueAcceptedOrderInvoice(user,input));
+  }
 
   if (Object.keys(args).some(key => !["user", "orderId", "dueAt"].includes(key)) ||
       (args.dueAt != null && (!(args.dueAt instanceof Date) || !Number.isFinite(args.dueAt.getTime())))) {
@@ -69,7 +79,7 @@ export async function issueOrderInvoiceForActor(args: {
       throw invoiceError("Cancelled or credited invoice cannot be reissued", 409);
     }
     // Manual rows can forge rule/source keys; server seeds pass through Float.
-    // No durable approved pricing acceptance exists. Never backfill ownership or invent FX.
+    // Legacy input supplies no accepted-price identity. Never adopt it or invent FX.
     throw Object.assign(invoiceError("Approved exact pricing and FX acceptance required for invoice issuance", 409),
       { code: "INVOICE_PRICING_ACCEPTANCE_REQUIRED" });
   }, { maxWait: 3000, timeout: 10000 });
@@ -98,6 +108,10 @@ export async function listInvoicesForActor(args: {
       id: true,
       companyId: true,
       orderId: true,
+      billingPriceApprovalId: true,
+      billingPolicyVersionId: true,
+      billingPayerCustomerEntityId: true,
+      billingLegalEntityId: true,
       customerId: true,
       customerEntityId: true,
       invoiceNumber: true,
@@ -127,7 +141,8 @@ export async function listInvoicesForActor(args: {
 export async function getInvoiceByOrder(orderId: string, actor: AppUser) {
   const where = await authorizedInvoiceWhere(actor, "finance.invoices.read");
   const invoice = await prisma.invoice.findFirst({ where: { AND: [where, { orderId }] },
-    select: { id: true, invoiceNumber: true, companyId: true, orderId: true, status: true, amount: true, currency: true, fxRate: true, issuedAt: true, dueAt: true } });
+    select: { id: true, invoiceNumber: true, companyId: true, orderId: true, status: true, amount: true, currency: true, fxRate: true, issuedAt: true, dueAt: true,
+      billingPriceApprovalId: true, billingPolicyVersionId: true, billingPayerCustomerEntityId: true, billingLegalEntityId: true } });
   return invoice ? publicInvoice(invoice) : null;
 }
 
