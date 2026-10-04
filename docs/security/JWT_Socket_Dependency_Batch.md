@@ -1,4 +1,8 @@
-# JWT/JWS and Socket.IO dependency checkpoint — 2026-10-04
+# Historical JWT/JWS and Socket.IO dependency checkpoint — 2026-10-04
+
+Current dependency evidence and completed DEP-NEXT-02 are in
+[Mongoose_Prisma_Dependency_Batch.md](Mongoose_Prisma_Dependency_Batch.md).
+Counts/next task below describe this earlier checkpoint.
 
 Baseline 74660208e8191556aecd9081d645a3f065d43772; branch cargopilot/erp-foundation.
 DEP-NEXT-01 completed within the two-family scope. No product authorization,

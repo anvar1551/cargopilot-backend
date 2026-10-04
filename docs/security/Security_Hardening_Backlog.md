@@ -1,4 +1,27 @@
-# Current checkpoint — JWT/JWS and Socket.IO remediation (2026-10-04)
+# Current checkpoint — Mongoose/Prisma dependency batch (2026-10-04)
+
+Baseline 5366663d672963a3a239cc91746a393f0ef54acd. DEP-NEXT-02 complete;
+[Mongoose_Prisma_Dependency_Batch.md](Mongoose_Prisma_Dependency_Batch.md) records
+scope, commands, path triage, exact versions and evidence limits.
+
+| Classification | Current state |
+|---|---|
+| Implemented with evidence | Removed repository-unused Mongoose/MongoDB dependencies. Prisma CLI/client/pg adapter pinned 7.10.0; generated ignored client, guarded offline schema/actual-config validation and final no-emit passed. 181 distinct in-process cases plus 9 PostgreSQL cases (4 new smoke, 5 selected existing concurrency/rollback) passed. Owned instance cleaned up; 112 unchanged migrations were setup, not renewed history certification. |
+| Partially implemented | Current audit: full 13 (0 critical / 10 high / 2 moderate / 1 low), production 6 (0 / 4 / 2 / 0). Prisma config DeepmergeTS and CLI MySQL2 exact vendor pins remain; no override, major downgrade or 8 RC. Shared dotenv refresh tested. Node 22.12+ requirement documented; deployed patch/images and complete adapter coverage unverified. |
+| Deliberately unavailable | Existing unapproved finance/accounting/FX/provider/manual-transition workflows remain contained. Dependency work does not restore those policies or deferred clients. |
+| Awaiting verification / decisions | Remaining pinned/breaking and actionable dependency findings; real infrastructure/S3/device/provider/Redis/history/NOT VALID/client/source-artifact/release gates. No complete isolation, exactly-once or production-readiness claim. |
+
+Exact finite next task **DEP-NEXT-03** (not started): compatible qs (Stripe) and
+dev glob-leaf fixes through reviewed declared ranges; offline encoding/affected
+tooling regressions, no-emit and fresh audits. Completion requires selected affected
+versions absent and contracts intact, with pinned/breaking findings recorded.
+Watcher/UUID migration and Prisma pinned-leaf resolution remain separate reviews.
+Old policy-blocked coverage directory remains untouched for manual cleanup:
+`C:\Users\Anvar\AppData\Local\Temp\cp-dependency-coverage-c87e5bd06bb04137b29a246fe3601bdb`.
+No push/deployment/existing services or client changes; dist/unrelated work preserved.
+Stop after this finite local checkpoint.
+
+## Historical checkpoint — JWT/JWS and Socket.IO remediation (2026-10-04)
 
 Baseline 74660208e8191556aecd9081d645a3f065d43772. DEP-NEXT-01 complete;
 exact paths, versions, commands and limits in

@@ -3,7 +3,7 @@
 Backend API for CargoPilot.
 
 ## Prerequisites
-- Node.js 22+
+- Node.js 22.12 or later within 22.x (Prisma 7 requirement; locally checked on 22.13.0)
 - Docker (optional, for containerized runs)
 
 ## Setup
