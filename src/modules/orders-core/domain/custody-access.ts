@@ -29,6 +29,23 @@ export async function loadCustodySource(tx: Prisma.TransactionClient, actor: Ord
 }
 type Source = Awaited<ReturnType<typeof loadCustodySource>>;
 
+/** Receiving authority belongs to staff, not the outgoing actor's continuing login/permissions. */
+export async function observeOutgoingCustody(tx: Prisma.TransactionClient, actor: OrderActor, source: Source, reason?: string) {
+  const prior = source.latest;
+  if (!prior || !["pickup-offered", "transport"].includes(prior.phase) || !prior.driverMembershipId || !prior.driverUserId ||
+      prior.actorUserId !== prior.driverUserId || prior.companyMembershipId !== prior.driverMembershipId) throw orderError("Accepted outgoing custody identity required", 409);
+  const member = await tx.companyMembership.findFirst({ where: { id: prior.driverMembershipId, userId: prior.driverUserId,
+    tenantId: actor.tenantId!, companyId: actor.companyId!, tenantMembershipId: prior.tenantMembershipId },
+    select: { status: true, tenantMembership: { select: { id: true, userId: true, tenantId: true, status: true } } } });
+  const tm = member?.tenantMembership;
+  if (!member || !tm || tm.id !== prior.tenantMembershipId || tm.userId !== prior.driverUserId || tm.tenantId !== actor.tenantId ||
+      !["active", "suspended"].includes(member.status) || !["active", "suspended"].includes(tm.status)) throw orderError("Consistent recorded outgoing membership required", 409);
+  const suspended = member.status === "suspended" || tm.status === "suspended";
+  if (suspended && !reason) throw orderError("Outgoing-driver suspension receipt reason required", 400);
+  return { predecessorEventId: prior.id, userId: prior.driverUserId, companyMembershipId: prior.driverMembershipId,
+    tenantMembershipId: prior.tenantMembershipId, membershipStatus: member.status, tenantMembershipStatus: tm.status, suspended, reason: reason ?? null };
+}
+
 export async function requireCustodyDriver(tx: Prisma.TransactionClient, actor: OrderActor, id: string, type: "local" | "linehaul", permission: string) {
   const member = await tx.companyMembership.findFirst({ where: { id, tenantId: actor.tenantId!, companyId: actor.companyId!, status: "active",
     company: { isActive: true, tenantId: actor.tenantId! }, tenant: { status: "active" },

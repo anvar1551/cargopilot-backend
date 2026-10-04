@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "crypto";
 import { OrderStatus, Prisma } from "@prisma/client";
 import { z } from "zod";
 import prisma from "../../../config/prismaClient";
-import { requireCustodyActor, ownedCustodyWhere, loadCustodySource, authorizeCustodyAction, authorizeCustodyRetry, authorizeCustodyRead, requireCustodyDriver as driver } from "../domain/custody-access";
+import { requireCustodyActor, ownedCustodyWhere, loadCustodySource, authorizeCustodyAction, authorizeCustodyRetry, authorizeCustodyRead, observeOutgoingCustody, requireCustodyDriver as driver } from "../domain/custody-access";
 import { nextDispatchTime } from "../domain/dispatch-batch";
 import { persistDispatchNotification } from "../domain/dispatch-notification";
 import { enqueueCargoPilotDomainEventsTx } from "../../analytics-core/infrastructure/analyticsOutbox";
@@ -15,6 +15,7 @@ const request = z.object({ operationId: uuid, action: z.enum(actions), expectedE
   expectedUpdatedAt: z.string().datetime(), parcelIds: z.array(uuid).min(1).max(100),
   warehouseId: uuid.optional(), destinationWarehouseId: uuid.optional(), driverMembershipId: uuid.optional(),
   legId: uuid.optional(), pickupTrackingId: uuid.optional(), proofSubmissionId: z.string().min(1).max(100).optional(),
+  outgoingDriverReason: z.string().trim().min(10).max(500).refine(v => !/[\x00-\x1f\x7f]/.test(v)).optional(),
 }).strict();
 const fields: Record<typeof actions[number], string[]> = {
   "pickup-offer": ["destinationWarehouseId", "pickupTrackingId"], intake: ["warehouseId"],
@@ -35,7 +36,8 @@ export async function executeWarehouseCustody(actor: OrderActor, orderId: string
   if(!parsed.success || !parsedOrder.success) throw orderError("Invalid custody intent",400);
   orderId=parsedOrder.data;
   const input = parsed.data, required = fields[input.action];
-  if (Object.keys(input).some(k => !["operationId", "action", "expectedEventId", "expectedUpdatedAt", "parcelIds", ...required].includes(k)) ||
+  const optional = ["intake", "receive"].includes(input.action) ? ["outgoingDriverReason"] : [];
+  if (Object.keys(input).some(k => !["operationId", "action", "expectedEventId", "expectedUpdatedAt", "parcelIds", ...required, ...optional].includes(k)) ||
       required.some(k => !(input as any)[k]) || new Set(input.parcelIds).size !== input.parcelIds.length) throw orderError("Invalid custody intent", 400);
   input.parcelIds.sort();
   if (new Date(input.expectedUpdatedAt).toISOString() !== input.expectedUpdatedAt) throw orderError("Exact expected timestamp required", 400);
@@ -68,6 +70,7 @@ export async function executeWarehouseCustody(actor: OrderActor, orderId: string
     if (order.parcels.length > 100 || order.parcels.map(p => p.id).sort().join() !== input.parcelIds.join()) deny("Expected entire owned parcel set required");
     const previous = source.latest;
     if ((previous?.id ?? null) !== input.expectedEventId || order.updatedAt.toISOString() !== input.expectedUpdatedAt) deny("Stale custody/order state");
+    const outgoing = ["intake", "receive"].includes(input.action) ? await observeOutgoingCustody(tx, a, source, input.outgoingDriverReason) : null;
     let phase = previous?.phase ?? "", warehouseId = previous?.warehouseId ?? null, destinationWarehouseId = previous?.destinationWarehouseId ?? null;
     let driverUserId = previous?.driverUserId ?? null, driverMembershipId = previous?.driverMembershipId ?? null, legId = previous?.legId ?? null;
     const change: Prisma.OrderUncheckedUpdateInput = { updatedAt: nextDispatchTime(order.updatedAt) };
@@ -82,7 +85,6 @@ export async function executeWarehouseCustody(actor: OrderActor, orderId: string
       }
       case "intake":
         if (phase !== "pickup-offered" || input.warehouseId !== destinationWarehouseId || order.status !== "picked_up" || order.assignedDriverId !== driverUserId) deny("Expected pickup offer required");
-        await driver(tx, a, driverMembershipId!, "local", custodyPermission("pickup-offer"));
         phase = "warehouse"; warehouseId = input.warehouseId!; destinationWarehouseId = null; driverUserId = null; driverMembershipId = null;
         change.status = "at_warehouse"; change.currentWarehouseId = warehouseId; change.assignedDriverId = null; break;
       case "dispatch": {
@@ -95,12 +97,11 @@ export async function executeWarehouseCustody(actor: OrderActor, orderId: string
       case "transport-accept":
         if (phase !== "transport-offered" || driverUserId !== a.id || driverMembershipId !== a.companyMembershipId || order.status !== "at_warehouse" || order.currentWarehouseId !== warehouseId) deny("Exact transport acceptance required");
         await driver(tx, a, driverMembershipId!, "linehaul", custodyPermission("transport-accept"));
-        if ((await tx.orderLeg.updateMany({ where: { id: legId!, orderId, status: "planned", fromWarehouseId: warehouseId, toWarehouseId: destinationWarehouseId }, data: { status: "departed", actualDepartureAt: new Date() } })).count !== 1) deny("Transport leg changed");
+        if ((await tx.orderLeg.updateMany({ where: { id: legId!, orderId, status: "planned", fromWarehouseId: warehouseId, toWarehouseId: destinationWarehouseId, carrierProviderId: null, carrierBookingStatus: "not_requested" }, data: { status: "departed", actualDepartureAt: new Date() } })).count !== 1) deny("Transport leg changed");
         phase = "transport"; change.status = "in_transit"; change.currentWarehouseId = null; change.assignedDriverId = null; break;
       case "receive":
         if (phase !== "transport" || input.warehouseId !== destinationWarehouseId || order.status !== "in_transit" || order.currentWarehouseId) deny("Accepted transport and expected destination required");
-        await driver(tx, a, driverMembershipId!, "linehaul", custodyPermission("transport-accept"));
-        if ((await tx.orderLeg.updateMany({ where: { id: legId!, orderId, status: { in: ["departed", "in_transit", "arrived"] }, fromWarehouseId: warehouseId, toWarehouseId: destinationWarehouseId, carrierProviderId: null }, data: { status: "completed", actualArrivalAt: new Date() } })).count !== 1) deny("Expected owned leg required");
+        if ((await tx.orderLeg.updateMany({ where: { id: legId!, orderId, status: { in: ["departed", "in_transit", "arrived"] }, fromWarehouseId: warehouseId, toWarehouseId: destinationWarehouseId, carrierProviderId: null, carrierBookingStatus: "not_requested" }, data: { status: "completed", actualArrivalAt: new Date() } })).count !== 1) deny("Expected owned leg required");
         warehouseId = input.warehouseId!; destinationWarehouseId = null; driverUserId = null; driverMembershipId = null;
         phase = "warehouse"; change.status = "at_warehouse"; change.currentWarehouseId = warehouseId; change.assignedDriverId = null; break;
       case "last-mile-offer": {
@@ -135,7 +136,7 @@ export async function executeWarehouseCustody(actor: OrderActor, orderId: string
       createdAt:clock[0].at,
       sequence: (previous?.sequence ?? 0) + 1, action: input.action, phase, actorUserId: a.id, companyMembershipId: a.companyMembershipId!, tenantMembershipId: a.tenantMembershipId!,
       intentHash: hash, intent:input, previousEventId: previous?.id, warehouseId, destinationWarehouseId, driverUserId, driverMembershipId, legId, trackingId: tracking.id,
-      beforeState: { eventId: previous?.id ?? null, phase: previous?.phase ?? null, status: order.status, warehouseId: order.currentWarehouseId, driverId: previous?.driverUserId ?? order.assignedDriverId }, result: result as Prisma.InputJsonValue } });
+      beforeState: { eventId: previous?.id ?? null, phase: previous?.phase ?? null, status: order.status, warehouseId: order.currentWarehouseId, driverId: previous?.driverUserId ?? order.assignedDriverId, outgoing }, result: result as Prisma.InputJsonValue } });
     await tx.orderCustodyParcel.createMany({data:input.parcelIds.map(parcelId=>({actionId:id,parcelId,orderId}))});
     await persistDispatchNotification(tx, tracking.id, "status");
     await enqueueCargoPilotDomainEventsTx(tx, [{ type: "order_status_changed", tenantScope: `tenant:${a.tenantId}:company:${a.companyId}`, entityId: orderId,
