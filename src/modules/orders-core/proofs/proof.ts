@@ -1,5 +1,6 @@
 import { acceptProof, findProofRetry, markProofStored, confirmProof, sha256 } from "./submission";
 import { MAX_PROOF_BYTES, processProofRaster, proofSignaturePoints, validateProofPng } from "./raster-processing";
+import { requireCustodyProofOrder } from "../domain/custody-access";
 import { requireAuthorizedOrder } from "../domain/order-access";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
 
@@ -206,7 +207,12 @@ async function buildProofBundlesForOrder(args: {
 }
 
 export async function requireProofSubmissionContext(actor: OrderActor, orderId: string) {
-  const order = await requireAuthorizedOrder(actor, orderId, "shipment.update");
+  let order;
+  try { order = await requireAuthorizedOrder(actor, orderId, "shipment.update"); }
+  catch (error) {
+    if (![403, 404].includes((error as {statusCode?:number}).statusCode ?? 0)) throw error;
+    order = await requireCustodyProofOrder(actor, orderId);
+  }
   if (!order.ownerOrgId || order.ownerOrgId !== actor.companyId || order.assignedDriverId !== actor.id) {
     throw orderError("You are not assigned to this order", 403);
   }

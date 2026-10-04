@@ -2,8 +2,8 @@ import { createHash, randomUUID } from "crypto";
 import { OrderStatus, Prisma } from "@prisma/client";
 import { z } from "zod";
 import prisma from "../../../config/prismaClient";
-import { requireDispatchAuthority, dispatchOrderWhere } from "../domain/dispatch-authority";
-import { lockDispatchBatch, nextDispatchTime } from "../domain/dispatch-batch";
+import { requireCustodyActor, ownedCustodyWhere, loadCustodySource, authorizeCustodyAction, authorizeCustodyRetry, authorizeCustodyRead, requireCustodyDriver as driver } from "../domain/custody-access";
+import { nextDispatchTime } from "../domain/dispatch-batch";
 import { persistDispatchNotification } from "../domain/dispatch-notification";
 import { enqueueCargoPilotDomainEventsTx } from "../../analytics-core/infrastructure/analyticsOutbox";
 import { orderError, type OrderActor } from "../shared";
@@ -24,23 +24,10 @@ const fields: Record<typeof actions[number], string[]> = {
 };
 export const custodyPermission = (action: typeof actions[number]) => `shipment.custody.${action}`;
 function deny(message: string): never { throw orderError(message, 409); }
-async function warehouse(tx: Prisma.TransactionClient, authority: Awaited<ReturnType<typeof requireDispatchAuthority>>, id: string, scoped: boolean) {
+async function warehouse(tx: Prisma.TransactionClient, authority: {actor: OrderActor}, id: string, scoped: boolean) {
   if (scoped && !authority.actor.scopes?.some(s => s.scopeType === "warehouse" && s.scopeRefId === id)) throw orderError("Explicit receiving/origin warehouse scope required", 403);
   if (!await tx.warehouse.findFirst({ where: { id, tenantId: authority.actor.tenantId! }, select: { id: true } })) throw orderError("Owned warehouse required", 403);
 }
-async function driver(tx: Prisma.TransactionClient, actor: OrderActor, id: string, type: "local" | "linehaul", permission: string) {
-  const member = await tx.companyMembership.findFirst({ where: { id, tenantId: actor.tenantId!, companyId: actor.companyId!, status: "active",
-    company: { isActive: true, tenantId: actor.tenantId! }, tenant: { status: "active" },
-    tenantMembership: { status: "active", tenantId: actor.tenantId! }, user: { driverType: type },
-    OR:[{branchId:null},{branch:{isActive:true,tenantId:actor.tenantId!}}] },
-    select: { id: true, userId: true, tenantMembership: { select: { userId: true } }, roles: { select: { role: { select: {
-      companyId: true, isSystem: true, rolePermissions: { select: { permission: { select: { key: true } } } } } } } } } });
-  const keys = member?.roles.flatMap(r => r.role.companyId === actor.companyId || (!r.role.companyId && r.role.isSystem)
-    ? r.role.rolePermissions.map(p => p.permission.key) : []) ?? [];
-  if (!member || member.tenantMembership?.userId !== member.userId || !keys.includes("drivers.telemetry") || !keys.includes(permission)) throw orderError("Eligible exact driver membership required", 403);
-  return member;
-}
-
 /** Per-order whole-parcel custody; no provider or storage effects. */
 export async function executeWarehouseCustody(actor: OrderActor, orderId: string, raw: unknown) {
   const parsed=request.safeParse(raw);
@@ -53,23 +40,33 @@ export async function executeWarehouseCustody(actor: OrderActor, orderId: string
   input.parcelIds.sort();
   if (new Date(input.expectedUpdatedAt).toISOString() !== input.expectedUpdatedAt) throw orderError("Exact expected timestamp required", 400);
   const hash = createHash("sha256").update(JSON.stringify(input)).digest("hex");
-  let authority = await requireDispatchAuthority(actor, custodyPermission(input.action));
+  let a = await requireCustodyActor(actor, custodyPermission(input.action));
   return prisma.$transaction(async tx => {
-    await lockDispatchBatch(tx, authority, [orderId]);
-    authority = await requireDispatchAuthority(actor, custodyPermission(input.action));
-    const a = authority.actor;
-    const order = await tx.order.findFirst({ where: dispatchOrderWhere(authority, [orderId]), include: { parcels: { select: { id: true }, take: 101 }, cashCollections: { select: { kind: true, status: true, expectedAmount: true } } } });
+    await tx.$executeRawUnsafe("SET LOCAL lock_timeout = '2s'");
+    await tx.$executeRawUnsafe("SET LOCAL statement_timeout = '5s'");
+    async function authorize() {
+      const source = await loadCustodySource(tx, a, orderId);
+      const receipt = await tx.orderCustodyAction.findUnique({ where: { tenantId_operationId: { tenantId: a.tenantId!, operationId: input.operationId } } });
+      if (receipt) {
+        if (receipt.orderId !== orderId || receipt.intentHash !== hash) deny("Custody operation identity conflict");
+        await authorizeCustodyRetry(tx, a, receipt);
+      } else await authorizeCustodyAction(tx, a, source, input.action);
+      return { source, receipt };
+    }
+    await authorize();
+    const locked = await tx.$queryRaw<Array<{id:string}>>`SELECT id FROM "Order" WHERE id=${orderId}::uuid
+      AND "tenantId"=${a.tenantId}::uuid AND "ownerOrgId"=${a.companyId}::uuid FOR UPDATE`;
+    if (locked.length !== 1) throw orderError("Owned custody order required", 403);
+    a = await requireCustodyActor(actor, custodyPermission(input.action));
+    const { source, receipt: retry } = await authorize();
+    const authority = { actor: a };
+    const order = await tx.order.findFirst({ where: ownedCustodyWhere(a, orderId), include: { parcels: { select: { id: true }, take: 101 }, cashCollections: { select: { kind: true, status: true, expectedAmount: true } } } });
     if (!order || order.ownerOrgId !== a.companyId || order.assignedOrgId && order.assignedOrgId !== a.companyId) throw orderError("Selected owning operating company required", 403);
     if (input.warehouseId) await warehouse(tx, authority, input.warehouseId, true);
     if (input.destinationWarehouseId) await warehouse(tx, authority, input.destinationWarehouseId, false);
-    const retry = await tx.orderCustodyAction.findUnique({ where: { tenantId_operationId: { tenantId: a.tenantId!, operationId: input.operationId } } });
-    if (retry) {
-      if (retry.orderId !== orderId || retry.actorUserId !== a.id || retry.companyMembershipId !== a.companyMembershipId ||
-          retry.tenantMembershipId !== a.tenantMembershipId || retry.companyId !== a.companyId || retry.intentHash !== hash) deny("Custody operation identity conflict");
-      return retry.result;
-    }
+    if (retry) return retry.result;
     if (order.parcels.length > 100 || order.parcels.map(p => p.id).sort().join() !== input.parcelIds.join()) deny("Expected entire owned parcel set required");
-    const previous = await tx.orderCustodyAction.findFirst({ where: { orderId, tenantId: a.tenantId!, companyId: a.companyId! }, orderBy: { sequence: "desc" } });
+    const previous = source.latest;
     if ((previous?.id ?? null) !== input.expectedEventId || order.updatedAt.toISOString() !== input.expectedUpdatedAt) deny("Stale custody/order state");
     let phase = previous?.phase ?? "", warehouseId = previous?.warehouseId ?? null, destinationWarehouseId = previous?.destinationWarehouseId ?? null;
     let driverUserId = previous?.driverUserId ?? null, driverMembershipId = previous?.driverMembershipId ?? null, legId = previous?.legId ?? null;
@@ -152,10 +149,16 @@ export async function readWarehouseCustody(actor: OrderActor, orderId: string) {
   const parsed=uuid.safeParse(orderId);
   if(!parsed.success) throw orderError("Valid order identifier required",400);
   orderId=parsed.data;
-  const authority = await requireDispatchAuthority(actor, "shipment.view");
-  const order = await prisma.order.findFirst({ where: dispatchOrderWhere(authority, [orderId]), select: { id: true, ownerOrgId: true, updatedAt: true } });
-  if (!order || order.ownerOrgId !== actor.companyId) throw orderError("Owned order required", 404);
-  const row = await prisma.orderCustodyAction.findFirst({ where: { orderId, tenantId: actor.tenantId!, companyId: actor.companyId! }, orderBy: { sequence: "desc" },
-    select: { id: true, phase: true, warehouseId: true, destinationWarehouseId: true, driverUserId: true, legId: true, createdAt: true } });
-  return { orderId, updatedAt: order.updatedAt.toISOString(), custody: row };
+  const a = await requireCustodyActor(actor, "shipment.view");
+  const source = await loadCustodySource(prisma, a, orderId);
+  await authorizeCustodyRead(prisma, a, source);
+  const parcels = await prisma.parcel.findMany({ where: { orderId }, select: { id: true }, orderBy: { id: "asc" }, take: 101 });
+  if (parcels.length > 100) throw orderError("Custody parcel limit exceeded", 409);
+  const latest = source.latest;
+  const custody = latest ? { id: latest.id, phase: latest.phase, warehouseId: latest.warehouseId,
+    destinationWarehouseId: latest.destinationWarehouseId, driverUserId: latest.driverUserId, legId: latest.legId, createdAt: latest.createdAt } : null;
+  const pickup = !latest && source.order.status === "picked_up" ? await prisma.tracking.findFirst({ where: { orderId, status: { not: null } },
+    orderBy: [{ timestamp: "desc" }, { id: "desc" }], select: { id: true, status: true, actorId: true } }) : null;
+  return { orderId, updatedAt: source.order.updatedAt.toISOString(), custody, parcelIds: parcels.map(p => p.id),
+    pickupTrackingId: pickup?.status === "picked_up" && pickup.actorId === a.id ? pickup.id : null };
 }

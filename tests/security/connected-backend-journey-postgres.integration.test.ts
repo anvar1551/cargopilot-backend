@@ -23,9 +23,9 @@ import { syntheticBillingPolicy } from "./billing-policy.fixture";
 import { createOrderForActor } from "../../src/modules/orders-core/write/create-order";
 import { bindOrderBillTo, acceptOrderPrice } from "../../src/modules/pricing-core/repo/order-price";
 import { assignDriversBulk, updateDriverOrderStatus, updateOrdersStatusBulk } from "../../src/modules/orders-core/operations/order-status";
-import { submitProofForActor } from "../../src/modules/orders-core/proofs/proof";
+import { submitProofForActor, requireProofSubmissionContext } from "../../src/modules/orders-core/proofs/proof";
 import { issueOrderInvoiceForActor } from "../../src/modules/invoice-core/application/invoiceRepo";
-import { executeWarehouseCustody } from "../../src/modules/orders-core/operations/warehouse-custody";
+import { executeWarehouseCustody, readWarehouseCustody } from "../../src/modules/orders-core/operations/warehouse-custody";
 import { createWarehouse } from "../../src/modules/warehouse-core/application/warehouseRepo";
 import { upsertOrderLeg } from "../../src/modules/orders-legs/legs";
 
@@ -285,4 +285,95 @@ it("competing dispatch and last-mile handover serialize one intent without mixed
   await expect(upsertOrderLeg(orderId,{legId:leg.id,actualArrivalAt:new Date().toISOString()},operator)).rejects.toThrow("planning only");
   expect(await businessState()).toEqual(before);
   expect(fetchSpy).not.toHaveBeenCalled();expect(httpSpy).not.toHaveBeenCalled();expect(httpsSpy).not.toHaveBeenCalled();
+});
+
+it("warehouse-only recipients and exact nominated drivers without company/assignCourier scope execute and preflight their own custody", async () => {
+  async function restricted(name: string, warehouseId?: string, type?: "linehaul") {
+    const id = randomUUID(), tm = randomUUID(), cm = randomUUID();
+    await mockPrisma.user.create({ data: { id, email: `${name}@example.invalid`, name, password: "synthetic-invalid-login-value", driverType: type } });
+    await mockPrisma.tenantMembership.create({ data: { id: tm, userId: id, tenantId: maker.tenantId } });
+    await mockPrisma.companyMembership.create({ data: { id: cm, userId: id, tenantMembershipId: tm, tenantId: maker.tenantId, companyId: maker.companyId } });
+    const who = { id, membershipId: cm, companyMembershipId: cm, tenantMembershipId: tm, tenantId: maker.tenantId, companyId: maker.companyId };
+    await grant(who, warehouseId ? ["shipment.view", "shipment.custody.intake", "shipment.custody.dispatch", "shipment.custody.receive", "shipment.custody.last-mile-offer"] : ["shipment.view", "drivers.telemetry", "shipment.custody.transport-accept"]);
+    await mockPrisma.membershipScope.deleteMany({ where: { membershipId: cm } });
+    if (warehouseId) await mockPrisma.membershipScope.create({ data: { membershipId: cm, scopeType: "warehouse", scopeRefId: warehouseId } });
+    return who;
+  }
+  const origin = await restricted("synthetic-origin-only", ownedWarehouseIds[0]);
+  const destination = await restricted("synthetic-destination-only", ownedWarehouseIds[1]);
+  const unrelated = await restricted("synthetic-unrelated-linehaul", undefined, "linehaul");
+  const made = await createOrderForActor({ user: operator, body: { ...savedBody, operationId: randomUUID() } }), orderId = made.payload.order.id;
+  await assignDriversBulk({ actor: operator, orderIds: [orderId], expectedStates: await expected(orderId), driverId: driver.id, type: "pickup" });
+  await updateDriverOrderStatus({ actor: driver, orderId, status: "pickup_in_progress" });
+  await updateDriverOrderStatus({ actor: driver, orderId, status: "picked_up" });
+  await mockPrisma.membershipScope.deleteMany({ where: { membershipId: { in: [driver.companyMembershipId, transport.companyMembershipId] } } });
+  for (const who of [origin, destination, driver, transport]) {
+    expect(await mockPrisma.membershipScope.count({ where: { membershipId: who.companyMembershipId, scopeType: "company" } })).toBe(0);
+    const roles = await mockPrisma.membershipRole.findMany({ where: { membershipId: who.companyMembershipId }, include: { role: { include: { rolePermissions: { include: { permission: true } } } } } });
+    expect(roles.flatMap(r => r.role.rolePermissions.map(p => p.permission.key))).not.toContain("shipment.assignCourier");
+  }
+  const parcelIds = made.payload.order.parcels.map((p: any) => p.id);
+  const next = async (who: any, action: string, extra: any = {}) => {
+    const snapshot = await readWarehouseCustody(who, orderId);
+    expect(snapshot.parcelIds).toEqual([...parcelIds].sort());
+    return { operationId: randomUUID(), action, expectedEventId: snapshot.custody?.id ?? null, expectedUpdatedAt: snapshot.updatedAt, parcelIds: snapshot.parcelIds, ...extra };
+  };
+  async function denied(who: any, input: any) {
+    const before = await businessState(), puts = mockStorage.mock.calls.length;
+    await expect(executeWarehouseCustody(who, orderId, input)).rejects.toThrow();
+    expect(await businessState()).toEqual(before); expect(mockStorage).toHaveBeenCalledTimes(puts);
+  }
+  const pickup = await readWarehouseCustody(driver, orderId);
+  expect(pickup.pickupTrackingId).toBeTruthy();
+  const offer = await next(driver, "pickup-offer", { pickupTrackingId: pickup.pickupTrackingId, destinationWarehouseId: ownedWarehouseIds[0] });
+  const offerResult = await executeWarehouseCustody(driver, orderId, offer);
+  const intake = await next(origin, "intake", { warehouseId: ownedWarehouseIds[0] });
+  await expect(readWarehouseCustody(destination, orderId)).rejects.toThrow();
+  await denied(destination, intake); await denied(actor(1), intake); await denied(actor(2), intake);
+  // Outgoing-driver revocation remains a deliberate recovery blocker, not relaxed by recipient access.
+  await mockPrisma.companyMembership.update({ where: { id: driver.companyMembershipId }, data: { status: "suspended" } });
+  try { await denied(origin, intake); await denied(driver, offer); } finally {
+    await mockPrisma.companyMembership.update({ where: { id: driver.companyMembershipId }, data: { status: "active" } });
+  }
+  const intakeResult = await executeWarehouseCustody(origin, orderId, intake);
+  const leg = await upsertOrderLeg(orderId, { sequence: 1, fromWarehouseId: ownedWarehouseIds[0], toWarehouseId: ownedWarehouseIds[1] }, operator);
+  const dispatch = await next(origin, "dispatch", { warehouseId: ownedWarehouseIds[0], destinationWarehouseId: ownedWarehouseIds[1], driverMembershipId: transport.companyMembershipId, legId: leg.id });
+  await executeWarehouseCustody(origin, orderId, dispatch);
+  const acceptance = await next(transport, "transport-accept");
+  await expect(readWarehouseCustody(unrelated, orderId)).rejects.toThrow();
+  await denied(unrelated, acceptance); await denied(driver, acceptance);
+  await denied({ ...transport, companyMembershipId: actor(1).companyMembershipId, membershipId: actor(1).membershipId }, acceptance);
+  const accepted = await executeWarehouseCustody(transport, orderId, acceptance);
+  expect(await executeWarehouseCustody(transport, orderId, acceptance)).toEqual(accepted);
+  expect((await readWarehouseCustody(transport, orderId)).custody?.phase).toBe("transport");
+  const receipt = await next(destination, "receive", { warehouseId: ownedWarehouseIds[1] });
+  await denied(origin, receipt); await denied(destination, { ...receipt, warehouseId: ownedWarehouseIds[0] });
+  await mockPrisma.companyMembership.update({ where: { id: destination.companyMembershipId }, data: { status: "suspended" } });
+  try { await denied(destination, receipt); await expect(readWarehouseCustody(destination, orderId)).rejects.toThrow(); } finally {
+    await mockPrisma.companyMembership.update({ where: { id: destination.companyMembershipId }, data: { status: "active" } });
+  }
+  await mockPrisma.companyMembership.update({ where: { id: transport.companyMembershipId }, data: { status: "suspended" } });
+  try { await denied(destination, receipt); } finally {
+    await mockPrisma.companyMembership.update({ where: { id: transport.companyMembershipId }, data: { status: "active" } });
+  }
+  await executeWarehouseCustody(destination, orderId, receipt);
+  await executeWarehouseCustody(destination, orderId, await next(destination, "last-mile-offer", { warehouseId: ownedWarehouseIds[1], driverMembershipId: driver.companyMembershipId }));
+  const last = await next(driver, "last-mile-accept");
+  await denied(transport, last); await executeWarehouseCustody(driver, orderId, last);
+  expect(await requireProofSubmissionContext(driver, orderId)).toMatchObject({ assignedDriverId: driver.id });
+  const { PNG } = require("pngjs"), bytes = PNG.sync.write({ width: 2, height: 2, data: Buffer.alloc(16, 255) });
+  const proofIntent = { actor: driver, orderId, body: { submissionId: randomUUID(), stage: "delivery", signedBy: "Synthetic recipient", signaturePaths: ["1,2;3,4"] }, file: { buffer: bytes, originalname: "photo.png", mimetype: "image/png", size: bytes.length } };
+  const proof = await submitProofForActor(proofIntent);
+  await executeWarehouseCustody(driver, orderId, await next(driver, "deliver", { proofSubmissionId: proof.proof.submissionId }));
+  expect((await readWarehouseCustody(driver, orderId)).custody?.phase).toBe("delivered");
+  const confirmed = await businessState(), puts = mockStorage.mock.calls.length;
+  expect(await executeWarehouseCustody(origin, orderId, intake)).toEqual(intakeResult);
+  expect(await executeWarehouseCustody(driver, orderId, offer)).toEqual(offerResult);
+  expect(await executeWarehouseCustody(transport, orderId, acceptance)).toEqual(accepted);
+  expect(await submitProofForActor(proofIntent)).toEqual(proof);
+  expect(await businessState()).toEqual(confirmed); expect(mockStorage).toHaveBeenCalledTimes(puts);
+  await expect(readWarehouseCustody(origin, orderId)).rejects.toThrow(); // Receipt does not grant current order visibility.
+  await mockPrisma.membershipScope.deleteMany({ where: { membershipId: origin.companyMembershipId } });
+  await denied(origin, intake);
+  expect(fetchSpy).not.toHaveBeenCalled(); expect(httpSpy).not.toHaveBeenCalled(); expect(httpsSpy).not.toHaveBeenCalled();
 });

@@ -1,5 +1,4 @@
 import { requireProofSubmissionContext } from "../../proofs/proof";
-import { requireAuthorizedOrder } from "../../domain/order-access";
 import { MAX_PROOF_BYTES } from "../../proofs/raster-processing";
 import { FastifyPluginAsync } from "fastify";
 import fastifyMultipart from "@fastify/multipart";
@@ -10,7 +9,7 @@ import type { AppUser } from "../../../../types/app-user";
 
 async function handleProofSubmit(request: any, reply: any, forcedStage?: "delivery") {
   const receivedAt = new Date();
-  await requireAuthorizedOrder(requireOrderActor(request.user), String(request.params?.id ?? "").trim(), "shipment.update");
+  await requireProofSubmissionContext(requireOrderActor(request.user), String(request.params?.id ?? "").trim());
   const file = await request.file();
   if (!file) return reply.code(400).send({ error: "photo is required" });
   const buffer = await file.toBuffer();
