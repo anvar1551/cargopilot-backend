@@ -11,7 +11,7 @@ export const billingPolicySchema = z.object({
   rounding: z.enum(["HALF_UP", "HALF_EVEN", "DOWN", "UP"]),
   weight: z.object({ source: z.literal("recorded_order_kg"), rule: z.literal("as_recorded") }).strict(),
   zones: z.object({ source: z.literal("structured_address_cities"), mappings: z.array(z.object({
-    origin: z.string().trim().min(1).max(100), destination: z.string().trim().min(1).max(100), zone: z.number().int().min(1).max(1000),
+    origin: z.string().trim().min(1).max(100), destination: z.string().trim().min(1).max(100), zone: z.number().int().min(0).max(1000),
     originCountry: z.string().regex(/^[A-Z]{2}$/), destinationCountry: z.string().regex(/^[A-Z]{2}$/),
     coverageType: z.enum(["domestic", "international"]), transportMode: z.nativeEnum(TariffTransportMode),
   }).strict()).min(1).max(100) }).strict(),
@@ -30,12 +30,16 @@ export const billingPolicySchema = z.object({
 export type BillingPolicy = z.infer<typeof billingPolicySchema>;
 const arithmetic = Decimal.clone({ precision: 60, toExpNeg: -60, toExpPos: 60 });
 const rounding = { HALF_UP: Decimal.ROUND_HALF_UP, HALF_EVEN: Decimal.ROUND_HALF_EVEN, DOWN: Decimal.ROUND_DOWN, UP: Decimal.ROUND_UP };
+export function billingRouteIdentity(origin: string, destination: string, originCountry: string | null, destinationCountry: string | null) {
+  return JSON.stringify([origin.trim().toLowerCase(), destination.trim().toLowerCase(),
+    originCountry?.trim().toUpperCase() ?? "", destinationCountry?.trim().toUpperCase() ?? ""]);
+}
 export function parseBillingPolicy(input: unknown): BillingPolicy {
   const p = billingPolicySchema.parse(input);
   const services = [...p.tariff.includedServices, ...p.fees.map(f => f.service)];
   if (new Set(services).size !== services.length || new Set(p.discounts.map(d => d.code)).size !== p.discounts.length)
     throw Object.assign(new Error("Duplicate or already included service/discount"), { statusCode: 400, code: "BILLING_DUPLICATE_COMPONENT" });
-  const lanes = p.zones.mappings.map(m => JSON.stringify([m.origin.toLowerCase(), m.destination.toLowerCase()]));
+  const lanes = p.zones.mappings.map(m => billingRouteIdentity(m.origin, m.destination, m.originCountry, m.destinationCountry));
   if (new Set(lanes).size !== lanes.length) throw Object.assign(new Error("Ambiguous zone mapping"), { statusCode: 400 });
   if (p.discounts.some(d => d.type === "percent" && new arithmetic(d.value).gt(100)) ||
       (p.tax.treatment === "exclusive_percent" && new arithmetic(p.tax.rate).gt(100)) || p.billing.eligibleOrderStates.includes("cancelled"))

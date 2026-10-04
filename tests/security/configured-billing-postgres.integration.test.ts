@@ -33,8 +33,8 @@ async function policy(content=syntheticBillingPolicy()){
  await decideBillingPolicy(user(4),{versionId:p.id,contentHash:p.contentHash,operationId:randomUUID(),decision:"approved",reason:"Independent synthetic configuration approval"});
  return p;
 }
-async function tariff(currency="UZS",price="100"){
- const p=await mockPrisma.tariffPlan.create({data:{tenantId:user().tenantId,companyId:user().companyId,name:"Synthetic bucket",serviceType:"DOOR_TO_DOOR",currency,isDefault:true,rates:{create:{zone:1,weightFromKg:"0.01",weightToKg:"100",price}}}});
+async function tariff(currency="UZS",price="100",extra:any={},zone=1){
+ const p=await mockPrisma.tariffPlan.create({data:{tenantId:user().tenantId,companyId:user().companyId,name:"Synthetic bucket",serviceType:"DOOR_TO_DOOR",currency,isDefault:true,...extra,rates:{create:{zone,weightFromKg:"0.01",weightToKg:"100",price}}}});
  const current=await mockPrisma.tariffPlan.findUniqueOrThrow({where:{id:p.id}});
  const v=await proposeTariffVersion({user:user(),planId:p.id,expectedGeneration:current.contentGeneration,operationId:randomUUID(),reason:"Synthetic tariff"});
  await decideTariffVersion({user:user(4),planId:p.id,versionId:v.id,operationId:randomUUID(),contentSha256:v.contentSha256,decision:"approved",reason:"Synthetic tariff approval"});
@@ -261,4 +261,61 @@ it("accepted history survives later configuration changes without recalculating 
  await policy(syntheticBillingPolicy({fees:[{service:"synthetic_extra",amount:"20"}]}));
  try{const before=await state();expect(await acceptOrderPrice(user(),p)).toEqual(accepted);expect(await issueOrderInvoiceForActor(args)).toEqual(issued);expect(await state()).toEqual(before);}
  finally{await policy();}
+});
+
+it("review correction: approved zone zero yields accepted price and same-currency invoice",async()=>{
+ const mapping={...syntheticBillingPolicy().zones.mappings[0],zone:0};
+ await policy(syntheticBillingPolicy({zones:{source:"structured_address_cities",mappings:[mapping]}}));
+ const id=await tariff("UZS","100",{priority:500},0);
+ try{const {o,accepted}=await ready();expect(accepted.content.inputs.zone).toBe(0);expect(accepted.content.tariffPlanId).toBe(id);
+  expect(await issueOrderInvoiceForActor(issuance(o,accepted))).toMatchObject({amount:"110.0100",currency:"UZS"});
+ }finally{await mockPrisma.tariffPlan.update({where:{id},data:{status:"archived"}});await policy();}
+});
+it("review correction: country-qualified identical city pairs match normalized authoritative addresses",async()=>{
+ const m=syntheticBillingPolicy().zones.mappings[0];
+ await policy(syntheticBillingPolicy({zones:{source:"structured_address_cities",mappings:[{...m,zone:0},{...m,originCountry:"AA",destinationCountry:"BB",zone:1}]}}));
+ const id=await tariff("UZS","100",{priority:500},0);
+ try{
+  await mockPrisma.address.update({where:{id:fixture.addresses[0].id},data:{city:" SYNTHETIC A ",country:"zz"}});
+  const {o,accepted}=await ready();expect(accepted.content.inputs.zone).toBe(0);
+  expect(await issueOrderInvoiceForActor(issuance(o,accepted))).toMatchObject({currency:"UZS"});
+  await mockPrisma.address.update({where:{id:fixture.addresses[0].id},data:{country:"AA"}});
+  await mockPrisma.address.update({where:{id:fixture.addresses[1].id},data:{country:"BB"}});
+  // Archive the zone-zero candidate; the other complete route uses the original zone-one tariff.
+  await mockPrisma.tariffPlan.update({where:{id},data:{status:"archived"}});
+  const second=await ready();expect(second.accepted.content.inputs.zone).toBe(1);
+  expect(await issueOrderInvoiceForActor(issuance(second.o,second.accepted))).toMatchObject({currency:"UZS"});
+ }finally{
+  await mockPrisma.tariffPlan.update({where:{id},data:{status:"archived"}});
+  await mockPrisma.address.update({where:{id:fixture.addresses[0].id},data:{city:"Synthetic A",country:"ZZ"}});
+  await mockPrisma.address.update({where:{id:fixture.addresses[1].id},data:{country:"ZZ"}});await policy();
+ }
+});
+it("review correction: many unrelated approved snapshots do not block the eligible tariff; drafts are not authority",async()=>{
+ const ids:string[]=[];
+ // More than the old 100-company-plan cap. Each source is independently approved through actual services.
+ for(let i=0;i<106;i++)ids.push(await tariff(i%2 ? "USD":"UZS","900",i%2?{}:{customerEntityId:payerId}));
+ try{
+  // Both directions: draft changes cannot admit unrelated approval or exclude the relevant approval.
+  await mockPrisma.tariffPlan.updateMany({where:{id:{in:ids}},data:{currency:"UZS",customerEntityId:null,priority:999}});
+  await mockPrisma.tariffPlan.update({where:{id:tariffId},data:{currency:"USD",priority:-999}});
+  const {o,accepted}=await ready();expect(accepted.content.tariffPlanId).toBe(tariffId);expect(accepted.total).toBe("110.0100");
+  expect(await issueOrderInvoiceForActor(issuance(o,accepted))).toMatchObject({currency:"UZS",amount:"110.0100"});
+ }finally{await mockPrisma.tariffPlan.updateMany({where:{id:{in:ids}},data:{status:"archived"}});await mockPrisma.tariffPlan.update({where:{id:tariffId},data:{currency:"UZS",priority:0}});}
+});
+it("review correction: excessive relevant approved candidates reject with no price or invoice effects",async()=>{
+ await policy(syntheticBillingPolicy({currency:"XTS"}));
+ const ids:string[]=[];for(let i=0;i<101;i++)ids.push(await tariff("XTS"));
+ try{const o=await order({currency:"XTS"});await bindOrderBillTo(user(),{...intent(o.id),payerCustomerEntityId:payerId,evidence:"Synthetic"});
+  const before=await state();await expect(acceptOrderPrice(user(),intent(o.id))).rejects.toMatchObject({code:"BILLING_TARIFF_SELECTION_LIMIT"});expect(await state()).toEqual(before);
+ }finally{await mockPrisma.tariffPlan.updateMany({where:{id:{in:ids}},data:{status:"archived"}});}
+});
+it("review correction: customer/default precedence remains authoritative and missing top bucket never falls back",async()=>{
+ const specific=await tariff("UZS","200",{customerEntityId:fixture.customers[0].id,isDefault:false,priority:-100});
+ try{const first=await ready();expect(first.accepted.content.tariffPlanId).toBe(specific);expect(first.accepted.total).toBe("220.0100");
+  const missing=await tariff("UZS","300",{customerEntityId:fixture.customers[0].id,isDefault:true},0);
+  try{const o=await order();await bindOrderBillTo(user(),{...intent(o.id),payerCustomerEntityId:payerId,evidence:"Synthetic"});const before=await state();
+   await expect(acceptOrderPrice(user(),intent(o.id))).rejects.toMatchObject({code:"BILLING_BUCKET_AMBIGUOUS_OR_MISSING"});expect(await state()).toEqual(before);
+  }finally{await mockPrisma.tariffPlan.update({where:{id:missing},data:{status:"archived"}});}
+ }finally{await mockPrisma.tariffPlan.update({where:{id:specific},data:{status:"archived"}});}
 });

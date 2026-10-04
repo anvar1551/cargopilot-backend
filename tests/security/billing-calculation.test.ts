@@ -1,5 +1,19 @@
-import { calculateAcceptedPrice, parseBillingPolicy } from "../../src/modules/pricing-core/domain/billing-calculation";
+import { calculateAcceptedPrice, parseBillingPolicy, billingRouteIdentity } from "../../src/modules/pricing-core/domain/billing-calculation";
 import { syntheticBillingPolicy } from "./billing-policy.fixture";
+
+it("zone zero is explicit and negative, fractional or unsupported zones reject", () => {
+  const mapping = syntheticBillingPolicy().zones.mappings[0];
+  expect(parseBillingPolicy(syntheticBillingPolicy({zones:{source:"structured_address_cities",mappings:[{...mapping,zone:0}]}})).zones.mappings[0].zone).toBe(0);
+  for (const zone of [-1, 0.5, 1001]) expect(() => parseBillingPolicy(syntheticBillingPolicy({zones:{source:"structured_address_cities",mappings:[{...mapping,zone}]}}))).toThrow();
+});
+it("country-qualified route identity permits same cities across countries and rejects conflicting complete routes", () => {
+  const mapping=syntheticBillingPolicy().zones.mappings[0];
+  const mappings=[mapping,{...mapping,originCountry:"AA",destinationCountry:"BB",zone:0}];
+  expect(parseBillingPolicy(syntheticBillingPolicy({zones:{source:"structured_address_cities",mappings}})).zones.mappings).toHaveLength(2);
+  expect(billingRouteIdentity(" Synthetic A ","SYNTHETIC B"," zz ","ZZ")).toBe(billingRouteIdentity(mapping.origin,mapping.destination,mapping.originCountry,mapping.destinationCountry));
+  for(const extra of [{...mapping,origin:" SYNTHETIC A ",zone:0},{...mapping,transportMode:"AIR"}])
+    expect(()=>parseBillingPolicy(syntheticBillingPolicy({zones:{source:"structured_address_cities",mappings:[mapping,extra]}}))).toThrow();
+});
 
 it("preserves exact large money, separate service fees and explicit synthetic tax", () => {
   expect(calculateAcceptedPrice(syntheticBillingPolicy(), "1234567890.12")).toMatchObject({ total: "1358024679.14", currency: "UZS",

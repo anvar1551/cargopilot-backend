@@ -6,7 +6,7 @@ import type { AppUser } from "../../../types/app-user";
 import { requireAuthorizedOrder } from "../../orders-core/domain/order-access";
 import { requireCustomerEntityReference } from "../../customers-core/application/customerEntityRepo";
 import { billingActor, billingOwner, billingAuthority, billingError, billingHash, assertBillingRetry, loadApprovedBillingPolicy } from "./billing-policy";
-import { calculateAcceptedPrice } from "../domain/billing-calculation";
+import { calculateAcceptedPrice, billingRouteIdentity } from "../domain/billing-calculation";
 
 const request = z.object({ orderId: z.string().uuid().transform(v => v.toLowerCase()), operationId: z.string().uuid().transform(v => v.toLowerCase()),
   reason: z.string().trim().min(1).max(1000) }).strict();
@@ -49,16 +49,38 @@ async function compute(tx: Prisma.TransactionClient,u:AppUser,o:Awaited<ReturnTy
     throw billingError("BILLING_STRUCTURED_ROUTE_EVIDENCE_REQUIRED");
   await requireCustomerEntityReference(u,o.customerEntityId);
   const origin=o.senderAddressObj.city!.trim().toLowerCase(), destination=o.receiverAddressObj.city!.trim().toLowerCase();
-  const zones=policy.content.zones.mappings.filter(m=>m.origin.toLowerCase()===origin && m.destination.toLowerCase()===destination &&
-    m.originCountry===o.senderAddressObj!.country && m.destinationCountry===o.receiverAddressObj!.country);
+  const route=billingRouteIdentity(origin,destination,o.senderAddressObj.country,o.receiverAddressObj.country);
+  const zones=policy.content.zones.mappings.filter(m=>billingRouteIdentity(m.origin,m.destination,m.originCountry,m.destinationCountry)===route);
   if(zones.length!==1 || o.weightKg==null || !Number.isFinite(o.weightKg) || o.weightKg<=0) throw billingError("BILLING_WEIGHT_OR_ZONE_UNCONFIGURED");
   // Weight is a recorded non-money measurement. No Float estimate is used as selling-price authority.
   const weight=o.weightKg.toString(), zone=zones[0].zone;
-  const plans=await tx.tariffPlan.findMany({where:{...billingOwner(u),approvedVersionId:{not:null},status:{not:"archived"}},take:101,include:{approvedPublication:{include:{source:true}}}});
-  if(plans.length>100)throw billingError("BILLING_TARIFF_SELECTION_LIMIT");
+  // Filter immutable approved authority before the cap, never mutable draft pricing fields.
+  // Return only bounded IDs first; SQL deadlines bound scans of unrelated history.
+  const eligible=await tx.$queryRaw<Array<{id:string;createdAt:Date}>>`
+    SELECT v.id,p."createdAt" FROM "TariffPlan" p
+    JOIN "TariffPublicationDecision" d ON d."versionId"=p."approvedVersionId" AND d."planId"=p.id
+      AND d."tenantId"=p."tenantId" AND d."companyId"=p."companyId" AND d.decision='approved'
+    JOIN "TariffConfigurationVersion" v ON v.id=d."versionId" AND v."planId"=p.id
+      AND v."tenantId"=p."tenantId" AND v."companyId"=p."companyId"
+    WHERE p."tenantId"=${u.tenantId!}::uuid AND p."companyId"=${u.companyId!}::uuid AND p.status<>'archived'
+      AND v.content->>'currency'=${o.currency} AND v.content->>'serviceType'=${o.serviceType ?? ""}
+      AND v.content->>'coverageType'=${zones[0].coverageType} AND v.content->>'transportMode'=${zones[0].transportMode}
+      AND v.content->>'pricingStrategy'='FIXED_LANE' AND v.content->>'priceType'='bucket'
+      AND (v.content->>'customerEntityId' IS NULL OR v.content->>'customerEntityId'=${o.customerEntityId})
+      AND (v.content->>'coverageType'<>'international' OR
+        (v.content->>'originCountryCode'=${zones[0].originCountry} AND v.content->>'destinationCountryCode'=${zones[0].destinationCountry}))
+      AND (v.content->>'routeTemplateId' IS NULL OR EXISTS (
+        SELECT 1 FROM "OrderLeg" l JOIN "RouteTemplate" r ON r.id=l."routeTemplateId"
+        JOIN "Organization" company ON company.id=r."companyId"
+        WHERE l."orderId"=${o.id}::uuid AND r.id::text=v.content->>'routeTemplateId'
+          AND r."companyId"=${u.companyId!}::uuid AND company."tenantId"=${u.tenantId!}::uuid AND r."isActive"=true))
+    ORDER BY v.id LIMIT 101`;
+  if(eligible.length>100)throw billingError("BILLING_TARIFF_SELECTION_LIMIT");
+  const versions=await tx.tariffConfigurationVersion.findMany({where:{id:{in:eligible.map(v=>v.id)},...billingOwner(u)},take:100});
+  const createdAt=new Map(eligible.map(v=>[v.id,v.createdAt]));
   const candidates:any[]=[];
-  for(const plan of plans){
-    const v=plan.approvedPublication?.source, c=v?.content as any;
+  for(const v of versions){
+    const c=v.content as any;
     if(!v || !c || billingHash(c)!==v.contentSha256 || c.companyId!==u.companyId || c.tenantId!==u.tenantId ||
       c.coverageType!==zones[0].coverageType || c.transportMode!==zones[0].transportMode ||
       (c.coverageType==="international" && (c.originCountryCode!==zones[0].originCountry || c.destinationCountryCode!==zones[0].destinationCountry)) ||
@@ -66,7 +88,7 @@ async function compute(tx: Prisma.TransactionClient,u:AppUser,o:Awaited<ReturnTy
       (c.customerEntityId && c.customerEntityId!==o.customerEntityId))continue;
     if(c.routeTemplateId && !await tx.orderLeg.findFirst({where:{orderId:o.id,routeTemplateId:c.routeTemplateId},select:{id:true}}))continue;
     if(c.routeTemplateId && !await tx.routeTemplate.findFirst({where:{id:c.routeTemplateId,companyId:u.companyId,isActive:true,company:{tenantId:u.tenantId}},select:{id:true}}))continue;
-    candidates.push({v,c,createdAt:plan.createdAt});
+    candidates.push({v,c,createdAt:createdAt.get(v.id)!});
   }
   candidates.sort((a,b)=>Number(Boolean(b.c.customerEntityId))-Number(Boolean(a.c.customerEntityId)) || Number(b.c.isDefault)-Number(a.c.isDefault) ||
     b.c.priority-a.c.priority || b.createdAt.getTime()-a.createdAt.getTime() || a.v.id.localeCompare(b.v.id));
