@@ -1,0 +1,199 @@
+model BillingPolicyVersion {
+  issuedInvoices Invoice[] @relation("InvoiceBillingPolicy")
+  OrderPriceSnapshot_policy OrderPriceSnapshot[] @relation("OrderPriceSnapshot_policy")
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  legalEntityId String @db.Uuid
+  currency String @db.VarChar(3)
+  revision Int
+  content Json
+  contentHash String @db.Char(64)
+  actorUserId String @db.Uuid
+  companyMembershipId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  operationId String @db.Uuid
+  intentHash String @db.Char(64)
+  reason String
+  createdAt DateTime @default(now())
+  entity FinanceLegalEntity @relation("BillingPolicyEntity", fields: [legalEntityId, tenantId, companyId], references: [id, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict)
+  actor CompanyMembership @relation("BillingPolicyActor", fields: [companyMembershipId, actorUserId, tenantId, companyId], references: [id, userId, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "BillingPolicy_actor_fkey")
+  bridge CompanyMembership @relation("BillingPolicyBridge", fields: [companyMembershipId, tenantMembershipId, actorUserId, tenantId], references: [id, tenantMembershipId, userId, tenantId], onDelete: Restrict, onUpdate: Restrict, map: "BillingPolicy_bridge_fkey")
+  decisions BillingPolicyDecision[] @relation("BillingPolicySource")
+  makerDecisions BillingPolicyDecision[] @relation("BillingPolicyMaker")
+  @@unique([tenantId, operationId])
+  @@unique([legalEntityId, currency, revision])
+  @@unique([id, tenantId, companyId, legalEntityId, currency, contentHash], map: "BillingPolicy_content_key")
+  @@unique([id, actorUserId])
+  @@unique([id, tenantId, companyId, legalEntityId, currency], map: "BillingPolicy_owner_key")
+  @@index([tenantId, companyId, currency, revision], map: "BillingPolicy_owner_idx")
+}
+
+model BillingPolicyDecision {
+  versionId String @id @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  legalEntityId String @db.Uuid
+  currency String @db.VarChar(3)
+  contentHash String @db.Char(64)
+  makerUserId String @db.Uuid
+  actorUserId String @db.Uuid
+  companyMembershipId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  operationId String @db.Uuid
+  intentHash String @db.Char(64)
+  decision TariffPublicationDecisionKind
+  reason String
+  createdAt DateTime @default(now())
+  source BillingPolicyVersion @relation("BillingPolicySource", fields: [versionId, tenantId, companyId, legalEntityId, currency, contentHash], references: [id, tenantId, companyId, legalEntityId, currency, contentHash], onDelete: Restrict, onUpdate: Restrict, map: "BillingPolicy_source_fkey")
+  maker BillingPolicyVersion @relation("BillingPolicyMaker", fields: [versionId, makerUserId], references: [id, actorUserId], onDelete: Restrict, onUpdate: Restrict, map: "BillingPolicy_maker_fkey")
+  actor CompanyMembership @relation("BillingDecisionActor", fields: [companyMembershipId, actorUserId, tenantId, companyId], references: [id, userId, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "BillingDecision_actor_fkey")
+  bridge CompanyMembership @relation("BillingDecisionBridge", fields: [companyMembershipId, tenantMembershipId, actorUserId, tenantId], references: [id, tenantMembershipId, userId, tenantId], onDelete: Restrict, onUpdate: Restrict, map: "BillingDecision_bridge_fkey")
+  @@unique([tenantId, operationId])
+  @@index([tenantId, companyId, currency, createdAt], map: "BillingDecision_owner_idx")
+}
+
+model OrderBillTo {
+  OrderPriceSnapshot_billto OrderPriceSnapshot[] @relation("OrderPriceSnapshot_billto")
+  id String @db.Uuid @id @default(dbgenerated("public.uuid_generate_v7()"))
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  legalEntityId String @db.Uuid
+  orderId String @db.Uuid
+  payerCustomerEntityId String @db.Uuid
+  evidence String
+  actorUserId String @db.Uuid
+  companyMembershipId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  operationId String @db.Uuid
+  intentHash String @db.Char(64)
+  reason String
+  createdAt DateTime @default(now())
+  @@unique([tenantId, operationId], map: "OrderBillTo_key_0")
+  @@unique([orderId], map: "OrderBillTo_key_1")
+  @@unique([id, tenantId, companyId, legalEntityId, orderId, payerCustomerEntityId], map: "OrderBillTo_key_2")
+  @@index([tenantId, companyId, orderId], map: "OrderBillTo_owner_idx")
+  entity FinanceLegalEntity @relation("OrderBillTo_entity", fields: [legalEntityId, tenantId, companyId], references: [id, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "OrderBillTo_entity_fk")
+  order Order @relation("OrderBillTo_order", fields: [tenantId, orderId, companyId], references: [tenantId, id, ownerOrgId], onDelete: Restrict, onUpdate: Restrict, map: "OrderBillTo_order_fk")
+  actor CompanyMembership @relation("OrderBillTo_actor", fields: [companyMembershipId, actorUserId, tenantId, companyId], references: [id, userId, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "OrderBillTo_actor_fk")
+  bridge CompanyMembership @relation("OrderBillTo_bridge", fields: [companyMembershipId, tenantMembershipId, actorUserId, tenantId], references: [id, tenantMembershipId, userId, tenantId], onDelete: Restrict, onUpdate: Restrict, map: "OrderBillTo_bridge_fk")
+  payer CustomerEntity @relation("OrderBillTo_payer", fields: [tenantId, payerCustomerEntityId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict, map: "OrderBillTo_payer_fk")
+}
+
+model OrderPriceSnapshot {
+  previousApproval OrderPriceApproval? @relation("PricePrevious", fields: [previousApprovalId, tenantId, companyId, orderId], references: [snapshotId, tenantId, companyId, orderId], onDelete: Restrict, onUpdate: Restrict, map: "Price_previous_fk")
+  OrderPriceApproval_source OrderPriceApproval[] @relation("OrderPriceApproval_source")
+  id String @db.Uuid @id @default(dbgenerated("public.uuid_generate_v7()"))
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  legalEntityId String @db.Uuid
+  orderId String @db.Uuid
+  billToId String @db.Uuid
+  payerCustomerEntityId String @db.Uuid
+  tariffVersionId String @db.Uuid
+  tariffPlanId String @db.Uuid
+  policyVersionId String @db.Uuid
+  previousApprovalId String? @db.Uuid
+  currency String @db.VarChar(3)
+  kind String
+  content Json
+  contentHash String @db.Char(64)
+  total Decimal @db.Decimal(20,4)
+  actorUserId String @db.Uuid
+  companyMembershipId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  operationId String @db.Uuid
+  intentHash String @db.Char(64)
+  reason String
+  createdAt DateTime @default(now())
+  @@unique([tenantId, operationId], map: "OrderPriceSnapshot_key_0")
+  @@unique([id, tenantId, companyId, legalEntityId, orderId, currency, total, kind, actorUserId, billToId, payerCustomerEntityId, policyVersionId], map: "OrderPriceSnapshot_key_1")
+  @@index([tenantId, companyId, orderId], map: "OrderPriceSnapshot_owner_idx")
+  entity FinanceLegalEntity @relation("OrderPriceSnapshot_entity", fields: [legalEntityId, tenantId, companyId], references: [id, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "OrderPriceSnapshot_entity_fk")
+  order Order @relation("OrderPriceSnapshot_order", fields: [tenantId, orderId, companyId], references: [tenantId, id, ownerOrgId], onDelete: Restrict, onUpdate: Restrict, map: "OrderPriceSnapshot_order_fk")
+  actor CompanyMembership @relation("OrderPriceSnapshot_actor", fields: [companyMembershipId, actorUserId, tenantId, companyId], references: [id, userId, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "OrderPriceSnapshot_actor_fk")
+  bridge CompanyMembership @relation("OrderPriceSnapshot_bridge", fields: [companyMembershipId, tenantMembershipId, actorUserId, tenantId], references: [id, tenantMembershipId, userId, tenantId], onDelete: Restrict, onUpdate: Restrict, map: "OrderPriceSnapshot_bridge_fk")
+  billTo OrderBillTo @relation("OrderPriceSnapshot_billto", fields: [billToId, tenantId, companyId, legalEntityId, orderId, payerCustomerEntityId], references: [id, tenantId, companyId, legalEntityId, orderId, payerCustomerEntityId], onDelete: Restrict, onUpdate: Restrict, map: "OrderPriceSnapshot_billto_fk")
+  tariff TariffConfigurationVersion @relation("OrderPriceSnapshot_tariff", fields: [tariffVersionId, tariffPlanId, tenantId, companyId], references: [id, planId, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "OrderPriceSnapshot_tariff_fk")
+  policy BillingPolicyVersion @relation("OrderPriceSnapshot_policy", fields: [policyVersionId, tenantId, companyId, legalEntityId, currency], references: [id, tenantId, companyId, legalEntityId, currency], onDelete: Restrict, onUpdate: Restrict, map: "OrderPriceSnapshot_policy_fk")
+}
+
+model OrderPriceApproval {
+  policyVersionId String @db.Uuid
+  issuedInvoices Invoice[] @relation("InvoiceAcceptedPrice")
+
+  currentOrders Order[] @relation("OrderCurrentPrice")
+  revisions OrderPriceSnapshot[] @relation("PricePrevious")
+  snapshotId String @db.Uuid @id
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  legalEntityId String @db.Uuid
+  orderId String @db.Uuid
+  billToId String @db.Uuid
+  payerCustomerEntityId String @db.Uuid
+  currency String @db.VarChar(3)
+  total Decimal @db.Decimal(20,4)
+  kind String
+  makerUserId String @db.Uuid
+  actorUserId String @db.Uuid
+  companyMembershipId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  operationId String @db.Uuid
+  intentHash String @db.Char(64)
+  reason String
+  createdAt DateTime @default(now())
+  @@unique([tenantId, operationId], map: "OrderPriceApproval_key_0")
+  @@unique([snapshotId, tenantId, companyId, orderId], map: "OrderPriceApproval_key_1")
+  @@unique([snapshotId, tenantId, companyId, legalEntityId, orderId, currency, total, billToId, payerCustomerEntityId, policyVersionId], map: "OrderPriceApproval_key_2")
+  @@index([tenantId, companyId, orderId], map: "OrderPriceApproval_owner_idx")
+  entity FinanceLegalEntity @relation("OrderPriceApproval_entity", fields: [legalEntityId, tenantId, companyId], references: [id, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "OrderPriceApproval_entity_fk")
+  order Order @relation("OrderPriceApproval_order", fields: [tenantId, orderId, companyId], references: [tenantId, id, ownerOrgId], onDelete: Restrict, onUpdate: Restrict, map: "OrderPriceApproval_order_fk")
+  actor CompanyMembership @relation("OrderPriceApproval_actor", fields: [companyMembershipId, actorUserId, tenantId, companyId], references: [id, userId, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "OrderPriceApproval_actor_fk")
+  bridge CompanyMembership @relation("OrderPriceApproval_bridge", fields: [companyMembershipId, tenantMembershipId, actorUserId, tenantId], references: [id, tenantMembershipId, userId, tenantId], onDelete: Restrict, onUpdate: Restrict, map: "OrderPriceApproval_bridge_fk")
+  source OrderPriceSnapshot @relation("OrderPriceApproval_source", fields: [snapshotId, tenantId, companyId, legalEntityId, orderId, currency, total, kind, makerUserId, billToId, payerCustomerEntityId, policyVersionId], references: [id, tenantId, companyId, legalEntityId, orderId, currency, total, kind, actorUserId, billToId, payerCustomerEntityId, policyVersionId], onDelete: Restrict, onUpdate: Restrict, map: "OrderPriceApproval_source_fk")
+}
+
+model InvoiceIssuanceReceipt {
+  outbox BillingInvoiceOutbox[]
+  id String @db.Uuid @id @default(dbgenerated("public.uuid_generate_v7()"))
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  legalEntityId String @db.Uuid
+  orderId String @db.Uuid
+  invoiceId String @db.Uuid
+  priceApprovalId String @db.Uuid
+  currency String @db.VarChar(3)
+  total Decimal @db.Decimal(20,4)
+  actorUserId String @db.Uuid
+  companyMembershipId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  operationId String @db.Uuid
+  intentHash String @db.Char(64)
+  reason String
+  createdAt DateTime @default(now())
+  @@unique([tenantId, operationId], map: "InvoiceIssuanceReceipt_key_0")
+  @@unique([invoiceId], map: "InvoiceIssuanceReceipt_key_1")
+  @@unique([priceApprovalId], map: "InvoiceIssuanceReceipt_key_2")
+  @@unique([id, tenantId, companyId, legalEntityId, orderId, invoiceId], map: "InvoiceIssuanceReceipt_key_3")
+  @@index([tenantId, companyId, orderId], map: "InvoiceIssuanceReceipt_owner_idx")
+  entity FinanceLegalEntity @relation("InvoiceIssuanceReceipt_entity", fields: [legalEntityId, tenantId, companyId], references: [id, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "InvoiceIssuanceReceipt_entity_fk")
+  order Order @relation("InvoiceIssuanceReceipt_order", fields: [tenantId, orderId, companyId], references: [tenantId, id, ownerOrgId], onDelete: Restrict, onUpdate: Restrict, map: "InvoiceIssuanceReceipt_order_fk")
+  actor CompanyMembership @relation("InvoiceIssuanceReceipt_actor", fields: [companyMembershipId, actorUserId, tenantId, companyId], references: [id, userId, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "InvoiceIssuanceReceipt_actor_fk")
+  bridge CompanyMembership @relation("InvoiceIssuanceReceipt_bridge", fields: [companyMembershipId, tenantMembershipId, actorUserId, tenantId], references: [id, tenantMembershipId, userId, tenantId], onDelete: Restrict, onUpdate: Restrict, map: "InvoiceIssuanceReceipt_bridge_fk")
+  invoice Invoice @relation("InvoiceIssuanceReceipt_invoice", fields: [invoiceId, tenantId, companyId, orderId, legalEntityId, currency, total, priceApprovalId], references: [id, tenantId, companyId, orderId, billingLegalEntityId, currency, amount, billingPriceApprovalId], onDelete: Restrict, onUpdate: Restrict, map: "InvoiceIssuanceReceipt_invoice_fk")
+}
+
+model BillingInvoiceOutbox {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  receiptId String @unique @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  legalEntityId String @db.Uuid
+  orderId String @db.Uuid
+  invoiceId String @unique @db.Uuid
+  eventType String
+  state String
+  createdAt DateTime @default(now())
+  source InvoiceIssuanceReceipt @relation(fields: [receiptId, tenantId, companyId, legalEntityId, orderId, invoiceId], references: [id, tenantId, companyId, legalEntityId, orderId, invoiceId], onDelete: Restrict, onUpdate: Restrict, map: "BillingInvoiceOutbox_source_fk")
+  @@index([tenantId, companyId, state, createdAt], map: "BillingInvoiceOutbox_owner_idx")
+}

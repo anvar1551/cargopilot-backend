@@ -68,6 +68,18 @@ model RolePermission {
 }
 
 model CompanyMembership {
+  InvoiceIssuanceReceipt_actor InvoiceIssuanceReceipt[] @relation("InvoiceIssuanceReceipt_actor")
+  InvoiceIssuanceReceipt_bridge InvoiceIssuanceReceipt[] @relation("InvoiceIssuanceReceipt_bridge")
+  OrderBillTo_actor OrderBillTo[] @relation("OrderBillTo_actor")
+  OrderBillTo_bridge OrderBillTo[] @relation("OrderBillTo_bridge")
+  OrderPriceSnapshot_actor OrderPriceSnapshot[] @relation("OrderPriceSnapshot_actor")
+  OrderPriceSnapshot_bridge OrderPriceSnapshot[] @relation("OrderPriceSnapshot_bridge")
+  OrderPriceApproval_actor OrderPriceApproval[] @relation("OrderPriceApproval_actor")
+  OrderPriceApproval_bridge OrderPriceApproval[] @relation("OrderPriceApproval_bridge")
+  billingPolicies BillingPolicyVersion[] @relation("BillingPolicyActor")
+  billingPolicyBridges BillingPolicyVersion[] @relation("BillingPolicyBridge")
+  billingDecisions BillingPolicyDecision[] @relation("BillingDecisionActor")
+  billingDecisionBridges BillingPolicyDecision[] @relation("BillingDecisionBridge")
   tariffVersions TariffConfigurationVersion[] @relation("TariffVersionActor")
   tariffVersionBridges TariffConfigurationVersion[] @relation("TariffVersionBridge")
   tariffDecisions TariffPublicationDecision[] @relation("TariffDecisionActor")

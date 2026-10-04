@@ -63,6 +63,7 @@ model Address {
 }
 
 model CustomerEntity {
+  OrderBillTo_payer OrderBillTo[] @relation("OrderBillTo_payer")
   financeJournalDimensions FinanceJournalLine[] @relation("JournalDimensionCustomer")
   tenantSupportTickets SupportTicket[] @relation("SupportTenantCustomer")
   id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid

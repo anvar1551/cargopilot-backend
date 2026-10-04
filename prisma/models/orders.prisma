@@ -128,6 +128,12 @@ enum RecipientUnavailableAction {
 }
 
 model Order {
+  InvoiceIssuanceReceipt_order InvoiceIssuanceReceipt[] @relation("InvoiceIssuanceReceipt_order")
+  currentPriceApprovalId String? @db.Uuid
+  currentPriceApproval OrderPriceApproval? @relation("OrderCurrentPrice", fields: [currentPriceApprovalId, tenantId, ownerOrgId, id], references: [snapshotId, tenantId, companyId, orderId], onDelete: Restrict, onUpdate: Restrict, map: "Order_current_price_fk")
+  OrderBillTo_order OrderBillTo[] @relation("OrderBillTo_order")
+  OrderPriceSnapshot_order OrderPriceSnapshot[] @relation("OrderPriceSnapshot_order")
+  OrderPriceApproval_order OrderPriceApproval[] @relation("OrderPriceApproval_order")
   paymentReservations PaymentIntent[] @relation("PaymentReservationOrder")
   analyticsOutbox AnalyticsDomainEventOutbox[] @relation("AnalyticsOutboxOrder")
   creationReceipts OrderCreationReceipt[]

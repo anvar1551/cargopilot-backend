@@ -37,6 +37,11 @@ export const SYSTEM_PERMISSIONS: SeedPermission[] = [
   permission("pricing.read", "pricing", "read", "Read pricing configuration"),
   permission("pricing.write", "pricing", "update", "Write pricing configuration"),
   permission("pricing.tariffs.propose", "pricing", "propose", "Propose an immutable selected-company tariff version"),
+  permission("billing.policies.propose", "billing", "propose", "Propose explicit selected-company billing and currency settings"),
+  permission("billing.policies.approve", "billing", "approve", "Independently approve an immutable billing settings version"),
+  permission("billing.payers.bind", "billing", "bind", "Record an explicit scoped order bill-to instruction"),
+  permission("pricing.orders.accept", "pricing", "accept", "Accept an exact standard selling price for an authorized order"),
+  permission("pricing.orders.approve", "pricing", "approve", "Independently approve an order-price exception or revision"),
   permission("pricing.tariffs.approve", "pricing", "approve", "Independently publish or reject another person's tariff version"),
 
   permission("customers.read", "customers", "read", "Read customer entities"),

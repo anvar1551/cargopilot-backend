@@ -248,6 +248,15 @@ model PaymentLedgerEntry {
 }
 
 model Invoice {
+  InvoiceIssuanceReceipt_invoice InvoiceIssuanceReceipt[] @relation("InvoiceIssuanceReceipt_invoice")
+  billingPriceApprovalId String? @db.Uuid
+  billingPolicyVersionId String? @db.Uuid
+  billingPayerCustomerEntityId String? @db.Uuid
+  billingLegalEntityId String? @db.Uuid
+  billingOrderBillToId String? @db.Uuid
+  billingPrice OrderPriceApproval? @relation("InvoiceAcceptedPrice", fields: [billingPriceApprovalId, tenantId, companyId, billingLegalEntityId, orderId, currency, amount, billingOrderBillToId, billingPayerCustomerEntityId, billingPolicyVersionId], references: [snapshotId, tenantId, companyId, legalEntityId, orderId, currency, total, billToId, payerCustomerEntityId, policyVersionId], onDelete: Restrict, onUpdate: Restrict, map: "Invoice_accepted_price_fk")
+  billingPolicy BillingPolicyVersion? @relation("InvoiceBillingPolicy", fields: [billingPolicyVersionId, tenantId, companyId, billingLegalEntityId, currency], references: [id, tenantId, companyId, legalEntityId, currency], onDelete: Restrict, onUpdate: Restrict, map: "Invoice_billing_policy_fk")
+  @@unique([id, tenantId, companyId, orderId, billingLegalEntityId, currency, amount, billingPriceApprovalId], map: "Invoice_issuance_source_key")
   paymentReservations PaymentIntent[] @relation("PaymentReservationInvoice")
   @@unique([tenantId, id, orderId, companyId, currency], map: "Invoice_reservation_source_key")
   id               String        @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid

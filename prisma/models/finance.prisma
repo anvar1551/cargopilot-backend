@@ -147,6 +147,11 @@ enum FinanceBankReconciliationTargetType {
 }
 
 model FinanceLegalEntity {
+  InvoiceIssuanceReceipt_entity InvoiceIssuanceReceipt[] @relation("InvoiceIssuanceReceipt_entity")
+  OrderBillTo_entity OrderBillTo[] @relation("OrderBillTo_entity")
+  OrderPriceSnapshot_entity OrderPriceSnapshot[] @relation("OrderPriceSnapshot_entity")
+  OrderPriceApproval_entity OrderPriceApproval[] @relation("OrderPriceApproval_entity")
+  billingPolicies BillingPolicyVersion[] @relation("BillingPolicyEntity")
   accountCreationReceipts FinanceAccountCreationReceipt[] @relation("AccountReceiptOwner")
   paymentReservations PaymentIntent[] @relation("PaymentReservationEntity")
   id        String       @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid

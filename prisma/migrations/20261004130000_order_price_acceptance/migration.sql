@@ -1,0 +1,57 @@
+-- New owned price authority only; no historical adoption.
+CREATE TABLE "OrderBillTo" ("id" UUID NOT NULL PRIMARY KEY DEFAULT public.uuid_generate_v7(),"tenantId" UUID NOT NULL,"companyId" UUID NOT NULL,"legalEntityId" UUID NOT NULL,"orderId" UUID NOT NULL,"payerCustomerEntityId" UUID NOT NULL,"evidence" TEXT NOT NULL,"actorUserId" UUID NOT NULL,"companyMembershipId" UUID NOT NULL,"tenantMembershipId" UUID NOT NULL,"operationId" UUID NOT NULL,"intentHash" CHAR(64) NOT NULL,"reason" TEXT NOT NULL,"createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP);
+ALTER TABLE "OrderBillTo" ADD CONSTRAINT "OrderBillTo_key_0" UNIQUE ("tenantId","operationId");
+ALTER TABLE "OrderBillTo" ADD CONSTRAINT "OrderBillTo_key_1" UNIQUE ("orderId");
+ALTER TABLE "OrderBillTo" ADD CONSTRAINT "OrderBillTo_key_2" UNIQUE ("id","tenantId","companyId","legalEntityId","orderId","payerCustomerEntityId");
+CREATE INDEX "OrderBillTo_owner_idx" ON "OrderBillTo"("tenantId","companyId","orderId");
+ALTER TABLE "OrderBillTo" ADD CONSTRAINT "OrderBillTo_check" CHECK (length(btrim(evidence)) BETWEEN 1 AND 500 AND "intentHash" ~ '^[a-f0-9]{64}$' AND length(btrim(reason)) BETWEEN 1 AND 1000);
+CREATE TRIGGER "OrderBillTo_immutable" BEFORE UPDATE OR DELETE ON "OrderBillTo" FOR EACH ROW EXECUTE FUNCTION cp_billing_history_immutable();
+CREATE TRIGGER "OrderBillTo_no_truncate" BEFORE TRUNCATE ON "OrderBillTo" FOR EACH STATEMENT EXECUTE FUNCTION cp_billing_history_immutable();
+CREATE TABLE "OrderPriceSnapshot" ("id" UUID NOT NULL PRIMARY KEY DEFAULT public.uuid_generate_v7(),"tenantId" UUID NOT NULL,"companyId" UUID NOT NULL,"legalEntityId" UUID NOT NULL,"orderId" UUID NOT NULL,"billToId" UUID NOT NULL,"payerCustomerEntityId" UUID NOT NULL,"tariffVersionId" UUID NOT NULL,"tariffPlanId" UUID NOT NULL,"policyVersionId" UUID NOT NULL,"previousApprovalId" UUID,"currency" VARCHAR(3) NOT NULL,"kind" TEXT NOT NULL,"content" JSONB NOT NULL,"contentHash" CHAR(64) NOT NULL,"total" DECIMAL(20,4) NOT NULL,"actorUserId" UUID NOT NULL,"companyMembershipId" UUID NOT NULL,"tenantMembershipId" UUID NOT NULL,"operationId" UUID NOT NULL,"intentHash" CHAR(64) NOT NULL,"reason" TEXT NOT NULL,"createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP);
+ALTER TABLE "OrderPriceSnapshot" ADD CONSTRAINT "OrderPriceSnapshot_key_0" UNIQUE ("tenantId","operationId");
+ALTER TABLE "OrderPriceSnapshot" ADD CONSTRAINT "OrderPriceSnapshot_key_1" UNIQUE ("id","tenantId","companyId","legalEntityId","orderId","currency","total","kind","actorUserId","billToId","payerCustomerEntityId","policyVersionId");
+CREATE INDEX "OrderPriceSnapshot_owner_idx" ON "OrderPriceSnapshot"("tenantId","companyId","orderId");
+ALTER TABLE "OrderPriceSnapshot" ADD CONSTRAINT "OrderPriceSnapshot_check" CHECK (kind IN ('standard','exception','revision') AND total>0 AND octet_length(content::text)<=65536 AND "contentHash" ~ '^[a-f0-9]{64}$' AND "intentHash" ~ '^[a-f0-9]{64}$' AND length(btrim(reason)) BETWEEN 1 AND 1000);
+CREATE TRIGGER "OrderPriceSnapshot_immutable" BEFORE UPDATE OR DELETE ON "OrderPriceSnapshot" FOR EACH ROW EXECUTE FUNCTION cp_billing_history_immutable();
+CREATE TRIGGER "OrderPriceSnapshot_no_truncate" BEFORE TRUNCATE ON "OrderPriceSnapshot" FOR EACH STATEMENT EXECUTE FUNCTION cp_billing_history_immutable();
+CREATE TABLE "OrderPriceApproval" ("policyVersionId" UUID NOT NULL,"snapshotId" UUID NOT NULL PRIMARY KEY,"tenantId" UUID NOT NULL,"companyId" UUID NOT NULL,"legalEntityId" UUID NOT NULL,"orderId" UUID NOT NULL,"billToId" UUID NOT NULL,"payerCustomerEntityId" UUID NOT NULL,"currency" VARCHAR(3) NOT NULL,"total" DECIMAL(20,4) NOT NULL,"kind" TEXT NOT NULL,"makerUserId" UUID NOT NULL,"actorUserId" UUID NOT NULL,"companyMembershipId" UUID NOT NULL,"tenantMembershipId" UUID NOT NULL,"operationId" UUID NOT NULL,"intentHash" CHAR(64) NOT NULL,"reason" TEXT NOT NULL,"createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP);
+ALTER TABLE "OrderPriceApproval" ADD CONSTRAINT "OrderPriceApproval_key_0" UNIQUE ("tenantId","operationId");
+ALTER TABLE "OrderPriceApproval" ADD CONSTRAINT "OrderPriceApproval_key_1" UNIQUE ("snapshotId","tenantId","companyId","orderId");
+ALTER TABLE "OrderPriceApproval" ADD CONSTRAINT "OrderPriceApproval_key_2" UNIQUE ("snapshotId","tenantId","companyId","legalEntityId","orderId","currency","total","billToId","payerCustomerEntityId","policyVersionId");
+CREATE INDEX "OrderPriceApproval_owner_idx" ON "OrderPriceApproval"("tenantId","companyId","orderId");
+ALTER TABLE "OrderPriceApproval" ADD CONSTRAINT "OrderPriceApproval_check" CHECK (((kind='standard' AND "makerUserId"="actorUserId") OR (kind IN ('exception','revision') AND "makerUserId"<>"actorUserId")) AND "intentHash" ~ '^[a-f0-9]{64}$' AND length(btrim(reason)) BETWEEN 1 AND 1000);
+CREATE TRIGGER "OrderPriceApproval_immutable" BEFORE UPDATE OR DELETE ON "OrderPriceApproval" FOR EACH ROW EXECUTE FUNCTION cp_billing_history_immutable();
+CREATE TRIGGER "OrderPriceApproval_no_truncate" BEFORE TRUNCATE ON "OrderPriceApproval" FOR EACH STATEMENT EXECUTE FUNCTION cp_billing_history_immutable();
+
+ALTER TABLE "OrderBillTo" ADD CONSTRAINT "OrderBillTo_entity_fk" FOREIGN KEY ("legalEntityId","tenantId","companyId") REFERENCES "FinanceLegalEntity"("id","tenantId","companyId") ON DELETE RESTRICT ON UPDATE RESTRICT;
+ALTER TABLE "OrderBillTo" ADD CONSTRAINT "OrderBillTo_order_fk" FOREIGN KEY ("tenantId","orderId","companyId") REFERENCES "Order"("tenantId","id","ownerOrgId") ON DELETE RESTRICT ON UPDATE RESTRICT;
+ALTER TABLE "OrderBillTo" ADD CONSTRAINT "OrderBillTo_actor_fk" FOREIGN KEY ("companyMembershipId","actorUserId","tenantId","companyId") REFERENCES "CompanyMembership"("id","userId","tenantId","companyId") ON DELETE RESTRICT ON UPDATE RESTRICT;
+ALTER TABLE "OrderBillTo" ADD CONSTRAINT "OrderBillTo_bridge_fk" FOREIGN KEY ("companyMembershipId","tenantMembershipId","actorUserId","tenantId") REFERENCES "CompanyMembership"("id","tenantMembershipId","userId","tenantId") ON DELETE RESTRICT ON UPDATE RESTRICT;
+ALTER TABLE "OrderBillTo" ADD CONSTRAINT "OrderBillTo_payer_fk" FOREIGN KEY ("tenantId","payerCustomerEntityId") REFERENCES "CustomerEntity"("tenantId","id") ON DELETE RESTRICT ON UPDATE RESTRICT;
+ALTER TABLE "OrderPriceSnapshot" ADD CONSTRAINT "OrderPriceSnapshot_entity_fk" FOREIGN KEY ("legalEntityId","tenantId","companyId") REFERENCES "FinanceLegalEntity"("id","tenantId","companyId") ON DELETE RESTRICT ON UPDATE RESTRICT;
+ALTER TABLE "OrderPriceSnapshot" ADD CONSTRAINT "OrderPriceSnapshot_order_fk" FOREIGN KEY ("tenantId","orderId","companyId") REFERENCES "Order"("tenantId","id","ownerOrgId") ON DELETE RESTRICT ON UPDATE RESTRICT;
+ALTER TABLE "OrderPriceSnapshot" ADD CONSTRAINT "OrderPriceSnapshot_actor_fk" FOREIGN KEY ("companyMembershipId","actorUserId","tenantId","companyId") REFERENCES "CompanyMembership"("id","userId","tenantId","companyId") ON DELETE RESTRICT ON UPDATE RESTRICT;
+ALTER TABLE "OrderPriceSnapshot" ADD CONSTRAINT "OrderPriceSnapshot_bridge_fk" FOREIGN KEY ("companyMembershipId","tenantMembershipId","actorUserId","tenantId") REFERENCES "CompanyMembership"("id","tenantMembershipId","userId","tenantId") ON DELETE RESTRICT ON UPDATE RESTRICT;
+ALTER TABLE "OrderPriceSnapshot" ADD CONSTRAINT "OrderPriceSnapshot_billto_fk" FOREIGN KEY ("billToId","tenantId","companyId","legalEntityId","orderId","payerCustomerEntityId") REFERENCES "OrderBillTo"("id","tenantId","companyId","legalEntityId","orderId","payerCustomerEntityId") ON DELETE RESTRICT ON UPDATE RESTRICT;
+ALTER TABLE "OrderPriceSnapshot" ADD CONSTRAINT "OrderPriceSnapshot_tariff_fk" FOREIGN KEY ("tariffVersionId","tariffPlanId","tenantId","companyId") REFERENCES "TariffConfigurationVersion"("id","planId","tenantId","companyId") ON DELETE RESTRICT ON UPDATE RESTRICT;
+ALTER TABLE "OrderPriceSnapshot" ADD CONSTRAINT "OrderPriceSnapshot_policy_fk" FOREIGN KEY ("policyVersionId","tenantId","companyId","legalEntityId","currency") REFERENCES "BillingPolicyVersion"("id","tenantId","companyId","legalEntityId","currency") ON DELETE RESTRICT ON UPDATE RESTRICT;
+ALTER TABLE "OrderPriceApproval" ADD CONSTRAINT "OrderPriceApproval_entity_fk" FOREIGN KEY ("legalEntityId","tenantId","companyId") REFERENCES "FinanceLegalEntity"("id","tenantId","companyId") ON DELETE RESTRICT ON UPDATE RESTRICT;
+ALTER TABLE "OrderPriceApproval" ADD CONSTRAINT "OrderPriceApproval_order_fk" FOREIGN KEY ("tenantId","orderId","companyId") REFERENCES "Order"("tenantId","id","ownerOrgId") ON DELETE RESTRICT ON UPDATE RESTRICT;
+ALTER TABLE "OrderPriceApproval" ADD CONSTRAINT "OrderPriceApproval_actor_fk" FOREIGN KEY ("companyMembershipId","actorUserId","tenantId","companyId") REFERENCES "CompanyMembership"("id","userId","tenantId","companyId") ON DELETE RESTRICT ON UPDATE RESTRICT;
+ALTER TABLE "OrderPriceApproval" ADD CONSTRAINT "OrderPriceApproval_bridge_fk" FOREIGN KEY ("companyMembershipId","tenantMembershipId","actorUserId","tenantId") REFERENCES "CompanyMembership"("id","tenantMembershipId","userId","tenantId") ON DELETE RESTRICT ON UPDATE RESTRICT;
+ALTER TABLE "OrderPriceApproval" ADD CONSTRAINT "OrderPriceApproval_source_fk" FOREIGN KEY ("snapshotId","tenantId","companyId","legalEntityId","orderId","currency","total","kind","makerUserId","billToId","payerCustomerEntityId","policyVersionId") REFERENCES "OrderPriceSnapshot"("id","tenantId","companyId","legalEntityId","orderId","currency","total","kind","actorUserId","billToId","payerCustomerEntityId","policyVersionId") ON DELETE RESTRICT ON UPDATE RESTRICT;
+
+ALTER TABLE "Order" ADD COLUMN "currentPriceApprovalId" UUID;
+ALTER TABLE "Order" ADD CONSTRAINT "Order_current_price_fk" FOREIGN KEY ("currentPriceApprovalId","tenantId","ownerOrgId",id) REFERENCES "OrderPriceApproval"("snapshotId","tenantId","companyId","orderId") ON DELETE RESTRICT ON UPDATE RESTRICT;
+ALTER TABLE "OrderPriceSnapshot" ADD CONSTRAINT "Price_previous_fk" FOREIGN KEY ("previousApprovalId","tenantId","companyId","orderId") REFERENCES "OrderPriceApproval"("snapshotId","tenantId","companyId","orderId") ON DELETE RESTRICT ON UPDATE RESTRICT;
+CREATE FUNCTION cp_order_price_pointer() RETURNS trigger LANGUAGE plpgsql AS $$ DECLARE previous UUID; BEGIN
+ IF NEW."currentPriceApprovalId" IS DISTINCT FROM OLD."currentPriceApprovalId" THEN
+  IF NEW."currentPriceApprovalId" IS NULL OR NEW."tenantId" IS NULL OR NEW."ownerOrgId" IS NULL THEN RAISE EXCEPTION 'Price authority cannot clear ownership' USING ERRCODE='23514'; END IF;
+  IF EXISTS(SELECT 1 FROM "Invoice" WHERE "orderId"=OLD.id) THEN RAISE EXCEPTION 'Invoice correction requires a separate contract' USING ERRCODE='23514'; END IF;
+  SELECT s."previousApprovalId" INTO previous FROM "OrderPriceSnapshot" s JOIN "OrderPriceApproval" a ON a."snapshotId"=s.id WHERE a."snapshotId"=NEW."currentPriceApprovalId" AND a."orderId"=OLD.id AND a."tenantId"=NEW."tenantId" AND a."companyId"=NEW."ownerOrgId";
+  IF NOT FOUND OR previous IS DISTINCT FROM OLD."currentPriceApprovalId" THEN RAISE EXCEPTION 'Price revision is stale or conflicting' USING ERRCODE='23514'; END IF;
+ END IF; RETURN NEW; END $$;
+CREATE TRIGGER "Order_price_pointer" BEFORE UPDATE ON "Order" FOR EACH ROW EXECUTE FUNCTION cp_order_price_pointer();
+
+ALTER TABLE "Order" ADD CONSTRAINT "Order_price_ownership_complete_check" CHECK ("currentPriceApprovalId" IS NULL OR ("tenantId" IS NOT NULL AND "ownerOrgId" IS NOT NULL));
+ALTER TABLE "OrderPriceSnapshot" ADD CONSTRAINT "OrderPrice_revision_link_check" CHECK ((kind='revision')=("previousApprovalId" IS NOT NULL));

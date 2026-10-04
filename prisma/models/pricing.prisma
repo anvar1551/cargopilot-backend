@@ -112,6 +112,7 @@ enum TariffPublicationDecisionKind {
 }
 
 model TariffConfigurationVersion {
+  OrderPriceSnapshot_tariff OrderPriceSnapshot[] @relation("OrderPriceSnapshot_tariff")
   id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   tenantId String @db.Uuid
   companyId String @db.Uuid
