@@ -1,4 +1,17 @@
-# Current checkpoint — focused pricing review corrections (2026-10-04)
+# Current checkpoint — connected pickup-to-invoice verification (2026-10-04)
+
+Baseline d556456c97314866c0b8adbb497c532192e93696; no application/schema/dependency changes. Connected_Backend_Workflow.md records the actual entrypoints, exact prerequisite grants, external mocks and results. One new connected PostgreSQL case passes across scoped customer/address creation, independent tariff/policy approval, normal creation, explicit payer, exact accepted price, assigned driver pickup, durable pickup proof and configured same-base-currency invoice. Original creation/price/proof/invoice identities return original results without new captured business rows or storage calls. All 111 migrations applied; final no-emit passed; exclusively owned disposable instances removed. Prior detailed concurrency/rollback/negative-access/real Socket.IO evidence is reused unchanged, not counted as newly executed cases.
+
+| Classification | Current connected journey boundary |
+|---|---|
+| Implemented with evidence | Scoped master/service-level creation -> independently approved exact pricing -> supported pickup/proof -> eligible manual same-currency invoice and original retries, with four separate synthetic identities and actual PostgreSQL transactions. Source-bound dispatch notifications persist; no new socket claim. |
+| Partially implemented | Physical delivery journey stops at `picked_up`. No supported onward transition exists in the current driver matrix; operator warehouse transition remains policy-contained. Rejected onward requests leave captured business records unchanged. |
+| Deliberately unavailable | Final-delivery demonstration through fabricated state changes; accounting/payment execution; invented company tax/eligibility/FX/approval/cancellation rules. The invoice-issued outbox fact stays held without accounting authority. |
+| Awaiting decisions / external verification | Approved pickup-to-warehouse and onward last-mile actor/state/assignment policy; real company configuration/eligibility/payer/provisioning; existing storage/provider/Redis/device/transport, historical/null, dependency and deployment gates. Clients remain deferred. |
+
+Finite next tasks (not started; this batch stops): obtain the precise dispatch transition policy before implementing warehouse intake/onward delivery; after approval, validate that one bounded continuation with actual transactions and owned fixtures. Approved source-specific accounting/FX/correction decisions and external storage/provider verification remain separate existing gates, not engineering defaults. No new broad hardening task is inferred.
+
+## Historical checkpoint — focused pricing review corrections (2026-10-04)
 
 Verified start f1320e31be88b4b3a7f1e059327fbec7f1008600; branch cargopilot/erp-foundation; clean authored tree with pre-existing dist preserved. Reviewed implementation 5205db65c0bac37c0ea8b6d2720e7ab3fdec0e72 contains exactly two pricing source files, two focused test files and Configured_Pricing_Invoice_Workflow.md. This separate dashboard checkpoint changes only this document. No implementation remains underway; stop after these three corrections, no push.
 

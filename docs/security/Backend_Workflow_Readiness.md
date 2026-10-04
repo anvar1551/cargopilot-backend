@@ -1,4 +1,12 @@
-# Current configured pricing / invoice update (2026-10-04)
+# Current connected backend verification (2026-10-04)
+
+See Connected_Backend_Workflow.md. Baseline d556456c97314866c0b8adbb497c532192e93696; one new actual PostgreSQL connected case / current 111 migrations / final no-emit pass. Actual scoped customer and structured-address services -> independent tariff/billing-policy publication -> normal order creation (no direct inserts) -> explicit payer -> exact UZS 110.0100 acceptance -> authorized pickup assignment/transitions -> durable pickup PNG/stroke proof -> manually issued same-base-currency invoice at explicitly approved synthetic `picked_up` eligibility. Matching creation/acceptance/proof/issuance retries preserve original results and captured database state; no additional storage puts. Application/API source unchanged; prior detailed evidence reused unchanged.
+
+This proves a **pickup-to-invoice** journey, not end-to-end delivery: current driver transitions have no onward edge from `picked_up`; operator manual `at_warehouse` transition is unavailable without approved policy. Both rejects leave captured business rows unchanged. A supported warehouse intake/onward last-mile actor/state/assignment policy is the exact decision needed to finish this particular physical journey. No fake exception, direct status change or automatic paid declaration was used.
+
+External boundary: actual codec and PostgreSQL, explicitly mocked immutable S3 writes, no signed URLs/Redis/network/provider/worker execution. Real label-job acceptance and owned notifications persist; prior Socket.IO evidence is reused, not rerun. Invoice facts remain held; no accounting/payment execution. Synthetic tax/ZZ/eligibility settings do not establish company policy. No API change; existing operation IDs, selected membership context, expected assignment states, proof identity/PNG/capture time and exact price/invoice contracts still require compatible clients. Deferred clients and all existing external/history/financial release gates remain. Disposable cleanup verified; finite batch stops.
+
+## Historical configured pricing / invoice update (2026-10-04)
 
 New bounded backend functionality: approved owned bucket tariff plus independently approved explicit calculation/billing settings -> immutable exact service-price components and explicit bill-to -> authorized manual same-base-currency invoice -> original matching retry. See Configured_Pricing_Invoice_Workflow.md for the exact API, supported policy modes, evidence and rollout. The older rows below describing acceptance/new issuance as entirely missing are historical for this new path; legacy estimate-only issuance remains blocked.
 
