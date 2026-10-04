@@ -55,6 +55,24 @@ function isUniqueConstraint(error: unknown) {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
 }
 
+/** Shared source publication contract, within the caller's transaction. No claims or transport. */
+export async function publishCarrierCanonicalTx(tx: Prisma.TransactionClient, input: EnqueueIntegrationCanonicalEventInput) {
+  if (input.source !== "outbound_response" || !input.outboxId) throw authorityError("Durable outbound source required", 409);
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext('carrier-publication'), hashtext(${input.outboxId}))::text`;
+  const data = await deriveCanonicalSource(tx, input);
+  const existing = await tx.integrationCanonicalEvent.findUnique({ where: { outboxId: input.outboxId } });
+  if (existing) {
+    if (existing.source !== data.source || existing.companyId !== data.companyId || existing.providerId !== data.providerId ||
+        existing.domain !== data.domain || existing.providerCode !== data.providerCode || existing.webhookEventId !== data.webhookEventId ||
+        existing.eventType !== data.eventType || existing.aggregateType !== data.aggregateType || existing.aggregateId !== data.aggregateId ||
+        existing.occurredAt.getTime() !== data.occurredAt.getTime() || !isDeepStrictEqual(existing.payloadJson, data.payloadJson)) {
+      throw Object.assign(authorityError("Canonical event identity conflict", 409), { code: "INTEGRATION_CANONICAL_ID_CONFLICT" });
+    }
+    return existing;
+  }
+  return tx.integrationCanonicalEvent.create({ data: { ...data, status: "pending" } });
+}
+
 export const integrationCanonicalEventRepository: IntegrationCanonicalEventRepository = {
   async enqueue(input: EnqueueIntegrationCanonicalEventInput) {
     const options = { maxWait: 2000, timeout: 5000 };
@@ -65,6 +83,11 @@ export const integrationCanonicalEventRepository: IntegrationCanonicalEventRepos
     };
     try {
       const row = await prisma.$transaction(async tx => {
+        if (input.source === "outbound_response") {
+          await tx.$executeRaw`SET LOCAL lock_timeout = '1000ms'`;
+          await tx.$executeRaw`SET LOCAL statement_timeout = '3000ms'`;
+          return publishCarrierCanonicalTx(tx, input);
+        }
         const data = await derive(tx);
         return tx.integrationCanonicalEvent.create({ data: { ...data, status: "pending" } });
       }, options);

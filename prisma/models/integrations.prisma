@@ -224,6 +224,7 @@ model IntegrationProviderSecret {
 }
 
 model IntegrationOutbox {
+  publicationRepairs CarrierPublicationRepair[]
   id             String                  @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   companyId      String                  @db.Uuid
   company        Organization            @relation(fields: [companyId], references: [id], onDelete: Cascade)
@@ -265,6 +266,7 @@ model IntegrationOutbox {
 }
 
 model IntegrationDeliveryAttempt {
+  publicationRepairs CarrierPublicationRepair[]
   id                String                    @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   outboxId          String                    @db.Uuid
   outbox            IntegrationOutbox         @relation(fields: [outboxId], references: [id], onDelete: Cascade)
@@ -336,6 +338,7 @@ model IntegrationWebhookCanonicalEvent {
 }
 
 model IntegrationCanonicalEvent {
+  publicationRepairs CarrierPublicationRepair[]
   id     String                        @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   source IntegrationEventSource
   status IntegrationEventProcessStatus @default(pending)
@@ -513,4 +516,26 @@ model IntegrationProviderConfigurationVersion {
   @@unique([providerId, revision], map: "ProviderConfiguration_revision_key")
   @@unique([id, providerId, companyId, revision], map: "IntegrationProviderConfiguration_pointer_key")
   @@index([tenantId, companyId, providerId, acceptedAt], map: "ProviderConfiguration_owner_idx")
+}
+
+// Internal missing-publication repair evidence; not a permission or provider retry grant.
+model CarrierPublicationRepair {
+  outboxId String @id @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  providerId String @db.Uuid
+  domain IntegrationDomain
+  providerCode String
+  attemptNo Int
+  userId String @db.Uuid
+  companyMembershipId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  resultSha256 String @db.Char(64)
+  recordedAt DateTime @default(now())
+  source IntegrationOutbox @relation(fields: [outboxId, companyId, providerId, domain, providerCode], references: [id, companyId, providerId, domain, providerCode], onDelete: Restrict, onUpdate: Restrict, map: "CarrierPublicationRepair_source_fkey")
+  publication IntegrationCanonicalEvent @relation(fields: [outboxId, companyId, providerId, domain, providerCode], references: [outboxId, companyId, providerId, domain, providerCode], onDelete: Restrict, onUpdate: Restrict, map: "CarrierPublicationRepair_publication_fkey")
+  attempt IntegrationDeliveryAttempt @relation(fields: [outboxId, attemptNo], references: [outboxId, attemptNo], onDelete: Restrict, onUpdate: Restrict, map: "CarrierPublicationRepair_attempt_fkey")
+  membership CompanyMembership @relation("PublicationRepairCompany", fields: [companyMembershipId, userId, tenantId, companyId], references: [id, userId, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict, map: "CarrierPublicationRepair_company_fkey")
+  bridge CompanyMembership @relation("PublicationRepairBridge", fields: [companyMembershipId, tenantMembershipId, userId, tenantId], references: [id, tenantMembershipId, userId, tenantId], onDelete: Restrict, onUpdate: Restrict, map: "CarrierPublicationRepair_bridge_fkey")
+  @@index([tenantId, companyId, recordedAt])
 }

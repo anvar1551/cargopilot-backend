@@ -68,6 +68,8 @@ model RolePermission {
 }
 
 model CompanyMembership {
+  publicationRepairs CarrierPublicationRepair[] @relation("PublicationRepairCompany")
+  publicationRepairBridges CarrierPublicationRepair[] @relation("PublicationRepairBridge")
   accountCreationReceipts FinanceAccountCreationReceipt[] @relation("AccountReceiptCompany")
   credentialSecurityEvents CredentialSecurityEvent[] @relation("CredentialAuditCompany")
   credentialSecurityBridges CredentialSecurityEvent[] @relation("CredentialAuditBridge")
