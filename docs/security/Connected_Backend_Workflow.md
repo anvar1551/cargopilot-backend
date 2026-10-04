@@ -1,4 +1,6 @@
-# Connected synthetic backend journey — 2026-10-04
+# Historical connected pickup-only backend journey — 2026-10-04
+
+This document preserves the earlier 111-migration/pickup-only checkpoint. Its missing onward-policy statements describe that baseline, not current implementation. The current test was extended by e303cb99f29f0b2bcbbd0fdfd302c14ffd731a60: warehouse intake, two accepted transfers through three warehouses, separate last-mile acceptance, confirmed delivery proof, actual delivered and same-currency invoice. See Warehouse_Assisted_Lifecycle.md and the current Backend_Workflow_Readiness.md/dashboard for the 112-migration/two-case evidence, new custody API, client impacts and remaining limitations. No historical test result below is counted as an additional current case.
 
 Baseline d556456c97314866c0b8adbb497c532192e93696. This finite batch adds a connected service-level PostgreSQL regression and documentation; application source, schema, dependencies and API behavior are unchanged. It does not establish a completed delivery journey or production readiness.
 
