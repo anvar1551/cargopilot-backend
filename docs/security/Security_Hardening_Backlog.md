@@ -1,4 +1,27 @@
-# Current checkpoint — bounded dependency remediation (2026-10-04)
+# Current checkpoint — JWT/JWS and Socket.IO remediation (2026-10-04)
+
+Baseline 74660208e8191556aecd9081d645a3f065d43772. DEP-NEXT-01 complete;
+exact paths, versions, commands and limits in
+[JWT_Socket_Dependency_Batch.md](JWT_Socket_Dependency_Batch.md).
+
+| Classification | Current state |
+|---|---|
+| Implemented with evidence | Patched JWS 3.2.3, Socket.IO 4.8.4, Engine.IO 6.6.11, parser 4.2.7, adapter 2.5.8, ws 8.21.3. 137 distinct focused cases passed (14 new JWT/transport, 3 new signed-token HTTP logout, 120 existing affected cases); assertion-strengthening rerun is not additional cases. Final no-emit passed. Actual loopback WebSocket/polling, synthetic database responses; no application authorization change. |
+| Partially implemented | Full audit 25 findings (0 critical / 17 high / 7 moderate / 1 low), production 18 (0 / 11 / 7 / 0). Aggregation counts are not exploit proof. Upstream JWS advisory excludes the synchronous jsonwebtoken path used here; installed affected version removed. |
+| Deliberately unavailable | All current policy-dependent finance/provider/manual-transition containment remains. No client/logistics/financial workflow enabled by dependency work. |
+| Awaiting verification / decisions | Remaining Prisma/tooling/Mongoose/dev-path findings; cold install/deployed runtime/real Redis adapter/multi-process upgraded transport and existing device/provider/S3/history/NOT VALID/client/release gates. No immediate revocation, exactly-once or production-readiness claim. |
+
+Exact finite next task **DEP-NEXT-02** (not started): resolve the Mongoose production
+declaration by bounded supported-consumer review; remove only if demonstrably unused,
+otherwise compatibly patch 8.x. Completion requires current Mongoose advisory nodes
+absent, affected checks/no-emit and fresh audits, with no unrelated dependency work.
+Prisma matching CLI/client/adapter review remains separate; no automatic downgrade.
+Policy-rejected coverage directory remains untouched for manual cleanup at
+`C:\Users\Anvar\AppData\Local\Temp\cp-dependency-coverage-c87e5bd06bb04137b29a246fe3601bdb`.
+No services, database/migrations, push or deployment; dist/unrelated work preserved.
+This finite batch stops after its local reviewed checkpoint.
+
+## Historical checkpoint — bounded dependency remediation (2026-10-04)
 
 Baseline bb65c504397ea6734ae4a1c15a7020532f5952df. This completed finite batch
 changes three direct families: AWS S3 v3, Fastify/multipart v5, Jest/ts-jest.

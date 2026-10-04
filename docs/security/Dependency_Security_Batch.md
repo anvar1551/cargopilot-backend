@@ -1,4 +1,8 @@
-# Bounded dependency-security checkpoint — 2026-10-04
+# Historical bounded dependency-security checkpoint — 2026-10-04
+
+Superseded current dependency evidence and completed DEP-NEXT-01 are in
+[JWT_Socket_Dependency_Batch.md](JWT_Socket_Dependency_Batch.md). Counts and next
+task below describe this earlier checkpoint, not the current resolved tree.
 
 Baseline: bb65c504397ea6734ae4a1c15a7020532f5952df, branch cargopilot/erp-foundation.
 This is dependency evidence, not a renewed security audit or production-readiness claim.

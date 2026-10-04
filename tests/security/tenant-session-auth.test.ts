@@ -11,6 +11,7 @@ jest.mock("../../src/config/redis", () => ({
 import bcrypt from "bcryptjs";
 import Fastify from "fastify";
 import jwt from "jsonwebtoken";
+import { createHash } from "crypto";
 import { database } from "./fixtures";
 import routes from "../../src/modules/identity-access/transport/fastify-routes";
 import { fastifyAuth } from "../../src/modules/identity-access/transport/fastify-auth";
@@ -74,6 +75,72 @@ const allowLimiter = {
   consume: jest.fn(async () => ({ count: 1, resetAfterMs: 1_000, allowed: true,
     limit: 100, remaining: 99, backend: "local" as const })),
 };
+
+describe("JWT dependency logout HTTP contract", () => {
+  const previousEnv = process.env;
+  beforeEach(() => {
+    process.env = { ...previousEnv, NODE_ENV: "test", JWT_SECRET: secret, REFRESH_TOKEN_SECRET: secret };
+    resetDatabaseMocks();
+    database.userRefreshSession.findFirst.mockReset();
+  });
+  afterAll(() => { process.env = previousEnv; });
+
+  it("signed refresh logout revokes the exact recorded successor and matching retry creates no duplicate audit", async () => {
+    const claims = { id: ids.user, sid: ids.user, tenantId: ids.tenantA,
+      tenantMembershipId: ids.tenantMembershipA, companyMembershipId: ids.membershipA,
+      companyId: ids.companyA, tokenType: "refresh" };
+    const raw = jwt.sign(claims, secret, { expiresIn: 60 });
+    const next = "80000000-0000-4000-8000-000000000001";
+    const origin = { id: claims.sid, userId: claims.id, tenantId: claims.tenantId,
+      tenantMembershipId: claims.tenantMembershipId, companyMembershipId: claims.companyMembershipId,
+      companyMembership: { companyId: claims.companyId }, rotationDepth: 0,
+      revokedAt: new Date(), replacementDepth: 1, replacedBySessionId: next };
+    database.userRefreshSession.findFirst.mockImplementation(async (args: any) => {
+      expect(args.where).toMatchObject({ id: claims.sid, userId: claims.id,
+        tenantId: claims.tenantId, tenantMembershipId: claims.tenantMembershipId,
+        companyMembershipId: claims.companyMembershipId,
+        tokenHash: createHash("sha256").update(raw).digest("hex") });
+      return origin;
+    });
+    database.$queryRaw.mockImplementation(async (sql: any) => sql.text.includes("pg_advisory") ? [] : [
+      sql.values[0] === origin.id ? origin : { ...origin, id: next, rotationDepth: 1,
+        revokedAt: null, replacementDepth: null, replacedBySessionId: null },
+    ]);
+    const app = Fastify();
+    try {
+      await app.register(routes, { prefix: "/api/auth", rateLimiter: allowLimiter });
+      expect((await app.inject({ method: "POST", url: "/api/auth/logout", payload: { refreshToken: raw } })).json()).toEqual({ ok: true });
+      expect(database.userRefreshSession.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({
+        id: { in: [origin.id, next] }, userId: claims.id, tenantId: claims.tenantId,
+        tenantMembershipId: claims.tenantMembershipId, companyMembershipId: claims.companyMembershipId,
+      }) }));
+      expect(database.credentialSecurityEvent.create).toHaveBeenCalledTimes(1);
+      expect(database.credentialSecurityEvent.create.mock.calls[0][0].data.action).toBe("LOGOUT_ACCEPTED");
+      database.userRefreshSession.updateMany.mockResolvedValue({ count: 0 });
+      expect((await app.inject({ method: "POST", url: "/api/auth/logout", payload: { refreshToken: raw } })).json()).toEqual({ ok: true });
+      expect(database.credentialSecurityEvent.create).toHaveBeenCalledTimes(1);
+      expect(database.userRefreshSession.create).not.toHaveBeenCalled();
+      expect(database.order.create).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+
+  it.each(["purpose", "signature"])("%s rejection keeps logout deliberately non-disclosing with no transaction", async kind => {
+    const raw = jwt.sign({ id: ids.user, sid: ids.user, tenantId: ids.tenantA,
+      tenantMembershipId: ids.tenantMembershipA, companyMembershipId: ids.membershipA,
+      companyId: ids.companyA, tokenType: kind === "purpose" ? "access" : "refresh" },
+      kind === "signature" ? "wrong-synthetic-key" : secret, { expiresIn: 60 });
+    const app = Fastify();
+    try {
+      await app.register(routes, { prefix: "/api/auth", rateLimiter: allowLimiter });
+      const response = await app.inject({ method: "POST", url: "/api/auth/logout", payload: { refreshToken: raw } });
+      expect(response.statusCode).toBe(200); expect(response.json()).toEqual({ ok: true });
+      expect(database.$transaction).not.toHaveBeenCalled();
+      expect(database.userRefreshSession.findFirst).not.toHaveBeenCalled();
+      expect(database.userRefreshSession.updateMany).not.toHaveBeenCalled();
+      expect(database.credentialSecurityEvent.create).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+});
 
 function resetDatabaseMocks() {
   [database.user.findUnique, database.companyMembership.findFirst, database.companyMembership.findMany,
