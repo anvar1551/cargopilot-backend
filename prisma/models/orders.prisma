@@ -128,6 +128,7 @@ enum RecipientUnavailableAction {
 }
 
 model Order {
+  custodyActions OrderCustodyAction[]
   InvoiceIssuanceReceipt_order InvoiceIssuanceReceipt[] @relation("InvoiceIssuanceReceipt_order")
   currentPriceApprovalId String? @db.Uuid
   currentPriceApproval OrderPriceApproval? @relation("OrderCurrentPrice", fields: [currentPriceApprovalId, tenantId, ownerOrgId, id], references: [snapshotId, tenantId, companyId, orderId], onDelete: Restrict, onUpdate: Restrict, map: "Order_current_price_fk")
@@ -308,6 +309,7 @@ model Order {
 }
 
 model Tracking {
+  custodyActions OrderCustodyAction[]
   dispatchNotifications UserNotification[] @relation("DispatchNotificationSource")
   id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
@@ -361,6 +363,8 @@ model OrderAttachment {
 }
 
 model Parcel {
+  custodyActions OrderCustodyParcel[]
+  @@unique([id, orderId], map:"Parcel_custody_order_key")
   id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   orderId String @db.Uuid

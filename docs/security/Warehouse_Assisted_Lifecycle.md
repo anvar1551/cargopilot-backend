@@ -1,0 +1,68 @@
+# Warehouse-assisted lifecycle — execution plan
+
+Baseline 49539d438370dc35dcc44e930d2b8b3088e5c159. Approved first version is same tenant and same operating company, per-order whole-parcel-set custody; partial consignments/bulk manifests, subcontractors and cross-company transfers are unsupported. No historical assignment/warehouse association is adopted as custody.
+
+| Action | Required state / actor | Custody after acceptance |
+|---|---|---|
+| pickup-offer | `picked_up`; assigned pickup driver; exact picked-up Tracking source; new explicit offer | Pickup driver remains custodian; receiving warehouse explicitly nominated |
+| intake | Matching offer; nominated warehouse staff with explicit warehouse scope | Receiving warehouse; pickup assignment ends; `at_warehouse` |
+| dispatch | Warehouse custody; origin scoped staff; explicit planned leg/destination and eligible linehaul membership | Warehouse retains custody pending transport acceptance; immutable transfer identity |
+| transport-accept | Pending dispatch; exact nominated linehaul driver | Transport driver; `in_transit`; current warehouse cleared; leg departs |
+| receive | Accepted transfer; nominated destination scoped staff; exact entire parcel set | Destination warehouse; `at_warehouse`; leg arrival recorded by receipt, not vice versa |
+| last-mile-offer | Warehouse custody; destination scoped staff; explicit eligible local driver | Warehouse retains custody; explicit assignment separate from acceptance |
+| last-mile-accept | Pending offer; exact assigned local driver | Local driver; `out_for_delivery`; current warehouse cleared |
+| deliver | Accepted last-mile custody; assigned driver; confirmed context/order-bound delivery proof after handover; cash restrictions | Delivered; durable custody event/receipt, tracking, audit and outbox atomically |
+
+Each action needs its dedicated capability, fresh selected context/order scope, expected order timestamp and custody-event identity, immutable UUID operation identity and exact sorted parcel IDs. Matching retries reauthorize and return the original receipt; conflicts reject. Order row locking serializes custody, assignment, generic leg editing and status writes. Transactions include custody receipts, order/leg changes, Tracking, audit and applicable notifications/analytics; network/storage stays outside. Latest append-only custody event is current authority. Planning and physical acceptance remain distinct.
+
+Warehouses are tenant-owned, not company-owned in the current model. Access requires the selected operating company to own the order plus explicit warehouse scope in that membership; no company-owner relationship is invented. Transport uses the existing `linehaul` driver type, active exact membership/tenant/company and explicit transport-accept capability plus driver eligibility. No free-text carrier authority.
+
+Implementation milestones: (1) additive append-only custody journal and guarded service/HTTP contracts, contain alternate execution writes; (2) actual disposable PostgreSQL positive/retry/conflict/rollback journey, including repeated transfers and final proof/invoice; (3) reviewed evidence/dashboard checkpoint. Preserve old planning history and nullable ownership; migration creates no inferred custody. Roll out migration before writers; stop old incompatible writers. Rollback must contain execution rather than restore unverified custody.
+
+## Implementation and API contract
+
+Current implementation uses the new append-only OrderCustodyAction journal as both operation receipt and operational audit: tenant/company/order, exact actor/TM/CM, normalized intent hash and content, predecessor, before/after custody, Tracking and server time. OrderCustodyParcel binds each manifest item to the same action/order using compound parcel/action targets. Compound owner, actor/bridge, nominated driver, warehouse, leg, Tracking and predecessor foreign keys prevent mixed references. New CHECKs enforce action/phase and null-state consistency; update/delete/truncate triggers preserve journal/manifests. No historical rows are mapped. Latest sequence is authoritative under the existing bounded Order lock; uniqueness is durable per tenant/operation and order/sequence. An intake/receipt is physical acceptance; planned destinations and leg arrival never create it.
+
+GET `/api/orders/:id/custody` returns minimal current custody and order timestamp after fresh selected context and existing order scope. POST to the same path takes a strict body:
+
+```
+{ operationId: UUID, action, expectedEventId: UUID|null,
+  expectedUpdatedAt: exact ISO timestamp, parcelIds: UUID[] }
+```
+
+Only these action-specific additions are accepted:
+
+| action | Additional required fields | Dedicated capability |
+|---|---|---|
+| pickup-offer | destinationWarehouseId, pickupTrackingId | shipment.custody.pickup-offer |
+| intake | warehouseId | shipment.custody.intake |
+| dispatch | warehouseId, destinationWarehouseId, driverMembershipId, legId | shipment.custody.dispatch |
+| transport-accept | none | shipment.custody.transport-accept |
+| receive | warehouseId | shipment.custody.receive |
+| last-mile-offer | warehouseId, driverMembershipId | shipment.custody.last-mile-offer |
+| last-mile-accept | none | shipment.custody.last-mile-accept |
+| deliver | proofSubmissionId | shipment.custody.deliver |
+
+Response: original eventId/orderId/operationId/phase/status/currentWarehouseId/trackingId. Monetary, tenant, company, actor and arbitrary workflow fields reject. UUIDs/parcel ordering normalize; duplicate parcel IDs reject. Exact complete parcel set is bounded to 100, no partial transfer. Current authorization is checked before returning matching receipts; changed context/content or stale state rejects. Staff need existing order/company/object authorization **and** explicit scope for the acting warehouse. Warehouse-only incoming visibility is not granted implicitly. Nominated drivers require the exact same-company active bridged membership, local/linehaul type, telemetry and corresponding acceptance capability; actual acceptance additionally requires that exact actor and its current order scope.
+
+`currentWarehouseId` now represents actual accepted warehouse custody for this new flow: intake/receipt sets it, dispatch nomination retains it, transport acceptance clears it; last-mile offer retains it, driver acceptance clears it. Journal warehouseId retains the origin/handover location for history and must be interpreted with phase; it is not a claim of current warehouse possession during transport/delivery. Existing unrelated historical associations are not certified or overwritten. Order.assignedDriverId remains nomination; acceptance is a separate journal action.
+
+Generic driver/bulk status changes to out_for_delivery/delivered now return 409 requiring the custody endpoint. Existing assignment cannot set a warehouse or alter an order with custody history; use the explicit handover actions. Generic leg authoring is planning only: no actual dates/executed status and no edits to accepted/executed legs. It reloads fresh scope after the Order lock. Carrier booking takes that owning-order lock and rejects custody-bound legs before acceptance/outbox effects. First-version human linehaul transfers do not use provider booking or free-text carrier identity. Existing provider execution for separately accepted provider work is not restored or redesigned.
+
+Final delivery requires current accepted last-mile phase, exact assigned eligible driver and confirmed `delivery` ProofSubmission in the same selected user/TM/CM/order/company/tenant context, accepted in the database after the handover journal time. Pickup, unconfirmed, missing or earlier proof cannot substitute. Database `clock_timestamp()` is read after lock acquisition for the journal; transaction-start `now()` is insufficient. Server record chronology does not prove when/where a human physically captured an image. Existing durable submission IDs, PNG/strokes, receipt/immutable storage recovery, cash-due checks and exact invoice authority remain unchanged. Custody operations never upload/sign files or call providers.
+
+Tracking, journal/manifest receipt/audit, order/leg state, eligible source-bound notification and analytics outbox commit together. HTTP emits only the persisted notification ID after confirmation through the existing recipient/context/revocation checks; repeated delivery does not insert a notification. Realtime remains best effort, not exactly once. A lost commit acknowledgement retries the identical operation; no new identity or stale-state auto-replacement. Ordinary authorization changes can still race the final eligibility read and commit; no immediate revocation/exactly-once claim.
+
+## Validation and limitations
+
+The actual-service connected PostgreSQL test now reaches **delivered**: normal scoped creation, independent tariff/policy approval, payer/price acceptance, pickup proof, origin intake, two accepted transfers through three scoped warehouses, explicit last-mile acceptance, durable delivery proof, and an exact UZS 110.0100 same-base-currency invoice under independently approved synthetic delivered-state eligibility. No direct Order insert. Separate maker/checker/operator/local driver/linehaul identities. The second distinct case races dispatch versus last-mile offer and asserts one coherent custody/assignment, one new Tracking and only the applicable notification; stale loser and generic assignment/leg execution attempts leave state unchanged.
+
+The journey exercises concurrent matching normalized/uppercase-ID retries, conflicting IDs/content, competing intake IDs, foreign tenant/company/warehouse, missing context/permission/warehouse scope, wrong driver/destination/parcel/leg, missing/wrong-stage proof, and final analytics-outbox failure rolling back custody/manifests/order/Tracking/notifications/leg state. Captured business rows and storage call counts must remain unchanged on rejection/replay. Main journey has 11 custody receipts/whole-order manifests, one order/invoice, four proof attachments, four total mock immutable S3 writes. No journal posting/payment intent; invoice fact remains held.
+
+Executed offline installed Prisma validate/generate through `$env:TEMP/cp-cash-schema-check.cjs` with allowlisted no-dotenv config; syntax/relations passed, ignored node_modules client generated only because new typed delegates are required. Manually reviewed schema/SQL targets/defaults and CHECK/append-only constraints; this is not full semantic equivalence or existing-data certification. Current full 112-migration chain and actual PostgreSQL transactions run only through the existing `$env:TEMP/cp-connected-journey-run.cjs` owned loopback/tmpfs harness. Final run: two distinct cases passed, 80.582 s suite (27.547 s connected case; 3.987 s competing-actions case); repeat runs after focused corrections are not additional cases. Exclusively owned cp-verification-a27031a5970c was removed after label/name/tmpfs/no-volume-or-bind checks and absence verification. Earlier run-owned instances were also removed. No existing containers/storage were touched.
+
+Affected consumer validation: 50 order-child/dispatch authorization/projection cases passed after explicit no-custody mock setup; unchanged dispatch-batch 24 cases passed in the initial affected run and were not repeated. Five new Fastify injection cases passed with mocked authentication/service/realtime, proving request context, post-confirmation minimal owned notification lookup, anonymous/denial suppression and scoped snapshot routing. Final `node node_modules/typescript/bin/tsc --noEmit` passed. Old mocks initially failed on new custody/lock queries; corrected fixtures without weakening denial assertions. Final review corrected post-lock scope reuse and missing lock-row-count enforcement; the affected 16-case order-child suite passed again (same cases, not additional), followed by the final PostgreSQL run above and no-emit check.
+
+Reused unchanged detailed pricing, exact invoice, codec/proof receipt, cash and real Socket.IO evidence only for their unchanged invariants. Storage/provider/Redis are not live: real PNG processing with mocked immutable S3; no HTTP/HTTPS/fetch allowed, no Redis or signed-URL execution. New realtime orchestration has mocked injection evidence, not new real socket/transport validation. No real-device, S3, infrastructure, physical parcel possession or exactly-once assertion.
+
+Client changes are deferred: warehouse UI needs these explicit actions/receipts/expected state, driver needs acceptance and deliver instead of generic final status. Existing proof operation IDs/format remain; proof alone never completes delivery. Capabilities must be deliberately provisioned; registry entries do not grant roles. Roll out additive migration before new source/client writers and stop incompatible old dispatch/provider writers. Preserve new audit on rollback and contain operations; dist remains intentionally unbuilt. Cash exceptions/returns/cancellation/manual overrides, bulk/partial manifests, subcontractor/shared/cross-company custody and provider recovery remain outside this slice. Real-company financial settings/FX/accounting and existing release/history/transport gates remain blocked or unverified.

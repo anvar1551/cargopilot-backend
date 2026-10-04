@@ -6,6 +6,7 @@ import legsPricingRoutes from "./routes/legs-pricing.routes";
 import proofsRoutes from "./routes/proofs.routes";
 import orderDetailRoutes from "./routes/order-detail.routes";
 import downstreamRecoveryRoutes from "./routes/downstream-recovery.routes";
+import warehouseCustodyRoutes from "./routes/warehouse-custody.routes";
 
 const ordersFastifyRoutes: FastifyPluginAsync = async (fastify) => {
   await fastify.register(importRoutes);
@@ -14,6 +15,7 @@ const ordersFastifyRoutes: FastifyPluginAsync = async (fastify) => {
   await fastify.register(legsPricingRoutes);
   await fastify.register(proofsRoutes);
   await fastify.register(downstreamRecoveryRoutes);
+  await fastify.register(warehouseCustodyRoutes);
   // Keep dynamic order-id route last to avoid shadowing specific paths.
   await fastify.register(orderDetailRoutes);
 };

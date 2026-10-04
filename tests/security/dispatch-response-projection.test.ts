@@ -11,6 +11,7 @@ const expected = (row:any) => [{orderId:row.id,updatedAt:row.updatedAt.toISOStri
 const summarySelect = { id: true, orderNumber: true, status: true, assignedDriverId: true, currentWarehouseId: true, updatedAt: true };
 beforeEach(() => {
   jest.clearAllMocks();
+  db.orderCustodyAction.count.mockResolvedValue(0);
   db.$executeRawUnsafe.mockResolvedValue(0);
   db.$queryRaw.mockResolvedValue([{id:"synthetic-order"}]);
   (loadAccessSnapshot as jest.Mock).mockResolvedValue({...actor,userId:actor.id,permissionCodes:["shipment.assignCourier","shipment.changeStatus"],roleCodes:[],warehouseId:null});

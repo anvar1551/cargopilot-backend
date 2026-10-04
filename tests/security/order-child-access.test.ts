@@ -25,6 +25,10 @@ function matches(row: any, where: any): boolean {
 beforeEach(() => {
  jest.clearAllMocks();
  db.$queryRaw.mockResolvedValue([]);
+ db.$executeRawUnsafe.mockResolvedValue(0);
+ db.$queryRaw.mockImplementation(async(query:any)=>String(query).includes('FROM "Order"')?[{id:"order-a"}]:[]);
+ db.order.findMany.mockResolvedValue([{id:"order-a"}]);
+ db.orderCustodyAction.count.mockResolvedValue(0);
  parent = { id: "order-a", tenantId: "tenant-a", ownerOrgId: "company-a", assignedOrgId: null, assignedDriverId: "user-a" };
  db.companyMembership.findFirst.mockResolvedValue({ id: "cm-a", status: "active", companyId: "company-a", tenantId: "tenant-a", tenantMembershipId: "tm-a", tenant: { id: "tenant-a", status: "active" }, tenantMembership: { id: "tm-a", userId: "user-a", tenantId: "tenant-a", status: "active" }, company: { id: "company-a", tenantId: "tenant-a", isActive: true }, user: { id: "user-a", name: "Synthetic", email: "synthetic@example.test" }, scopes: [{ scopeType: "company", scopeRefId: "company-a" }], roles: [{ role: { code: "operator", rolePermissions: permissions.map(key => ({ permission: { key } })) } }] });
  db.order.findFirst.mockImplementation(async ({ where, select }: any) => matches(parent, where) ? (select.parcels ? { ...parent, parcels: [{ id: "parcel-a", orderId: "order-a", parcelCode: "demo", pieceNo: 1, pieceTotal: 1 }], pickupAddress: "Demo pickup", dropoffAddress: "Demo destination", createdAt: new Date() } : parent) : null);

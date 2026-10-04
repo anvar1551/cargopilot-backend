@@ -15,6 +15,8 @@ function permission(
 }
 
 export const SYSTEM_PERMISSIONS: SeedPermission[] = [
+  ...["pickup-offer","intake","dispatch","transport-accept","receive","last-mile-offer","last-mile-accept","deliver"].map(action =>
+    permission(`shipment.custody.${action}`, "orders", "update", `Explicit warehouse custody ${action}`)),
   permission("shipment.view", "orders", "read", "View shipments"),
   permission("shipment.create", "orders", "create", "Create shipments"),
   permission("shipment.update", "orders", "update", "Update shipments"),

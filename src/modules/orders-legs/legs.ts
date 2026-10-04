@@ -10,6 +10,8 @@ import {
   type UpsertOrderLegInput,
 } from "./shared";
 import { autoBookCarrierForOrderLeg } from "./carrier-auto-booking";
+import { requireDispatchAuthority, dispatchOrderWhere } from "../orders-core/domain/dispatch-authority";
+import { lockDispatchBatch } from "../orders-core/domain/dispatch-batch";
 
 export async function listOrderLegs(orderId: string, actor?: Actor) {
   await requireAuthorizedOrder(actor, orderId, "shipment.view");
@@ -25,6 +27,7 @@ export async function upsertOrderLeg(
   actor?: Actor,
 ) {
   await requireAuthorizedOrder(actor, orderId, "shipment.update");
+  if (input.status && input.status !== "planned" || input.actualDepartureAt || input.actualArrivalAt) throw orderError("Generic leg authoring is planning only",409);
 
   for (const warehouseId of [input.fromWarehouseId, input.toWarehouseId]) {
     if (!warehouseId) continue;
@@ -36,16 +39,22 @@ export async function upsertOrderLeg(
   }
 
   const leg = await prisma.$transaction(async (tx) => {
+    let authority=await requireDispatchAuthority(actor!,"shipment.update");
+    await lockDispatchBatch(tx,authority,[orderId]);
+    authority=await requireDispatchAuthority(actor!,"shipment.update");
+    if (!await tx.order.findFirst({where:dispatchOrderWhere(authority,[orderId]),select:{id:true}})) throw orderError("Order no longer authorized",403);
+    if (input.legId && await tx.orderCustodyAction.count({where:{orderId,legId:input.legId}})) throw orderError("Accepted custody leg cannot be edited",409);
     let leg;
 
     if (input.legId) {
       const existing = await tx.orderLeg.findFirst({
         where: { id: input.legId, orderId },
-        select: { id: true },
+        select: { id: true, status:true, carrierBookingStatus:true },
       });
       if (!existing) {
         throw orderError("Order leg not found for this order", 404);
       }
+      if(existing.status!=="planned" || existing.carrierBookingStatus!=="not_requested") throw orderError("Executed/accepted leg cannot be edited",409);
 
       leg = await tx.orderLeg.update({
         where: { id: existing.id },

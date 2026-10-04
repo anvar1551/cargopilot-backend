@@ -39,6 +39,9 @@ const dispatchStateSelect = {
 
 type DispatchRow = Prisma.OrderGetPayload<{select:typeof dispatchStateSelect}>;
 function assertDriverStatusTransition(actor:OrderActor,order:DispatchRow,status:OrderStatus,reasonCode?:ReasonCode|null) {
+    if (status === OrderStatus.delivered || status === OrderStatus.out_for_delivery) {
+      throw orderError("Durable warehouse custody endpoint required for delivery", 409);
+    }
     if (order.assignedDriverId !== actor.id) {
       throw orderError("You are not assigned to this order; manual transition policy is unavailable", 403);
     }
@@ -61,7 +64,7 @@ function assertDriverStatusTransition(actor:OrderActor,order:DispatchRow,status:
       throw orderError(`reasonCode is required when status is ${status}`, 400);
     }
 
-    const { hasPickupCashDue, hasDeliveryCashDue } = hasCashDueForStage(order);
+    const { hasPickupCashDue } = hasCashDueForStage(order);
 
     if (status === OrderStatus.picked_up && hasPickupCashDue) {
       throw orderError(
@@ -70,12 +73,6 @@ function assertDriverStatusTransition(actor:OrderActor,order:DispatchRow,status:
       );
     }
 
-    if (status === OrderStatus.delivered && hasDeliveryCashDue) {
-      throw orderError(
-        "Cannot complete delivery while COD/service charge is still expected. Collect cash first.",
-        400,
-      );
-    }
 
 }
 
@@ -336,6 +333,10 @@ function hasCashDueForStage(order: {
   return { hasPickupCashDue, hasDeliveryCashDue };
 }
 
+export function assertDeliveryCashSettled(order: Parameters<typeof hasCashDueForStage>[0]) {
+  if (hasCashDueForStage(order).hasDeliveryCashDue) throw orderError("Cannot complete delivery while COD/service charge is still expected. Collect cash first.", 400);
+}
+
 async function loadAssignedOrdersForResponse(
   orderIds: string[],
   authority: DispatchAuthority,
@@ -375,6 +376,8 @@ export async function assignDriversBulk(args: {
     } });
     if (orders.length !== orderIds.length) throw orderError("Some orders are no longer in scope", 409);
     requireExpectedDispatchState(orders, expected); assertWarehouseScope(actor, orders);
+    if (await tx.orderCustodyAction.count({where:{orderId:{in:orderIds}}})) throw orderError("Custody-bound assignments require the warehouse custody endpoint",409);
+    if (args.warehouseId || actor.warehouseId) throw orderError("Assignment cannot establish warehouse custody",409);
     if (orders.some(order => FINAL_ORDER_STATUSES.includes(order.status) || !ASSIGNABLE_ORDER_STATUSES[type].includes(order.status)))
       throw orderError("Assignment is not permitted at the current stage", 409);
     const driver = await tx.user.findUnique({where:{id:driverId},select:{id:true,driverType:true}});

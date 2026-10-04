@@ -69,6 +69,7 @@ enum OrderDocumentFormat {
 }
 
 model OrderLeg {
+  custodyActions OrderCustodyAction[]
   financeJournalDimensions FinanceJournalLine[] @relation("JournalDimensionLeg")
   financeJournalProviders FinanceJournalLine[] @relation("JournalDimensionLegProvider")
   @@unique([id, orderId, carrierProviderId], map: "OrderLeg_journal_provider_key")

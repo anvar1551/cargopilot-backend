@@ -1,0 +1,49 @@
+model OrderCustodyAction {
+  id String @id @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  orderId String @db.Uuid
+  operationId String @db.Uuid
+  sequence Int
+  action String
+  phase String
+  actorUserId String @db.Uuid
+  companyMembershipId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  intentHash String @db.Char(64)
+  intent Json
+  previousEventId String? @db.Uuid
+  warehouseId String? @db.Uuid
+  destinationWarehouseId String? @db.Uuid
+  driverUserId String? @db.Uuid
+  driverMembershipId String? @db.Uuid
+  legId String? @db.Uuid
+  trackingId String @db.Uuid
+  beforeState Json
+  result Json
+  createdAt DateTime @default(now())
+  order Order @relation(fields: [tenantId, orderId, companyId], references: [tenantId, id, ownerOrgId], onDelete: Restrict, onUpdate: Restrict)
+  actor CompanyMembership @relation("CustodyActor", fields: [companyMembershipId, actorUserId, tenantId, companyId], references: [id, userId, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict)
+  bridge CompanyMembership @relation("CustodyBridge", fields: [companyMembershipId, tenantMembershipId, actorUserId, tenantId], references: [id, tenantMembershipId, userId, tenantId], onDelete: Restrict, onUpdate: Restrict)
+  driver CompanyMembership? @relation("CustodyDriver", fields: [driverMembershipId, driverUserId, tenantId, companyId], references: [id, userId, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict)
+  warehouse Warehouse? @relation("CustodyWarehouse", fields: [tenantId, warehouseId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  destination Warehouse? @relation("CustodyDestination", fields: [tenantId, destinationWarehouseId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  leg OrderLeg? @relation(fields: [legId, orderId], references: [id, orderId], onDelete: Restrict, onUpdate: Restrict)
+  tracking Tracking @relation(fields: [trackingId, orderId], references: [id, orderId], onDelete: Restrict, onUpdate: Restrict)
+  previous OrderCustodyAction? @relation("CustodyPrevious", fields: [previousEventId, orderId], references: [id, orderId], onDelete: Restrict, onUpdate: Restrict)
+  successors OrderCustodyAction[] @relation("CustodyPrevious")
+  parcels OrderCustodyParcel[]
+  @@unique([tenantId, operationId])
+  @@unique([orderId, sequence])
+  @@unique([id, orderId])
+  @@index([tenantId, companyId, orderId, sequence])
+}
+
+model OrderCustodyParcel {
+  actionId String @db.Uuid
+  parcelId String @db.Uuid
+  orderId String @db.Uuid
+  action OrderCustodyAction @relation(fields:[actionId, orderId], references:[id, orderId], onDelete:Restrict, onUpdate:Restrict)
+  parcel Parcel @relation(fields:[parcelId, orderId], references:[id, orderId], onDelete:Restrict, onUpdate:Restrict)
+  @@id([actionId, parcelId])
+}

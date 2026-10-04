@@ -25,6 +25,9 @@ import { bindOrderBillTo, acceptOrderPrice } from "../../src/modules/pricing-cor
 import { assignDriversBulk, updateDriverOrderStatus, updateOrdersStatusBulk } from "../../src/modules/orders-core/operations/order-status";
 import { submitProofForActor } from "../../src/modules/orders-core/proofs/proof";
 import { issueOrderInvoiceForActor } from "../../src/modules/invoice-core/application/invoiceRepo";
+import { executeWarehouseCustody } from "../../src/modules/orders-core/operations/warehouse-custody";
+import { createWarehouse } from "../../src/modules/warehouse-core/application/warehouseRepo";
+import { upsertOrderLeg } from "../../src/modules/orders-legs/legs";
 
 const url = process.env.CARGOPILOT_WORKER_TEST_DATABASE_URL, run = process.env.CARGOPILOT_WORKER_RUN_ID;
 if (!url || !run || !/^[a-f0-9]{12}$/.test(run)) throw Error("Disposable run required");
@@ -37,7 +40,8 @@ const fixture = createTenantDemoFixture(), memberships = fixture.companyMembersh
 const actor = (i: number): any => ({ ...memberships[i], id: memberships[i].userId,
   membershipId: memberships[i].id, companyMembershipId: memberships[i].id });
 const maker = actor(3), checker = actor(4), operator = actor(0);
-let driver: any;
+let driver: any, transport: any;
+let savedBody:any, ownedWarehouseIds:string[];
 const objects = new Map<string, Buffer>();
 const mockStorage = jest.fn(async (command: any) => {
   const { Key, Body, IfNoneMatch, ContentType } = command.input;
@@ -60,7 +64,7 @@ async function businessState() {
   const result: Record<string, unknown> = {};
   for (const table of ["Order", "Parcel", "OrderCreationIntent", "OrderCreationReceipt", "Tracking", "UserNotification",
     "OrderLabelJob", "PricingComponent", "OrderBillTo", "OrderPriceSnapshot", "OrderPriceApproval", "ProofSubmission",
-    "OrderAttachment", "Invoice", "InvoiceIssuanceReceipt", "BillingInvoiceOutbox", "FinanceAuditEvent", "AnalyticsDomainEventOutbox"])
+    "OrderAttachment", "OrderCustodyAction", "OrderCustodyParcel", "OrderLeg", "Invoice", "InvoiceIssuanceReceipt", "BillingInvoiceOutbox", "FinanceAuditEvent", "AnalyticsDomainEventOutbox"])
     result[table] = (await pool.query('SELECT to_jsonb(t) AS row FROM "' + table + '" t ORDER BY to_jsonb(t)::text')).rows;
   return result;
 }
@@ -87,11 +91,19 @@ beforeAll(async () => {
   await mockPrisma.companyMembership.create({ data: { id: cmId, userId: driverId, tenantId: maker.tenantId,
     tenantMembershipId: tmId, companyId: maker.companyId } });
   driver = { id: driverId, tenantId: maker.tenantId, tenantMembershipId: tmId, companyId: maker.companyId, membershipId: cmId, companyMembershipId: cmId };
+  const transportId=randomUUID(),transportTm=randomUUID(),transportCm=randomUUID();
+  await mockPrisma.user.create({data:{id:transportId,email:"synthetic-linehaul@example.invalid",name:"Synthetic linehaul",password:"synthetic-invalid-login-value",driverType:"linehaul"}});
+  await mockPrisma.tenantMembership.create({data:{id:transportTm,userId:transportId,tenantId:maker.tenantId}});
+  await mockPrisma.companyMembership.create({data:{id:transportCm,userId:transportId,tenantMembershipId:transportTm,tenantId:maker.tenantId,companyId:maker.companyId}});
+  transport={id:transportId,tenantMembershipId:transportTm,companyMembershipId:transportCm,membershipId:transportCm,tenantId:maker.tenantId,companyId:maker.companyId};
   await grant(maker, ["pricing.write", "pricing.read", "pricing.tariffs.propose", "billing.policies.propose", "billing.payers.bind",
     "pricing.orders.accept", "finance.invoices.issue", "customers.read"]);
   await grant(checker, ["pricing.tariffs.approve", "billing.policies.approve"]);
-  await grant(operator, ["customers.read", "customers.write", "pricing.read", "shipment.create", "shipment.view", "shipment.bookCarrier", "shipment.assignCourier", "shipment.changeStatus"]);
-  await grant(driver, ["drivers.telemetry", "shipment.view", "shipment.update", "shipment.changeStatus"]);
+  await grant(operator, ["warehouse.create", "shipment.update", "customers.read", "customers.write", "pricing.read", "shipment.create", "shipment.view", "shipment.bookCarrier", "shipment.assignCourier", "shipment.changeStatus",
+    "shipment.custody.intake","shipment.custody.dispatch","shipment.custody.receive","shipment.custody.last-mile-offer"]);
+  await grant(driver, ["drivers.telemetry", "shipment.view", "shipment.update", "shipment.changeStatus","shipment.custody.pickup-offer","shipment.custody.last-mile-accept","shipment.custody.deliver"]);
+  await grant(transport,["drivers.telemetry","shipment.view","shipment.custody.transport-accept"]);
+  for(const i of [1,2])await grant(actor(i),["shipment.view","shipment.custody.intake","shipment.custody.dispatch","warehouse.create"]);
   process.env.ORDER_LABEL_BLOCKING = "true";
   process.env.ORDER_LABEL_AUTO_FALLBACK = "false";
   process.env.ORDER_LABEL_MODE = "queue";
@@ -105,7 +117,7 @@ afterAll(async () => {
   for (const key of ["ORDER_LABEL_BLOCKING", "ORDER_LABEL_AUTO_FALLBACK", "ORDER_LABEL_MODE", "AWS_S3_BUCKET"]) delete process.env[key];
   await mockPrisma?.$disconnect(); await pool.end();
 });
-it("real scoped master creation -> independently approved pricing -> normal order -> pickup/proof -> eligible same-currency invoice and original retries", async () => {
+it("real normal creation -> pickup -> three warehouses -> accepted last mile -> delivery proof -> delivered invoice; retries, conflicts and rollback", async () => {
   expect(new Set([maker.id, checker.id, operator.id, driver.id]).size).toBe(4);
   expect(await mockPrisma.order.count()).toBe(0);
   expect(await mockPrisma.customerEntity.count()).toBe(0);
@@ -122,12 +134,13 @@ it("real scoped master creation -> independently approved pricing -> normal orde
   await decideTariffVersion({ user: checker, planId: plan.id, versionId: version.id, contentSha256: version.contentSha256,
     operationId: randomUUID(), decision: "approved", reason: "Independent synthetic tariff review" });
   const policy = await proposeBillingPolicy(maker, { operationId: randomUUID(), reason: "Synthetic configuration only",
-    content: syntheticBillingPolicy({ billing: { mode: "manual", eligibleOrderStates: ["pending", "picked_up"], dueDays: 7, numberPrefix: "SYNTHETIC" } }) });
+    content: syntheticBillingPolicy({ billing: { mode: "manual", eligibleOrderStates: ["pending", "delivered"], dueDays: 7, numberPrefix: "SYNTHETIC" } }) });
   await decideBillingPolicy(checker, { versionId: policy.id, contentHash: policy.contentHash, operationId: randomUUID(), decision: "approved",
-    reason: "Independent synthetic policy; pickup invoice eligibility is a test configuration, not company policy" });
+    reason: "Independent synthetic policy; delivered invoice eligibility is a test configuration, not company policy" });
   const body = { operationId: randomUUID(), customerEntityId: customer.id, sender: { name: "Synthetic sender" }, receiver: { name: "Synthetic recipient" },
     addresses: { pickupAddress: "Synthetic pickup", dropoffAddress: "Synthetic destination", senderAddressId: sender.id, receiverAddressId: receiver.id },
     shipment: { serviceType: "DOOR_TO_DOOR", currency: "UZS", weightKg: 2 }, payment: { paymentType: "OTHER", deliveryChargePaidBy: "COMPANY" } };
+  savedBody=body;
   const created = await createOrderForActor({ user: operator, body }), orderId = created.payload.order.id;
   expect(created.payload.warning).toBeNull();
   expect(created.payload.order).toMatchObject({ tenantId: maker.tenantId, ownerOrgId: maker.companyId,
@@ -140,7 +153,7 @@ it("real scoped master creation -> independently approved pricing -> normal orde
   await updateDriverOrderStatus({ actor: driver, orderId, status: OrderStatus.picked_up });
   // Do not fabricate an onward warehouse transition or a completed delivery.
   const atPickup = await businessState();
-  await expect(updateDriverOrderStatus({ actor: driver, orderId, status: OrderStatus.out_for_delivery })).rejects.toThrow("Driver cannot move order");
+  await expect(updateDriverOrderStatus({ actor: driver, orderId, status: OrderStatus.out_for_delivery })).rejects.toThrow("Durable warehouse custody endpoint required");
   await expect(updateOrdersStatusBulk({ actor: operator, orderIds: [orderId], expectedStates: await expected(orderId), status: OrderStatus.at_warehouse })).rejects.toThrow("manual transition policy is unavailable");
   expect(await businessState()).toEqual(atPickup);
   const { PNG } = require("pngjs"), buffer = PNG.sync.write({ width: 2, height: 2, data: Buffer.alloc(16, 255) });
@@ -151,26 +164,125 @@ it("real scoped master creation -> independently approved pricing -> normal orde
   expect(proof.success).toBe(true); expect(proof.proof.savedAt).not.toBe(proof.proof.clientCapturedAt);
   expect(mockStorage).toHaveBeenCalledTimes(2);
   for (const bytes of objects.values()) expect(PNG.sync.read(bytes).width).toBeGreaterThan(0);
+  const warehouses=[];
+  for(let i=0;i<3;i++){
+    const w=await createWarehouse(operator,{name:`Synthetic warehouse ${i}`,type:"warehouse",location:"Synthetic"});warehouses.push(w);
+    await mockPrisma.membershipScope.create({data:{membershipId:operator.companyMembershipId,scopeType:"warehouse",scopeRefId:w.id}});
+  }
+  const parcelIds=created.payload.order.parcels.map((p:any)=>p.id);
+  ownedWarehouseIds=warehouses.map(w=>w.id);
+  async function custodyIntent(action:string,extra:any={}){
+    const o=await mockPrisma.order.findUniqueOrThrow({where:{id:orderId}});
+    const event=await mockPrisma.orderCustodyAction.findFirst({where:{orderId},orderBy:{sequence:"desc"}});
+    return {operationId:randomUUID(),action,expectedEventId:event?.id??null,expectedUpdatedAt:o.updatedAt.toISOString(),parcelIds,...extra};
+  }
+  async function denied(who:any,input:any){const before=await businessState(),storage=mockStorage.mock.calls.length;await expect(executeWarehouseCustody(who,orderId,input)).rejects.toThrow();expect(await businessState()).toEqual(before);expect(mockStorage).toHaveBeenCalledTimes(storage);}
+  async function accepted(who:any,input:any){const results=await Promise.all([executeWarehouseCustody(who,orderId,input),executeWarehouseCustody(who,orderId.toUpperCase(),JSON.parse(JSON.stringify(input)))]);expect(results[0]).toEqual(results[1]);const before=await businessState();expect(await executeWarehouseCustody(who,orderId,input)).toEqual(results[0]);expect(await businessState()).toEqual(before);return results[0];}
+  const pickupSource=await mockPrisma.tracking.findFirstOrThrow({where:{orderId,status:"picked_up"},orderBy:{timestamp:"desc"}});
+  const offer=await custodyIntent("pickup-offer",{pickupTrackingId:pickupSource.id,destinationWarehouseId:warehouses[0].id});
+  const foreignWarehouse=await createWarehouse(actor(2),{name:"Synthetic foreign warehouse",type:"warehouse",location:"Synthetic"});
+  await denied(driver,{...offer,destinationWarehouseId:foreignWarehouse.id});
+  await denied(driver,{...offer,pickupTrackingId:randomUUID()});
+  await accepted(driver,offer);
+  await denied(driver,{...offer,destinationWarehouseId:warehouses[1].id});
+  const intake=await custodyIntent("intake",{warehouseId:warehouses[0].id});
+  await denied(actor(1),intake);await denied(actor(2),intake);await denied({},intake);
+  await denied(checker,intake);
+  const receivingScope=await mockPrisma.membershipScope.findFirstOrThrow({where:{membershipId:operator.companyMembershipId,scopeType:"warehouse",scopeRefId:warehouses[0].id}});
+  await mockPrisma.membershipScope.delete({where:{id:receivingScope.id}});
+  try{await denied(operator,intake);}finally{await mockPrisma.membershipScope.create({data:receivingScope});}
+  await denied(operator,{...intake,parcelIds:[randomUUID()]});await denied(operator,{...intake,warehouseId:warehouses[1].id});
+  await denied(operator,{...intake,expectedUpdatedAt:new Date(0).toISOString()});
+  const intakeIntents=[intake,{...intake,operationId:randomUUID()}];
+  const competition=await Promise.allSettled(intakeIntents.map(v=>executeWarehouseCustody(operator,orderId,v)));
+  expect(competition.filter(v=>v.status==="fulfilled")).toHaveLength(1);
+  expect(competition.filter(v=>v.status==="rejected")).toHaveLength(1);
+  const winner=competition.findIndex(v=>v.status==="fulfilled"),intakeState=await businessState();
+  expect(await executeWarehouseCustody(operator,orderId,intakeIntents[winner])).toEqual((competition[winner] as PromiseFulfilledResult<unknown>).value);
+  expect(await businessState()).toEqual(intakeState);
+  await denied(operator,{...intakeIntents[winner],warehouseId:warehouses[1].id});
+  // No adoption of assignment as acceptance: intake explicitly ends the pickup assignment.
+  expect(await mockPrisma.order.findUniqueOrThrow({where:{id:orderId}})).toMatchObject({status:"at_warehouse",currentWarehouseId:warehouses[0].id,assignedDriverId:null});
+  for(let i=0;i<2;i++){
+    const leg=await upsertOrderLeg(orderId,{sequence:i+1,fromWarehouseId:warehouses[i].id,toWarehouseId:warehouses[i+1].id},operator);
+    const dispatch=await custodyIntent("dispatch",{warehouseId:warehouses[i].id,destinationWarehouseId:warehouses[i+1].id,legId:leg.id,driverMembershipId:transport.companyMembershipId});
+    await denied(operator,{...dispatch,driverMembershipId:driver.companyMembershipId});
+    await denied(operator,{...dispatch,legId:randomUUID()});
+    if(i===0){
+      const before=await businessState();
+      await pool.query("CREATE FUNCTION cp_custody_test_failure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'Synthetic custody rollback'; END $$; CREATE TRIGGER cp_custody_test_failure BEFORE INSERT ON \"AnalyticsDomainEventOutbox\" FOR EACH ROW EXECUTE FUNCTION cp_custody_test_failure()");
+      try{await expect(executeWarehouseCustody(operator,orderId,dispatch)).rejects.toThrow();expect(await businessState()).toEqual(before);}
+      finally{await pool.query('DROP TRIGGER cp_custody_test_failure ON "AnalyticsDomainEventOutbox"; DROP FUNCTION cp_custody_test_failure()');}
+    }
+    await accepted(operator,dispatch);
+    const prior=await businessState();await expect(upsertOrderLeg(orderId,{legId:leg.id,status:"arrived"},operator)).rejects.toThrow("planning only");expect(await businessState()).toEqual(prior);
+    await denied(operator,await custodyIntent("receive",{warehouseId:warehouses[i+1].id}));
+    const accept=await custodyIntent("transport-accept");await denied(driver,accept);await accepted(transport,accept);
+    expect(await mockPrisma.order.findUniqueOrThrow({where:{id:orderId}})).toMatchObject({status:"in_transit",currentWarehouseId:null});
+    await denied(operator,await custodyIntent("receive",{warehouseId:warehouses[i].id}));
+    await accepted(operator,await custodyIntent("receive",{warehouseId:warehouses[i+1].id}));
+    expect(await mockPrisma.order.findUniqueOrThrow({where:{id:orderId}})).toMatchObject({status:"at_warehouse",currentWarehouseId:warehouses[i+1].id});
+  }
+  await accepted(operator,await custodyIntent("last-mile-offer",{warehouseId:warehouses[2].id,driverMembershipId:driver.companyMembershipId}));
+  const lastAccept=await custodyIntent("last-mile-accept");await denied(transport,lastAccept);await accepted(driver,lastAccept);
+  await denied(driver,await custodyIntent("deliver",{proofSubmissionId:proofIntent.body.submissionId}));
+  const deliveryProofIntent={...proofIntent,body:{...proofIntent.body,stage:"delivery",submissionId:randomUUID(),signedBy:"Synthetic recipient"}};
+  const deliveryProof=await submitProofForActor(deliveryProofIntent);
+  await accepted(driver,await custodyIntent("deliver",{proofSubmissionId:deliveryProofIntent.body.submissionId}));
+  expect(await mockPrisma.order.findUniqueOrThrow({where:{id:orderId}})).toMatchObject({status:"delivered",currentWarehouseId:null,assignedDriverId:driver.id});
   const issuance = { user: maker, ...intent(orderId), priceApprovalId: price.id }, invoice = await issueOrderInvoiceForActor(issuance);
   expect(invoice).toMatchObject({ status: "issued", amount: "110.0100", currency: "UZS", billing: { payerCustomerEntityId: payer.id, priceApprovalId: price.id } });
   const confirmed = await businessState();
   expect((await createOrderForActor({ user: operator, body })).payload).toMatchObject({ creationReplay: true, order: { id: orderId } });
   expect(await acceptOrderPrice(maker, acceptanceIntent)).toEqual(price);
   expect(await submitProofForActor(proofIntent)).toEqual(proof);
+  expect(await submitProofForActor(deliveryProofIntent)).toEqual(deliveryProof);
   expect(await issueOrderInvoiceForActor(issuance)).toEqual(invoice);
   expect(await businessState()).toEqual(confirmed);
   expect(await mockPrisma.order.count()).toBe(1);
   expect(await mockPrisma.invoice.count()).toBe(1);
   expect(await mockPrisma.orderCreationReceipt.count()).toBe(1);
   expect(await mockPrisma.orderPriceSnapshot.count()).toBe(1);
-  expect(await mockPrisma.orderAttachment.count()).toBe(2);
+  expect(await mockPrisma.orderAttachment.count()).toBe(4);
   expect(await mockPrisma.orderLabelJob.count()).toBe(1);
+  expect(await mockPrisma.orderCustodyAction.count()).toBe(11);
+  expect(await mockPrisma.orderCustodyParcel.count()).toBe(11*parcelIds.length);
   expect(await mockPrisma.billingInvoiceOutbox.count({ where: { state: "held_no_accounting_authority" } })).toBe(1);
   expect(await mockPrisma.financeJournalEntry.count()).toBe(0);
   expect(await mockPrisma.paymentIntent.count()).toBe(0);
   const notifications = await mockPrisma.userNotification.findMany();
   expect(notifications.length).toBeGreaterThan(0);
   for (const n of notifications) expect(n).toMatchObject({ userId: driver.id, tenantId: maker.tenantId, companyId: maker.companyId, companyMembershipId: driver.companyMembershipId });
-  expect(mockStorage).toHaveBeenCalledTimes(2);
+  expect(mockStorage).toHaveBeenCalledTimes(4);
   expect(fetchSpy).not.toHaveBeenCalled(); expect(httpSpy).not.toHaveBeenCalled(); expect(httpsSpy).not.toHaveBeenCalled();
+});
+
+it("competing dispatch and last-mile handover serialize one intent without mixed custody or duplicate effects",async()=>{
+  const made=await createOrderForActor({user:operator,body:{...savedBody,operationId:randomUUID()}}),orderId=made.payload.order.id;
+  const parcelIds=made.payload.order.parcels.map((p:any)=>p.id);
+  const next=async(action:string,extra:any={})=>{const o=await mockPrisma.order.findUniqueOrThrow({where:{id:orderId}}),e=await mockPrisma.orderCustodyAction.findFirst({where:{orderId},orderBy:{sequence:"desc"}});return {action,operationId:randomUUID(),expectedUpdatedAt:o.updatedAt.toISOString(),expectedEventId:e?.id??null,parcelIds,...extra};};
+  await assignDriversBulk({actor:operator,orderIds:[orderId],expectedStates:await expected(orderId),driverId:driver.id,type:"pickup"});
+  await updateDriverOrderStatus({actor:driver,orderId,status:"pickup_in_progress"});await updateDriverOrderStatus({actor:driver,orderId,status:"picked_up"});
+  const tracking=await mockPrisma.tracking.findFirstOrThrow({where:{orderId,status:"picked_up"}});
+  await executeWarehouseCustody(driver,orderId,await next("pickup-offer",{destinationWarehouseId:ownedWarehouseIds[0],pickupTrackingId:tracking.id}));
+  await executeWarehouseCustody(operator,orderId,await next("intake",{warehouseId:ownedWarehouseIds[0]}));
+  const leg=await upsertOrderLeg(orderId,{sequence:1,fromWarehouseId:ownedWarehouseIds[0],toWarehouseId:ownedWarehouseIds[1]},operator);
+  const inputs=[await next("dispatch",{warehouseId:ownedWarehouseIds[0],destinationWarehouseId:ownedWarehouseIds[1],legId:leg.id,driverMembershipId:transport.companyMembershipId}),
+    await next("last-mile-offer",{warehouseId:ownedWarehouseIds[0],driverMembershipId:driver.companyMembershipId})];
+  const beforeNotifications=await mockPrisma.userNotification.count({where:{orderId}}),beforeTracking=await mockPrisma.tracking.count({where:{orderId}});
+  const results=await Promise.allSettled(inputs.map(input=>executeWarehouseCustody(operator,orderId,input)));
+  expect(results.filter(v=>v.status==="fulfilled")).toHaveLength(1);expect(results.filter(v=>v.status==="rejected")).toHaveLength(1);
+  expect(await mockPrisma.orderCustodyAction.count({where:{orderId}})).toBe(3);
+  expect(await mockPrisma.tracking.count({where:{orderId}})).toBe(beforeTracking+1);
+  const o=await mockPrisma.order.findUniqueOrThrow({where:{id:orderId}}),state=await mockPrisma.orderCustodyAction.findFirstOrThrow({where:{orderId},orderBy:{sequence:"desc"}});
+  expect(o.status).toBe("at_warehouse");expect(o.currentWarehouseId).toBe(ownedWarehouseIds[0]);
+  expect(o.assignedDriverId).toBe(state.phase==="last-mile-offered"?driver.id:null);
+  expect(await mockPrisma.userNotification.count({where:{orderId}})).toBe(beforeNotifications+(state.phase==="last-mile-offered"?1:0));
+  const winner=results.findIndex(v=>v.status==="fulfilled"),before=await businessState();
+  expect(await executeWarehouseCustody(operator,orderId,inputs[winner])).toEqual((results[winner] as PromiseFulfilledResult<unknown>).value);
+  await expect(executeWarehouseCustody(operator,orderId,inputs[1-winner])).rejects.toThrow();
+  await expect(assignDriversBulk({actor:operator,orderIds:[orderId],expectedStates:await expected(orderId),driverId:driver.id,type:"delivery"})).rejects.toThrow("Custody-bound assignments");
+  await expect(upsertOrderLeg(orderId,{legId:leg.id,actualArrivalAt:new Date().toISOString()},operator)).rejects.toThrow("planning only");
+  expect(await businessState()).toEqual(before);
+  expect(fetchSpy).not.toHaveBeenCalled();expect(httpSpy).not.toHaveBeenCalled();expect(httpsSpy).not.toHaveBeenCalled();
 });

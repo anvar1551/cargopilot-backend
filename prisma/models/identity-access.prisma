@@ -68,6 +68,9 @@ model RolePermission {
 }
 
 model CompanyMembership {
+  custodyActions OrderCustodyAction[] @relation("CustodyActor")
+  custodyBridges OrderCustodyAction[] @relation("CustodyBridge")
+  custodyDrivers OrderCustodyAction[] @relation("CustodyDriver")
   InvoiceIssuanceReceipt_actor InvoiceIssuanceReceipt[] @relation("InvoiceIssuanceReceipt_actor")
   InvoiceIssuanceReceipt_bridge InvoiceIssuanceReceipt[] @relation("InvoiceIssuanceReceipt_bridge")
   OrderBillTo_actor OrderBillTo[] @relation("OrderBillTo_actor")

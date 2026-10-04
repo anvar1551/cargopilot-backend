@@ -160,6 +160,10 @@ export async function bookCarrierForOrderLeg(input: BookCarrierForOrderLegInput)
   if (!companyId) throw orderError("Active company membership is required", 403);
 
   return db.$transaction(async (tx: any) => {
+    const locked=await tx.$queryRaw`SELECT id FROM "Order" WHERE id=${input.orderId}::uuid AND "tenantId"=${input.actor.tenantId}::uuid AND "ownerOrgId"=${companyId}::uuid FOR UPDATE`;
+    if(locked.length!==1) throw orderError("Selected owning company required for carrier booking",403);
+    await requireAuthorizedOrder(input.actor,input.orderId,"shipment.bookCarrier");
+    if(await tx.orderCustodyAction.count({where:{orderId:input.orderId,legId:input.legId}})) throw orderError("Custody transport cannot be booked through provider mutation",409);
     const provider = await tx.integrationProvider.findFirst({
       where: {
         id: input.providerId,
