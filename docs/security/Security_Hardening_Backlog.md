@@ -1,4 +1,29 @@
-# Current checkpoint — Mongoose/Prisma dependency batch (2026-10-04)
+# Current checkpoint — compatible qs/glob dependency batch (2026-10-04)
+
+Baseline `8a56ce1352672dee621b06c931629a27c38245d8`. DEP-NEXT-03 complete;
+[Qs_Glob_Dependency_Batch.md](Qs_Glob_Dependency_Batch.md) records exact paths,
+versions, commands, audit hashes, all remaining findings and evidence limits.
+
+| Classification | Current state |
+|---|---|
+| Implemented with evidence | qs 6.16.0, minimatch 3.1.5, brace-expansion 1.1.21, watcher picomatch 2.3.2, Jest picomatch 4.0.7 and diff 4.0.4 through existing ranges. Nine lock entries changed, direct declarations unchanged. 46 distinct cases passed: 6 actual dependency/SDK cases (network-free) and 40 affected payment cases. Corrected Headers assertion rerun is not extra evidence. Final no-emit passed; scope/registry/SRI/engines reviewed. |
+| Partially implemented | Fresh full audit 8 (0 critical / 7 high / 1 moderate / 0 low); production 5 (0 / 4 / 1 / 0). Vendor-pinned Prisma deepmerge-ts/mysql2, development watcher/braces and UUID remain separately classified. No overrides or major migration. |
+| Deliberately unavailable | Existing unapproved accounting/FX/provider/manual-transition workflows unchanged. Dependency updates do not restore contained financial policies or deferred clients. |
+| Awaiting verification / decisions | Vendor releases or separately reviewed breaking remediation; deployed/cold-install/runtime reachability, real infrastructure/S3/device/provider/Redis/history/NOT VALID/client/source-artifact/release gates remain. No production-readiness claim. |
+
+Exact finite next task **DEP-NEXT-04** (not started): supported ts-node-dev/watcher
+replacement review. Completion: affected braces dependency path removed, intended
+dev/worker/bootstrap/smoke command compatibility validated without business
+bootstrap/seed execution, no-emit and fresh audits. UUID supported-consumer/removal
+or major review and vendor-pinned Prisma resolution are separate tasks.
+Reused unchanged Prisma schema/client and 9-case disposable PostgreSQL evidence;
+no new database/migrations, sockets or unrelated suite run.
+Policy-blocked coverage directory remains untouched for manual cleanup:
+`C:\Users\Anvar\AppData\Local\Temp\cp-dependency-coverage-c87e5bd06bb04137b29a246fe3601bdb`.
+No push/deployment/existing services or client changes; dist/unrelated work preserved.
+This finite batch stops after its reviewed local checkpoint.
+
+## Historical checkpoint — Mongoose/Prisma dependency batch (2026-10-04)
 
 Baseline 5366663d672963a3a239cc91746a393f0ef54acd. DEP-NEXT-02 complete;
 [Mongoose_Prisma_Dependency_Batch.md](Mongoose_Prisma_Dependency_Batch.md) records

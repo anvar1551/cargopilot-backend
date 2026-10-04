@@ -1,5 +1,8 @@
 # Mongoose/Prisma dependency checkpoint — 2026-10-04
 
+Historical evidence for that batch. Current compatible-leaf versions, audits and
+remaining paths are in [Qs_Glob_Dependency_Batch.md](Qs_Glob_Dependency_Batch.md).
+
 Baseline 5366663d672963a3a239cc91746a393f0ef54acd, cargopilot/erp-foundation.
 Finite batch: verify paths/reachability, remove unused Mongoose, compatibly align
 Prisma 7, inspect lock/scripts, offline schema/config/client checks, affected
