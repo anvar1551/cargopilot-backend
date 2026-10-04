@@ -1,4 +1,30 @@
-# Current suspension-safe receipt and custody discovery readiness (2026-10-04)
+# Current controlled onboarding readiness (2026-10-04)
+
+Implemented internal foundation at `9162596e8cb42395615c5f128eba5ba43e2198df`;
+see [Tenant_Onboarding_Foundation.md](Tenant_Onboarding_Foundation.md).
+
+| Step | Current enforced behavior / remaining gate |
+|---|---|
+| Operator acceptance | Explicit deployment-owned Ed25519 public registry, sole cargopilot-bootstrap-owner subject, signed exact normalized intent/profile/operation/key and ≤5-minute expiry. No tenant-admin or queue-supplied authority. No real key or signed concrete intent installed; real invocation unavailable. |
+| New tenant/company/admin | Actual atomic PostgreSQL service creates new owned Tenant/company/User, linked active memberships, non-system/non-owner company role, six owner-approved grants and exact new-company scope. No adoption of existing case-insensitive email identity. No CP_ROOT, arbitrary role/grants, finance settings or checker. |
+| Credentials / durable retries | Offline one-time bcrypt preparation with signed opaque commitment; hash only in User.password, never receipt/log. Original hash/operation identity retained; substitution/conflicting reuse reject. Matching fresh-authorized retry returns original IDs, no password reset, duplicate grant or audit. Real credential delivery/activation handoff and operator CLI not implemented. |
+| First login | Actual current login resolves the new single eligible membership; verified tenant/company/TM/CM response and exact six permissions, no membership guessing. API still returns token/refreshToken and selected-context fields. New initial-operational-admin.v1 role is not legacy super_admin; frontend navigation/browser/device compatibility deferred. |
+| Administrator capabilities | organizations.read, customers.read/write, shipment.view/create and notifications.read, subject to existing permissions/object/workflow rules. Customer/address masters belong to tenant, not one company; same-tenant company-scoped customer access follows current resource rules. No invitations/delegation/role management, warehouse provisioning/custody/assignment, pricing approval, invoice/accounting/payment or checker authority. Dependent workflows still need their own approved configuration/actors. |
+| Audit / concurrency | Append-only accepted receipt/operator audit, operation and normalized-email locks, exact compound ownership constraints and atomic rollback. Registry eligibility is reloaded, but last-check-to-commit/out-of-band registry timing boundary remains; no instantaneous revocation claim. |
+| Runtime / rollout | package/lock/README declare >=22.12.0 <23; use currently supported patched22.x, no obsolete patch pin chosen. Docker/CI remain floating Node22, no image/build/deployed patch verified. New additive migration first; stop old broad writers and do not execute preserved old dist bootstrap. Rollback retains denial. |
+
+Evidence:19 distinct offline cases,12 distinct actual PostgreSQL cases; final
+credential-binding rerun is not additional distinct cases. Seven FK maps/six
+substituted references requiring23503, first login, concurrent duplicates/email,
+conflict/revoked key/suspended result, audit immutability and final-write rollback.
+113 migrations setup, offline schema/client validation, final bounded4GiB no-emit
+passed. One final bootstrap-packaging unit rerun; three owned containers cleaned
+up/absence verified. No existing DB/Redis/AWS, real key generation/registration,
+provider/device/S3, public enrollment or client implementation. Existing dependency
+audits and unchanged workflow/session/transport evidence reused. Further provisioning
+requires separate real-key/intent/credential-channel/database authorization.
+
+## Historical suspension-safe receipt and custody discovery readiness (2026-10-04)
 
 Current correction from 7df9595baeba499f7dbf6bb67002c42e12407518: Restricted_Initial_Pickup.md distinguishes initial assignment evidence from later custody. Empty-scope local drivers now discover/preflight their owned current assignment and execute the existing forward pickup transitions without company/warehouse scope or shipment.assignCourier. The proof submission path rejects implicit compatibility company scope and uses explicit scope or the exact active driver relationship; initial proof eligibility is assigned/pickup_in_progress/picked_up before journal creation. No generic order API, assignment, exception/return or client capability is broadened. Earlier downstream-only restricted evidence below is historical for initial pickup.
 

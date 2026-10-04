@@ -1,4 +1,40 @@
-# Current checkpoint — compatible qs/glob dependency batch (2026-10-04)
+# Current checkpoint — controlled tenant-onboarding foundation (2026-10-04)
+
+Implementation checkpoint `9162596e8cb42395615c5f128eba5ba43e2198df`, from
+`1d01f19a3aa7ffa1096ab419144c01d60e6e73e0`.
+[Tenant_Onboarding_Foundation.md](Tenant_Onboarding_Foundation.md) records the
+pre-implementation plan, owner decisions, exact internal contract and evidence.
+
+| Classification | Current state |
+|---|---|
+| Implemented with evidence — ONBOARD-01 | Root package/lock/README Node range >=22.12.0 <23 aligned; no package-node changes or image claim. Legacy ERP/support bootstrap aliases/source deny without dotenv/database/grants. Sole signed operator subject cargopilot-bootstrap-owner, explicitly registered Ed25519 key, ≤5-minute intent-bound permit and immutable six-key initial-operational-admin.v1 profile. Signed opaque credential commitment prevents initial-hash substitution; operation/email locks, atomic graph/receipt/operator audit, exact owner/bridge/role FKs, immutable audit, no email adoption or all-permission/system/owner/finance grants. 19 distinct offline and12 distinct real PostgreSQL cases passed; final standalone denial case rerun is not extra evidence. 113 migrations as disposable setup, offline schema/client checks and final 4GiB no-emit passed. |
+| Partially implemented | Controlled internal service, no public enrollment or operator CLI. New profile grants existing scoped organization/order reads, customer/address read/write, ordinary shipment creation and own notifications; it does not imply all workflows or client UI compatibility. Customer master ownership remains tenant-level; company-scoped customer permissions can access that tenant master subject to actual object restrictions. No invented customer-company ownership. |
+| Deliberately unavailable | Real provisioning has no registered real key or signed concrete intent. Invitations/delegation/user or role management, warehouse provisioning/assignment, finance/checker/platform/override capabilities absent from this profile. Existing financial/provider/manual-policy containment unchanged. Direct old dirty dist bootstrap must never be executed. |
+| Awaiting external authorization/verification — ONBOARD-02 | Owner-controlled real public-key registration/ACLs, explicit intent/profile review and signing, secure initial credential delivery and separately authorized database/operator invocation. No real key/activation ceremony, production image or credential delivery verified. Registry updates after final verification can race commit; stop provisioning for key retirement, no immediate-revocation claim. Existing nullable/history/NOT VALID, Redis/provider/S3/device/client/source-artifact and dependency gates remain. |
+
+All three run-owned PostgreSQL instances (including compile-failed setup and
+pre-credential-binding pass) were label/name/tmpfs verified, removed and absence
+confirmed. Final instance cp-verification-94f9cab24196, cached image/no pull,
+synthetic loopback credentials and bounded resources; temporary public registries
+removed, test private keys never persisted. Repeated12-case run is not24 cases.
+Default-heap no-emit OOM and test token/accessToken mismatch were corrected/reported;
+no assertions or production configuration weakened. Final scoped review/whitespace/
+secret checks passed. Resolved dependencies unchanged; reuse full8/production5
+audit, unaffected session/finance/transport evidence. No unrelated test campaign.
+
+Exact next bounded task, **not started**: ONBOARD-02 planning/ceremony and, if
+separately approved, an operator invocation/secure credential handoff integration.
+Completion requires owner-reviewed real public fingerprint/key registry, concrete
+signed immutable intent and approved private credential channel plus explicit DB
+authorization; never auto-sign, adopt existing email, infer ownership or widen grants.
+Invitations/delegation and dependency watcher/UUID/vendor-pin remediation are
+separate future batches. No automatic continuation beyond this finite task.
+Policy-blocked cleanup remains untouched at
+`C:\Users\Anvar\AppData\Local\Temp\cp-dependency-coverage-c87e5bd06bb04137b29a246fe3601bdb`.
+Only pre-existing dist remains dirty. No real registry installed, clients, push,
+deployment or existing-service access; stop after this documentation checkpoint.
+
+## Historical checkpoint — compatible qs/glob dependency batch (2026-10-04)
 
 Baseline `8a56ce1352672dee621b06c931629a27c38245d8`. DEP-NEXT-03 complete;
 [Qs_Glob_Dependency_Batch.md](Qs_Glob_Dependency_Batch.md) records exact paths,
