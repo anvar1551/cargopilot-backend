@@ -1,0 +1,72 @@
+// SQL also enforces fixed revisions, action attribution and append-only journals.
+model CompanyDelegationAuthority {
+  membershipId String @id @db.Uuid
+  userId String @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  ceilingRevision String
+  warehouseIds String[] @default([]) @db.Uuid
+  enabled Boolean @default(true)
+  createdAt DateTime @default(now())
+  member CompanyMembership @relation("DelegatorOwner", fields: [membershipId,userId,tenantId,companyId], references: [id,userId,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  bridge CompanyMembership @relation("DelegatorBridge", fields: [membershipId,tenantMembershipId,userId,tenantId], references: [id,tenantMembershipId,userId,tenantId], onDelete: Restrict, onUpdate: Restrict)
+  invitations CompanyInvitation[]
+  @@unique([membershipId,tenantId,companyId])
+}
+model CompanyInvitation {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  operationId String @unique @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  inviterMembershipId String @db.Uuid
+  email String
+  profileRevision String
+  warehouseIds String[] @db.Uuid
+  fingerprint String
+  tokenHash String @unique
+  expiresAt DateTime
+  state String @default("pending")
+  acceptedMembershipId String? @db.Uuid
+  createdAt DateTime @default(now())
+  company Organization @relation("InvitationCompany", fields: [tenantId,companyId], references: [tenantId,id], onDelete: Restrict, onUpdate: Restrict)
+  inviter CompanyDelegationAuthority @relation(fields: [inviterMembershipId,tenantId,companyId], references: [membershipId,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  accepted CompanyMembership? @relation("InvitationAccepted", fields: [acceptedMembershipId,tenantId,companyId], references: [id,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  @@index([tenantId,companyId,inviterMembershipId,state], map: "CompanyInvitation_context_idx")
+}
+model CompanyOperationalGrant {
+  membershipId String @id @db.Uuid
+  userId String @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  profileRevision String
+  warehouseIds String[] @db.Uuid
+  roleId String @db.Uuid
+  enabled Boolean @default(true)
+  member CompanyMembership @relation("OperationalGrantOwner", fields: [membershipId,userId,tenantId,companyId], references: [id,userId,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  bridge CompanyMembership @relation("OperationalGrantBridge", fields: [membershipId,tenantMembershipId,userId,tenantId], references: [id,tenantMembershipId,userId,tenantId], onDelete: Restrict, onUpdate: Restrict)
+  role Role @relation(fields: [roleId,companyId], references: [id,companyId], onDelete: Restrict, onUpdate: Restrict)
+}
+model CompanyDelegationAction {
+  operationId String @id @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  action String
+  fingerprint String
+  actorUserId String? @db.Uuid
+  actorMembershipId String? @db.Uuid
+  operatorId String?
+  operatorKeyFingerprint String?
+  targetMembershipId String? @db.Uuid
+  recipientUserId String? @db.Uuid
+  reason String
+  result Json
+  createdAt DateTime @default(now())
+  company Organization @relation("DelegationActionCompany", fields: [tenantId,companyId], references: [tenantId,id], onDelete: Restrict, onUpdate: Restrict)
+  actor CompanyMembership? @relation("DelegationActionActor", fields: [actorMembershipId,actorUserId,tenantId,companyId], references: [id,userId,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  target CompanyMembership? @relation("DelegationActionTarget", fields: [targetMembershipId,tenantId,companyId], references: [id,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  recipient User? @relation(fields: [recipientUserId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  recipientTarget CompanyMembership? @relation("DelegationRecipientTarget", fields: [targetMembershipId,recipientUserId,tenantId,companyId], references: [id,userId,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict, map: "CompanyDelegationAction_recipient_context_fkey")
+  @@index([tenantId,companyId,createdAt], map: "CompanyDelegationAction_context_idx")
+}

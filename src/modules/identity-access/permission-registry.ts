@@ -100,6 +100,7 @@ export const SYSTEM_PERMISSIONS: SeedPermission[] = [
   permission("finance.bankReconciliation.approve", "finance", "approve", "Approve or reject reconciled bank statements"),
 
   permission("membership.invite", "memberships", "create", "Invite company member"),
+  permission("membership.delegateOperational", "memberships", "manage", "Manage explicitly accepted company operational delegation ceiling"),
   permission("membership.suspend", "memberships", "manage", "Suspend company member"),
   permission("membership.restore", "memberships", "manage", "Restore company member"),
   permission("roles.read", "roles", "read", "Read role catalog"),

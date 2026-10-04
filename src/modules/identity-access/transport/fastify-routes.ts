@@ -1,5 +1,7 @@
 import { recordAuthRejection, AuthRejectionCode } from "./auth-rejection-diagnostics";
 import { ADMINISTRATIVE_CONTAINMENT } from "../application/managementAccess";
+import prisma from "../../../config/prismaClient";
+import { createCompanyInvitation, acceptCompanyInvitation, cancelCompanyInvitation, mutateCompanyOperationalGrant } from "../application/company-delegation";
 import { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
 import { fastifyAuth } from "./fastify-auth";
@@ -309,7 +311,7 @@ const usersFastifyRoutes: FastifyPluginAsync<IdentityAccessRouteOptions> = async
     },
   );
 
-  // No approved durable delegation/revocation capability exists. Deny before parsing or effects.
+  // Legacy arbitrary mutation contracts stay denied; approved profiles use explicit routes.
   const rejectAccessChange = async (_request: unknown, reply: FastifyReply) => {
     reply.header("Cache-Control", "no-store");
     return reply.code(403).send({ error: ADMINISTRATIVE_CONTAINMENT, code: "DELEGATION_POLICY_REQUIRED" });
@@ -317,6 +319,28 @@ const usersFastifyRoutes: FastifyPluginAsync<IdentityAccessRouteOptions> = async
   fastify.post("/roles", { onRequest: rejectAccessChange }, rejectAccessChange);
   fastify.patch("/:id", { onRequest: rejectAccessChange }, rejectAccessChange);
   fastify.delete("/:id", { onRequest: rejectAccessChange }, rejectAccessChange);
+
+  const delegationError = (reply: FastifyReply, error: unknown) => {
+    const e = error as { statusCode?: number; code?: string };
+    const code = typeof e?.code === "string" && /^(DELEGATION_|INVITATION_)[A-Z_]+$/.test(e.code) ? e.code : "DELEGATION_REQUEST_REJECTED";
+    return reply.code([400, 401, 403, 409].includes(e?.statusCode ?? 0) ? e.statusCode! : error instanceof z.ZodError ? 400 : 500).send({ error: code, code });
+  };
+  const privateReply = async (_request: unknown, reply: FastifyReply) => { reply.header("Cache-Control", "no-store"); };
+  fastify.post("/company-invitations", { onRequest: privateReply, preHandler: fastifyAuth({ permission: "membership.invite" }), bodyLimit: 8192 }, async (request, reply) => {
+    try { return await createCompanyInvitation(prisma, request.user!, request.body); } catch (e) { return delegationError(reply, e); }
+  });
+  fastify.post("/company-invitations/cancel", { onRequest: privateReply, preHandler: fastifyAuth({ permission: "membership.invite" }), bodyLimit: 8192 }, async (request, reply) => {
+    try { return await cancelCompanyInvitation(prisma, request.user!, request.body); } catch (e) { return delegationError(reply, e); }
+  });
+  fastify.post("/company-operational-grants", { onRequest: privateReply, preHandler: fastifyAuth({ permission: "membership.delegateOperational" }), bodyLimit: 8192 }, async (request, reply) => {
+    try { return await mutateCompanyOperationalGrant(prisma, request.user!, request.body); } catch (e) { return delegationError(reply, e); }
+  });
+  fastify.post("/company-invitations/accept", { onRequest: privateReply, preHandler: ipLimit("invitation-accept", 10), bodyLimit: 8192 }, async (request, reply) => {
+    const header = request.headers.authorization;
+    const token = header?.startsWith("Bearer ") ? header.slice(7) : undefined;
+    if (header && !token) return reply.code(401).send({ error: "INVITATION_IDENTITY_REQUIRED" });
+    try { return await acceptCompanyInvitation(prisma, request.body, token); } catch (e) { return delegationError(reply, e); }
+  });
 };
 
 export default usersFastifyRoutes;

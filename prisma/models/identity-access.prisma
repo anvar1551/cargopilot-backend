@@ -18,6 +18,7 @@ enum MembershipScopeType {
 }
 
 model Role {
+  operationalGrants CompanyOperationalGrant[]
   onboardingReceipts TenantOnboardingReceipt[]
   id   String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   code String
@@ -70,6 +71,14 @@ model RolePermission {
 }
 
 model CompanyMembership {
+  delegationOwners CompanyDelegationAuthority[] @relation("DelegatorOwner")
+  delegationBridges CompanyDelegationAuthority[] @relation("DelegatorBridge")
+  acceptedInvitations CompanyInvitation[] @relation("InvitationAccepted")
+  operationalOwners CompanyOperationalGrant[] @relation("OperationalGrantOwner")
+  operationalBridges CompanyOperationalGrant[] @relation("OperationalGrantBridge")
+  delegationActions CompanyDelegationAction[] @relation("DelegationActionActor")
+  delegatedTargets CompanyDelegationAction[] @relation("DelegationActionTarget")
+  delegationRecipientTargets CompanyDelegationAction[] @relation("DelegationRecipientTarget")
   onboardingBridges TenantOnboardingReceipt[] @relation("OnboardingBridge")
   onboardingOwners TenantOnboardingReceipt[] @relation("OnboardingOwner")
   custodyActions OrderCustodyAction[] @relation("CustodyActor")
@@ -130,6 +139,8 @@ model CompanyMembership {
 
   status MembershipStatus @default(active)
 
+  authorizationVersion Int @default(1)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -140,6 +151,7 @@ model CompanyMembership {
   cashCustodyOperations CashCustodyOperation[]
 
   @@unique([userId, companyId])
+  @@unique([id, tenantId, companyId], map: "CompanyMembership_delegation_context_key")
   @@unique([id, tenantMembershipId, userId, tenantId], map: "CompanyMembership_session_bridge_key")
   @@unique([id, userId, tenantId, companyId], map: "CompanyMembership_notification_owner_key")
   @@index([companyId, status])
@@ -200,6 +212,7 @@ model MembershipScope {
 }
 
 model User {
+  invitationAcceptances CompanyDelegationAction[]
   onboardingReceipts TenantOnboardingReceipt[]
   id       String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   name     String

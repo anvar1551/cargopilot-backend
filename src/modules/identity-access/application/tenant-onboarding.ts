@@ -9,6 +9,7 @@ import { normalizeTenantOnboardingIntent } from "./tenant-onboarding-intent";
 
 export const ONBOARDING_OPERATOR = "cargopilot-bootstrap-owner";
 export const ONBOARDING_PROFILE = "initial-operational-admin.v1";
+export const ONBOARDING_PROFILE_V2 = "initial-operational-admin.v2";
 export const ONBOARDING_PERMISSIONS = Object.freeze([
   "organizations.read", "customers.read", "customers.write",
   "shipment.view", "shipment.create", "notifications.read",
@@ -25,13 +26,13 @@ export async function prepareOnboardingCredential(password: string) {
   return { initialCredentialHash, credentialCommitment: digest(initialCredentialHash) };
 }
 const registrySchema = z.object({ version: z.literal(1), enabled: z.literal(true),
-  operatorId: z.literal(ONBOARDING_OPERATOR), profileRevision: z.literal(ONBOARDING_PROFILE),
+  operatorId: z.literal(ONBOARDING_OPERATOR), profileRevision: z.enum([ONBOARDING_PROFILE, ONBOARDING_PROFILE_V2]),
   revoked: z.literal(false), keyFingerprint: hex,
   publicKeyPem: z.string().max(4096),
 }).strict();
 const permitSchema = z.object({ version: z.literal(1), operatorId: z.literal(ONBOARDING_OPERATOR),
   keyFingerprint: hex, operationId: z.string().uuid(), intentFingerprint: hex,
-  profileRevision: z.literal(ONBOARDING_PROFILE), issuedAt: z.string().datetime(),
+  profileRevision: z.enum([ONBOARDING_PROFILE, ONBOARDING_PROFILE_V2]), issuedAt: z.string().datetime(),
   expiresAt: z.string().datetime(),
 }).strict();
 
@@ -44,8 +45,8 @@ function denied(code: string): never {
   throw Object.assign(new Error(code), { code });
 }
 
-function authenticatePermit(input: unknown, signature: string, operationId: string,
-  intentFingerprint: string) {
+export function authenticateControlledOperatorPermit(input: unknown, signature: string, operationId: string,
+  intentFingerprint: string, profileRevision: string) {
   try {
     // Deployment-owned path ONLY. Neither request nor tenant roles can select keys.
     const path = process.env.CARGOPILOT_ONBOARDING_REGISTRY_PATH;
@@ -58,7 +59,8 @@ function authenticatePermit(input: unknown, signature: string, operationId: stri
     if (key.asymmetricKeyType !== "ed25519" || fingerprint !== registry.keyFingerprint) return denied("ONBOARDING_REGISTRY_INVALID");
     const permit = permitSchema.parse(input);
     const now = Date.now(), issued = Date.parse(permit.issuedAt), expires = Date.parse(permit.expiresAt);
-    if (permit.keyFingerprint !== fingerprint || permit.operationId !== operationId ||
+    if (registry.profileRevision !== profileRevision || permit.profileRevision !== profileRevision ||
+      permit.keyFingerprint !== fingerprint || permit.operationId !== operationId ||
       permit.intentFingerprint !== intentFingerprint || issued > now + 30000 ||
       expires <= now || expires <= issued || expires - issued > 300000) return denied("ONBOARDING_PERMIT_INVALID");
     if (typeof signature !== "string" || signature.length !== 88) return denied("ONBOARDING_PERMIT_INVALID");
@@ -90,8 +92,12 @@ export async function onboardTenant(db: PrismaClient, args: {
   try { prepared = normalizeTenantOnboardingIntent(args.intent); }
   catch { return denied("ONBOARDING_INTENT_INVALID"); }
   const { intent, fingerprint } = prepared;
-  if (intent.profileRevision !== ONBOARDING_PROFILE) return denied("ONBOARDING_PROFILE_REJECTED");
+  if (![ONBOARDING_PROFILE, ONBOARDING_PROFILE_V2].includes(intent.profileRevision)) return denied("ONBOARDING_PROFILE_REJECTED");
+  const authenticatePermit = (permit: unknown, signature: string, operationId: string, fingerprint: string) =>
+    authenticateControlledOperatorPermit(permit, signature, operationId, fingerprint, intent.profileRevision);
   const authority = authenticatePermit(args.permit, args.signature, intent.operationId, fingerprint);
+  const grantKeys = intent.profileRevision === ONBOARDING_PROFILE_V2
+    ? [...ONBOARDING_PERMISSIONS, "membership.invite", "membership.delegateOperational"] : [...ONBOARDING_PERMISSIONS];
   const hash = args.initialCredentialHash;
   if (hash !== undefined && (typeof hash !== "string" ||
     !/^\$2[ab]\$12\$[./A-Za-z0-9]{53}$/.test(hash) || digest(hash) !== intent.credentialCommitment)) return denied("ONBOARDING_CREDENTIAL_CONFLICT");
@@ -120,8 +126,8 @@ export async function onboardTenant(db: PrismaClient, args: {
       await tx.$queryRaw`SELECT 1 AS locked FROM (SELECT pg_advisory_xact_lock(hashtextextended(${"tenant-onboarding-email:" + intent.administrator.email}, 0))) AS lock`;
       authenticatePermit(args.permit, args.signature, intent.operationId, fingerprint);
       if (await tx.user.findFirst({ where: { email: { equals: intent.administrator.email, mode: "insensitive" } }, select: { id: true } })) return denied("ONBOARDING_IDENTITY_EXISTS");
-      const permissions = await tx.permission.findMany({ where: { key: { in: [...ONBOARDING_PERMISSIONS] } }, select: { id: true, key: true } });
-      if (permissions.length !== ONBOARDING_PERMISSIONS.length) return denied("ONBOARDING_CATALOG_INCOMPLETE");
+      const permissions = await tx.permission.findMany({ where: { key: { in: grantKeys } }, select: { id: true, key: true } });
+      if (permissions.length !== grantKeys.length) return denied("ONBOARDING_CATALOG_INCOMPLETE");
       authenticatePermit(args.permit, args.signature, intent.operationId, fingerprint);
       const tenant = await tx.tenant.create({ data: { code: intent.tenant.code, name: intent.tenant.name, status: "active" }, select: { id: true } });
       const company = await tx.organization.create({ data: { ...intent.company, tenantId: tenant.id, type: "company", isActive: true }, select: { id: true } });
@@ -129,7 +135,7 @@ export async function onboardTenant(db: PrismaClient, args: {
       const tenantMembership = await tx.tenantMembership.create({ data: { tenantId: tenant.id, userId: user.id, status: "active" }, select: { id: true } });
       const membership = await tx.companyMembership.create({ data: { tenantId: tenant.id, tenantMembershipId: tenantMembership.id,
         companyId: company.id, userId: user.id, status: "active" }, select: { id: true } });
-      const role = await tx.role.create({ data: { companyId: company.id, code: ONBOARDING_PROFILE,
+      const role = await tx.role.create({ data: { companyId: company.id, code: intent.profileRevision,
         name: "Initial operational administrator", isSystem: false, isOwnerRole: false }, select: { id: true } });
       await tx.rolePermission.createMany({ data: permissions.map(p => ({ roleId: role.id, permissionId: p.id })) });
       await tx.membershipRole.create({ data: { membershipId: membership.id, roleId: role.id } });
@@ -139,6 +145,10 @@ export async function onboardTenant(db: PrismaClient, args: {
       // This append-only receipt IS the accepted operator audit fact. No secret,
       // password hash, permit signature or external effect is persisted here.
       await tx.$executeRaw`INSERT INTO "TenantOnboardingReceipt" ("operationId", "operatorId", "keyFingerprint", "profileRevision", "intentFingerprint", "reason", "tenantId", "companyId", "userId", "tenantMembershipId", "companyMembershipId", "roleId") VALUES (${intent.operationId}::uuid, ${current.operatorId}, ${current.keyFingerprint}, ${current.profileRevision}, ${fingerprint}, ${intent.reason}, ${result.tenantId}::uuid, ${result.companyId}::uuid, ${result.userId}::uuid, ${result.tenantMembershipId}::uuid, ${result.companyMembershipId}::uuid, ${result.roleId}::uuid)`;
+      if (intent.profileRevision === ONBOARDING_PROFILE_V2) {
+        await tx.$executeRaw`INSERT INTO "CompanyDelegationAuthority" ("membershipId","userId","tenantId","companyId","tenantMembershipId","ceilingRevision") VALUES (${membership.id}::uuid,${user.id}::uuid,${tenant.id}::uuid,${company.id}::uuid,${tenantMembership.id}::uuid,'operational-delegation.v1')`;
+        await tx.$executeRaw`INSERT INTO "CompanyDelegationAction" ("operationId","tenantId","companyId",action,fingerprint,"operatorId","operatorKeyFingerprint","targetMembershipId",reason,result) VALUES (${intent.operationId}::uuid,${tenant.id}::uuid,${company.id}::uuid,'operator-authorize',${fingerprint},${current.operatorId},${current.keyFingerprint},${membership.id}::uuid,${intent.reason},${JSON.stringify(result)}::jsonb)`;
+      }
       return result;
     }, { maxWait: 5000, timeout: 15000 });
   } catch (error) {

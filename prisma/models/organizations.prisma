@@ -21,6 +21,8 @@ enum DriverType {
 }
 
 model Organization {
+  companyInvitations CompanyInvitation[] @relation("InvitationCompany")
+  delegationActions CompanyDelegationAction[] @relation("DelegationActionCompany")
   onboardingReceipts TenantOnboardingReceipt[]
   analyticsOutbox AnalyticsDomainEventOutbox[] @relation("AnalyticsOutboxCompany")
   providerConfigurations IntegrationProviderConfigurationVersion[] @relation("ProviderConfigurationCompany")
