@@ -31,6 +31,8 @@ enum CashCollectionEventType {
 }
 
 model CashCollection {
+  RestrictedCashReceipt_r1 RestrictedCashReceipt[] @relation("RestrictedCashReceipt_r1")
+  RestrictedCashState_r1 RestrictedCashState[] @relation("RestrictedCashState_r1")
   id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
 
   orderId String @db.Uuid
@@ -102,6 +104,9 @@ model CashCollectionEvent {
 
 // New operation receipts are fully owned; legacy cash columns remain compatibility mirrors.
 model CashCustodyOperation {
+  RestrictedCashTransferOffer_r1 RestrictedCashTransferOffer[] @relation("RestrictedCashTransferOffer_r1")
+  RestrictedCashState_r2 RestrictedCashState[] @relation("RestrictedCashState_r2")
+ @@unique([collectionId,eventId,tenantId,companyId,orderId,amount,currency],map:"Cash_operation_basis_key")
   id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
   tenantId String @db.Uuid
   companyId String @db.Uuid

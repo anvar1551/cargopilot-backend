@@ -1,0 +1,85 @@
+model RestrictedCashState {
+ collectionId String @db.Uuid @id
+ orderId String @db.Uuid
+ tenantId String @db.Uuid
+ companyId String @db.Uuid
+ legalEntityId String @db.Uuid
+ kind String
+ amount Decimal @db.Decimal(20,4)
+ currency String
+ holderMembershipId String @db.Uuid
+ holderUserId String @db.Uuid
+ holderWarehouseId String? @db.Uuid
+ eventId String @db.Uuid @unique
+ priceApprovalId String @db.Uuid
+ reference0 Order @relation("RestrictedCashState_r0",fields:[tenantId,orderId,companyId],references:[tenantId,id,ownerOrgId],onDelete:Restrict,onUpdate:Restrict,map:"DOM05_RestrictedCashState_fk0")
+ reference1 CashCollection @relation("RestrictedCashState_r1",fields:[orderId,collectionId],references:[orderId,id],onDelete:Restrict,onUpdate:Restrict,map:"DOM05_RestrictedCashState_fk1")
+ reference2 CashCustodyOperation @relation("RestrictedCashState_r2",fields:[collectionId,eventId,tenantId,companyId,orderId,amount,currency],references:[collectionId,eventId,tenantId,companyId,orderId,amount,currency],onDelete:Restrict,onUpdate:Restrict,map:"DOM05_RestrictedCashState_fk2")
+ reference3 CompanyMembership @relation("RestrictedCashState_r3",fields:[holderMembershipId,holderUserId,tenantId,companyId],references:[id,userId,tenantId,companyId],onDelete:Restrict,onUpdate:Restrict,map:"DOM05_RestrictedCashState_fk3")
+ reference4 Warehouse? @relation("RestrictedCashState_r4",fields:[tenantId,holderWarehouseId],references:[tenantId,id],onDelete:Restrict,onUpdate:Restrict,map:"DOM05_RestrictedCashState_fk4")
+ reference5 FinanceLegalEntity @relation("RestrictedCashState_r5",fields:[legalEntityId,tenantId,companyId],references:[id,tenantId,companyId],onDelete:Restrict,onUpdate:Restrict,map:"DOM05_RestrictedCashState_fk5")
+ reference6 OrderPriceApproval @relation("RestrictedCashState_r6",fields:[priceApprovalId,tenantId,companyId,legalEntityId,orderId],references:[snapshotId,tenantId,companyId,legalEntityId,orderId],onDelete:Restrict,onUpdate:Restrict,map:"DOM05_RestrictedCashState_fk6")
+ RestrictedCashTransferOffer_r0 RestrictedCashTransferOffer[] @relation("RestrictedCashTransferOffer_r0")
+ @@unique([collectionId,tenantId,companyId,legalEntityId,orderId,kind,amount,currency])
+ @@index([tenantId,companyId,holderMembershipId,orderId],map:"RestrictedCashState_context")
+}
+
+model RestrictedCashTransferOffer {
+ id String @db.Uuid @id @default(dbgenerated("public.uuid_generate_v7()"))
+ operationId String
+ tenantId String @db.Uuid
+ companyId String @db.Uuid
+ legalEntityId String @db.Uuid
+ orderId String @db.Uuid
+ collectionId String @db.Uuid
+ kind String
+ amount Decimal @db.Decimal(20,4)
+ currency String
+ expectedEventId String @db.Uuid
+ sourceMembershipId String @db.Uuid
+ sourceUserId String @db.Uuid
+ sourceWarehouseId String? @db.Uuid
+ recipientMembershipId String @db.Uuid
+ recipientUserId String @db.Uuid
+ recipientWarehouseId String? @db.Uuid
+ fingerprint String
+ note String?
+ createdAt DateTime @default(now())
+ reference0 RestrictedCashState @relation("RestrictedCashTransferOffer_r0",fields:[collectionId,tenantId,companyId,legalEntityId,orderId,kind,amount,currency],references:[collectionId,tenantId,companyId,legalEntityId,orderId,kind,amount,currency],onDelete:Restrict,onUpdate:Restrict,map:"DOM05_RestrictedCashTransferOffer_fk0")
+ reference1 CashCustodyOperation @relation("RestrictedCashTransferOffer_r1",fields:[collectionId,expectedEventId],references:[collectionId,eventId],onDelete:Restrict,onUpdate:Restrict,map:"DOM05_RestrictedCashTransferOffer_fk1")
+ reference2 CompanyMembership @relation("RestrictedCashTransferOffer_r2",fields:[sourceMembershipId,sourceUserId,tenantId,companyId],references:[id,userId,tenantId,companyId],onDelete:Restrict,onUpdate:Restrict,map:"DOM05_RestrictedCashTransferOffer_fk2")
+ reference3 CompanyMembership @relation("RestrictedCashTransferOffer_r3",fields:[recipientMembershipId,recipientUserId,tenantId,companyId],references:[id,userId,tenantId,companyId],onDelete:Restrict,onUpdate:Restrict,map:"DOM05_RestrictedCashTransferOffer_fk3")
+ reference4 Warehouse? @relation("RestrictedCashTransferOffer_r4",fields:[tenantId,sourceWarehouseId],references:[tenantId,id],onDelete:Restrict,onUpdate:Restrict,map:"DOM05_RestrictedCashTransferOffer_fk4")
+ reference5 Warehouse? @relation("RestrictedCashTransferOffer_r5",fields:[tenantId,recipientWarehouseId],references:[tenantId,id],onDelete:Restrict,onUpdate:Restrict,map:"DOM05_RestrictedCashTransferOffer_fk5")
+ RestrictedCashReceipt_r4 RestrictedCashReceipt[] @relation("RestrictedCashReceipt_r4")
+ @@unique([collectionId,expectedEventId])
+ @@unique([id,tenantId,companyId])
+ @@unique([tenantId,companyId,operationId])
+ @@index([tenantId,companyId,recipientMembershipId,createdAt],map:"RestrictedCashTransferOffer_context")
+}
+
+model RestrictedCashReceipt {
+ operationId String
+ tenantId String @db.Uuid
+ companyId String @db.Uuid
+ legalEntityId String @db.Uuid
+ orderId String @db.Uuid
+ collectionId String @db.Uuid
+ actorMembershipId String @db.Uuid
+ actorUserId String @db.Uuid
+ capabilityAcceptanceId String @db.Uuid
+ capabilityAction String @default("accept")
+ action String
+ fingerprint String
+ transferOfferId String? @db.Uuid
+ result Json
+ createdAt DateTime @default(now())
+ reference0 Order @relation("RestrictedCashReceipt_r0",fields:[tenantId,orderId,companyId],references:[tenantId,id,ownerOrgId],onDelete:Restrict,onUpdate:Restrict,map:"DOM05_RestrictedCashReceipt_fk0")
+ reference1 CashCollection @relation("RestrictedCashReceipt_r1",fields:[orderId,collectionId],references:[orderId,id],onDelete:Restrict,onUpdate:Restrict,map:"DOM05_RestrictedCashReceipt_fk1")
+ reference2 CompanyMembership @relation("RestrictedCashReceipt_r2",fields:[actorMembershipId,actorUserId,tenantId,companyId],references:[id,userId,tenantId,companyId],onDelete:Restrict,onUpdate:Restrict,map:"DOM05_RestrictedCashReceipt_fk2")
+ reference3 CashCapabilityGrantAction @relation("RestrictedCashReceipt_r3",fields:[capabilityAcceptanceId,actorMembershipId,tenantId,companyId,legalEntityId,capabilityAction],references:[operationId,targetMembershipId,tenantId,companyId,legalEntityId,action],onDelete:Restrict,onUpdate:Restrict,map:"DOM05_RestrictedCashReceipt_fk3")
+ reference4 RestrictedCashTransferOffer? @relation("RestrictedCashReceipt_r4",fields:[transferOfferId,tenantId,companyId],references:[id,tenantId,companyId],onDelete:Restrict,onUpdate:Restrict,map:"DOM05_RestrictedCashReceipt_fk4")
+ reference5 FinanceLegalEntity @relation("RestrictedCashReceipt_r5",fields:[legalEntityId,tenantId,companyId],references:[id,tenantId,companyId],onDelete:Restrict,onUpdate:Restrict,map:"DOM05_RestrictedCashReceipt_fk5")
+ @@id([tenantId,companyId,operationId])
+ @@index([tenantId,companyId,actorMembershipId,createdAt],map:"RestrictedCashReceipt_context")
+}

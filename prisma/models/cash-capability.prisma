@@ -1,0 +1,103 @@
+// DOM-05 compound ownership, immutable journals and independent-checker trigger.
+model CashCapabilityGrantProposal {
+  operationId String @id @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  legalEntityId String @db.Uuid
+  proposerMembershipId String @db.Uuid
+  proposerUserId String @db.Uuid
+  targetMembershipId String @db.Uuid
+  recipientUserId String @db.Uuid
+  warehouseIds String[] @db.Uuid
+  kinds String[]
+  profileRevisions String[]
+  expectedAcceptanceId String? @db.Uuid
+  expectedEnabled Boolean
+  proposerAcceptanceId String @db.Uuid
+  fingerprint String
+  reason String
+  createdAt DateTime @default(now())
+  proposer CompanyMembership @relation("CashCapabilityGrantProposal_proposer", fields: [proposerMembershipId,proposerUserId,tenantId,companyId], references: [id,userId,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  target CompanyMembership @relation("CashCapabilityGrantProposal_target", fields: [targetMembershipId,recipientUserId,tenantId,companyId], references: [id,userId,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  entity FinanceLegalEntity @relation("CashCapabilityGrantProposal_entity", fields: [legalEntityId,tenantId,companyId], references: [id,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  decisions CashCapabilityGrantAction[] @relation("CashCapabilityDecisionProposal")
+  @@unique([operationId,targetMembershipId,tenantId,companyId,legalEntityId])
+  @@index([tenantId,companyId,createdAt], map: "CashCapabilityGrantProposal_context_idx")
+}
+model CashCapabilityGrantAction {
+  RestrictedCashReceipt_r3 RestrictedCashReceipt[] @relation("RestrictedCashReceipt_r3")
+  operationId String @id @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  legalEntityId String @db.Uuid
+  action String
+  fingerprint String
+  targetMembershipId String @db.Uuid
+  actorMembershipId String? @db.Uuid
+  actorUserId String? @db.Uuid
+  operatorKeyFingerprint String?
+  operatorId String?
+  proposalId String? @unique @db.Uuid
+  reason String
+  result Json
+  createdAt DateTime @default(now())
+  target CompanyMembership @relation("CashCapabilityGrantAction_target", fields: [targetMembershipId,tenantId,companyId], references: [id,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  actor CompanyMembership? @relation("CashCapabilityGrantAction_actor", fields: [actorMembershipId,actorUserId,tenantId,companyId], references: [id,userId,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  entity FinanceLegalEntity @relation("CashCapabilityGrantAction_entity", fields: [legalEntityId,tenantId,companyId], references: [id,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  proposal CashCapabilityGrantProposal? @relation("CashCapabilityDecisionProposal", fields: [proposalId,targetMembershipId,tenantId,companyId,legalEntityId], references: [operationId,targetMembershipId,tenantId,companyId,legalEntityId], onDelete: Restrict, onUpdate: Restrict)
+  warehouses CashCapabilityActionWarehouse[]
+  @@unique([operationId,tenantId,companyId])
+  authorities CashCapabilityDelegationAuthority[] @relation("CashCapabilityAuthorityAcceptance")
+  grants CashCapabilityMembershipGrant[] @relation("CashCapabilityGrantAcceptance")
+  @@unique([operationId,targetMembershipId,tenantId,companyId,legalEntityId,action])
+  @@index([tenantId,companyId,createdAt], map: "CashCapabilityGrantAction_context_idx")
+}
+model CashCapabilityDelegationAuthority {
+  membershipId String @db.Uuid
+  userId String @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  legalEntityId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  kind String
+  warehouseIds String[] @db.Uuid
+  kinds String[]
+  profileRevisions String[]
+  acceptedOperationId String @db.Uuid
+  acceptedAction String @default("operator-authorize")
+  enabled Boolean @default(true)
+  member CompanyMembership @relation("CashCapabilityDelegationAuthority_member", fields: [membershipId,userId,tenantId,companyId], references: [id,userId,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  bridge CompanyMembership @relation("CashCapabilityDelegationAuthority_bridge", fields: [membershipId,tenantMembershipId,userId,tenantId], references: [id,tenantMembershipId,userId,tenantId], onDelete: Restrict, onUpdate: Restrict)
+  entity FinanceLegalEntity @relation("CashCapabilityDelegationAuthority_entity", fields: [legalEntityId,tenantId,companyId], references: [id,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  acceptance CashCapabilityGrantAction @relation("CashCapabilityAuthorityAcceptance", fields: [acceptedOperationId,membershipId,tenantId,companyId,legalEntityId,acceptedAction], references: [operationId,targetMembershipId,tenantId,companyId,legalEntityId,action], onDelete: Restrict, onUpdate: Restrict, map: "CashCapabilityDelegationAuthority_acceptance_fkey")
+  @@id([membershipId,kind])
+}
+model CashCapabilityMembershipGrant {
+  membershipId String @db.Uuid
+  userId String @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  legalEntityId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  warehouseIds String[] @db.Uuid
+  kinds String[]
+  profileRevisions String[]
+  acceptedOperationId String @db.Uuid
+  acceptedAction String @default("accept")
+  enabled Boolean @default(true)
+  member CompanyMembership @relation("CashCapabilityMembershipGrant_member", fields: [membershipId,userId,tenantId,companyId], references: [id,userId,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  bridge CompanyMembership @relation("CashCapabilityMembershipGrant_bridge", fields: [membershipId,tenantMembershipId,userId,tenantId], references: [id,tenantMembershipId,userId,tenantId], onDelete: Restrict, onUpdate: Restrict)
+  entity FinanceLegalEntity @relation("CashCapabilityMembershipGrant_entity", fields: [legalEntityId,tenantId,companyId], references: [id,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  acceptance CashCapabilityGrantAction @relation("CashCapabilityGrantAcceptance", fields: [acceptedOperationId,membershipId,tenantId,companyId,legalEntityId,acceptedAction], references: [operationId,targetMembershipId,tenantId,companyId,legalEntityId,action], onDelete: Restrict, onUpdate: Restrict, map: "CashCapabilityMembershipGrant_acceptance_fkey")
+  @@id([membershipId])
+}
+
+model CashCapabilityActionWarehouse {
+ operationId String @db.Uuid
+ tenantId String @db.Uuid
+ companyId String @db.Uuid
+ warehouseId String @db.Uuid
+ source CashCapabilityGrantAction @relation(fields:[operationId,tenantId,companyId],references:[operationId,tenantId,companyId],onDelete:Restrict,onUpdate:Restrict)
+ warehouse Warehouse @relation(fields:[tenantId,warehouseId],references:[tenantId,id],onDelete:Restrict,onUpdate:Restrict)
+ @@id([operationId,warehouseId])
+}

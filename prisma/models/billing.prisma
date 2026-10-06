@@ -119,6 +119,8 @@ model OrderPriceSnapshot {
 }
 
 model OrderPriceApproval {
+  RestrictedCashState_r6 RestrictedCashState[] @relation("RestrictedCashState_r6")
+ @@unique([snapshotId,tenantId,companyId,legalEntityId,orderId],map:"Price_cash_owner_key")
   policyVersionId String @db.Uuid
   issuedInvoices Invoice[] @relation("InvoiceAcceptedPrice")
 

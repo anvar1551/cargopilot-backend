@@ -15,6 +15,13 @@ function permission(
 }
 
 export const SYSTEM_PERMISSIONS: SeedPermission[] = [
+  permission("cash.custody.read", "cash", "read", "Read accepted restricted cash custody"),
+  permission("cash.collect", "cash", "collect", "Collect accepted assigned cash obligation"),
+  permission("cash.handoff", "cash", "handoff", "Offer and accept restricted cash transfer"),
+  permission("cash.settle", "cash", "settle", "Independently settle warehouse cash"),
+  permission("membership.proposeCashCapability", "memberships", "propose", "Propose accepted cash supplements"),
+  permission("membership.approveCashCapability", "memberships", "approve", "Independently accept cash supplements"),
+
   ...["pickup-offer","intake","dispatch","transport-accept","receive","last-mile-offer","last-mile-accept","deliver"].map(action =>
     permission(`shipment.custody.${action}`, "orders", "update", `Explicit warehouse custody ${action}`)),
   permission("shipment.view", "orders", "read", "View shipments"),

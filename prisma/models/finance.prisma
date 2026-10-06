@@ -147,11 +147,17 @@ enum FinanceBankReconciliationTargetType {
 }
 
 model FinanceLegalEntity {
+  RestrictedCashReceipt_r5 RestrictedCashReceipt[] @relation("RestrictedCashReceipt_r5")
+  RestrictedCashState_r5 RestrictedCashState[] @relation("RestrictedCashState_r5")
   initialSetupActions IssuingEntitySetupAction[]
   FinancialGrantProposal_entity FinancialGrantProposal[] @relation("FinancialGrantProposal_entity")
+  CashCapabilityGrantProposal_entity CashCapabilityGrantProposal[] @relation("CashCapabilityGrantProposal_entity")
   FinancialGrantAction_entity FinancialGrantAction[] @relation("FinancialGrantAction_entity")
+  CashCapabilityGrantAction_entity CashCapabilityGrantAction[] @relation("CashCapabilityGrantAction_entity")
   FinancialDelegationAuthority_entity FinancialDelegationAuthority[] @relation("FinancialDelegationAuthority_entity")
+  CashCapabilityDelegationAuthority_entity CashCapabilityDelegationAuthority[] @relation("CashCapabilityDelegationAuthority_entity")
   FinancialMembershipGrant_entity FinancialMembershipGrant[] @relation("FinancialMembershipGrant_entity")
+  CashCapabilityMembershipGrant_entity CashCapabilityMembershipGrant[] @relation("CashCapabilityMembershipGrant_entity")
   InvoiceIssuanceReceipt_entity InvoiceIssuanceReceipt[] @relation("InvoiceIssuanceReceipt_entity")
   OrderBillTo_entity OrderBillTo[] @relation("OrderBillTo_entity")
   OrderPriceSnapshot_entity OrderPriceSnapshot[] @relation("OrderPriceSnapshot_entity")

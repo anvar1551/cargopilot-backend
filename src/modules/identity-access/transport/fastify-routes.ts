@@ -1,3 +1,4 @@
+import { proposeCashCapabilityGrant, acceptCashCapabilityGrant, revokeCashCapabilityGrant } from "../application/cash-capability-delegation";
 import { createCompanyDriverInvitation, acceptCompanyDriverInvitation, cancelCompanyDriverInvitation, mutateCompanyDriverEligibility } from "../application/driver-delegation";
 import { proposeFinancialGrant, acceptFinancialGrant, revokeFinancialGrant } from "../application/financial-delegation";
 import { proposeIssuingEntity, decideIssuingEntity, readIssuingEntityProposal } from "../application/issuing-entity-setup";
@@ -337,6 +338,15 @@ const usersFastifyRoutes: FastifyPluginAsync<IdentityAccessRouteOptions> = async
   });
   fastify.post("/issuing-entity-setup/decisions", { onRequest: privateReply, preHandler: fastifyAuth({permission:"finance.entitySetup.approve"}), bodyLimit:4096 },async(request,reply)=>{
     try{return reply.code(201).send(await decideIssuingEntity(prisma,request.user!,request.body));}catch(e){return delegationError(reply,e);}
+  });
+  fastify.post("/company-cash-capabilities/proposals",{onRequest:privateReply,preHandler:fastifyAuth({permission:"membership.proposeCashCapability"}),bodyLimit:8192},async(req,reply)=>{
+    try{return reply.code(201).send(await proposeCashCapabilityGrant(prisma,req.user!,req.body));}catch(e){return delegationError(reply,e);}
+  });
+  fastify.post("/company-cash-capabilities/accept",{onRequest:privateReply,preHandler:fastifyAuth({permission:"membership.approveCashCapability"}),bodyLimit:8192},async(req,reply)=>{
+    try{return reply.code(201).send(await acceptCashCapabilityGrant(prisma,req.user!,req.body));}catch(e){return delegationError(reply,e);}
+  });
+  fastify.post("/company-cash-capabilities/revoke",{onRequest:privateReply,preHandler:fastifyAuth(),bodyLimit:8192},async(req,reply)=>{
+    try{return reply.send(await revokeCashCapabilityGrant(prisma,req.user!,req.body));}catch(e){return delegationError(reply,e);}
   });
   fastify.post("/company-financial-grants/proposals", { onRequest: privateReply, preHandler: fastifyAuth({permission:"membership.proposeFinancial"}), bodyLimit:8192 },async(request,reply)=>{
     try{return reply.code(201).send(await proposeFinancialGrant(prisma,request.user!,request.body));}catch(e){return delegationError(reply,e);}

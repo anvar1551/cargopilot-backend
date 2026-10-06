@@ -90,6 +90,10 @@ model Organization {
 }
 
 model Warehouse {
+  RestrictedCashTransferOffer_r5 RestrictedCashTransferOffer[] @relation("RestrictedCashTransferOffer_r5")
+  RestrictedCashTransferOffer_r4 RestrictedCashTransferOffer[] @relation("RestrictedCashTransferOffer_r4")
+  RestrictedCashState_r4 RestrictedCashState[] @relation("RestrictedCashState_r4")
+ cashCapabilityReferences CashCapabilityActionWarehouse[]
  provisioningActions WarehouseProvisioningAction[]
   custodyActions OrderCustodyAction[] @relation("CustodyWarehouse")
   custodyDestinations OrderCustodyAction[] @relation("CustodyDestination")
