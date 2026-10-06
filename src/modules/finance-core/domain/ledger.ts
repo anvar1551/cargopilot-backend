@@ -1,7 +1,8 @@
 import Decimal from "decimal.js";
 import { financeBadRequest } from "./finance.errors";
 
-export const FINANCE_CURRENCIES = ["UZS", "USD", "CNY"] as const;
+import { SUPPORTED_FINANCE_CURRENCIES } from "./supported-currencies";
+export const FINANCE_CURRENCIES = SUPPORTED_FINANCE_CURRENCIES;
 export type FinanceCurrency = (typeof FINANCE_CURRENCIES)[number];
 
 export type JournalLineInput = {

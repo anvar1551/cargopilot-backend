@@ -3,6 +3,11 @@ jest.mock("../../src/config/prismaClient", () => ({ __esModule: true, default: n
     }) }));
 jest.mock("../../src/config/redis", () => ({ getRedisClient: async () => null, getRedisPrefix: () => "synthetic",
     withRedisTimeout: (_name: any, work: any) => work() }));
+// DOM-04 exercises normal order creation; label storage/queue transport is outside
+// this setup acceptance journey, not evidence of label/provider execution.
+jest.mock("../../src/modules/orders-core/label",()=>({resolveOrderLabelMode:()=>"queue",isOrderLabelAutoFallbackEnabled:()=>false,
+ enqueueOrderLabelJob:jest.fn(async()=>({})),generateAndAttachParcelLabelsForOrder:jest.fn(async()=>{}),
+ runOrderLabelAutoFallback:jest.fn(),scheduleOrderLabelAutoFallback:jest.fn()}));
 import { Prisma, PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
@@ -49,6 +54,7 @@ function request(input = intent()) {
     return { intent: input, permit, signature: sign(null, Buffer.from(canonicalOnboardingPermit(permit)), keys.privateKey).toString("base64"), initialCredentialHash: credentialHash };
 }
 const tables = ["Order", "OrderBillTo", "BillingPolicyVersion", "BillingPolicyDecision", "OrderPriceSnapshot", "OrderPriceApproval", "Invoice", "InvoiceIssuanceReceipt", "BillingInvoiceOutbox", "FinanceAuditEvent", "FinanceDomainEventOutbox", "FinanceJournalEntry", "FinancialDelegationAuthority", "FinancialGrantProposal", "FinancialMembershipGrant", "FinancialGrantAction", "FinanceLegalEntity", "TariffPlan", "TariffRate", "TariffConfigurationVersion", "TariffPublicationDecision", "Tenant", "Organization", "User", "TenantMembership", "CompanyMembership", "Role", "RolePermission", "MembershipRole", "MembershipScope", "TenantOnboardingReceipt", "CompanyDelegationAuthority", "CompanyInvitation", "CompanyOperationalGrant", "CompanyDelegationAction", "UserRefreshSession", "CredentialSecurityEvent"];
+tables.push("IssuingEntitySetupAuthority","IssuingEntitySetupProposal","IssuingEntitySetupAction","OrderCreationIntent","OrderCreationReceipt","Parcel","Tracking","PricingComponent","OrderLabelJob","IntegrationOutbox","SupportTicket","Address","CustomerEntity");
 async function counts() { const result: Record<string, number> = {}; for (const table of tables)
     result[table] = Number((await pool.query(`SELECT count(*) AS count FROM "${table}"`)).rows[0].count); return result; }
 beforeAll(async () => {
@@ -101,6 +107,9 @@ import { requireLegalEntityContext } from "../../src/modules/finance-core/applic
 import { syntheticDriverOwner } from "./driver-provisioning.fixture";
 import { authorizeCompanyDriverDelegator,createCompanyDriverInvitation,acceptCompanyDriverInvitation } from "../../src/modules/identity-access/application/driver-delegation";
 import { requireAcceptedDriver } from "../../src/modules/identity-access/application/driver-eligibility";
+import { authorizeIssuingEntitySetup,normalizeIssuingEntityAuthorityIntent,proposeIssuingEntity,decideIssuingEntity,readIssuingEntityProposal } from "../../src/modules/identity-access/application/issuing-entity-setup";
+import { createAddress } from "../../src/modules/addresses-core/application/addressRepo";
+import { createOrderForActor } from "../../src/modules/orders-core/write/create-order";
 const WebSocket = require("ws");
 type Peer = {
     child: ChildProcess;
@@ -579,4 +588,203 @@ it('financial lock grant-revoke-first permits exact successor logout as a no-op 
   expect(await original.userRefreshSession.count({where:{companyMembershipId:f.g.target.accepted.companyMembershipId,revokedAt:null}})).toBe(0);
   const before=await graphDigest();await revokeRefreshSession(login.refreshToken);expect(await graphDigest()).toBe(before);
  }finally{release.release();await revoke;await logout;mockDb=original;}
+});
+
+// DOM-04: no direct entity seed in any setup fixture or connected journey.
+const setupConfiguration={baseCurrency:'UZS',fiscalYearStartMonth:4,timezone:'Asia/Tashkent',reportingCurrency:null};
+async function setupOwner(membershipId:string,kind='proposer',action='operator-authorize',expectedAcceptanceId:string|null=null){
+ writeFileSync(registryPath,JSON.stringify({...registry,profileRevision:'issuing-entity-setup.v1'}));
+ const selected=await mockDb.companyMembership.findUniqueOrThrow({where:{id:membershipId},select:{userId:true,tenantId:true,companyId:true,tenantMembershipId:true}});
+ const {intent,fingerprint}=normalizeIssuingEntityAuthorityIntent({operationId:randomUUID(),membershipId,...selected,kind,action,expectedAcceptanceId,profileRevision:'issuing-entity-setup.v1',reason:'Explicit synthetic setup authority'});
+ const now=Date.now(),permit={version:1,operatorId:ONBOARDING_OPERATOR,keyFingerprint,operationId:intent.operationId,intentFingerprint:fingerprint,profileRevision:'issuing-entity-setup.v1',issuedAt:new Date(now).toISOString(),expiresAt:new Date(now+240000).toISOString()};
+ return {intent,permit,signature:sign(null,Buffer.from(canonicalOnboardingPermit(permit)),keys.privateKey).toString('base64')};
+}
+async function setupGroup(){
+ const a=await admin(),checker=await staff(a);
+ const makerOwner=await setupOwner(a.companyMembershipId),checkOwner=await setupOwner(checker.accepted.companyMembershipId,'checker');
+ await authorizeIssuingEntitySetup(mockDb,makerOwner);await authorizeIssuingEntitySetup(mockDb,checkOwner);
+ expect(await mockDb.financeLegalEntity.count({where:{companyId:a.companyId}})).toBe(0);
+ const input={operationId:randomUUID(),configuration:setupConfiguration,reason:'Reviewed explicit synthetic initial configuration'};
+ const p=await proposeIssuingEntity(mockDb,a.actor,input);
+ const decision={operationId:randomUUID(),proposalId:p.proposalId,contentHash:p.contentHash,decision:'approved',reason:'Independent synthetic configuration review'};
+ return {a,checker,makerOwner,checkOwner,input,p,decision};
+}
+it('DOM-04 connected onboarding and appointed setup -> independent entity -> financial actors -> approved pricing/payer/price -> manual invoice',async()=>{
+ const s=await setupGroup();expect(await proposeIssuingEntity(mockDb,s.a.actor,s.input)).toEqual(s.p);
+ const publication=await decideIssuingEntity(mockDb,s.checker.actor,s.decision);expect(await decideIssuingEntity(mockDb,s.checker.actor,s.decision)).toEqual(publication);
+ const entity=await mockDb.financeLegalEntity.findUniqueOrThrow({where:{companyId:s.a.companyId}});
+ expect(entity).toMatchObject({...setupConfiguration,tenantId:s.a.tenantId,createdByUserId:s.a.userId,updatedByUserId:s.checker.actor.id});
+ expect((await mockDb.organization.findUniqueOrThrow({where:{id:entity.companyId}})).name).toBe('Synthetic company');
+ // Only prerequisite identity enrollment, not an entity/configuration seed.
+ const target=await staff(s.a),pricingChecker=await staff(s.a);
+ await authorizeFinancialDelegator(mockDb,financialOwner(s.a.companyMembershipId,entity.id,'proposer'));
+ await authorizeFinancialDelegator(mockDb,financialOwner(s.checker.accepted.companyMembershipId,entity.id,'checker'));
+ const g={a:s.a,checker:s.checker,target,legalEntity:entity};await accept(g);await accept({...g,target:pricingChecker});
+ const plan=await createTariffPlan(target.actor,tariffInput()),draft=await mockDb.tariffPlan.findUniqueOrThrow({where:{id:plan!.id}});
+ const version=await proposeTariffVersion({user:target.actor,planId:plan!.id,expectedGeneration:draft.contentGeneration,operationId:randomUUID(),reason:'Synthetic approved tariff'});
+ await decideTariffVersion({user:pricingChecker.actor,planId:plan!.id,versionId:version.id,contentSha256:version.contentSha256,operationId:randomUUID(),decision:'approved',reason:'Independent tariff'});
+ const policy=await proposeBillingPolicy(target.actor,{operationId:randomUUID(),reason:'Explicit synthetic billing choices',content:syntheticBillingPolicy()});
+ await decideBillingPolicy(pricingChecker.actor,{versionId:policy.id,contentHash:policy.contentHash,operationId:randomUUID(),decision:'approved',reason:'Independent policy'});
+ const customer=await createCustomerEntity(target.actor,{type:'PERSON',name:'Synthetic DOM-04 payer'});
+ const addresses=await Promise.all(['Synthetic A','Synthetic B'].map(city=>createAddress(target.actor,{customerEntityId:customer.id,country:'ZZ',city,street:'Synthetic street'})));
+ const body={operationId:randomUUID(),customerEntityId:customer.id,sender:{name:'Synthetic sender'},receiver:{name:'Synthetic recipient'},
+ addresses:{pickupAddress:'Synthetic A',dropoffAddress:'Synthetic B',senderAddressId:addresses[0].id,receiverAddressId:addresses[1].id},
+ shipment:{serviceType:'DOOR_TO_DOOR',currency:'UZS',weightKg:2},payment:{paymentType:'OTHER',deliveryChargePaidBy:'COMPANY'}};
+ process.env.ORDER_LABEL_BLOCKING='true';
+ const made=await createOrderForActor({user:target.actor,body}),o=made.payload.order;
+ expect(made.payload.warning).toBeNull();expect((await createOrderForActor({user:target.actor,body})).payload.order.id).toBe(o.id);
+ const boundIntent={orderId:o.id,operationId:randomUUID(),payerCustomerEntityId:customer.id,evidence:'Explicit synthetic bill-to instruction',reason:'Synthetic payer'};
+ const bound=await bindOrderBillTo(target.actor,boundIntent);expect(await bindOrderBillTo(target.actor,boundIntent)).toEqual(bound);
+ const priceIntent={orderId:o.id,operationId:randomUUID(),reason:'Synthetic standard price'},price=await acceptOrderPrice(target.actor,priceIntent);
+ expect(await acceptOrderPrice(target.actor,priceIntent)).toEqual(price);expect(price).toMatchObject({state:'accepted',currency:'UZS',total:'110.0100'});
+ const invoiceIntent={user:target.actor,orderId:o.id,operationId:randomUUID(),priceApprovalId:price.id,reason:'Synthetic same-currency manual invoice'};
+ const invoice=await issueOrderInvoiceForActor(invoiceIntent);expect(await issueOrderInvoiceForActor(invoiceIntent)).toEqual(invoice);
+ expect(invoice).toMatchObject({currency:'UZS',amount:'110.0100'});expect(await mockDb.financeLegalEntity.count({where:{companyId:s.a.companyId}})).toBe(1);
+ expect(await mockDb.invoice.count({where:{orderId:o.id}})).toBe(1);expect(await mockDb.billingInvoiceOutbox.count({where:{invoiceId:invoice.id,state:'held_no_accounting_authority'}})).toBe(1);
+ expect(await mockDb.financeJournalEntry.count()).toBe(0);expect(await mockDb.financeDomainEventOutbox.count({where:{legalEntityId:entity.id}})).toBe(0);
+ expect(await mockDb.orderCreationIntent.count({where:{operationId:body.operationId}})).toBe(1);
+});
+it('DOM-04 owner authority retries/conflicts and revocation preserve unrelated grants and selected versions',async()=>{
+ const s=await setupGroup(),before=await graphDigest();expect(await authorizeIssuingEntitySetup(mockDb,s.makerOwner)).toMatchObject({acceptanceId:s.makerOwner.intent.operationId});expect(await graphDigest()).toBe(before);
+ const changed={...s.makerOwner,intent:{...s.makerOwner.intent,kind:'checker'}};await unchanged(()=>authorizeIssuingEntitySetup(mockDb,changed));
+ const roleBefore=await mockDb.membershipRole.findMany({where:{membershipId:s.a.companyMembershipId}});
+ const revoke=await setupOwner(s.a.companyMembershipId,'proposer','operator-revoke',s.makerOwner.intent.operationId);
+ await authorizeIssuingEntitySetup(mockDb,revoke);await unchanged(()=>proposeIssuingEntity(mockDb,s.a.actor,s.input));await unchanged(()=>decideIssuingEntity(mockDb,s.checker.actor,s.decision));
+ const removed=await mockDb.role.findFirstOrThrow({where:{companyId:s.a.companyId,code:'issuing-entity-setup-proposer.v1'}});
+ expect(await mockDb.membershipRole.findMany({where:{membershipId:s.a.companyMembershipId}})).toEqual(roleBefore.filter(r=>r.roleId!==removed.id));
+ expect(await mockDb.userRefreshSession.count({where:{companyMembershipId:s.a.companyMembershipId,revokedAt:null}})).toBe(0);
+});
+it('DOM-04 self approval, foreign context and caller ownership reject with unchanged graph',async()=>{
+ const s=await setupGroup();await authorizeIssuingEntitySetup(mockDb,await setupOwner(s.a.companyMembershipId,'checker'));
+ await unchanged(()=>decideIssuingEntity(mockDb,s.a.actor,s.decision));
+ const foreign=await setupGroup();await unchanged(()=>decideIssuingEntity(mockDb,foreign.checker.actor,s.decision));
+ await unchanged(()=>readIssuingEntityProposal(mockDb,foreign.checker.actor,s.p.proposalId));
+ await unchanged(()=>proposeIssuingEntity(mockDb,s.a.actor,{...s.input,tenantId:foreign.a.tenantId}));
+ await unchanged(()=>decideIssuingEntity(mockDb,{...s.checker.actor,companyMembershipId:s.a.companyMembershipId},s.decision));
+});
+it('DOM-04 concurrent matching approval and lost acknowledgement yield one original entity/action/audit',async()=>{
+ const s=await setupGroup();const results=await Promise.all([decideIssuingEntity(mockDb,s.checker.actor,s.decision),decideIssuingEntity(mockDb,s.checker.actor,s.decision)]);
+ expect(results[0]).toEqual(results[1]);expect(await decideIssuingEntity(mockDb,s.checker.actor,s.decision)).toEqual(results[0]);
+ expect(await pool.query('SELECT count(*)::integer n FROM "IssuingEntitySetupAction" WHERE "proposalId"=$1',[s.p.proposalId]).then(r=>r.rows[0].n)).toBe(1);
+ expect(await mockDb.financeAuditEvent.count({where:{legalEntityId:results[0].legalEntityId,action:'finance.entity.initial-approved'}})).toBe(1);
+ await unchanged(()=>decideIssuingEntity(mockDb,s.checker.actor,{...s.decision,reason:'Conflicting approved intent'}));
+ await unchanged(()=>proposeIssuingEntity(mockDb,s.a.actor,{...s.input,configuration:{...setupConfiguration,baseCurrency:'USD'}}));
+});
+it('DOM-04 competing initial proposals publish only one entity and never overwrite settings',async()=>{
+ const s=await setupGroup(),second=await proposeIssuingEntity(mockDb,s.a.actor,{...s.input,operationId:randomUUID(),configuration:{...setupConfiguration,baseCurrency:'USD'}});
+ const outcome=await Promise.allSettled([decideIssuingEntity(mockDb,s.checker.actor,s.decision),decideIssuingEntity(mockDb,s.checker.actor,{...s.decision,operationId:randomUUID(),proposalId:second.proposalId,contentHash:second.contentHash})]);
+ expect(outcome.filter(r=>r.status==='fulfilled')).toHaveLength(1);expect(outcome.filter(r=>r.status==='rejected')).toHaveLength(1);expect(await mockDb.financeLegalEntity.count({where:{companyId:s.a.companyId}})).toBe(1);
+ await unchanged(()=>proposeIssuingEntity(mockDb,s.a.actor,{...s.input,operationId:randomUUID()}));
+});
+it('DOM-04 publication audit failure rolls back new entity, acceptance and all business graph',async()=>{
+ const s=await setupGroup(),before=await graphDigest();
+ const failing=new Proxy(mockDb,{get(base,name){if(name==='$transaction')return (work:any,options:any)=>base.$transaction(tx=>work(new Proxy(tx,{get(t,k){if(k==='financeAuditEvent')return new Proxy(t.financeAuditEvent,{get(a,b){if(b==='create')return async()=>{throw Error('Injected audit failure');};return (a as any)[b];}});const value=(t as any)[k];return typeof value==='function'?value.bind(t):value;}})),options);const v=(base as any)[name];return typeof v==='function'?v.bind(base):v;}}) as PrismaClient;
+ await expect(decideIssuingEntity(failing,s.checker.actor,s.decision)).rejects.toThrow('Injected audit failure');expect(await graphDigest()).toBe(before);
+ expect((await decideIssuingEntity(mockDb,s.checker.actor,s.decision)).decision).toBe('approved');
+});
+it('DOM-04 append-only proposals/actions and published configuration reject mutation without graph effects',async()=>{
+ const s=await setupGroup(),publication=await decideIssuingEntity(mockDb,s.checker.actor,s.decision);
+ for(const table of ['IssuingEntitySetupProposal','IssuingEntitySetupAction'])for(const sql of [`UPDATE "${table}" SET reason='overwrite'`,`DELETE FROM "${table}"`,`TRUNCATE "${table}" CASCADE`])await unchanged(()=>pool.query(sql));
+ await unchanged(()=>mockDb.financeLegalEntity.update({where:{id:publication.legalEntityId!},data:{baseCurrency:'USD'}}));
+ await unchanged(()=>mockDb.financeLegalEntity.update({where:{id:publication.legalEntityId!},data:{isActive:false}}));
+ expect(await decideIssuingEntity(mockDb,s.checker.actor,s.decision)).toEqual(publication);
+});
+it('DOM-04 revoked checker denies confirmed receipt and publication remains intact',async()=>{
+ const s=await setupGroup(),publication=await decideIssuingEntity(mockDb,s.checker.actor,s.decision);
+ await authorizeIssuingEntitySetup(mockDb,await setupOwner(s.checker.accepted.companyMembershipId,'checker','operator-revoke',s.checkOwner.intent.operationId));
+ await unchanged(()=>decideIssuingEntity(mockDb,s.checker.actor,s.decision));
+ expect(await mockDb.financeLegalEntity.findUnique({where:{id:publication.legalEntityId!}})).toMatchObject({isActive:true,baseCurrency:'UZS'});
+});
+it('DOM-04 admitted approval finishes before waiting owner revocation; future retries deny',async()=>{
+ const s=await setupGroup(),held=lockSignal(),release=lockSignal();let businessPid=0,ownerPid=0;
+ const businessDb=lockDb(mockDb,async(sql,info)=>{businessPid=info.pid;if(sql.includes('FOR SHARE OF a')){held.release();await release.promise;}});
+ const ownerDb=lockDb(mockDb,async(_sql,info)=>{ownerPid=info.pid;});
+ const revocation=await setupOwner(s.a.companyMembershipId,'proposer','operator-revoke',s.makerOwner.intent.operationId);
+ const business=decideIssuingEntity(businessDb,s.checker.actor,s.decision).then(value=>({value}),error=>({error}));let revoke:Promise<any>|undefined;
+ try{await setupBarrier(held.promise);revoke=authorizeIssuingEntitySetup(ownerDb,revocation).then(value=>({value}),error=>({error}));await lockWaitFor(()=>lockBlocked(ownerPid,businessPid));release.release();
+ const [b,r]=await Promise.all([business,revoke]);expect(b).toHaveProperty('value.legalEntityId');expect(r).toHaveProperty('value.action','operator-revoke');await unchanged(()=>decideIssuingEntity(mockDb,s.checker.actor,s.decision));
+ }finally{release.release();await business;await revoke;}
+});
+it('DOM-04 owner-revoke-first rejects waiting approval without partial publication',async()=>{
+ const s=await setupGroup(),held=lockSignal(),release=lockSignal();let businessPid=0,ownerPid=0;
+ const ownerDb=lockDb(mockDb,async(sql,info)=>{ownerPid=info.pid;if(sql.includes('pg_advisory_xact_lock')){held.release();await release.promise;}});
+ const businessDb=lockDb(mockDb,async(_sql,info)=>{businessPid=info.pid;});const request=await setupOwner(s.a.companyMembershipId,'proposer','operator-revoke',s.makerOwner.intent.operationId);
+ const revoke=authorizeIssuingEntitySetup(ownerDb,request).then(value=>({value}),error=>({error}));let business:Promise<any>|undefined;
+ try{await setupBarrier(held.promise);const before=await mockDb.financeLegalEntity.count();business=decideIssuingEntity(businessDb,s.checker.actor,s.decision).then(value=>({value}),error=>({error}));await lockWaitFor(()=>lockBlocked(businessPid,ownerPid));release.release();
+ const [r,b]=await Promise.all([revoke,business]);expect(r).toHaveProperty('value.action','operator-revoke');expect(b).toHaveProperty('error');expect(await mockDb.financeLegalEntity.count()).toBe(before);await unchanged(()=>decideIssuingEntity(mockDb,s.checker.actor,s.decision));
+ }finally{release.release();await revoke;await business;}
+});
+it('DOM-04 actual HTTP proposal/read/decision use live selected sessions; revocation invalidates both HTTP and existing sockets',async()=>withSocketPeers(async(peers,wires)=>{
+ const s=await setupGroup(),makerLogin=await loginUser({email:(await mockDb.user.findUniqueOrThrow({where:{id:s.a.userId}})).email,password}),checkerLogin=await loginUser({email:s.checker.input.email,password:s.checker.pass});
+ const app=Fastify();await app.register(authRoutes,{prefix:'/users'});
+ try{const headers={authorization:'Bearer '+makerLogin.token};
+ expect((await app.inject({method:'POST',url:'/users/issuing-entity-setup/proposals',headers,payload:s.input})).statusCode).toBe(201);
+ const response=await app.inject({url:'/users/issuing-entity-setup/proposals/'+s.p.proposalId,headers:{authorization:'Bearer '+checkerLogin.token}});expect(response.statusCode).toBe(200);expect(Object.keys(response.json()).sort()).toEqual(['configuration','contentHash','createdAt','decision','proposalId','reason'].sort());
+ expect((await app.inject({method:'POST',url:'/users/issuing-entity-setup/decisions',headers:{authorization:'Bearer '+checkerLogin.token},payload:s.decision})).statusCode).toBe(201);
+ for(const peer of peers)wires.push(await connectWire(peer,makerLogin.token));
+ await authorizeIssuingEntitySetup(mockDb,await setupOwner(s.a.companyMembershipId,'proposer','operator-revoke',s.makerOwner.intent.operationId));
+ expect((await app.inject({url:'/users/issuing-entity-setup/proposals/'+s.p.proposalId,headers})).statusCode).toBe(401);await Promise.all(wires.map(w=>awaitClosed(w)));
+ }finally{await app.close();}
+}));
+it('DOM-04 missing authority, changed acceptance, legacy entity and compound bridge defects remain contained',async()=>{
+ const s=await setupGroup(),unappointed=await staff(s.a);
+ await unchanged(()=>proposeIssuingEntity(mockDb,unappointed.actor,s.input));
+ const original=await pool.query('SELECT * FROM "IssuingEntitySetupAuthority" WHERE "membershipId"=$1 AND kind=$2',[s.a.companyMembershipId,'proposer']);
+ await unchanged(()=>pool.query('UPDATE "IssuingEntitySetupAuthority" SET "userId"=$1 WHERE "membershipId"=$2 AND kind=$3',[s.checker.actor.id,s.a.companyMembershipId,'proposer']));
+ expect((await pool.query('SELECT * FROM "IssuingEntitySetupAuthority" WHERE "membershipId"=$1 AND kind=$2',[s.a.companyMembershipId,'proposer'])).rows).toEqual(original.rows);
+ // Re-appointment invalidates proposals tied to the previous authority acceptance.
+ await authorizeIssuingEntitySetup(mockDb,await setupOwner(s.a.companyMembershipId,'proposer','operator-authorize',s.makerOwner.intent.operationId));
+ await unchanged(()=>decideIssuingEntity(mockDb,s.checker.actor,s.decision));
+ // Deliberately legacy/null ownership negative fixture only, never the connected journey.
+ await mockDb.financeLegalEntity.create({data:{companyId:s.a.companyId,baseCurrency:'UZS',createdByUserId:s.a.userId,updatedByUserId:s.a.userId}});
+ await unchanged(()=>proposeIssuingEntity(mockDb,s.a.actor,{...s.input,operationId:randomUUID()}));
+});
+
+it('DOM-04 owner can remove suspended setup authority without reactivation or changing another company',async()=>{
+ const s=await setupGroup(),foreign=await admin();
+ // Existing identity receives only a synthetic unrelated membership fixture.
+ const tm=await mockDb.tenantMembership.create({data:{tenantId:foreign.tenantId,userId:s.a.userId,status:'active'}});
+ const cm=await mockDb.companyMembership.create({data:{userId:s.a.userId,tenantId:foreign.tenantId,tenantMembershipId:tm.id,companyId:foreign.companyId,status:'active'}});
+ const before=await mockDb.companyMembership.findUniqueOrThrow({where:{id:cm.id}});
+ await mockDb.companyMembership.update({where:{id:s.a.companyMembershipId},data:{status:'suspended'}});
+ await unchanged(()=>decideIssuingEntity(mockDb,s.checker.actor,s.decision));
+ await authorizeIssuingEntitySetup(mockDb,await setupOwner(s.a.companyMembershipId,'proposer','operator-revoke',s.makerOwner.intent.operationId));
+ expect(await mockDb.companyMembership.findUnique({where:{id:s.a.companyMembershipId}})).toMatchObject({status:'suspended'});
+ expect(await mockDb.companyMembership.findUniqueOrThrow({where:{id:cm.id}})).toEqual(before);
+});
+it('DOM-04 schema compound references and database independent approval agree with declared ownership',async()=>{
+ const s=await setupGroup(),published=await decideIssuingEntity(mockDb,s.checker.actor,s.decision);
+ const definitions=(await pool.query(`SELECT c.conrelid::regclass::text AS table_name,pg_get_constraintdef(c.oid) AS definition FROM pg_constraint c WHERE c.conrelid IN ('"IssuingEntitySetupAuthority"'::regclass,'"IssuingEntitySetupProposal"'::regclass,'"IssuingEntitySetupAction"'::regclass)`)).rows;
+ for(const table of ['IssuingEntitySetupAuthority','IssuingEntitySetupProposal','IssuingEntitySetupAction']){
+  const found=definitions.filter(d=>d.table_name==='"'+table+'"').map(d=>d.definition);
+  expect(found.some(d=>d.includes('FOREIGN KEY ("membershipId", "userId", "tenantId", "companyId")'))).toBe(true);
+  expect(found.some(d=>d.includes('FOREIGN KEY ("membershipId", "tenantMembershipId", "userId", "tenantId")'))).toBe(true);
+ }
+ await unchanged(()=>pool.query(`INSERT INTO "IssuingEntitySetupAction" ("operationId","tenantId","companyId","membershipId","userId","tenantMembershipId",kind,action,fingerprint,reason,result,"proposalId","legalEntityId") SELECT $1,"tenantId","companyId",$2,$3,$4,kind,action,fingerprint,reason,result,"proposalId","legalEntityId" FROM "IssuingEntitySetupAction" WHERE "operationId"=$5`,[randomUUID(),s.a.companyMembershipId,s.a.userId,s.a.tenantMembershipId,s.decision.operationId]));
+ expect(await mockDb.financeLegalEntity.findUniqueOrThrow({where:{id:published.legalEntityId!}})).toMatchObject({baseCurrency:'UZS',companyId:s.a.companyId});
+});
+it('DOM-04 owner authority action failure rolls back role/version/session changes',async()=>{
+ const s=await setupGroup();await loginUser({email:(await mockDb.user.findUniqueOrThrow({where:{id:s.a.userId}})).email,password});const before=await graphDigest();
+ const db=new Proxy(mockDb,{get(base,name){if(name==='$transaction')return (work:any,options:any)=>base.$transaction(tx=>work(new Proxy(tx,{get(t,k){if(k==='$executeRaw')return async(...args:any[])=>{const result=await (t.$executeRaw as any)(...args);if(lockText(args).includes('"authorizationVersion"'))throw Error('Injected authority version failure');return result;};const value=(t as any)[k];return typeof value==='function'?value.bind(t):value;}})),options);const value=(base as any)[name];return typeof value==='function'?value.bind(base):value;}}) as PrismaClient;
+ const revoke=await setupOwner(s.a.companyMembershipId,'proposer','operator-revoke',s.makerOwner.intent.operationId);
+ await expect(authorizeIssuingEntitySetup(db,revoke)).rejects.toThrow('Injected authority version failure');expect(await graphDigest()).toBe(before);
+ expect((await decideIssuingEntity(mockDb,s.checker.actor,s.decision)).decision).toBe('approved');
+});
+
+async function setupBarrier(signal:Promise<void>){let timer:NodeJS.Timeout|undefined;try{await Promise.race([signal,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Setup barrier deadline')),5000);})]);}finally{clearTimeout(timer);}}
+it('DOM-04 operation identity cannot be reused across proposal and decision kinds',async()=>{
+ const s=await setupGroup();await unchanged(()=>decideIssuingEntity(mockDb,s.checker.actor,{...s.decision,operationId:s.input.operationId}));
+ await unchanged(()=>proposeIssuingEntity(mockDb,s.a.actor,{...s.input,operationId:s.makerOwner.intent.operationId}));
+ const results=await Promise.all([proposeIssuingEntity(mockDb,s.a.actor,{...s.input,operationId:s.input.operationId}),proposeIssuingEntity(mockDb,s.a.actor,{...s.input,operationId:s.input.operationId})]);expect(results).toEqual([s.p,s.p]);
+});
+
+it('DOM-04 owner permits bind the exact user tenant company and tenant-membership tuple',async()=>{
+ const s=await setupGroup(),foreign=await admin();
+ for(const mismatch of [{companyId:foreign.companyId,tenantId:foreign.tenantId},{tenantMembershipId:s.checker.actor.tenantMembershipId},{userId:s.checker.actor.id}]){
+  const base=await setupOwner(s.a.companyMembershipId,'proposer','operator-authorize',s.makerOwner.intent.operationId);
+  const normalized=normalizeIssuingEntityAuthorityIntent({...base.intent,...mismatch});
+  const permit={...base.permit,intentFingerprint:normalized.fingerprint};
+  const request={intent:normalized.intent,permit,signature:sign(null,Buffer.from(canonicalOnboardingPermit(permit)),keys.privateKey).toString('base64')};
+  await unchanged(()=>authorizeIssuingEntitySetup(mockDb,request));
+ }
 });

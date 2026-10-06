@@ -1,5 +1,6 @@
 import { createCompanyDriverInvitation, acceptCompanyDriverInvitation, cancelCompanyDriverInvitation, mutateCompanyDriverEligibility } from "../application/driver-delegation";
 import { proposeFinancialGrant, acceptFinancialGrant, revokeFinancialGrant } from "../application/financial-delegation";
+import { proposeIssuingEntity, decideIssuingEntity, readIssuingEntityProposal } from "../application/issuing-entity-setup";
 import { recordAuthRejection, AuthRejectionCode } from "./auth-rejection-diagnostics";
 import { ADMINISTRATIVE_CONTAINMENT } from "../application/managementAccess";
 import prisma from "../../../config/prismaClient";
@@ -324,10 +325,19 @@ const usersFastifyRoutes: FastifyPluginAsync<IdentityAccessRouteOptions> = async
 
   const delegationError = (reply: FastifyReply, error: unknown) => {
     const e = error as { statusCode?: number; code?: string };
-    const code = typeof e?.code === "string" && /^(DELEGATION_|INVITATION_|FINANCIAL_)[A-Z_]+$/.test(e.code) ? e.code : "DELEGATION_REQUEST_REJECTED";
+    const code = typeof e?.code === "string" && /^(DELEGATION_|INVITATION_|FINANCIAL_|ENTITY_SETUP_)[A-Z_]+$/.test(e.code) ? e.code : "DELEGATION_REQUEST_REJECTED";
     return reply.code([400, 401, 403, 409].includes(e?.statusCode ?? 0) ? e.statusCode! : error instanceof z.ZodError ? 400 : 500).send({ error: code, code });
   };
   const privateReply = async (_request: unknown, reply: FastifyReply) => { reply.header("Cache-Control", "no-store"); };
+  fastify.post("/issuing-entity-setup/proposals", { onRequest: privateReply, preHandler: fastifyAuth({permission:"finance.entitySetup.propose"}), bodyLimit:4096 },async(request,reply)=>{
+    try{return reply.code(201).send(await proposeIssuingEntity(prisma,request.user!,request.body));}catch(e){return delegationError(reply,e);}
+  });
+  fastify.get("/issuing-entity-setup/proposals/:proposalId", { onRequest: privateReply, preHandler: fastifyAuth() },async(request,reply)=>{
+    try{return reply.send(await readIssuingEntityProposal(prisma,request.user!,(request.params as {proposalId:string}).proposalId));}catch(e){return delegationError(reply,e);}
+  });
+  fastify.post("/issuing-entity-setup/decisions", { onRequest: privateReply, preHandler: fastifyAuth({permission:"finance.entitySetup.approve"}), bodyLimit:4096 },async(request,reply)=>{
+    try{return reply.code(201).send(await decideIssuingEntity(prisma,request.user!,request.body));}catch(e){return delegationError(reply,e);}
+  });
   fastify.post("/company-financial-grants/proposals", { onRequest: privateReply, preHandler: fastifyAuth({permission:"membership.proposeFinancial"}), bodyLimit:8192 },async(request,reply)=>{
     try{return reply.code(201).send(await proposeFinancialGrant(prisma,request.user!,request.body));}catch(e){return delegationError(reply,e);}
   });

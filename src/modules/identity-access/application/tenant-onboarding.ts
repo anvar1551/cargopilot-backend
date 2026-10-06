@@ -27,13 +27,13 @@ export async function prepareOnboardingCredential(password: string) {
   return { initialCredentialHash, credentialCommitment: digest(initialCredentialHash) };
 }
 const registrySchema = z.object({ version: z.literal(1), enabled: z.literal(true),
-  operatorId: z.literal(ONBOARDING_OPERATOR), profileRevision: z.enum([ONBOARDING_PROFILE, ONBOARDING_PROFILE_V2, DRIVER_DELEGATION_REVISION, "warehouse-provisioning.v1", "financial-delegation.v1"]),
+  operatorId: z.literal(ONBOARDING_OPERATOR), profileRevision: z.enum([ONBOARDING_PROFILE, ONBOARDING_PROFILE_V2, DRIVER_DELEGATION_REVISION, "warehouse-provisioning.v1", "financial-delegation.v1", "issuing-entity-setup.v1"]),
   revoked: z.literal(false), keyFingerprint: hex,
   publicKeyPem: z.string().max(4096),
 }).strict();
 const permitSchema = z.object({ version: z.literal(1), operatorId: z.literal(ONBOARDING_OPERATOR),
   keyFingerprint: hex, operationId: z.string().uuid(), intentFingerprint: hex,
-  profileRevision: z.enum([ONBOARDING_PROFILE, ONBOARDING_PROFILE_V2, DRIVER_DELEGATION_REVISION, "warehouse-provisioning.v1", "financial-delegation.v1"]), issuedAt: z.string().datetime(),
+  profileRevision: z.enum([ONBOARDING_PROFILE, ONBOARDING_PROFILE_V2, DRIVER_DELEGATION_REVISION, "warehouse-provisioning.v1", "financial-delegation.v1", "issuing-entity-setup.v1"]), issuedAt: z.string().datetime(),
   expiresAt: z.string().datetime(),
 }).strict();
 

@@ -308,10 +308,15 @@ export async function createOrderForActor(args: CreateOrderForActorArgs) {
 
   let carrierRoutingWarning: string | null = null;
   try {
-    const autoBookResults = await autoBookCarrierForOrder({
+    // A newly created order without transport legs has no carrier work. Do not
+    // demand booking authority for a nonexistent operation. If a leg exists,
+    // preserve the normal carrier action authorization without a bypass.
+    const carrierLeg = await prisma.orderLeg.findFirst({ where: { orderId: order.id,
+      order: { tenantId: actor.tenantId!, ownerOrgId: actor.companyId! } }, select: { id: true } });
+    const autoBookResults = carrierLeg ? await autoBookCarrierForOrder({
       orderId: order.id,
       actor,
-    });
+    }) : [];
     const failedMatches = autoBookResults.filter(
       (item) => item.matched && !item.booked && item.skippedReason !== "matched rule has autoBook disabled",
     );

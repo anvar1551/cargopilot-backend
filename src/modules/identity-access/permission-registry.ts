@@ -67,6 +67,8 @@ export const SYSTEM_PERMISSIONS: SeedPermission[] = [
   permission("finance.settleCash", "payments", "manage", "Settle operational cash"),
   permission("finance.refund", "payments", "manage", "Issue refunds"),
   permission("finance.settings.read", "finance", "read", "Read finance legal entity settings"),
+  permission("finance.entitySetup.propose", "finance", "propose", "Propose initial issuing entity within accepted company authority"),
+  permission("finance.entitySetup.approve", "finance", "approve", "Independently decide initial issuing entity within accepted company authority"),
   permission("finance.settings.manage", "finance", "manage", "Manage finance legal entity settings"),
   permission("finance.accounts.read", "finance", "read", "Read chart of accounts"),
   permission("finance.accounts.manage", "finance", "manage", "Manage chart of accounts"),

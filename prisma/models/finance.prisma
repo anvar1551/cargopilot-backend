@@ -147,6 +147,7 @@ enum FinanceBankReconciliationTargetType {
 }
 
 model FinanceLegalEntity {
+  initialSetupActions IssuingEntitySetupAction[]
   FinancialGrantProposal_entity FinancialGrantProposal[] @relation("FinancialGrantProposal_entity")
   FinancialGrantAction_entity FinancialGrantAction[] @relation("FinancialGrantAction_entity")
   FinancialDelegationAuthority_entity FinancialDelegationAuthority[] @relation("FinancialDelegationAuthority_entity")

@@ -75,6 +75,7 @@ beforeEach(() => {
     return order && order.tenantId===where.tenantId && order.ownerOrgId===where.ownerOrgId && order.customerId===where.customerId ? order : null;
   });
   db.counter.upsert.mockResolvedValue({ value: 1 });
+  db.orderLeg.findFirst.mockResolvedValue({id:"synthetic-existing-leg"});
   db.order.create.mockImplementation(async ({ data }: any) => {const result={id:confirmedOrders.size ? "order-"+(confirmedOrders.size+1) : "order-a",...data};confirmedOrders.set(result.id,result);return result;});
   (quoteTariffForOrder as jest.Mock).mockReset().mockResolvedValue({ quoteAvailable: false, reason: "no_rule" });
 });
@@ -386,4 +387,32 @@ it("rejects invalid later import rows before accepting the batch or any earlier 
   const csvText=sample+"\n"+sample.split("\n")[1].replace("14 Harbor Street, District 5, Bremen, Germany","");
   await expect(importOrdersFromCsv({actor,csvText,operationId:"50000000-0000-4000-8000-000000000008"})).rejects.toMatchObject({statusCode:400});
   noBusinessEffects();
+});
+
+describe('empty carrier work after authorized creation',()=>{
+ beforeEach(()=>{
+  const support=require('../../src/modules/support-core/application/autoTriage');
+  support.createSystemSupportTicket.mockResolvedValue(undefined);support.createLabelFailureSupportTicket.mockResolvedValue(undefined);
+  (legs.autoBookCarrierForOrder as jest.Mock).mockResolvedValue([]);
+  (labels.enqueueOrderLabelJob as jest.Mock).mockResolvedValue(undefined);
+  (labels.resolveOrderLabelMode as jest.Mock).mockReturnValue('queue');
+ });
+ it('does not demand carrier booking or call transport for an owned order without legs',async()=>{
+  db.orderLeg.findFirst.mockResolvedValueOnce(null);
+  process.env.ORDER_LABEL_BLOCKING='true';
+  try{
+   const result=await createOrderForActor({user:actor,body:body()});expect(result.payload.order.id).toBe('order-a');
+   expect(db.orderLeg.findFirst).toHaveBeenCalledWith({where:{orderId:'order-a',order:{tenantId:actor.tenantId,ownerOrgId:actor.companyId}},select:{id:true}});
+   expect(legs.autoBookCarrierForOrder).not.toHaveBeenCalled();
+  }finally{delete process.env.ORDER_LABEL_BLOCKING;}
+ });
+ it('retains existing carrier action authorization for actual legs',async()=>{
+  (legs.autoBookCarrierForOrder as jest.Mock).mockRejectedValueOnce(Object.assign(new Error('Denied'),{statusCode:403}));
+  process.env.ORDER_LABEL_BLOCKING='true';const error=jest.spyOn(console,'error').mockImplementation(()=>{});
+  try{
+   const result=await createOrderForActor({user:actor,body:body()});expect(legs.autoBookCarrierForOrder).toHaveBeenCalledWith({orderId:'order-a',actor:expect.objectContaining({id:actor.id,tenantId:actor.tenantId,companyId:actor.companyId,companyMembershipId:actor.companyMembershipId,tenantMembershipId:actor.tenantMembershipId,permissionCodes:actor.permissionCodes,scopes:actor.scopes})});
+   expect((legs.autoBookCarrierForOrder as jest.Mock).mock.calls[0][0].actor).not.toHaveProperty('email');
+   expect(result.payload.warning).toBe('Carrier routing auto-book failed');
+  }finally{delete process.env.ORDER_LABEL_BLOCKING;error.mockRestore();}
+ });
 });

@@ -1,0 +1,62 @@
+model IssuingEntitySetupAuthority {
+  membershipId String @db.Uuid
+  kind String
+  userId String @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  profileRevision String
+  acceptedOperationId String @db.Uuid
+  enabled Boolean @default(true)
+  member CompanyMembership @relation("EntitySetupAuthorityMember",fields:[membershipId,userId,tenantId,companyId],references:[id,userId,tenantId,companyId],onDelete:Restrict,onUpdate:Restrict)
+  bridge CompanyMembership @relation("EntitySetupAuthorityBridge",fields:[membershipId,tenantMembershipId,userId,tenantId],references:[id,tenantMembershipId,userId,tenantId],onDelete:Restrict,onUpdate:Restrict)
+  acceptedAction IssuingEntitySetupAction @relation(fields:[acceptedOperationId,membershipId,kind,tenantId,companyId],references:[operationId,membershipId,kind,tenantId,companyId],onDelete:Restrict,onUpdate:Restrict)
+  @@id([membershipId,kind])
+}
+model IssuingEntitySetupProposal {
+  operationId String @id @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  membershipId String @db.Uuid
+  userId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  kind String @default("proposer")
+  authorityAcceptanceId String @db.Uuid
+  content Json
+  contentHash String
+  fingerprint String
+  reason String
+  createdAt DateTime @default(now())
+  member CompanyMembership @relation("EntitySetupProposalMember",fields:[membershipId,userId,tenantId,companyId],references:[id,userId,tenantId,companyId],onDelete:Restrict,onUpdate:Restrict)
+  bridge CompanyMembership @relation("EntitySetupProposalBridge",fields:[membershipId,tenantMembershipId,userId,tenantId],references:[id,tenantMembershipId,userId,tenantId],onDelete:Restrict,onUpdate:Restrict)
+  acceptedAction IssuingEntitySetupAction @relation("EntitySetupProposalAuthority",fields:[authorityAcceptanceId,membershipId,kind,tenantId,companyId],references:[operationId,membershipId,kind,tenantId,companyId],onDelete:Restrict,onUpdate:Restrict)
+  decisions IssuingEntitySetupAction[] @relation("EntitySetupDecisionProposal")
+  @@unique([operationId,tenantId,companyId])
+  @@index([tenantId,companyId,createdAt])
+}
+model IssuingEntitySetupAction {
+  operationId String @id @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  membershipId String @db.Uuid
+  userId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  kind String
+  action String
+  fingerprint String
+  reason String
+  result Json
+  operatorId String?
+  operatorKeyFingerprint String?
+  proposalId String? @unique @db.Uuid
+  legalEntityId String? @unique @db.Uuid
+  createdAt DateTime @default(now())
+  member CompanyMembership @relation("EntitySetupActionMember",fields:[membershipId,userId,tenantId,companyId],references:[id,userId,tenantId,companyId],onDelete:Restrict,onUpdate:Restrict)
+  bridge CompanyMembership @relation("EntitySetupActionBridge",fields:[membershipId,tenantMembershipId,userId,tenantId],references:[id,tenantMembershipId,userId,tenantId],onDelete:Restrict,onUpdate:Restrict)
+  proposal IssuingEntitySetupProposal? @relation("EntitySetupDecisionProposal",fields:[proposalId,tenantId,companyId],references:[operationId,tenantId,companyId],onDelete:Restrict,onUpdate:Restrict)
+  entity FinanceLegalEntity? @relation(fields:[legalEntityId,tenantId,companyId],references:[id,tenantId,companyId],onDelete:Restrict,onUpdate:Restrict)
+  authorities IssuingEntitySetupAuthority[]
+  proposedByAuthority IssuingEntitySetupProposal[] @relation("EntitySetupProposalAuthority")
+  @@unique([operationId,membershipId,kind,tenantId,companyId])
+  @@index([tenantId,companyId,createdAt])
+}

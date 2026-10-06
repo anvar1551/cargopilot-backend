@@ -72,6 +72,12 @@ model RolePermission {
 }
 
 model CompanyMembership {
+  entitySetupAuthorities IssuingEntitySetupAuthority[] @relation("EntitySetupAuthorityMember")
+  entitySetupAuthorityBridges IssuingEntitySetupAuthority[] @relation("EntitySetupAuthorityBridge")
+  entitySetupProposals IssuingEntitySetupProposal[] @relation("EntitySetupProposalMember")
+  entitySetupProposalBridges IssuingEntitySetupProposal[] @relation("EntitySetupProposalBridge")
+  entitySetupActions IssuingEntitySetupAction[] @relation("EntitySetupActionMember")
+  entitySetupActionBridges IssuingEntitySetupAction[] @relation("EntitySetupActionBridge")
   FinancialGrantProposal_proposer FinancialGrantProposal[] @relation("FinancialGrantProposal_proposer")
   FinancialGrantProposal_target FinancialGrantProposal[] @relation("FinancialGrantProposal_target")
   FinancialGrantAction_target FinancialGrantAction[] @relation("FinancialGrantAction_target")
