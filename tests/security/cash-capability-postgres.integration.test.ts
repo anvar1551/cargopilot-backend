@@ -1,3 +1,5 @@
+jest.mock("../../src/config/s3",()=>({s3:{send:(command:any)=>mockCashStorage(command)}}));
+jest.mock("../../src/utils/s3Presign",()=>({presignGetObject:()=>{throw Error("No signing in cash journey");}}));
 jest.mock("../../src/config/prismaClient", () => ({ __esModule: true, default: new Proxy({}, {
         get: (_target, key) => { const value = (mockDb as any)[key]; return typeof value === "function" ? value.bind(mockDb) : value; },
     }) }));
@@ -53,8 +55,11 @@ function request(input = intent()) {
         profileRevision: ONBOARDING_PROFILE_V2, issuedAt: new Date(now).toISOString(), expiresAt: new Date(now + 240000).toISOString() };
     return { intent: input, permit, signature: sign(null, Buffer.from(canonicalOnboardingPermit(permit)), keys.privateKey).toString("base64"), initialCredentialHash: credentialHash };
 }
+const mockCashObjects=new Map<string,Buffer>();
+const mockCashStorage=jest.fn(async(command:any)=>{const {Key,Body}=command.input;if(mockCashObjects.has(Key))throw Error("Immutable synthetic object exists");mockCashObjects.set(Key,Buffer.from(Body));return {};});
 const tables = ["CashCapabilityGrantProposal","CashCapabilityGrantAction","CashCapabilityDelegationAuthority","CashCapabilityMembershipGrant","CashCapabilityActionWarehouse","Order", "OrderBillTo", "BillingPolicyVersion", "BillingPolicyDecision", "OrderPriceSnapshot", "OrderPriceApproval", "Invoice", "InvoiceIssuanceReceipt", "BillingInvoiceOutbox", "FinanceAuditEvent", "FinanceDomainEventOutbox", "FinanceJournalEntry", "FinancialDelegationAuthority", "FinancialGrantProposal", "FinancialMembershipGrant", "FinancialGrantAction", "FinanceLegalEntity", "TariffPlan", "TariffRate", "TariffConfigurationVersion", "TariffPublicationDecision", "Tenant", "Organization", "User", "TenantMembership", "CompanyMembership", "Role", "RolePermission", "MembershipRole", "MembershipScope", "TenantOnboardingReceipt", "CompanyDelegationAuthority", "CompanyInvitation", "CompanyOperationalGrant", "CompanyDelegationAction", "UserRefreshSession", "CredentialSecurityEvent"];
 tables.push("IssuingEntitySetupAuthority","IssuingEntitySetupProposal","IssuingEntitySetupAction","OrderCreationIntent","OrderCreationReceipt","Parcel","Tracking","PricingComponent","OrderLabelJob","IntegrationOutbox","SupportTicket","Address","CustomerEntity");
+tables.push("OrderAttachment","ProofSubmission","OrderServicePaymentInstruction","OrderServiceCashObligation","WarehouseProvisioningAction","WarehouseProvisioningAuthority","PaymentIntent","PaymentAttempt");
 tables.push("RestrictedCashState","RestrictedCashTransferOffer","RestrictedCashReceipt","CashCollection","CashCollectionEvent","CashCustodyOperation","OrderCustodyAction","AnalyticsDomainEventOutbox","UserNotification");
 async function counts() { const result: Record<string, number> = {}; for (const table of tables)
     result[table] = Number((await pool.query(`SELECT count(*) AS count FROM "${table}"`)).rows[0].count); return result; }
@@ -67,6 +72,7 @@ beforeAll(async () => {
             options: "-c statement_timeout=10000 -c lock_timeout=5000 -c idle_in_transaction_session_timeout=15000" }) });
     await mockDb.permission.createMany({ data: SYSTEM_PERMISSIONS, skipDuplicates: true });
     process.env.CARGOPILOT_ONBOARDING_REGISTRY_PATH = registryPath;
+    process.env.AWS_S3_BUCKET="synthetic-cash-no-network";
     process.env.JWT_SECRET = randomUUID();
     process.env.REFRESH_TOKEN_SECRET = randomUUID();
 }, 30000);
@@ -87,7 +93,7 @@ import { hasLiveAccessSession } from "../../src/modules/identity-access/applicat
 async function admin() { writeFileSync(registryPath, JSON.stringify(registry)); const args = request(), result = await onboardTenant(mockDb, args); const login = await loginUser({ email: args.intent.administrator.email, password }); return { ...result, actor: { ...login.user, id: login.user.userId }, login }; }
 const inviteInput = (extra: any = {}) => ({ operationId: randomUUID(), email: randomUUID() + "@example.invalid", profileRevision: "operational-clerk.v1", warehouseIds: [], reason: "Synthetic approved invitation", ...extra });
 async function enrolled(a: any, extra: any = {}) { const input = inviteInput(extra), invitation = await createCompanyInvitation(mockDb, a.actor, input); const pass = randomUUID() + "-synthetic"; const accepted = await acceptCompanyInvitation(mockDb, { token: invitation.token, operationId: randomUUID(), name: "Synthetic recipient", password: pass }); return { input, invitation, accepted, pass }; }
-function ownerRequest(membershipId: string, warehouseIds: string[] = [], action = "operator-authorize") { const intent = { operationId: randomUUID(), membershipId, action, warehouseIds, ceilingRevision: DELEGATION_REVISION, profileRevision: ONBOARDING_PROFILE_V2, reason: "Synthetic reviewed owner authority" }; const now = Date.now(); const permit = { version: 1, operatorId: ONBOARDING_OPERATOR, keyFingerprint, operationId: intent.operationId, intentFingerprint: delegationFingerprint("operator-authority", intent), profileRevision: ONBOARDING_PROFILE_V2, issuedAt: new Date(now).toISOString(), expiresAt: new Date(now + 240000).toISOString() }; return { intent, permit, signature: sign(null, Buffer.from(canonicalOnboardingPermit(permit)), keys.privateKey).toString("base64") }; }
+function ownerRequest(membershipId: string, warehouseIds: string[] = [], action = "operator-authorize") { writeFileSync(registryPath,JSON.stringify(registry)); const intent = { operationId: randomUUID(), membershipId, action, warehouseIds, ceilingRevision: DELEGATION_REVISION, profileRevision: ONBOARDING_PROFILE_V2, reason: "Synthetic reviewed owner authority" }; const now = Date.now(); const permit = { version: 1, operatorId: ONBOARDING_OPERATOR, keyFingerprint, operationId: intent.operationId, intentFingerprint: delegationFingerprint("operator-authority", intent), profileRevision: ONBOARDING_PROFILE_V2, issuedAt: new Date(now).toISOString(), expiresAt: new Date(now + 240000).toISOString() }; return { intent, permit, signature: sign(null, Buffer.from(canonicalOnboardingPermit(permit)), keys.privateKey).toString("base64") }; }
 async function graphDigest() { const graph: Record<string, unknown> = {}; for (const table of tables)
     graph[table] = (await pool.query(`SELECT to_jsonb(record) AS row FROM "${table}" AS record ORDER BY to_jsonb(record)::text`)).rows; return createHash("sha256").update(JSON.stringify(graph)).digest("hex"); }
 async function unchanged(work: () => Promise<unknown>) { const before = await graphDigest(); await expect(work()).rejects.toThrow(); expect(await graphDigest()).toBe(before); }
@@ -103,13 +109,33 @@ async function cashOwner(a:any,member:any,kind:string,warehouseIds:string[],prof
  const normalized=normalizeCashCapabilityAuthorityIntent(intent),now=Date.now(),permit={version:1,operatorId:ONBOARDING_OPERATOR,keyFingerprint,operationId:intent.operationId,intentFingerprint:normalized.fingerprint,profileRevision:"cash-delegation.v1",issuedAt:new Date(now).toISOString(),expiresAt:new Date(now+240000).toISOString()};
  return authorizeCashCapabilityDelegator(mockDb,{intent,permit,signature:sign(null,Buffer.from(canonicalOnboardingPermit(permit)),keys.privateKey).toString("base64")});
 }
+import {authorizeWarehouseProvisioner,createControlledWarehouse} from "../../src/modules/warehouse-core/application/warehouseProvisioning";
+import {authorizeIssuingEntitySetup,normalizeIssuingEntityAuthorityIntent,proposeIssuingEntity,decideIssuingEntity} from "../../src/modules/identity-access/application/issuing-entity-setup";
+import {issueAcceptedOrderInvoice} from "../../src/modules/invoice-core/application/accepted-issuance";
+async function signedAuthority(intent:any,fingerprint:string){
+ writeFileSync(registryPath,JSON.stringify({...registry,profileRevision:intent.profileRevision}));
+ const now=Date.now(),permit={version:1,operatorId:ONBOARDING_OPERATOR,keyFingerprint,operationId:intent.operationId,intentFingerprint:fingerprint,profileRevision:intent.profileRevision,issuedAt:new Date(now).toISOString(),expiresAt:new Date(now+240000).toISOString()};
+ return {intent,permit,signature:sign(null,Buffer.from(canonicalOnboardingPermit(permit)),keys.privateKey).toString("base64")};
+}
+async function warehouseOwner(a:any){
+ const intent={operationId:randomUUID(),membershipId:a.companyMembershipId,action:"operator-authorize",profileRevision:"warehouse-provisioning.v1",reason:"Synthetic explicit warehouse authority"};
+ await authorizeWarehouseProvisioner(mockDb,await signedAuthority(intent,delegationFingerprint("warehouse-operator-authority",intent)));
+}
+async function initialEntity(a:any,checker:any){
+ for(const [m,kind] of [[a,"proposer"],[checker,"checker"]] as const){
+  const normalized=normalizeIssuingEntityAuthorityIntent({operationId:randomUUID(),membershipId:m.companyMembershipId,userId:m.userId,tenantId:a.tenantId,companyId:a.companyId,tenantMembershipId:m.tenantMembershipId,kind,action:"operator-authorize",expectedAcceptanceId:null,profileRevision:"issuing-entity-setup.v1",reason:"Synthetic initial entity authority"});
+  await authorizeIssuingEntitySetup(mockDb,await signedAuthority(normalized.intent,normalized.fingerprint));
+ }
+ const p=await proposeIssuingEntity(mockDb,a.actor,{operationId:randomUUID(),configuration:{baseCurrency:"UZS",fiscalYearStartMonth:1,timezone:"Asia/Tashkent",reportingCurrency:null},reason:"Explicit synthetic entity"});
+ const d=await decideIssuingEntity(mockDb,actor(checker),{operationId:randomUUID(),proposalId:p.proposalId,contentHash:p.contentHash,decision:"approved",reason:"Independent synthetic entity"});
+ return mockDb.financeLegalEntity.findUniqueOrThrow({where:{id:d.legalEntityId!}});
+}
 async function cashGroup(){
- const a=await admin(); const warehouse=await mockDb.warehouse.create({data:{tenantId:a.tenantId,name:"Synthetic cash warehouse",location:"Synthetic"}});
- const second=await mockDb.warehouse.create({data:{tenantId:a.tenantId,name:"Synthetic other warehouse",location:"Synthetic"}});
- // Independently established synthetic entity prerequisite; DOM-04 is not re-tested.
- const entity=await mockDb.financeLegalEntity.create({data:{tenantId:a.tenantId,companyId:a.companyId,baseCurrency:"UZS",fiscalYearStartMonth:1,timezone:"Asia/Tashkent",createdByUserId:a.userId,updatedByUserId:a.userId}});
+ const a=await admin(); await warehouseOwner(a); const warehouse=await createControlledWarehouse(mockDb,a.actor,{operationId:randomUUID(),name:"Synthetic cash warehouse",location:"Synthetic"});
+ const second=await createControlledWarehouse(mockDb,a.actor,{operationId:randomUUID(),name:"Synthetic other warehouse",location:"Synthetic"});
  await authorizeCompanyDelegator(mockDb,ownerRequest(a.companyMembershipId,[warehouse.id,second.id]));
  const maker=await enrolled(a),checker=await enrolled(a),staff=await enrolled(a,{profileRevision:"operational-warehouse.v1",warehouseIds:[warehouse.id]}),clerk=await enrolled(a);
+ const entity=await initialEntity(a,checker.accepted);
  const driverOwner=syntheticDriverOwner();let driver:any;
  try{await authorizeCompanyDriverDelegator(mockDb,driverOwner.request(a.companyMembershipId,["local-driver.v1"]));const invitation=await createCompanyDriverInvitation(mockDb,a.actor,{operationId:randomUUID(),email:randomUUID()+"@example.invalid",profileRevision:"local-driver.v1",reason:"Synthetic driver"});driver=await acceptCompanyDriverInvitation(mockDb,{operationId:randomUUID(),token:invitation.token,name:"Synthetic cash driver",password});}finally{driverOwner.cleanup();}
  const result={...a,warehouse,second,entity,maker:maker.accepted,checker:checker.accepted,staff:staff.accepted,clerk:clerk.accepted,driver};
@@ -156,7 +182,7 @@ import {syntheticBillingPolicy} from "./billing-policy.fixture";
 import {createCustomerEntity} from "../../src/modules/customers-core/application/customerEntityRepo";
 import {createAddress} from "../../src/modules/addresses-core/application/addressRepo";
 import {createOrderForActor} from "../../src/modules/orders-core/write/create-order";
-import {bindOrderBillTo,acceptOrderPrice} from "../../src/modules/pricing-core/repo/order-price";
+import {bindOrderBillTo,bindServicePaymentInstruction,acceptOrderPrice,approveOrderPrice} from "../../src/modules/pricing-core/repo/order-price";
 import {assignDriversBulk,updateDriverOrderStatus} from "../../src/modules/orders-core/operations/order-status";
 import {executeWarehouseCustody,readWarehouseCustody} from "../../src/modules/orders-core/operations/warehouse-custody";
 import {executeRestrictedCash,readRestrictedCash} from "../../src/modules/orders-core/cash/restricted-cash.service";
@@ -166,33 +192,32 @@ async function financeAuthority(g:any,m:any,kind:string){
  const permit={version:1,operatorId:ONBOARDING_OPERATOR,keyFingerprint,operationId:intent.operationId,intentFingerprint:fingerprint,profileRevision:"financial-delegation.v1",issuedAt:new Date(now).toISOString(),expiresAt:new Date(now+240000).toISOString()};
  await authorizeFinancialDelegator(mockDb,{intent,permit,signature:sign(null,Buffer.from(canonicalOnboardingPermit(permit)),keys.privateKey).toString("base64")});
 }
-async function pricedJourney(){
+async function pricedJourney(party="SENDER",basePrice=100){
  const g=await cashGroup();await accept(g,g.driver);await accept(g,g.staff,"warehouse-cash.v1");await accept(g,g.clerk,"cash-settlement-checker.v1");
  await financeAuthority(g,g,"proposer");await financeAuthority(g,g.checker,"checker");
  const pricingMaker=await enrolled(g),pricingChecker=await enrolled(g);
  for(const m of [pricingMaker.accepted,pricingChecker.accepted]){const p=await proposeFinancialGrant(mockDb,g.actor,{operationId:randomUUID(),membershipId:m.companyMembershipId,legalEntityId:g.entity.id,profileRevisions:Object.keys(FINANCIAL_PROFILES),expectedAcceptanceId:null,reason:"Synthetic prerequisite pricing profiles"});await acceptFinancialGrant(mockDb,actor(g.checker),{operationId:randomUUID(),proposalId:p.proposalId,fingerprint:p.fingerprint,reason:"Independent synthetic prerequisite"});}
  const maker=actor(pricingMaker.accepted),check=actor(pricingChecker.accepted);
- const plan=await createTariffPlan(maker,{name:"Synthetic cash tariff",code:"SYN-"+randomUUID().slice(0,8),description:null,status:"active",serviceType:"DOOR_TO_DOOR",priceType:"bucket",pricingStrategy:"FIXED_LANE",coverageType:"domestic",transportMode:"ROAD",originCountryCode:null,destinationCountryCode:null,routeTemplateId:null,currency:"UZS",priority:1,isDefault:true,customerEntityId:null,rates:[{zone:1,weightFromKg:0.01,weightToKg:100,price:100}],transitLegRates:[]} as any);
+ const plan=await createTariffPlan(maker,{name:"Synthetic cash tariff",code:"SYN-"+randomUUID().slice(0,8),description:null,status:"active",serviceType:"DOOR_TO_DOOR",priceType:"bucket",pricingStrategy:"FIXED_LANE",coverageType:"domestic",transportMode:"ROAD",originCountryCode:null,destinationCountryCode:null,routeTemplateId:null,currency:"UZS",priority:1,isDefault:true,customerEntityId:null,rates:[{zone:1,weightFromKg:0.01,weightToKg:100,price:basePrice===0?100:basePrice}],transitLegRates:[]} as any);
  const draft=await mockDb.tariffPlan.findUniqueOrThrow({where:{id:plan!.id}}),version=await proposeTariffVersion({user:maker,planId:plan!.id,expectedGeneration:draft.contentGeneration,operationId:randomUUID(),reason:"Synthetic tariff"});
  await decideTariffVersion({user:check,planId:plan!.id,versionId:version.id,contentSha256:version.contentSha256,operationId:randomUUID(),decision:"approved",reason:"Independent tariff"});
- const policy=await proposeBillingPolicy(maker,{operationId:randomUUID(),reason:"Explicit synthetic zero-fee zero-tax policy",content:syntheticBillingPolicy({fees:[],tax:{treatment:"exclusive_percent",rate:"0",authorityReference:"SYNTHETIC ZERO TAX TEST ONLY"}})});
+ const policy=await proposeBillingPolicy(maker,{operationId:randomUUID(),reason:"Explicit synthetic zero-fee zero-tax policy",content:syntheticBillingPolicy({billing:{mode:"manual",eligibleOrderStates:["pending","assigned","delivered"],dueDays:7,numberPrefix:"SYNTHETIC"},fees:[],discounts:basePrice===0?[{code:"synthetic_free",type:"percent",value:"100"}]:[],tax:{treatment:"exclusive_percent",rate:"0",authorityReference:"SYNTHETIC ZERO TAX TEST ONLY"}})});
  await decideBillingPolicy(check,{versionId:policy.id,contentHash:policy.contentHash,operationId:randomUUID(),decision:"approved",reason:"Independent synthetic policy"});
  const customer=await createCustomerEntity(maker,{type:"PERSON",name:"Synthetic cash payer"}),addresses=await Promise.all(["Synthetic A","Synthetic B"].map(city=>createAddress(maker,{customerEntityId:customer.id,country:"ZZ",city,street:"Synthetic"})));
  const body={operationId:randomUUID(),customerEntityId:customer.id,sender:{name:"Synthetic sender"},receiver:{name:"Synthetic recipient"},addresses:{pickupAddress:"Synthetic A",dropoffAddress:"Synthetic B",senderAddressId:addresses[0].id,receiverAddressId:addresses[1].id},shipment:{serviceType:"DOOR_TO_DOOR",currency:"UZS",weightKg:2},payment:{paymentType:"CASH",deliveryChargePaidBy:"SENDER"}};
  const made=await createOrderForActor({user:maker,body}),orderId=made.payload.order.id;
- await bindOrderBillTo(maker,{orderId,operationId:randomUUID(),payerCustomerEntityId:customer.id,evidence:"Synthetic accepted payer",reason:"Synthetic payer"});
- const price=await acceptOrderPrice(maker,{orderId,operationId:randomUUID(),reason:"Synthetic exact price"});expect(price.total).toBe("100.0000");
+ const billTo=await bindOrderBillTo(maker,{orderId,operationId:randomUUID(),payerCustomerEntityId:customer.id,evidence:"Synthetic accepted payer",reason:"Synthetic payer"});
+ const instructionIntent={orderId,operationId:randomUUID(),billToId:billTo.id,method:"CASH",collectionParty:party,evidence:"Synthetic explicit cash instruction",reason:"Synthetic cash payer instruction"};
+ const instruction=await bindServicePaymentInstruction(maker,instructionIntent);
+ const priceIntent={orderId,operationId:randomUUID(),reason:"Synthetic exact price"};
+ const price=await acceptOrderPrice(maker,priceIntent);expect(price.total).toBe(new Prisma.Decimal(basePrice).toFixed(4));
+ if(price.state==="approval_required")await approveOrderPrice(check,{orderId,operationId:randomUUID(),snapshotId:price.id,contentHash:price.contentHash,reason:"Independent synthetic zero-price approval"});
  const dispatcher=await enrolled(g,{profileRevision:"operational-dispatcher.v1"});
  const o=await mockDb.order.findUniqueOrThrow({where:{id:orderId}});await assignDriversBulk({actor:actor(dispatcher.accepted),orderIds:[orderId],driverId:g.driver.userId,type:"pickup",expectedStates:[{orderId,updatedAt:o.updatedAt.toISOString(),status:o.status,assignedDriverId:o.assignedDriverId,currentWarehouseId:o.currentWarehouseId}]});
- // DOM-06 has not initialized exact expected obligations. This owned test-only
- // compatibility prerequisite is derived from the actual accepted price, never
- // a source of production authority. Before preparation the real service denies.
- const emptyBefore=await graphDigest();await expect(executeRestrictedCash(actor(g.driver),"collect",{orderId,operationId:randomUUID(),kind:"service_charge"})).rejects.toThrow("CASH_MIRROR_RECONCILIATION_REQUIRED");expect(await graphDigest()).toBe(emptyBefore);
- await mockDb.$transaction(async tx=>{await tx.order.update({where:{id:orderId},data:{serviceCharge:Number(price.total)}});await tx.cashCollection.create({data:{orderId,kind:"service_charge",expectedAmount:Number(price.total),currency:price.currency,status:"expected",currentHolderType:"none"}});});
  expect(await mockDb.membershipScope.count({where:{membershipId:g.driver.companyMembershipId}})).toBe(0);
- return {...g,orderId,maker,dispatcher:dispatcher.accepted};
+ return {...g,orderId,maker,pricingChecker:check,dispatcher:dispatcher.accepted,body,billTo,instruction,instructionIntent,price,priceIntent};
 }
-const cashIntent=(g:any,extra:any={})=>({orderId:g.orderId,operationId:randomUUID(),kind:"service_charge",...extra});
+const cashIntent=(g:any,extra:any={})=>({orderId:g.orderId,operationId:randomUUID(),kind:"service_charge",...(!extra.expectedEventId?{obligationId:g.price.id}:{}),...extra});
 async function physical(g:any,who:any,action:string,extra:any={}){const s=await readWarehouseCustody(actor(who),g.orderId);return executeWarehouseCustody(actor(who),g.orderId,{operationId:randomUUID(),action,expectedEventId:s.custody?.id??null,expectedUpdatedAt:s.updatedAt,parcelIds:s.parcelIds,...extra});}
 async function warehouseOffer(g:any){await updateDriverOrderStatus({actor:actor(g.driver),orderId:g.orderId,status:"pickup_in_progress"});await updateDriverOrderStatus({actor:actor(g.driver),orderId:g.orderId,status:"picked_up"});const s=await readWarehouseCustody(actor(g.driver),g.orderId);await physical(g,g.driver,"pickup-offer",{pickupTrackingId:s.pickupTrackingId,destinationWarehouseId:g.warehouse.id});}
 it("restricted collection, retained holder after parcel intake, explicit transfer and independent warehouse settlement; matching retries",async()=>{
@@ -204,8 +229,18 @@ it("restricted collection, retained holder after parcel intake, explicit transfe
  const acceptIntent=cashIntent(g,{offerId:offer.offerId,expectedEventId:offer.expectedEventId}),accepted=await executeRestrictedCash(actor(g.staff),"accept",acceptIntent);
  expect(accepted).toMatchObject({holderMembershipId:g.staff.companyMembershipId,holderWarehouseId:g.warehouse.id});expect(await executeRestrictedCash(actor(g.staff),"accept",acceptIntent)).toEqual(accepted);
  const settle=cashIntent(g,{expectedEventId:accepted.expectedEventId}),settled=await executeRestrictedCash(actor(g.clerk),"settle",settle);expect(settled).toMatchObject({state:"settled",amount:"100",holderMembershipId:null});expect(await executeRestrictedCash(actor(g.clerk),"settle",settle)).toEqual(settled);
- const collection=await mockDb.cashCollection.findUniqueOrThrow({where:{orderId_kind:{orderId:g.orderId,kind:"service_charge"}},include:{events:true}});expect(collection).toMatchObject({status:"settled",currentHolderType:"finance",currentHolderUserId:null,currentHolderWarehouseId:null,collectedAmount:100});expect(collection.events).toHaveLength(3);
+ const collection=await mockDb.cashCollection.findUniqueOrThrow({where:{orderId_kind:{orderId:g.orderId,kind:"service_charge"}},include:{events:true}});expect(collection).toMatchObject({status:"settled",currentHolderType:"finance",currentHolderUserId:null,currentHolderWarehouseId:null,collectedAmount:100});expect(collection.events).toHaveLength(4);
  expect(await mockDb.cashCustodyOperation.count({where:{orderId:g.orderId}})).toBe(3);expect(await mockDb.financeSourceEvent.count()).toBe(0);
+ // Complete normal delivery/proof/invoice after explicit service money settlement.
+ await physical(g,g.staff,"last-mile-offer",{warehouseId:g.warehouse.id,driverMembershipId:g.driver.companyMembershipId});await physical(g,g.driver,"last-mile-accept");
+ const proof=await deliveryProof(g);await physical(g,g.driver,"deliver",{proofSubmissionId:proof.intent.body.submissionId});
+ const invoiceIntent={orderId:g.orderId,operationId:randomUUID(),priceApprovalId:g.price.id,reason:"Synthetic same-currency manual invoice"};
+ const invoice=await issueAcceptedOrderInvoice(g.maker,invoiceIntent);expect(invoice.amount.toFixed(4)).toBe("100.0000");expect(invoice.status).toBe("issued");expect(await issueAcceptedOrderInvoice(g.maker,invoiceIntent)).toEqual(invoice);
+ expect((await createOrderForActor({user:g.maker,body:g.body})).payload.order.id).toBe(g.orderId);
+ expect(await bindServicePaymentInstruction(g.maker,g.instructionIntent)).toEqual(g.instruction);expect((await acceptOrderPrice(g.maker,g.priceIntent)).id).toBe(g.price.id);
+ const obligation=(await pool.query('SELECT * FROM "OrderServiceCashObligation" WHERE "orderId"=$1',[g.orderId])).rows;expect(obligation).toHaveLength(1);expect(obligation[0]).toMatchObject({priceApprovalId:g.price.id,amount:"100.0000",currency:"UZS",instructionId:g.instruction.id});
+ expect((await mockDb.invoice.findUniqueOrThrow({where:{orderId:g.orderId}})).billingPriceApprovalId).toBe(g.price.id);expect(await mockDb.financeSourceEvent.count()).toBe(0);
+
 });
 it("warehouse-to-accepted-last-mile local driver requires offer and acceptance; no automatic parcel cash transfer",async()=>{
  const g=await pricedJourney(),collected=await executeRestrictedCash(actor(g.driver),"collect",cashIntent(g));await warehouseOffer(g);await physical(g,g.staff,"intake",{warehouseId:g.warehouse.id});
@@ -225,7 +260,7 @@ it("wrong recipient, foreign context, unsupported COD and supplied monetary auth
  await unchanged(()=>executeRestrictedCash(actor(g.staff),"accept",cashIntent(g,{offerId:randomUUID(),expectedEventId:collected.expectedEventId})));
 });
 it("competing custody mutations admit one result; stale events and injected receipt failure leave no partial state",async()=>{
- const g=await pricedJourney(),intents=[cashIntent(g),cashIntent(g)],r=await Promise.allSettled(intents.map(v=>executeRestrictedCash(actor(g.driver),"collect",v)));expect(r.filter(x=>x.status==="fulfilled")).toHaveLength(1);expect(await mockDb.cashCollectionEvent.count({where:{cashCollection:{orderId:g.orderId}}})).toBe(1);
+ const g=await pricedJourney(),intents=[cashIntent(g),cashIntent(g)],r=await Promise.allSettled(intents.map(v=>executeRestrictedCash(actor(g.driver),"collect",v)));expect(r.filter(x=>x.status==="fulfilled")).toHaveLength(1);expect(await mockDb.cashCollectionEvent.count({where:{cashCollection:{orderId:g.orderId}}})).toBe(2);
  const collected=(r.find(x=>x.status==="fulfilled") as PromiseFulfilledResult<any>).value;await warehouseOffer(g);
  await unchanged(()=>executeRestrictedCash(actor(g.driver),"offer",cashIntent(g,{expectedEventId:randomUUID(),recipientMembershipId:g.staff.companyMembershipId,recipientWarehouseId:g.warehouse.id})));
  const offered=await executeRestrictedCash(actor(g.driver),"offer",cashIntent(g,{expectedEventId:collected.expectedEventId,recipientMembershipId:g.staff.companyMembershipId,recipientWarehouseId:g.warehouse.id}));
@@ -381,7 +416,7 @@ it("admitted cash work fences competing revoke; committed revoke rejects subsequ
  try{await locked;revoke=revokeCashCapabilityGrant(base,actor(g.checker),{operationId:randomUUID(),membershipId:g.driver.companyMembershipId,legalEntityId:g.entity.id,expectedAcceptanceId:grant.acceptedOperationId,reason:'Synthetic competing revoke'});
   let blocked=false;for(let i=0;i<30;i++){blocked=(await pool.query('SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1::int=ANY(pg_blocking_pids(pid))) AS blocked',[pid])).rows[0].blocked;if(blocked)break;await new Promise(r=>setTimeout(r,30));}expect(blocked).toBe(true);release();expect(await business).toMatchObject({state:'held',amount:'100'});await revoke;
  }finally{release();await Promise.allSettled([business,...(revoke?[revoke]:[])]);mockDb=base;}
- expect(await mockDb.cashCollectionEvent.count({where:{cashCollection:{orderId:g.orderId}}})).toBe(1);await unchanged(()=>executeRestrictedCash(actor(g.driver),'collect',intent));
+ expect(await mockDb.cashCollectionEvent.count({where:{cashCollection:{orderId:g.orderId}}})).toBe(2);await unchanged(()=>executeRestrictedCash(actor(g.driver),'collect',intent));
 });
 it("protected cash basis/receipts reject tampering and accepted retry retains original result",async()=>{
  const g=await pricedJourney(),intent=cashIntent(g),collected=await executeRestrictedCash(actor(g.driver),'collect',intent);
@@ -392,7 +427,7 @@ import cashRoutes from "../../src/modules/orders-core/transport/routes/cash.rout
 it("actual restricted cash HTTP contracts need selected sessions and accepted capability, without broad shipment keys",async()=>{
  const g=await pricedJourney(),driverLogin=await loginUser({email:(await mockDb.user.findUniqueOrThrow({where:{id:g.driver.userId}})).email,password}),adminLogin=await loginUser({email:(await mockDb.user.findUniqueOrThrow({where:{id:g.userId}})).email,password});
  for(const key of ['shipment.view','shipment.update','shipment.assignCourier','cash.collect'])expect(driverLogin.user.permissionCodes).not.toContain(key);
- const app=Fastify();await app.register(cashRoutes,{prefix:'/api/orders'});const path='/api/orders/'+g.orderId+'/cash/collect',payload={operationId:randomUUID(),kind:'service_charge'};
+ const app=Fastify();await app.register(cashRoutes,{prefix:'/api/orders'});const path='/api/orders/'+g.orderId+'/cash/collect',payload={operationId:randomUUID(),kind:'service_charge',obligationId:g.price.id};
  try{const before=await graphDigest();expect((await app.inject({method:'POST',url:path,payload})).statusCode).toBe(401);expect((await app.inject({method:'POST',url:path,payload,headers:{authorization:'Bearer '+adminLogin.token}})).statusCode).toBe(403);expect(await graphDigest()).toBe(before);
   const response=await app.inject({method:'POST',url:path,payload,headers:{authorization:'Bearer '+driverLogin.token}});expect(response.statusCode).toBe(200);expect(response.json()).toMatchObject({success:true,order:{amount:'100',holderMembershipId:g.driver.companyMembershipId}});
   const confirmed=await graphDigest(),retry=await app.inject({method:'POST',url:path,payload,headers:{authorization:'Bearer '+driverLogin.token}});expect(retry.json()).toEqual(response.json());expect(await graphDigest()).toBe(confirmed);
@@ -407,4 +442,94 @@ it("parcel reassignment does not strand the original recorded cash holder or sil
  expect((await mockDb.cashCollection.findUniqueOrThrow({where:{orderId_kind:{orderId:g.orderId,kind:'service_charge'}}})).currentHolderUserId).toBe(g.driver.userId);
  const offer=await executeRestrictedCash(actor(g.driver),'offer',cashIntent(g,{expectedEventId:collected.expectedEventId,recipientMembershipId:g.staff.companyMembershipId,recipientWarehouseId:g.warehouse.id}));
  const accepted=await executeRestrictedCash(actor(g.staff),'accept',cashIntent(g,{offerId:offer.offerId,expectedEventId:offer.expectedEventId}));expect(accepted).toMatchObject({holderMembershipId:g.staff.companyMembershipId,holderWarehouseId:g.warehouse.id,amount:'100'});
+});
+
+import {submitProofForActor} from "../../src/modules/orders-core/proofs/proof";
+async function deliveryProof(g:any){const {PNG}=require("pngjs"),buffer=PNG.sync.write({width:2,height:2,data:Buffer.alloc(16,255)});const intent={actor:actor(g.driver),orderId:g.orderId,body:{submissionId:randomUUID(),stage:"delivery",signedBy:"Synthetic payer",clientCapturedAt:"2026-01-01T00:00:00.000Z",signaturePaths:["1,2;3,4"]},file:{buffer,size:buffer.length,mimetype:"image/png",originalname:"synthetic.png"}};const result=await submitProofForActor(intent);expect(await submitProofForActor(intent)).toEqual(result);return {intent,result};}
+it("DOM-06 instruction fresh retries, conflicts, foreign bill-to and no creation-seeded collectible rows",async()=>{
+ const g=await pricedJourney();expect(await bindServicePaymentInstruction(g.maker,g.instructionIntent)).toEqual(g.instruction);
+ await unchanged(()=>bindServicePaymentInstruction(g.maker,{...g.instructionIntent,collectionParty:"RECIPIENT"}));await unchanged(()=>bindServicePaymentInstruction(actor(g.driver),g.instructionIntent));
+ await unchanged(()=>bindServicePaymentInstruction(g.maker,{...g.instructionIntent,operationId:randomUUID(),billToId:randomUUID()}));
+ expect(await mockDb.cashCollection.count({where:{orderId:g.orderId}})).toBe(1);expect(await mockDb.cashCollectionEvent.count({where:{cashCollection:{orderId:g.orderId},eventType:"expected"}})).toBe(1);
+});
+it("DOM-06 recipient timing permits scoped warehouse collection but denies early driver; sender cannot collect after pickup",async()=>{
+ const g=await pricedJourney("RECIPIENT");await unchanged(()=>executeRestrictedCash(actor(g.driver),"collect",cashIntent(g)));
+ await warehouseOffer(g);await physical(g,g.staff,"intake",{warehouseId:g.warehouse.id});const c=await executeRestrictedCash(actor(g.staff),"collect",cashIntent(g,{warehouseId:g.warehouse.id}));expect(c.amount).toBe("100");
+ const settled=await executeRestrictedCash(actor(g.clerk),"settle",cashIntent(g,{expectedEventId:c.expectedEventId}));expect(settled.state).toBe("settled");
+});
+it("DOM-06 recipient delivery stays blocked until exact collection; wrong stage permission cannot collect",async()=>{
+ const g=await pricedJourney("RECIPIENT");await warehouseOffer(g);await physical(g,g.staff,"intake",{warehouseId:g.warehouse.id});await physical(g,g.staff,"last-mile-offer",{warehouseId:g.warehouse.id,driverMembershipId:g.driver.companyMembershipId});await physical(g,g.driver,"last-mile-accept");
+ const proof=await deliveryProof(g);await unchanged(()=>physical(g,g.driver,"deliver",{proofSubmissionId:proof.intent.body.submissionId}));
+ const c=await executeRestrictedCash(actor(g.driver),"collect",cashIntent(g));await physical(g,g.driver,"deliver",{proofSubmissionId:proof.intent.body.submissionId});expect(c.amount).toBe("100");
+});
+async function revision(g:any){return acceptOrderPrice(g.maker,{orderId:g.orderId,operationId:randomUUID(),reason:"Synthetic reasoned price revision"});}
+const revisionIntent=(g:any,p:any)=>({orderId:g.orderId,operationId:randomUUID(),snapshotId:p.id,contentHash:p.contentHash,reason:"Independent untouched revision"});
+it("DOM-06 independently approved untouched revision preserves history and rejects obsolete collection/invoice authority",async()=>{
+ const g=await pricedJourney(),p=await revision(g);expect(p.state).toBe("approval_required");const v=revisionIntent(g,p);await approveOrderPrice(g.pricingChecker,v);expect((await approveOrderPrice(g.pricingChecker,v)).id).toBe(p.id);
+ await unchanged(()=>executeRestrictedCash(actor(g.driver),"collect",cashIntent(g)));await unchanged(()=>issueAcceptedOrderInvoice(g.maker,{orderId:g.orderId,operationId:randomUUID(),priceApprovalId:g.price.id,reason:"Obsolete invoice"}));
+ const c=await executeRestrictedCash(actor(g.driver),"collect",cashIntent(g,{obligationId:p.id}));expect(c.amount).toBe("100");
+ expect((await pool.query('SELECT count(*) FROM "OrderServiceCashObligation" WHERE "orderId"=$1',[g.orderId])).rows[0].count).toBe("2");expect((await acceptOrderPrice(g.maker,g.priceIntent)).id).toBe(g.price.id);
+ await unchanged(()=>approveOrderPrice(g.pricingChecker,{...v,operationId:randomUUID()}));
+});
+it("DOM-06 revision versus collection serializes one monetary authority without partial approval or duplicate collection",async()=>{
+ const g=await pricedJourney(),p=await revision(g),v=revisionIntent(g,p),r=await Promise.allSettled([approveOrderPrice(g.pricingChecker,v),executeRestrictedCash(actor(g.driver),"collect",cashIntent(g))]);expect(r.filter(x=>x.status==="fulfilled")).toHaveLength(1);
+ const o=await mockDb.order.findUniqueOrThrow({where:{id:g.orderId}}),c=await mockDb.cashCollection.findUniqueOrThrow({where:{orderId_kind:{orderId:g.orderId,kind:"service_charge"}}});
+ if(r[0].status==="fulfilled"){expect(o.currentPriceApprovalId).toBe(p.id);expect(c.status).toBe("expected");expect(await mockDb.cashCustodyOperation.count({where:{orderId:g.orderId}})).toBe(0);}else{expect(o.currentPriceApprovalId).toBe(g.price.id);expect(c.status).toBe("held");expect(await mockDb.orderPriceApproval.count({where:{snapshotId:p.id}})).toBe(0);}
+});
+it("DOM-06 pending reservation and uncertain attempt freeze revisions even without successful payment",async()=>{
+ const g=await pricedJourney(),p=await revision(g);const config=await mockDb.paymentProviderConfig.create({data:{companyId:g.companyId,provider:"CLICK",environment:"TEST",secretEncrypted:"synthetic-unusable",secretMasked:"synthetic",callbackPath:"/synthetic",isEnabled:false}});
+ const intent=await mockDb.paymentIntent.create({data:{companyId:g.companyId,orderId:g.orderId,provider:"CLICK",providerConfigId:config.id,environment:"TEST",amountMinor:10000n,currency:"UZS",idempotencyKey:randomUUID(),status:"PENDING"}});
+ await unchanged(()=>approveOrderPrice(g.pricingChecker,revisionIntent(g,p)));
+ // The pending durable reservation is sufficient even with no provider call/attempt.
+ expect(await mockDb.paymentAttempt.count({where:{paymentIntentId:intent.id}})).toBe(0);
+ await mockDb.paymentIntent.update({where:{id:intent.id},data:{status:"PROCESSING"}});await mockDb.paymentAttempt.create({data:{paymentIntentId:intent.id,provider:"CLICK",status:"ERROR",errorCode:"SYNTHETIC_UNCERTAIN_TRANSPORT"}});await unchanged(()=>approveOrderPrice(g.pricingChecker,revisionIntent(g,p)));
+});
+it("DOM-06 injected publication failure rolls back approval, obligation, mirrors, audit and pointer; original retry succeeds",async()=>{
+ const g=await pricedJourney(),p=await revision(g),v=revisionIntent(g,p);
+ await pool.query(`CREATE FUNCTION cp_service_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'Synthetic obligation rollback'; END $$; CREATE TRIGGER cp_service_fail BEFORE INSERT ON "OrderServiceCashObligation" FOR EACH ROW EXECUTE FUNCTION cp_service_fail()`);
+ try{await unchanged(()=>approveOrderPrice(g.pricingChecker,v));}finally{await pool.query('DROP TRIGGER cp_service_fail ON "OrderServiceCashObligation"; DROP FUNCTION cp_service_fail()');}
+ expect((await approveOrderPrice(g.pricingChecker,v)).id).toBe(p.id);
+});
+it("DOM-06 zero accepted price publishes noncollectible source and no cash collection",async()=>{
+ const g=await pricedJourney("SENDER",0);await unchanged(()=>issueAcceptedOrderInvoice(g.maker,{orderId:g.orderId,operationId:randomUUID(),priceApprovalId:g.price.id,reason:"Noncollectible invoice remains unavailable"}));expect(await mockDb.cashCollection.count({where:{orderId:g.orderId}})).toBe(0);await unchanged(()=>executeRestrictedCash(actor(g.driver),"collect",cashIntent(g)));await warehouseOffer(g);
+ expect((await pool.query('SELECT amount,"collectionId" FROM "OrderServiceCashObligation" WHERE "orderId"=$1',[g.orderId])).rows[0]).toEqual({amount:"0.0000",collectionId:null});
+});
+
+import {importOrdersFromCsv} from "../../src/modules/orders-core/import/order-import";
+it("DOM-06 normal import preserves row receipts without Float cash seeds or duplicate row effects",async()=>{
+ const g=await pricedJourney();const fields=['senderName','senderPhone','receiverName','receiverPhone','pickupAddress','dropoffAddress','serviceType','currency','weightKg','customerEntityId','senderAddressId','receiverAddressId'];
+ const row=['Synthetic importer','+998900000001','Synthetic recipient','+998900000002','Synthetic A','Synthetic B','DOOR_TO_DOOR','UZS','2',g.body.customerEntityId,g.body.addresses.senderAddressId,g.body.addresses.receiverAddressId];
+ const csvText=fields.join(',')+'\n'+row.join(','),request={actor:g.maker,csvText,operationId:randomUUID()};
+ const first=await importOrdersFromCsv(request);expect(first.count).toBe(1);const id=first.orders[0].id;expect(await mockDb.cashCollection.count({where:{orderId:id}})).toBe(0);
+ const retry=await importOrdersFromCsv(request);expect(retry.orders.map(o=>o.id)).toEqual([id]);expect(retry.replayedRows).toBe(1);await unchanged(()=>importOrdersFromCsv({...request,csvText:csvText.replace('Synthetic importer','Conflicting importer')}));
+ const billTo=await bindOrderBillTo(g.maker,{orderId:id,operationId:randomUUID(),payerCustomerEntityId:g.body.customerEntityId,evidence:"Synthetic imported payer",reason:"Synthetic imported payer"});
+ await bindServicePaymentInstruction(g.maker,{orderId:id,operationId:randomUUID(),billToId:billTo.id,method:"CASH",collectionParty:"SENDER",evidence:"Synthetic imported instruction",reason:"Synthetic imported instruction"});
+ const accepted=await acceptOrderPrice(g.maker,{orderId:id,operationId:randomUUID(),reason:"Synthetic imported price"});expect(accepted.total).toBe("100.0000");expect(await mockDb.cashCollection.count({where:{orderId:id}})).toBe(1);
+});
+it("DOM-06 sender pickup requires exact collection; legacy unproved obligations are not adopted",async()=>{
+ const g=await pricedJourney();await updateDriverOrderStatus({actor:actor(g.driver),orderId:g.orderId,status:"pickup_in_progress"});await unchanged(()=>updateDriverOrderStatus({actor:actor(g.driver),orderId:g.orderId,status:"picked_up"}));
+ const untouched=await createOrderForActor({user:g.maker,body:{...g.body,operationId:randomUUID()}}),id=untouched.payload.order.id;
+ const b=await bindOrderBillTo(g.maker,{orderId:id,operationId:randomUUID(),payerCustomerEntityId:g.body.customerEntityId,evidence:"Synthetic legacy comparison",reason:"Synthetic legacy comparison"});
+ await bindServicePaymentInstruction(g.maker,{orderId:id,operationId:randomUUID(),billToId:b.id,method:"CASH",collectionParty:"SENDER",evidence:"Synthetic cash",reason:"Synthetic cash"});
+ // Deliberately invalid pre-upgrade row: negative test only, never a connected prerequisite.
+ await mockDb.cashCollection.create({data:{orderId:id,kind:"service_charge",expectedAmount:100,currency:"UZS"}});
+ await unchanged(()=>acceptOrderPrice(g.maker,{orderId:id,operationId:randomUUID(),reason:"Legacy must not be adopted"}));
+});
+
+it("DOM-06 concurrent instruction and initial acceptance publish one obligation; lost acknowledgement retries original result",async()=>{
+ const g=await pricedJourney(),made=await createOrderForActor({user:g.maker,body:{...g.body,operationId:randomUUID()}}),orderId=made.payload.order.id;
+ const billTo=await bindOrderBillTo(g.maker,{orderId,operationId:randomUUID(),payerCustomerEntityId:g.body.customerEntityId,evidence:"Synthetic duplicate payer",reason:"Synthetic duplicate payer"});
+ const input={orderId,operationId:randomUUID(),billToId:billTo.id,method:"CASH",collectionParty:"SENDER",evidence:"Synthetic immutable instruction",reason:"Synthetic instruction"};
+ const instructions=await Promise.all([bindServicePaymentInstruction(g.maker,input),bindServicePaymentInstruction(g.maker,input)]);expect(instructions[0]).toEqual(instructions[1]);
+ const v={orderId,operationId:randomUUID(),reason:"Synthetic concurrent acceptance"},prices=await Promise.all([acceptOrderPrice(g.maker,v),acceptOrderPrice(g.maker,v)]);expect(prices[0]).toEqual(prices[1]);
+ expect((await pool.query('SELECT count(*) FROM "OrderServiceCashObligation" WHERE "orderId"=$1',[orderId])).rows[0].count).toBe("1");expect(await mockDb.cashCollection.count({where:{orderId}})).toBe(1);
+ const collect=cashIntent(g);let confirmed:any;await expect((async()=>{confirmed=await executeRestrictedCash(actor(g.driver),"collect",collect);throw Error("Synthetic lost acknowledgement");})()).rejects.toThrow("Synthetic lost acknowledgement");const before=await graphDigest();expect(await executeRestrictedCash(actor(g.driver),"collect",collect)).toEqual(confirmed);expect(await graphDigest()).toBe(before);
+});
+it("DOM-06 source constraints and append-only evidence reject tampering without certifying legacy state",async()=>{
+ const g=await pricedJourney();for(const table of ["OrderServicePaymentInstruction","OrderServiceCashObligation"]){
+  const change=table==="OrderServicePaymentInstruction"?"reason='changed'":"amount=1";await unchanged(()=>pool.query('UPDATE "'+table+'" SET '+change+' WHERE "orderId"=$1',[g.orderId]));await unchanged(()=>pool.query('DELETE FROM "'+table+'" WHERE "orderId"=$1',[g.orderId]));await unchanged(()=>pool.query('TRUNCATE "'+table+'" CASCADE'));
+ }
+ await unchanged(()=>pool.query('INSERT INTO "OrderServiceCashObligation" ("priceApprovalId","tenantId","companyId","legalEntityId","orderId","instructionId","billToId","payerCustomerEntityId","policyVersionId",amount,currency,"collectionId") SELECT $1,"tenantId","companyId","legalEntityId","orderId","instructionId","billToId","payerCustomerEntityId","policyVersionId",amount,currency,"collectionId" FROM "OrderServiceCashObligation" WHERE "orderId"=$2',[randomUUID(),g.orderId]));
+ expect((await pool.query("SELECT convalidated FROM pg_constraint WHERE conname='RestrictedCashState_service_basis_fk'")).rows[0].convalidated).toBe(false);
+ expect((await acceptOrderPrice(g.maker,g.priceIntent)).id).toBe(g.price.id);
 });

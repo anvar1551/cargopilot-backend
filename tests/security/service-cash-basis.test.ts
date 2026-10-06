@@ -1,0 +1,23 @@
+jest.mock("../../src/config/prismaClient",()=>({__esModule:true,default:{}}));
+jest.mock("../../src/config/redis",()=>({getRedisClient:async()=>null}));
+import {randomUUID} from "node:crypto";
+import {assertServiceCollectionTiming,assertServiceBasisUntouched,assertExactServiceTransition,publishServiceObligation} from "../../src/modules/pricing-core/repo/service-cash-basis";
+import {servicePaymentInstructionSchema} from "../../src/modules/pricing-core/repo/order-price";
+const intent=()=>({orderId:randomUUID(),operationId:randomUUID(),billToId:randomUUID(),method:"CASH",collectionParty:"SENDER",evidence:"Synthetic instruction",reason:"Synthetic review"});
+it("explicit cash instruction has no implicit defaults",()=>{expect(servicePaymentInstructionSchema.parse(intent()).method).toBe("CASH");const {method,...v}=intent();expect(()=>servicePaymentInstructionSchema.parse(v)).toThrow();});
+it.each([{method:"CARD"},{collectionParty:"COMPANY"},{amount:"10.00"},{paid:true},{tenantId:randomUUID()}])("rejects unsupported authority %j",change=>expect(()=>servicePaymentInstructionSchema.parse({...intent(),...change})).toThrow());
+it.each([["SENDER","assigned","local-driver-cash.v1"],["SENDER","pickup_in_progress","local-driver-cash.v1"],["RECIPIENT","at_warehouse","warehouse-cash.v1"],["RECIPIENT","out_for_delivery","local-driver-cash.v1"]])("permits collection timing %s %s %s",(party,state,profile)=>expect(()=>assertServiceCollectionTiming(party,state,profile)).not.toThrow());
+it.each([["SENDER","picked_up","local-driver-cash.v1"],["SENDER","at_warehouse","warehouse-cash.v1"],["RECIPIENT","assigned","local-driver-cash.v1"],["RECIPIENT","at_warehouse","local-driver-cash.v1"],["RECIPIENT","out_for_delivery","warehouse-cash.v1"],["RECIPIENT","delivered","local-driver-cash.v1"]])("denies collection timing %s %s %s",(party,state,profile)=>expect(()=>assertServiceCollectionTiming(party,state,profile)).toThrow("CASH_COLLECTION_TIMING_REQUIRED"));
+it.each(["payment","invoice","cash","exact"])("freezes basis for %s",async field=>{const tx:any={$queryRaw:jest.fn().mockResolvedValue([{[field]:true}]),order:{findUnique:jest.fn().mockResolvedValue({paymentState:"UNPAID",serviceChargePaidStatus:"NOT_PAID"})}};await expect(assertServiceBasisUntouched(tx,randomUUID())).rejects.toThrow("CASH_BASIS_FROZEN");});
+it("a missing accepted source cannot bypass a sender transition",async()=>{const tx:any={$queryRaw:jest.fn().mockResolvedValueOnce([{collectionParty:"SENDER"}]).mockResolvedValueOnce([])};await expect(assertExactServiceTransition(tx,randomUUID(),"pickup")).rejects.toThrow("CASH_SERVICE_OBLIGATION_REQUIRED");});
+it("zero exact obligation requires no custody evidence",async()=>{const id=randomUUID(),tx:any={$queryRaw:jest.fn().mockResolvedValueOnce([{id,collectionParty:"RECIPIENT"}]).mockResolvedValueOnce([{instructionId:id,amount:"0.0000"}])};await assertExactServiceTransition(tx,randomUUID(),"delivery");expect(tx.$queryRaw).toHaveBeenCalledTimes(2);});
+
+it("positive-zero Decimal sign cannot create a collectible cash row",async()=>{
+ const orderId=randomUUID(),instruction={id:randomUUID(),tenantId:randomUUID(),companyId:randomUUID(),legalEntityId:randomUUID(),billToId:randomUUID(),payerCustomerEntityId:randomUUID(),collectionParty:"SENDER"};
+ const approval={...instruction,snapshotId:randomUUID(),orderId,total:"0.0000",currency:"UZS",actorUserId:randomUUID(),policyVersionId:randomUUID()};
+ const tx:any={$queryRaw:jest.fn().mockResolvedValueOnce([instruction]).mockResolvedValueOnce([{payment:false,invoice:false,cash:false,exact:false}]).mockResolvedValueOnce([]),$executeRaw:jest.fn(),
+ order:{findUnique:jest.fn().mockResolvedValue({paymentState:"UNPAID",serviceChargePaidStatus:"NOT_PAID"}),update:jest.fn()},
+ financeLegalEntity:{findUnique:jest.fn().mockResolvedValue({isActive:true,baseCurrency:"UZS"})},
+ cashCollection:{findUnique:jest.fn().mockResolvedValue(null),create:jest.fn(),update:jest.fn()},cashCollectionEvent:{create:jest.fn()},financeAuditEvent:{create:jest.fn()}};
+ await publishServiceObligation(tx,approval,{id:orderId,paymentType:"CASH"});expect(tx.cashCollection.create).not.toHaveBeenCalled();expect(tx.cashCollectionEvent.create).not.toHaveBeenCalled();expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
+});

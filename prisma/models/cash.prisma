@@ -31,6 +31,7 @@ enum CashCollectionEventType {
 }
 
 model CashCollection {
+ serviceObligations OrderServiceCashObligation[] @relation("ServiceObligationCollection")
   RestrictedCashReceipt_r1 RestrictedCashReceipt[] @relation("RestrictedCashReceipt_r1")
   RestrictedCashState_r1 RestrictedCashState[] @relation("RestrictedCashState_r1")
   id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid

@@ -1,4 +1,5 @@
 model RestrictedCashState {
+ serviceBasis OrderServiceCashObligation @relation("RestrictedCashServiceBasis",fields:[priceApprovalId,tenantId,companyId,legalEntityId,orderId,amount,currency],references:[priceApprovalId,tenantId,companyId,legalEntityId,orderId,amount,currency],onDelete:Restrict,onUpdate:Restrict,map:"RestrictedCashState_service_basis_fk")
  collectionId String @db.Uuid @id
  orderId String @db.Uuid
  tenantId String @db.Uuid

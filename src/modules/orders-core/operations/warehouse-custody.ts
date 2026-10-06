@@ -1,3 +1,4 @@
+import { assertExactServiceTransition } from "../../pricing-core/repo/service-cash-basis";
 import { createHash, randomUUID } from "crypto";
 import { OrderStatus, Prisma } from "@prisma/client";
 import { z } from "zod";
@@ -121,6 +122,7 @@ export async function executeWarehouseCustody(actor: OrderActor, orderId: string
           AND "userId"=${a.id}::uuid AND "companyMembershipId"=${a.companyMembershipId!}::uuid AND "tenantMembershipId"=${a.tenantMembershipId!}::uuid
           AND stage='delivery' AND state='confirmed' AND "createdAt">${previous!.createdAt}`;
         if (proof.length !== 1) deny("Current confirmed delivery proof required");
+        await assertExactServiceTransition(tx,orderId,"delivery");
         assertDeliveryCashSettled(order);
         phase = "delivered"; change.status = "delivered"; break;
       }

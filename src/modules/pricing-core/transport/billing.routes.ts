@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { ZodError } from "zod";
 import { fastifyAuth } from "../../identity-access/transport/fastify-auth";
 import { proposeBillingPolicy, decideBillingPolicy, readBillingPolicy } from "../repo/billing-policy";
-import { bindOrderBillTo, acceptOrderPrice, approveOrderPrice } from "../repo/order-price";
+import { bindOrderBillTo, bindServicePaymentInstruction, acceptOrderPrice, approveOrderPrice } from "../repo/order-price";
 export function billingRouteError(reply: any, error: unknown) {
   const e = error as { statusCode?: number; message?: string; code?: string };
   const status = error instanceof ZodError ? 400 : [400,403,404,409].includes(e.statusCode ?? 0) ? e.statusCode! : 500;
@@ -11,6 +11,7 @@ export function billingRouteError(reply: any, error: unknown) {
 export function registerBillingPolicyRoutes(fastify: FastifyInstance) {
   for(const [path,permission,handler] of [
     ["bill-to","billing.payers.bind",bindOrderBillTo],
+    ["service-payment-instruction","billing.payers.bind",bindServicePaymentInstruction],
     ["price-acceptance","pricing.orders.accept",acceptOrderPrice],
     ["price-approval","pricing.orders.approve",approveOrderPrice],
   ] as const)fastify.post("/orders/:id/"+path,{preHandler:fastifyAuth({permission})},async(req,reply)=>{

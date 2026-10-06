@@ -72,6 +72,8 @@ model RolePermission {
 }
 
 model CompanyMembership {
+ serviceInstructionsActor OrderServicePaymentInstruction[] @relation("ServiceInstructionActor")
+ serviceInstructionsBridge OrderServicePaymentInstruction[] @relation("ServiceInstructionBridge")
   RestrictedCashReceipt_r2 RestrictedCashReceipt[] @relation("RestrictedCashReceipt_r2")
   RestrictedCashTransferOffer_r3 RestrictedCashTransferOffer[] @relation("RestrictedCashTransferOffer_r3")
   RestrictedCashTransferOffer_r2 RestrictedCashTransferOffer[] @relation("RestrictedCashTransferOffer_r2")

@@ -8,9 +8,31 @@ import { requireCustomerEntityReference } from "../../customers-core/application
 import { billingActor, billingOwner, billingAuthority, billingError, billingHash, assertBillingRetry, loadApprovedBillingPolicy } from "./billing-policy";
 import { calculateAcceptedPrice, billingRouteIdentity } from "../domain/billing-calculation";
 
+import { serviceInstruction, assertServiceBasisUntouched, publishServiceObligation } from "./service-cash-basis";
 const request = z.object({ orderId: z.string().uuid().transform(v => v.toLowerCase()), operationId: z.string().uuid().transform(v => v.toLowerCase()),
   reason: z.string().trim().min(1).max(1000) }).strict();
 const payerRequest = request.extend({ payerCustomerEntityId: z.string().uuid().transform(v => v.toLowerCase()), evidence: z.string().trim().min(1).max(500) });
+export const servicePaymentInstructionSchema=request.extend({billToId:z.string().uuid().transform(v=>v.toLowerCase()),method:z.literal("CASH"),
+  collectionParty:z.enum(["SENDER","RECIPIENT"]),evidence:z.string().trim().min(1).max(500)});
+export async function bindServicePaymentInstruction(u:AppUser,raw:unknown){
+  const input=servicePaymentInstructionSchema.parse(raw),{operationId,...intent}=input,intentHash=billingHash(intent);
+  return prisma.$transaction(async tx=>{
+    const entity=await billingAuthority(tx,u,"billing.payers.bind"),o=await ownedOrder(tx,u,input.orderId,"billing.payers.bind");
+    const billTo=await tx.orderBillTo.findFirst({where:{id:input.billToId,orderId:o.id,...billingOwner(u),legalEntityId:entity.id}});
+    if(!billTo)throw billingError("CASH_BILL_TO_REQUIRED");
+    await requireCustomerEntityReference(u,billTo.payerCustomerEntityId);
+    const old=(await tx.$queryRaw<any[]>`SELECT * FROM "OrderServicePaymentInstruction" WHERE "tenantId"=${u.tenantId!}::uuid AND "operationId"=${operationId}::uuid`)[0];
+    if(old){assertBillingRetry(old,u,intentHash);return {id:old.id,orderId:old.orderId,method:old.method,collectionParty:old.collectionParty};}
+    await assertServiceBasisUntouched(tx,o.id);
+    if(o.paymentType!=="CASH" || o.currentPriceApprovalId || await serviceInstruction(tx,o.id))throw billingError("CASH_INSTRUCTION_ALREADY_BOUND_OR_INELIGIBLE");
+    const row=(await tx.$queryRaw<any[]>`INSERT INTO "OrderServicePaymentInstruction"
+      ("tenantId","companyId","legalEntityId","orderId","billToId","payerCustomerEntityId","actorUserId","companyMembershipId","tenantMembershipId","operationId","intentHash",method,"collectionParty",evidence,reason)
+      VALUES (${u.tenantId!}::uuid,${u.companyId!}::uuid,${entity.id}::uuid,${o.id}::uuid,${billTo.id}::uuid,${billTo.payerCustomerEntityId}::uuid,
+      ${u.id}::uuid,${u.companyMembershipId!}::uuid,${u.tenantMembershipId!}::uuid,${operationId}::uuid,${intentHash},'CASH',${input.collectionParty},${input.evidence},${input.reason}) RETURNING id`)[0];
+    await tx.financeAuditEvent.create({data:{legalEntityId:entity.id,actorUserId:u.id,action:"cash.service.instruction.bound",detailsJson:{instructionId:row.id,orderId:o.id,billToId:billTo.id,collectionParty:input.collectionParty,reason:input.reason}}});
+    return {id:row.id,orderId:o.id,method:"CASH",collectionParty:input.collectionParty};
+  },{maxWait:2000,timeout:10000});
+}
 async function ownedOrder(tx: Prisma.TransactionClient, u: AppUser, id: string, permission: string) {
   await requireAuthorizedOrder(u, id, permission);
   await tx.$queryRaw`SELECT id FROM "Order" WHERE id=${id}::uuid AND "tenantId"=${u.tenantId!}::uuid AND "ownerOrgId"=${u.companyId!}::uuid FOR UPDATE`;
@@ -105,8 +127,10 @@ async function compute(tx: Prisma.TransactionClient,u:AppUser,o:Awaited<ReturnTy
 }
 async function acceptSnapshot(tx:Prisma.TransactionClient,u:AppUser,s:any,o:Awaited<ReturnType<typeof ownedOrder>>,operationId:string,intentHash:string,reason:string) {
   if(o.currentPriceApprovalId!==s.previousApprovalId || await tx.invoice.findUnique({where:{orderId:o.id}}))throw billingError("BILLING_REVISION_STALE_OR_INVOICED");
+  if(await serviceInstruction(tx,o.id))await assertServiceBasisUntouched(tx,o.id);
   const approved=await tx.orderPriceApproval.create({data:{snapshotId:s.id,...billingOwner(u),...billingActor(u),legalEntityId:s.legalEntityId,orderId:o.id,
     billToId:s.billToId,policyVersionId:s.policyVersionId,payerCustomerEntityId:s.payerCustomerEntityId,currency:s.currency,total:s.total,kind:s.kind,makerUserId:s.actorUserId,operationId,intentHash,reason}});
+  await publishServiceObligation(tx,approved,o);
   const changed=await tx.order.updateMany({where:{id:o.id,tenantId:u.tenantId,ownerOrgId:u.companyId,currentPriceApprovalId:s.previousApprovalId},data:{currentPriceApprovalId:s.id}});
   if(changed.count!==1)throw billingError("BILLING_REVISION_CONFLICT");
   await tx.financeAuditEvent.create({data:{legalEntityId:s.legalEntityId,actorUserId:u.id,action:"billing.price.accepted",detailsJson:{orderId:o.id,snapshotId:s.id,previousApprovalId:s.previousApprovalId,reason}}});

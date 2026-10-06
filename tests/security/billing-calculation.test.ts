@@ -42,3 +42,9 @@ it("unsupported automatic modes, tax absence, money Numbers and malformed amount
   expect(() => parseBillingPolicy(syntheticBillingPolicy({ fees: [{ service: "packing", amount: 1.2 }] }))).toThrow();
   expect(() => parseBillingPolicy(syntheticBillingPolicy({ discounts: [{ code: "test", type: "percent", value: "101" }] }))).toThrow();
 });
+
+it("explicit approved zero total has no collectible charge; negative reductions remain rejected",()=>{
+ const p=syntheticBillingPolicy({fees:[],discounts:[{code:"synthetic_free",type:"percent",value:"100"}],tax:{treatment:"not_applicable",authorityReference:"Synthetic explicit policy"}});
+ expect(calculateAcceptedPrice(p,"100")).toMatchObject({total:"0.00",requiresIndependentApproval:true});
+ expect(()=>calculateAcceptedPrice({...p,discounts:[{code:"invalid",type:"flat",value:"101"}]},"100")).toThrow("Discount exceeds charge basis");
+});

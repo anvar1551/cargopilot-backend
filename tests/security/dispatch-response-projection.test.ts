@@ -1,6 +1,10 @@
 jest.mock("../../src/config/prismaClient", () => ({ __esModule: true, default: require("./fixtures").database }));
 jest.mock("../../src/modules/analytics-core/infrastructure/analyticsOutbox", () => ({ enqueueCargoPilotDomainEventsTx: jest.fn(async () => undefined) }));
 jest.mock("../../src/modules/identity-access/access-control", () => ({ loadAccessSnapshot: jest.fn(), buildMembershipOrderScopeWhere: jest.fn() }));
+// Projection/transaction-order tests, not driver or reference-pin authorization evidence.
+// Actual eligibility and lock invariants are exercised by disposable PostgreSQL journeys.
+jest.mock("../../src/modules/identity-access/application/driver-eligibility",()=>({requireAcceptedDriver:jest.fn(async(_tx:any,_ctx:any,id:string)=>({id,userId:"synthetic-driver",tenantMembershipId:"synthetic-tenant-member",driverType:"local"}))}));
+jest.mock("../../src/modules/identity-access/application/credential-lock",()=>({lockSelectedIdentityReferences:jest.fn(async()=>true)}));
 import { loadAccessSnapshot, buildMembershipOrderScopeWhere } from "../../src/modules/identity-access/access-control";
 import { database as db } from "./fixtures";
 import { assignDriversBulk, updateOrdersStatusBulk, updateDriverOrderStatus } from "../../src/modules/orders-core/operations/order-status";
@@ -13,7 +17,9 @@ beforeEach(() => {
   jest.clearAllMocks();
   db.orderCustodyAction.count.mockResolvedValue(0);
   db.$executeRawUnsafe.mockResolvedValue(0);
-  db.$queryRaw.mockResolvedValue([{id:"synthetic-order"}]);
+  db.$queryRaw.mockImplementation(async(q:any)=>String(q.sql??q.join?.("")??q).includes("OrderServicePaymentInstruction")?[]:[{id:"synthetic-order"}]);
+  db.$executeRaw.mockResolvedValue(0);
+  db.companyMembership.findUnique.mockResolvedValue({id:actor.companyMembershipId,userId:actor.id,tenantId:actor.tenantId,companyId:actor.companyId,tenantMembershipId:actor.tenantMembershipId});
   (loadAccessSnapshot as jest.Mock).mockResolvedValue({...actor,userId:actor.id,permissionCodes:["shipment.assignCourier","shipment.changeStatus"],roleCodes:[],warehouseId:null});
   (buildMembershipOrderScopeWhere as jest.Mock).mockResolvedValue({tenantId:actor.tenantId,ownerOrgId:actor.companyId});
   db.$transaction.mockImplementation(async (fn: any) => { insideTransaction=true; try { return await fn(db); } finally { insideTransaction=false; } });
@@ -58,7 +64,7 @@ it.each([
   (loadAccessSnapshot as jest.Mock).mockResolvedValue({...actor,userId:summary.assignedDriverId,permissionCodes:["shipment.changeStatus"],roleCodes:[],warehouseId:null});
   db.order.findFirst.mockResolvedValueOnce(summary).mockResolvedValueOnce(state);
   await expect(updateDriverOrderStatus({actor:{...actor,id:summary.assignedDriverId},orderId:summary.id,status:status as any})).rejects.toThrow(message);
-  expect(db.$queryRaw).toHaveBeenCalledTimes(1);expect(db.order.updateMany).not.toHaveBeenCalled();expect(db.tracking.create).not.toHaveBeenCalled();expect(enqueueCargoPilotDomainEventsTx).not.toHaveBeenCalled();
+  expect(db.$queryRaw).toHaveBeenCalledTimes(status==="picked_up"?2:1);expect(db.order.updateMany).not.toHaveBeenCalled();expect(db.tracking.create).not.toHaveBeenCalled();expect(enqueueCargoPilotDomainEventsTx).not.toHaveBeenCalled();
   expect(db.$transaction.mock.calls[0][1]).toEqual({isolationLevel:"ReadCommitted",maxWait:2000,timeout:10000});
 });
 it("missing lock target rejects without writes or a protected response",async()=>{

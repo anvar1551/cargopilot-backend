@@ -54,6 +54,7 @@ model BillingPolicyDecision {
 }
 
 model OrderBillTo {
+ serviceInstructions OrderServicePaymentInstruction[] @relation("ServiceInstructionBillTo")
   OrderPriceSnapshot_billto OrderPriceSnapshot[] @relation("OrderPriceSnapshot_billto")
   id String @db.Uuid @id @default(dbgenerated("public.uuid_generate_v7()"))
   tenantId String @db.Uuid
@@ -119,6 +120,7 @@ model OrderPriceSnapshot {
 }
 
 model OrderPriceApproval {
+ serviceObligations OrderServiceCashObligation[] @relation("ServiceObligationSource")
   RestrictedCashState_r6 RestrictedCashState[] @relation("RestrictedCashState_r6")
  @@unique([snapshotId,tenantId,companyId,legalEntityId,orderId],map:"Price_cash_owner_key")
   policyVersionId String @db.Uuid

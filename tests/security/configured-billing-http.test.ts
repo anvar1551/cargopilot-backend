@@ -1,12 +1,12 @@
 jest.mock("../../src/modules/identity-access/transport/fastify-auth",()=>({fastifyAuth:(o:any)=>async(req:any,reply:any)=>{mockPermission=o.permission;if(!mockAuthenticated)return reply.code(401).send({error:"Unauthorized"});req.user=mockUser;}}));
 jest.mock("../../src/modules/pricing-core/repo/billing-policy",()=>({proposeBillingPolicy:jest.fn(),decideBillingPolicy:jest.fn(),readBillingPolicy:jest.fn()}));
-jest.mock("../../src/modules/pricing-core/repo/order-price",()=>({bindOrderBillTo:jest.fn(),acceptOrderPrice:jest.fn(),approveOrderPrice:jest.fn()}));
+jest.mock("../../src/modules/pricing-core/repo/order-price",()=>({bindOrderBillTo:jest.fn(),bindServicePaymentInstruction:jest.fn(),acceptOrderPrice:jest.fn(),approveOrderPrice:jest.fn()}));
 jest.mock("../../src/modules/invoice-core/application/invoiceRepo",()=>({issueOrderInvoiceForActor:jest.fn(),listInvoicesForActor:jest.fn(),getAuthorizedInvoiceFile:jest.fn()}));
 jest.mock("../../src/utils/s3Presign",()=>({presignGetObject:jest.fn()}));
 import Fastify from "fastify";
 import { registerBillingPolicyRoutes } from "../../src/modules/pricing-core/transport/billing.routes";
 import invoiceRoutes from "../../src/modules/invoice-core/transport/fastify-routes";
-import { acceptOrderPrice } from "../../src/modules/pricing-core/repo/order-price";
+import { acceptOrderPrice, bindServicePaymentInstruction } from "../../src/modules/pricing-core/repo/order-price";
 import { issueOrderInvoiceForActor } from "../../src/modules/invoice-core/application/invoiceRepo";
 import { readBillingPolicy } from "../../src/modules/pricing-core/repo/billing-policy";
 const id="019b0000-0000-7000-8100-000000000001",operationId="019b0000-0000-7000-8100-000000000002",priceApprovalId="019b0000-0000-7000-8100-000000000003";
@@ -19,6 +19,12 @@ it("price acceptance forwards only verified context, path order and original ope
  jest.mocked(acceptOrderPrice).mockResolvedValue({state:"accepted"} as any);
  const body={operationId,reason:"Synthetic"};const r=await app.inject({method:"POST",url:"/orders/"+id+"/price-acceptance",payload:body});
  expect(r.statusCode).toBe(201);expect(mockPermission).toBe("pricing.orders.accept");expect(acceptOrderPrice).toHaveBeenCalledWith(mockUser,{...body,orderId:id});
+});
+it("cash instruction uses the existing payer permission and verified selected context",async()=>{
+ jest.mocked(bindServicePaymentInstruction).mockResolvedValue({id,method:"CASH",collectionParty:"SENDER"} as any);
+ const body={operationId,billToId:priceApprovalId,method:"CASH",collectionParty:"SENDER",evidence:"Synthetic",reason:"Synthetic"};
+ const r=await app.inject({method:"POST",url:"/orders/"+id+"/service-payment-instruction",payload:body});
+ expect(r.statusCode).toBe(201);expect(mockPermission).toBe("billing.payers.bind");expect(bindServicePaymentInstruction).toHaveBeenCalledWith(mockUser,{...body,orderId:id});
 });
 it("path/body order conflict rejects before service work",async()=>{
  expect((await app.inject({method:"POST",url:"/orders/"+id+"/price-acceptance",payload:{operationId,reason:"Synthetic",orderId:priceApprovalId}})).statusCode).toBe(400);

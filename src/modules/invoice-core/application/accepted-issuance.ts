@@ -6,6 +6,7 @@ import { requireCustomerEntityReference } from "../../customers-core/application
 import { billingAuthority, billingOwner, billingActor, billingHash, billingError, assertBillingRetry } from "../../pricing-core/repo/billing-policy";
 import { parseBillingPolicy } from "../../pricing-core/domain/billing-calculation";
 
+import { serviceInstruction, currentServiceObligation } from "../../pricing-core/repo/service-cash-basis";
 export const acceptedInvoiceIntentSchema = z.object({ orderId:z.string().uuid().transform(v=>v.toLowerCase()),operationId:z.string().uuid().transform(v=>v.toLowerCase()),
   priceApprovalId:z.string().uuid().transform(v=>v.toLowerCase()),reason:z.string().trim().min(1).max(1000) }).strict();
 export async function issueAcceptedOrderInvoice(u:AppUser,raw:unknown){
@@ -27,7 +28,10 @@ export async function issueAcceptedOrderInvoice(u:AppUser,raw:unknown){
     }
     if(o.currentPriceApprovalId!==input.priceApprovalId)throw billingError("BILLING_CURRENT_ACCEPTED_PRICE_REQUIRED");
     const accepted=await tx.orderPriceApproval.findFirst({where:{snapshotId:input.priceApprovalId,orderId:o.id,...billingOwner(u),legalEntityId:entity.id},include:{source:true}});
+    const instruction=await serviceInstruction(tx,o.id),basis=instruction?await currentServiceObligation(tx,o.id):null;
+    if(instruction && (!basis || basis.priceApprovalId!==input.priceApprovalId || basis.instructionId!==instruction.id))throw billingError("CASH_INVOICE_BASIS_CONFLICT");
     if(!accepted || billingHash(accepted.source.content)!==accepted.source.contentHash)throw billingError("BILLING_ACCEPTED_PRICE_REQUIRED");
+    if(!accepted.total.gt(0))throw billingError("BILLING_NONCOLLECTIBLE_INVOICE_UNAVAILABLE");
     await requireCustomerEntityReference(u,accepted.payerCustomerEntityId);
     const policy=await tx.billingPolicyVersion.findFirst({where:{id:accepted.policyVersionId,...billingOwner(u),legalEntityId:entity.id,currency:accepted.currency,decisions:{some:{decision:"approved"}}}});
     if(!policy || billingHash(policy.content)!==policy.contentHash)throw billingError("BILLING_ACCEPTED_POLICY_REQUIRED");

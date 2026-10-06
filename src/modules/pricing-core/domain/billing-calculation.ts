@@ -69,6 +69,6 @@ export function calculateAcceptedPrice(p: BillingPolicy, base: string) {
   const tax = () => { const basis = subtotal.toFixed(p.precision);
     subtotal = subtotal.plus(add("tax", p.tax.treatment, p.tax.treatment === "exclusive_percent" ? subtotal.times(p.tax.rate).div(100) : "0", basis)); };
   if (p.calculationOrder === "discount_then_tax") { discount(); tax(); } else { tax(); discount(); }
-  if (!subtotal.gt(0) || subtotal.gte("10000000000000000")) throw Object.assign(new Error("Unsupported accepted total"), { statusCode: 409, code: "BILLING_CALCULATION_REJECTED" });
+  if (subtotal.isNegative() || subtotal.gte("10000000000000000")) throw Object.assign(new Error("Unsupported accepted total"), { statusCode: 409, code: "BILLING_CALCULATION_REJECTED" });
   return { components, total: subtotal.toFixed(p.precision), currency: p.currency, requiresIndependentApproval: p.discounts.length > 0 };
 }

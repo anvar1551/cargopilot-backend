@@ -4,7 +4,7 @@ jest.mock("../../src/config/prismaClient",()=>({__esModule:true,default:{$queryR
 jest.mock("../../src/config/redis",()=>({getRedisClient:async()=>null}));
 import {executeRestrictedCash,readRestrictedCash} from "../../src/modules/orders-core/cash/restricted-cash.service";
 const actor=()=>{const membershipId=randomUUID();return {id:randomUUID(),tenantId:randomUUID(),companyId:randomUUID(),tenantMembershipId:randomUUID(),companyMembershipId:membershipId,membershipId} as any;};
-const intent=()=>({orderId:randomUUID(),operationId:randomUUID(),kind:"service_charge"});
+const intent=()=>({orderId:randomUUID(),operationId:randomUUID(),kind:"service_charge",obligationId:randomUUID()});
 afterEach(()=>{expect(mockQuery).not.toHaveBeenCalled();expect(mockTransaction).not.toHaveBeenCalled();});
 it.each([{amount:100},{tenantId:randomUUID()},{companyId:randomUUID()},{paid:true},{toDriverId:randomUUID()}])("forbids client monetary/ownership authority before database work %j",change=>expect(executeRestrictedCash(actor(),"collect",{...intent(),...change})).rejects.toThrow());
 it.each(["tenantId","tenantMembershipId","companyMembershipId","membershipId"])("missing %s fails before database work",key=>{const a:any=actor();delete a[key];return expect(executeRestrictedCash(a,"collect",intent())).rejects.toThrow();});

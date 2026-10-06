@@ -5,7 +5,6 @@ import { requireTenantBoundOrderCompanyAuthority, hasCompanyScope } from "../dom
 import prisma from "../../../config/prismaClient";
 import { OrderPaymentState, OrderStatus, Prisma } from "@prisma/client";
 
-import { buildInitialOrderCashCollections } from "../cash";
 import { enqueueCargoPilotDomainEventsTx } from "../../analytics-core/infrastructure/analyticsOutbox";
 import { resolveOrderSlaSnapshot } from "../sla";
 import { CreateOrderRepoPayload } from "../domain/orderCreate.mapper";
@@ -163,18 +162,7 @@ export const createOrder = async (
           },
         ];
 
-    const cashCollectionsToCreate = buildInitialOrderCashCollections(
-      {
-        codAmount: payload.codAmount ?? null,
-        codPaidStatus: "NOT_PAID",
-        serviceCharge: payload.serviceCharge ?? null,
-        serviceChargePaidStatus: "NOT_PAID",
-        deliveryChargePaidBy: payload.deliveryChargePaidBy ?? null,
-        currency: payload.currency ?? null,
-      },
-      actor,
-    );
-
+    // DOM-06: creation quotes/COD requests are not accepted cash obligations.
     const created = await tx.order.create({
       data: {
         tenantId: membership.tenantId,
@@ -230,9 +218,6 @@ export const createOrder = async (
         shipmentInsurance: payload.shipmentInsurance ?? false,
         createdAt,
         parcels: { create: parcelsToCreate },
-        ...(cashCollectionsToCreate.length > 0
-          ? { cashCollections: { create: cashCollectionsToCreate } }
-          : {}),
         trackingEvents: {
           create: {
             status: OrderStatus.pending,

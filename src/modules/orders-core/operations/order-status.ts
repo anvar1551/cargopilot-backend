@@ -1,5 +1,6 @@
 import { requireAcceptedDriver } from "../../identity-access/application/driver-eligibility";
 import { requireInitialPickupAuthority } from "../domain/custody-access";
+import { assertExactServiceTransition } from "../../pricing-core/repo/service-cash-basis";
 import prisma from "../../../config/prismaClient";
 import { persistDispatchNotification, withDispatchNotifications } from "../domain/dispatch-notification";
 import { enqueueCargoPilotDomainEventsTx } from "../../analytics-core/infrastructure/analyticsOutbox";
@@ -443,6 +444,7 @@ export async function updateOrdersStatusBulk(args: {
     // The warehouse target allowlist does not establish a manual transition matrix.
     const notificationIds: string[] = [];
     for (const order of orders) {
+      if(args.status===OrderStatus.picked_up)await assertExactServiceTransition(tx,order.id,"pickup");
       assertDriverStatusTransition(actor,order,args.status,args.reasonCode);
       if (args.warehouseId && args.warehouseId !== order.currentWarehouseId) throw orderError("Warehouse does not belong to current order state",403);
     }
@@ -496,6 +498,7 @@ export async function updateDriverOrderStatus(args: {
     if (!order) {
       throw orderError("Order not found", 404);
     }
+    if(status===OrderStatus.picked_up)await assertExactServiceTransition(tx,orderId,"pickup");
     assertDriverStatusTransition(actor,order,status,reasonCode);
 
     const updateData: any = { status, updatedAt:nextDispatchTime(order.updatedAt) };

@@ -1,0 +1,52 @@
+// DOM-06 service money only. Merchant goods COD has no authority in these models.
+model OrderServicePaymentInstruction {
+ id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+ tenantId String @db.Uuid
+ companyId String @db.Uuid
+ legalEntityId String @db.Uuid
+ orderId String @unique @db.Uuid
+ billToId String @db.Uuid
+ payerCustomerEntityId String @db.Uuid
+ actorUserId String @db.Uuid
+ companyMembershipId String @db.Uuid
+ tenantMembershipId String @db.Uuid
+ operationId String @db.Uuid
+ intentHash String
+ method String
+ collectionParty String
+ evidence String
+ reason String
+ createdAt DateTime @default(now())
+ billTo OrderBillTo @relation("ServiceInstructionBillTo",fields:[billToId,tenantId,companyId,legalEntityId,orderId,payerCustomerEntityId],references:[id,tenantId,companyId,legalEntityId,orderId,payerCustomerEntityId],onDelete:Restrict,onUpdate:Restrict,map:"ServiceInstruction_billto_fk")
+ actor CompanyMembership @relation("ServiceInstructionActor",fields:[companyMembershipId,actorUserId,tenantId,companyId],references:[id,userId,tenantId,companyId],onDelete:Restrict,onUpdate:Restrict,map:"ServiceInstruction_actor_fk")
+ bridge CompanyMembership @relation("ServiceInstructionBridge",fields:[companyMembershipId,tenantMembershipId,actorUserId,tenantId],references:[id,tenantMembershipId,userId,tenantId],onDelete:Restrict,onUpdate:Restrict,map:"ServiceInstruction_bridge_fk")
+ obligations OrderServiceCashObligation[] @relation("ServiceObligationInstruction")
+ @@unique([tenantId,operationId])
+ @@unique([id,tenantId,companyId,legalEntityId,orderId,billToId,payerCustomerEntityId])
+ @@index([tenantId,companyId,orderId],map:"ServiceInstruction_owner_idx")
+}
+model OrderServiceCashObligation {
+ priceApprovalId String @id @db.Uuid
+ tenantId String @db.Uuid
+ companyId String @db.Uuid
+ legalEntityId String @db.Uuid
+ orderId String @db.Uuid
+ instructionId String @db.Uuid
+ billToId String @db.Uuid
+ payerCustomerEntityId String @db.Uuid
+ policyVersionId String @db.Uuid
+ amount Decimal @db.Decimal(20,4)
+ currency String @db.VarChar(3)
+ collectionId String? @db.Uuid
+ previousApprovalId String? @db.Uuid
+ createdAt DateTime @default(now())
+ source OrderPriceApproval @relation("ServiceObligationSource",fields:[priceApprovalId,tenantId,companyId,legalEntityId,orderId,currency,amount,billToId,payerCustomerEntityId,policyVersionId],references:[snapshotId,tenantId,companyId,legalEntityId,orderId,currency,total,billToId,payerCustomerEntityId,policyVersionId],onDelete:Restrict,onUpdate:Restrict,map:"ServiceObligation_source_fk")
+ instruction OrderServicePaymentInstruction @relation("ServiceObligationInstruction",fields:[instructionId,tenantId,companyId,legalEntityId,orderId,billToId,payerCustomerEntityId],references:[id,tenantId,companyId,legalEntityId,orderId,billToId,payerCustomerEntityId],onDelete:Restrict,onUpdate:Restrict,map:"ServiceObligation_instruction_fk")
+ collection CashCollection? @relation("ServiceObligationCollection",fields:[orderId,collectionId],references:[orderId,id],onDelete:Restrict,onUpdate:Restrict,map:"ServiceObligation_collection_fk")
+ previous OrderServiceCashObligation? @relation("ServiceObligationPrevious",fields:[previousApprovalId,tenantId,companyId,legalEntityId,orderId],references:[priceApprovalId,tenantId,companyId,legalEntityId,orderId],onDelete:Restrict,onUpdate:Restrict,map:"ServiceObligation_previous_fk")
+ next OrderServiceCashObligation[] @relation("ServiceObligationPrevious")
+ states RestrictedCashState[] @relation("RestrictedCashServiceBasis")
+ @@unique([priceApprovalId,tenantId,companyId,legalEntityId,orderId,amount,currency],map:"ServiceObligation_money_key")
+ @@unique([priceApprovalId,tenantId,companyId,legalEntityId,orderId],map:"ServiceObligation_owner_key")
+ @@index([tenantId,companyId,orderId],map:"ServiceObligation_owner_idx")
+}

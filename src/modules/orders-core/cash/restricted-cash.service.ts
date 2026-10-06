@@ -11,9 +11,10 @@ import { companyMembershipPrimitives } from "../../identity-access/application/c
 import { loadCustodySource,initialPickupWhere } from "../domain/custody-access";
 import { requireAcceptedDriver } from "../../identity-access/application/driver-eligibility";
 import { enqueueCargoPilotDomainEventsTx } from "../../analytics-core/infrastructure/analyticsOutbox";
+import { currentServiceObligation, assertServiceCollectionTiming } from "../../pricing-core/repo/service-cash-basis";
 const id=z.string().uuid().transform(v=>v.toLowerCase());
 const common={orderId:id,operationId:z.string().regex(/^[A-Za-z0-9:_-]{8,100}$/),kind:z.enum(["cod","service_charge"]),note:z.string().max(500).regex(/^[^\x00-\x1f\x7f]*$/).nullable().optional()};
-const schemas={collect:z.object({...common,warehouseId:id.optional()}).strict(),
+const schemas={collect:z.object({...common,obligationId:id,warehouseId:id.optional()}).strict(),
  offer:z.object({...common,expectedEventId:id,recipientMembershipId:id,recipientWarehouseId:id.nullable()}).strict(),
  accept:z.object({...common,expectedEventId:id,offerId:id}).strict(),
  settle:z.object({...common,expectedEventId:id}).strict()};
@@ -33,6 +34,8 @@ async function pin(tx:Tx,ids:string[],context:{tenantId:string;companyId:string}
 }
 async function held(tx:Tx,c:Cap,order:any,kind:string){
  const state=(await tx.$queryRaw<any[]>`SELECT * FROM "RestrictedCashState" WHERE "orderId"=${order.id}::uuid AND kind=${kind} AND "tenantId"=${c.tenantId}::uuid AND "companyId"=${c.companyId}::uuid FOR UPDATE`)[0];
+ const basis=await currentServiceObligation(tx,order.id);
+ if(!basis || !state || basis.priceApprovalId!==state.priceApprovalId || basis.collectionId!==state.collectionId || !decimal(basis.amount).eq(state.amount) || basis.currency!==state.currency)return cashDenied("CASH_EXACT_OWNERSHIP_UNPROVEN",409);
  if(!state||state.legalEntityId!==c.legalEntityId)return cashDenied("CASH_EXACT_OWNERSHIP_UNPROVEN",409);
  const row=await tx.cashCollection.findUnique({where:{id:state.collectionId},include:{events:{orderBy:[{createdAt:"desc"},{id:"desc"}],take:1}}});
  const receipt=await tx.cashCustodyOperation.findUnique({where:{eventId:state.eventId}});
@@ -76,11 +79,16 @@ async function monetaryBasis(tx:Tx,c:Cap,o:any,kind:string){
  // DOM-06 merchant COD provenance is absent. Never manufacture it from a Float.
  if(kind!=="service_charge")return cashDenied("CASH_MERCHANT_BASIS_UNAVAILABLE",409);
  if(!o.currentPriceApprovalId||["CARD","TRANSFER"].includes(o.paymentType)||!["SENDER","RECIPIENT"].includes(o.deliveryChargePaidBy)||o.serviceChargePaidStatus!=="NOT_PAID")return cashDenied("CASH_ACCEPTED_MONETARY_BASIS_REQUIRED",409);
+ if(o.paymentState!=="UNPAID" || await tx.paymentIntent.findFirst({where:{orderId:o.id},select:{id:true}}))return cashDenied("CASH_PAYMENT_ACTIVITY_CONFLICT",409);
+ const obligation=await currentServiceObligation(tx,o.id);
+ if(!obligation || obligation.tenantId!==c.tenantId || obligation.companyId!==c.companyId || obligation.legalEntityId!==c.legalEntityId || obligation.priceApprovalId!==o.currentPriceApprovalId || !decimal(obligation.amount).gt(0))return cashDenied("CASH_SERVICE_OBLIGATION_REQUIRED",409);
+ assertServiceCollectionTiming(obligation.collectionParty,o.status,c.profileRevision);
  const p=await tx.orderPriceApproval.findUnique({where:{snapshotId:o.currentPriceApprovalId},include:{source:true}});
  const payer=p?await tx.orderBillTo.findUnique({where:{id:p.billToId}}):null;
  const entity=await tx.financeLegalEntity.findFirst({where:{id:c.legalEntityId,tenantId:c.tenantId,companyId:c.companyId,isActive:true}});
- if(!p||!payer||!entity||p.tenantId!==c.tenantId||p.companyId!==c.companyId||p.legalEntityId!==c.legalEntityId||p.orderId!==o.id||p.currency!==entity.baseCurrency||p.currency!==o.currency||payer.orderId!==o.id||payer.legalEntityId!==c.legalEntityId||payer.payerCustomerEntityId!==p.payerCustomerEntityId||!p.total.isPositive()||!p.source.total.eq(p.total)||p.source.contentHash!==billingHash(p.source.content))return cashDenied("CASH_ACCEPTED_MONETARY_BASIS_REQUIRED",409);
+ if(!p||!payer||!entity||p.tenantId!==c.tenantId||p.companyId!==c.companyId||p.legalEntityId!==c.legalEntityId||p.orderId!==o.id||p.currency!==entity.baseCurrency||p.currency!==o.currency||payer.orderId!==o.id||payer.legalEntityId!==c.legalEntityId||payer.payerCustomerEntityId!==p.payerCustomerEntityId||!p.total.gt(0)||!p.source.total.eq(p.total)||p.source.contentHash!==billingHash(p.source.content))return cashDenied("CASH_ACCEPTED_MONETARY_BASIS_REQUIRED",409);
  // Mirrors can reject inconsistency; they cannot determine or adjust accepted money.
+ if(!decimal(obligation.amount).eq(p.total)||obligation.currency!==p.currency)return cashDenied("CASH_OBLIGATION_SOURCE_CONFLICT",409);
  if(o.serviceCharge===null||!decimal(o.serviceCharge).eq(p.total)||String(p.total.toNumber())!==p.total.toString())return cashDenied("CASH_MIRROR_RECONCILIATION_REQUIRED",409);
  return p;
 }
@@ -102,7 +110,9 @@ export async function executeRestrictedCash(actor:AppUser,action:keyof typeof sc
   const fingerprint=createHash("sha256").update(JSON.stringify({action,context:requested,intent:{...v,note:v.note??null}})).digest("hex");
   const old=(await tx.$queryRaw<any[]>`SELECT * FROM "RestrictedCashReceipt" WHERE "tenantId"=${cap.tenantId}::uuid AND "companyId"=${cap.companyId}::uuid AND "operationId"=${v.operationId}`)[0];
   if(old){if(old.fingerprint!==fingerprint||old.actorMembershipId!==cap.membershipId||old.legalEntityId!==cap.legalEntityId)return cashDenied("CASH_OPERATION_CONFLICT",409);
-   const result=old.result;if(result.sourceWarehouseId){if(!cap.warehouseIds.includes(result.sourceWarehouseId))return cashDenied("CASH_RECEIPT_RESOURCE_CEILING_REQUIRED");if(cap.profileRevision==="warehouse-cash.v1")warehouse(cap,result.sourceWarehouseId);}
+   const result=old.result,receiptBasis=await currentServiceObligation(tx,order.id);
+   if(!receiptBasis || receiptBasis.collectionId!==old.collectionId || receiptBasis.legalEntityId!==old.legalEntityId || !decimal(receiptBasis.amount).eq(result.amount) || receiptBasis.currency!==result.currency)return cashDenied("CASH_RECEIPT_BASIS_UNPROVEN",409);
+   if(result.sourceWarehouseId){if(!cap.warehouseIds.includes(result.sourceWarehouseId))return cashDenied("CASH_RECEIPT_RESOURCE_CEILING_REQUIRED");if(cap.profileRevision==="warehouse-cash.v1")warehouse(cap,result.sourceWarehouseId);}
    if(old.transferOfferId){const prior=(await tx.$queryRaw<any[]>`SELECT * FROM "RestrictedCashTransferOffer" WHERE id=${old.transferOfferId}::uuid AND "tenantId"=${cap.tenantId}::uuid AND "companyId"=${cap.companyId}::uuid`)[0];
     if(!prior||prior.legalEntityId!==cap.legalEntityId)return cashDenied();
     const endpointWarehouse=prior.recipientWarehouseId??prior.sourceWarehouseId;
@@ -112,6 +122,7 @@ export async function executeRestrictedCash(actor:AppUser,action:keyof typeof sc
   if(!["assigned","pickup_in_progress","picked_up","at_warehouse","in_transit","out_for_delivery","delivered"].includes(order.status))return cashDenied("CASH_ORDER_STATE_REQUIRED",409);
   let state:any,row:any,amount:Prisma.Decimal,currency:string,priceApprovalId:string,holderMembershipId=cap.membershipId,holderUserId=cap.userId,holderWarehouseId:string|null=null,offer:any=null;
   if(action==="collect"){
+   const selected=await currentServiceObligation(tx,order.id);if(!selected || selected.priceApprovalId!==v.obligationId)return cashDenied("CASH_OBLIGATION_STALE",409);
    const p=await monetaryBasis(tx,cap,order,v.kind);amount=p.total;currency=p.currency;priceApprovalId=p.snapshotId;
    if(cap.profileRevision==="local-driver-cash.v1"){
     const physical=await loadCustodySource(tx,{...cap.context,membershipId:cap.membershipId} as any,order.id);
@@ -122,6 +133,8 @@ export async function executeRestrictedCash(actor:AppUser,action:keyof typeof sc
    }else return cashDenied();
    await tx.$queryRaw`SELECT id FROM "CashCollection" WHERE "orderId"=${order.id}::uuid AND kind::text=${v.kind} FOR UPDATE`;
    row=await tx.cashCollection.findUnique({where:{orderId_kind:{orderId:order.id,kind:v.kind}}});
+   const basis=await currentServiceObligation(tx,order.id);
+   if(!basis || basis.collectionId!==row?.id)return cashDenied("CASH_OBLIGATION_COLLECTION_CONFLICT",409);
    if(!row||row.status!=="expected"||row.currentHolderType!=="none"||row.currentHolderUserId||row.currentHolderWarehouseId||row.collectedAmount!==null||row.expectedAmount===null||row.currency!==currency||!decimal(row.expectedAmount).eq(amount))return cashDenied("CASH_EXPECTED_BASIS_REQUIRED",409);
   }else{
    ({state,row}=await held(tx,cap,order,v.kind));amount=decimal(state.amount);currency=state.currency;priceApprovalId=state.priceApprovalId;
@@ -161,7 +174,7 @@ export async function executeRestrictedCash(actor:AppUser,action:keyof typeof sc
    // evidence, not executable accounting source facts. DOM-06 owns that binding.
    await enqueueCargoPilotDomainEventsTx(tx,[{id:`cash-operation:${event.id}`,type:settled?"cash_settled":"cash_handoff",tenantScope:`company:${cap.companyId}`,entityId:order.id,occurredAt:event.createdAt.toISOString(),payload:{source:"cashCustody",kind:v.kind,tenantId:cap.tenantId,companyId:cap.companyId,cashOperationEventId:event.id}}]);
   }
-  const result={orderId:order.id,orderNumber:order.orderNumber,kind:v.kind,action,amount:amount.toString(),currency,expectedEventId:eventId,offerId:offer?.id??null,state:action==="offer"?"offered":action==="settle"?"settled":"held",holderMembershipId:action==="settle"?null:holderMembershipId,holderWarehouseId:action==="settle"?null:holderWarehouseId,sourceWarehouseId:action==="settle"||cap.profileRevision==="warehouse-cash.v1"?(state?.holderWarehouseId??holderWarehouseId):null};
+  const result={orderId:order.id,orderNumber:order.orderNumber,obligationId:priceApprovalId,kind:v.kind,action,amount:amount.toString(),currency,expectedEventId:eventId,offerId:offer?.id??null,state:action==="offer"?"offered":action==="settle"?"settled":"held",holderMembershipId:action==="settle"?null:holderMembershipId,holderWarehouseId:action==="settle"?null:holderWarehouseId,sourceWarehouseId:action==="settle"||cap.profileRevision==="warehouse-cash.v1"?(state?.holderWarehouseId??holderWarehouseId):null};
   await tx.$executeRaw`INSERT INTO "RestrictedCashReceipt" ("operationId","tenantId","companyId","legalEntityId","orderId","collectionId","actorMembershipId","actorUserId","capabilityAcceptanceId",action,fingerprint,"transferOfferId",result) VALUES (${v.operationId},${cap.tenantId}::uuid,${cap.companyId}::uuid,${cap.legalEntityId}::uuid,${order.id}::uuid,${row.id}::uuid,${cap.membershipId}::uuid,${cap.userId}::uuid,${cap.acceptedOperationId}::uuid,${action},${fingerprint},${offer?.id??null}::uuid,${JSON.stringify(result)}::jsonb)`;
   return result;
  },{maxWait:3000,timeout:15000});
@@ -181,18 +194,20 @@ export async function readRestrictedCash(actor:AppUser,input:unknown){
     (physical.phase='last-mile' AND physical."driverMembershipId"=${cap.membershipId}::uuid AND o."assignedDriverId"=${cap.userId}::uuid AND o.status='out_for_delivery'))))`:
    cap.profileRevision==="warehouse-cash.v1"?Prisma.sql`(${warehouseSql} OR (offer."recipientMembershipId"=${cap.membershipId}::uuid AND offer."recipientWarehouseId" IN (${Prisma.join(warehouses.map((x:string)=>Prisma.sql`${x}::uuid`))})) OR (s."collectionId" IS NULL AND o."currentWarehouseId" IN (${Prisma.join(warehouses.map((x:string)=>Prisma.sql`${x}::uuid`))})))`:
    warehouseSql;
-  const rows=await tx.$queryRaw<any[]>(Prisma.sql`SELECT o.id AS "orderId",o."orderNumber",o.status AS "orderStatus",s."collectionId",s."eventId" AS "expectedEventId",s.amount::text,s.currency,s."holderMembershipId",s."holderWarehouseId",cc.status AS "cashStatus",offer.id AS "offerId",offer."recipientMembershipId",offer."recipientWarehouseId",price.total::text AS "acceptedServicePrice",price.currency AS "acceptedCurrency"
+  const rows=await tx.$queryRaw<any[]>(Prisma.sql`SELECT basis."priceApprovalId" AS "obligationId",i."collectionParty",o.id AS "orderId",o."orderNumber",o.status AS "orderStatus",s."collectionId",s."eventId" AS "expectedEventId",COALESCE(s.amount,basis.amount)::text AS amount,COALESCE(s.currency,basis.currency) AS currency,s."holderMembershipId",s."holderWarehouseId",cc.status AS "cashStatus",offer.id AS "offerId",offer."recipientMembershipId",offer."recipientWarehouseId",price.total::text AS "acceptedServicePrice",price.currency AS "acceptedCurrency"
    FROM "Order" o LEFT JOIN "RestrictedCashState" s ON s."orderId"=o.id AND s.kind='service_charge' AND s."tenantId"=o."tenantId" AND s."companyId"=o."ownerOrgId" AND s."legalEntityId"=${cap.legalEntityId}::uuid
    LEFT JOIN "CashCollection" cc ON cc.id=s."collectionId"
    LEFT JOIN "RestrictedCashTransferOffer" offer ON offer."collectionId"=s."collectionId" AND offer."expectedEventId"=s."eventId" AND NOT EXISTS(SELECT 1 FROM "RestrictedCashReceipt" done WHERE done."transferOfferId"=offer.id AND done.action='accept')
    LEFT JOIN LATERAL(SELECT * FROM "OrderCustodyAction" a WHERE a."orderId"=o.id ORDER BY a.sequence DESC LIMIT 1) physical ON true
    LEFT JOIN "OrderPriceApproval" price ON price."snapshotId"=o."currentPriceApprovalId" AND price."orderId"=o.id AND price."tenantId"=o."tenantId" AND price."companyId"=o."ownerOrgId" AND price."legalEntityId"=${cap.legalEntityId}::uuid
+   JOIN "OrderServiceCashObligation" basis ON basis."priceApprovalId"=price."snapshotId" AND basis."tenantId"=o."tenantId" AND basis."companyId"=o."ownerOrgId" AND basis."legalEntityId"=price."legalEntityId" AND basis."orderId"=o.id AND (s."collectionId" IS NULL OR (basis."collectionId"=s."collectionId" AND s."priceApprovalId"=basis."priceApprovalId"))
+   JOIN "OrderServicePaymentInstruction" i ON i.id=basis."instructionId"
    WHERE o."tenantId"=${cap.tenantId}::uuid AND o."ownerOrgId"=${cap.companyId}::uuid AND (o."assignedOrgId" IS NULL OR o."assignedOrgId"=${cap.companyId}::uuid)
    AND ${cap.kinds.includes("service_charge")?Prisma.sql`true`:Prisma.sql`false`} AND ${visibility}
    AND (${after}::uuid IS NULL OR o.id>${after}::uuid) AND (${page.orderId??null}::uuid IS NULL OR o.id=${page.orderId??null}::uuid)
    AND (s."collectionId" IS NOT NULL OR (price."snapshotId" IS NOT NULL AND NOT EXISTS(SELECT 1 FROM "CashCollection" legacy WHERE legacy."orderId"=o.id AND legacy.kind='service_charge' AND legacy.status<>'expected')))
    ORDER BY o.id LIMIT ${page.limit+1}`);
-  const items=rows.slice(0,page.limit).map(r=>({id:r.orderId,orderId:r.orderId,orderNumber:r.orderNumber,orderStatus:r.orderStatus,kind:"service_charge",expectedEventId:r.expectedEventId??null,
+  const items=rows.slice(0,page.limit).map(r=>({id:r.orderId,orderId:r.orderId,orderNumber:r.orderNumber,orderStatus:r.orderStatus,obligationId:r.obligationId,collectionParty:r.collectionParty,kind:"service_charge",expectedEventId:r.expectedEventId??null,
    amount:r.amount??null,currency:r.currency??null,state:r.cashStatus??"preflight-required",offerId:r.offerId??null,recipientMembershipId:r.recipientMembershipId??null,recipientWarehouseId:r.recipientWarehouseId??null,
    holderMembershipId:r.cashStatus==="settled"?null:r.holderMembershipId??null,holderWarehouseId:r.cashStatus==="settled"?null:r.holderWarehouseId??null,acceptedServicePrice:r.acceptedServicePrice??null,acceptedCurrency:r.acceptedCurrency??null}));
   if(page.orderId&&!items.length)return cashDenied("CASH_WORK_NOT_FOUND",404);
