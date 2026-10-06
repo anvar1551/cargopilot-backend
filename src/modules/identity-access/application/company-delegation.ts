@@ -130,6 +130,8 @@ export async function authorizeCompanyDelegator(db: PrismaClient, args: { intent
         VALUES (${m.id}::uuid,${m.userId}::uuid,${m.tenantId}::uuid,${m.companyId}::uuid,${m.tenantMembershipId}::uuid,${DELEGATION_REVISION},${v.warehouseIds}::uuid[])
         ON CONFLICT ("membershipId") DO UPDATE SET "warehouseIds"=EXCLUDED."warehouseIds",enabled=true`;
     } else {
+      // Common order: membership -> authority -> invitation (also acceptance/cancellation).
+      await tx.$queryRaw`SELECT "membershipId" FROM "CompanyDelegationAuthority" WHERE "membershipId"=${m.id}::uuid FOR UPDATE`;
       await tx.$executeRaw`UPDATE "CompanyDelegationAuthority" SET enabled=false WHERE "membershipId"=${m.id}::uuid`;
       await tx.$executeRaw`UPDATE "CompanyInvitation" SET state='cancelled' WHERE "inviterMembershipId"=${m.id}::uuid AND state='pending'`;
     }
@@ -177,8 +179,10 @@ export async function acceptCompanyInvitation(db: PrismaClient, input: unknown, 
   return db.$transaction(async tx => {
     await operationLock(tx, v.operationId);
     await tx.$queryRaw`SELECT 1 FROM (SELECT pg_advisory_xact_lock(hashtextextended(${"invitation-token:" + digest(v.token)},0))) AS held`;
-    const inv = (await tx.$queryRaw<Invitation[]>`SELECT * FROM "CompanyInvitation" WHERE "tokenHash"=${digest(v.token)}`)[0];
-    if (!inv) fail("INVITATION_UNAVAILABLE");
+    // Routing hint only. State must be reloaded after acquiring inviter authority.
+    const hint = (await tx.$queryRaw<Invitation[]>`SELECT * FROM "CompanyInvitation" WHERE "tokenHash"=${digest(v.token)}`)[0];
+    if (!hint) fail("INVITATION_UNAVAILABLE");
+    let inv = hint;
     await tx.$queryRaw`SELECT 1 FROM (SELECT pg_advisory_xact_lock(hashtextextended(${"tenant-onboarding-email:" + inv.email},0))) AS held`;
     let user = await tx.user.findFirst({ where: { email: { equals: inv.email, mode: "insensitive" } }, select: { id: true, email: true } });
     if (user) {
@@ -194,6 +198,9 @@ export async function acceptCompanyInvitation(db: PrismaClient, input: unknown, 
     } else if (claims !== undefined || !hash || !v.name) fail("INVITATION_NEW_CREDENTIAL_REQUIRED", 400);
     const inviter = await member(tx, inv.inviterMembershipId), c: Context = { id: inviter.userId, tenantId: inviter.tenantId!, companyId: inviter.companyId, tenantMembershipId: inviter.tenantMembershipId!, companyMembershipId: inviter.id };
     const a = await authority(tx, c, true);
+    const locked = (await tx.$queryRaw<Invitation[]>`SELECT * FROM "CompanyInvitation" WHERE id=${hint.id}::uuid AND "tokenHash"=${digest(v.token)} FOR UPDATE`)[0];
+    if (!locked || locked.email !== hint.email || locked.inviterMembershipId !== hint.inviterMembershipId) fail("INVITATION_CONTEXT_CONFLICT");
+    inv = locked;
     if (inv.tenantId !== c.tenantId || inv.companyId !== c.companyId) fail("INVITATION_CONTEXT_CONFLICT");
     await withinCeiling(tx, a, inv.profileRevision, inv.warehouseIds);
     if (user?.id === inviter.userId) fail("DELEGATION_SELF_CHANGE");
@@ -211,8 +218,9 @@ export async function acceptCompanyInvitation(db: PrismaClient, input: unknown, 
     const tm = await tx.tenantMembership.upsert({ where: { tenantId_userId: { tenantId: c.tenantId, userId: user.id } }, create: { tenantId: c.tenantId, userId: user.id }, update: {} });
     if (tm.status !== "active") fail("INVITATION_TENANT_MEMBERSHIP_UNAVAILABLE");
     const m = await tx.companyMembership.create({ data: { tenantId: c.tenantId, companyId: c.companyId, userId: user.id, tenantMembershipId: tm.id } });
-    await applyProfile(tx, m.id, inv.profileRevision, inv.warehouseIds, true);
-    await tx.$executeRaw`UPDATE "CompanyInvitation" SET state='accepted',"acceptedMembershipId"=${m.id}::uuid WHERE id=${inv.id}::uuid AND state='pending'`;
+    await applyProfile(tx, m.id, inv.profileRevision, inv.warehouseIds, { creating: true });
+    const changed = await tx.$executeRaw`UPDATE "CompanyInvitation" SET state='accepted',"acceptedMembershipId"=${m.id}::uuid WHERE id=${inv.id}::uuid AND state='pending'`;
+    if (changed !== 1) fail("INVITATION_STATE_CONFLICT", 409);
     const result = { companyMembershipId: m.id, tenantId: c.tenantId, companyId: c.companyId, tenantMembershipId: tm.id, userId: user.id };
     await audit(tx, v.operationId, "accept", fingerprint, c, "Recipient accepted approved invitation", result, m.id, false, user.id);
     return result;
@@ -234,12 +242,16 @@ export async function cancelCompanyInvitation(db: PrismaClient, actor: AppUser, 
   }, options);
 }
 
-async function applyProfile(tx: Tx, membershipId: string, profile: OperationalProfile, warehouseIds: string[], creating = false) {
+async function applyProfile(tx: Tx, membershipId: string, profile: OperationalProfile, warehouseIds: string[], mode: { creating: true } | { authority: Authority }) {
+  const creating = "creating" in mode;
   const m = await member(tx, membershipId, true);
   const current = (await tx.$queryRaw<any[]>`SELECT * FROM "CompanyOperationalGrant" WHERE "membershipId"=${m.id}::uuid FOR UPDATE`)[0];
   if ((!creating && !current) || (creating && (current || m.roles.length || m.scopes.length)) ||
     m.roles.some(r => r.roleId !== current?.roleId)) fail("DELEGATION_UNMANAGED_TARGET");
   if (current) assertManagedScopes(m, current);
+  // Replacements remove the existing managed access, so authority must cover
+  // that access as well as the requested profile. Disabled grants have no scopes.
+  if (current?.enabled && "authority" in mode) await withinCeiling(tx, mode.authority, current.profileRevision, current.warehouseIds);
   await tx.$queryRaw`SELECT 1 FROM (SELECT pg_advisory_xact_lock(hashtextextended(${"operational-role:" + m.companyId + ":" + profile},0))) AS held`;
   const role = await staticRole(tx, m.companyId, profile, OPERATIONAL_PROFILES[profile]);
   await tx.membershipRole.deleteMany({ where: { membershipId: m.id } });
@@ -271,7 +283,7 @@ export async function mutateCompanyOperationalGrant(db: PrismaClient, actor: App
     if (m.tenantId !== c.tenantId || m.companyId !== c.companyId) fail("DELEGATION_FOREIGN_TARGET");
     if ((await tx.$queryRaw<any[]>`SELECT 1 FROM "CompanyDelegationAuthority" WHERE "membershipId"=${m.id}::uuid`).length) fail("DELEGATION_TARGET_IS_DELEGATOR");
     const old = await previous(tx, v.operationId, v.action, fingerprint, c); if (old) return old;
-    if (v.action === "grant") await applyProfile(tx, m.id, v.profileRevision, v.warehouseIds);
+    if (v.action === "grant") await applyProfile(tx, m.id, v.profileRevision, v.warehouseIds, { authority: a });
     else {
       const grant = (await tx.$queryRaw<any[]>`SELECT * FROM "CompanyOperationalGrant" WHERE "membershipId"=${m.id}::uuid FOR UPDATE`)[0];
       if (!grant || grant.profileRevision !== v.profileRevision || JSON.stringify([...grant.warehouseIds].sort()) !== JSON.stringify(v.warehouseIds) || m.roles.some(r => r.roleId !== grant.roleId)) fail("DELEGATION_TARGET_CONFLICT");

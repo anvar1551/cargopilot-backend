@@ -1,4 +1,22 @@
-# Current checkpoint — company invitations and operational delegation (2026-10-05)
+# Current checkpoint — invitation race and replacement ceiling corrections (2026-10-06)
+
+Baseline `9b7c4d4e379a38525698db03fcb22fb4ef624b05`.
+[Company_Invitation_Delegation.md](Company_Invitation_Delegation.md) records the
+focused source findings, implementation, exact commands and evidence.
+
+| Classification | Current state |
+|---|---|
+| Implemented/tested — INVITATION-RACE-01 | Initial lookup is routing-only; membership/authority locks precede authoritative invitation FOR UPDATE/state decision. Cancellation and owner revocation use the same shared order. Exactly one pending-to-accepted update required or all enrollment/session/audit effects roll back. Both race winners and zero-row rollback demonstrated; fresh matching-receipt authorization retained. |
+| Implemented/tested — DELEGATION-CEILING-01 | Replacements validate enabled existing managed scopes as well as requested scopes under current actor/target locks. A-only administrators cannot strip B-scoped access through clerk/dispatcher/A-only replacement. Authorized replacements and write-free matching receipts remain available; unrelated-role protection unchanged. |
+| Executed evidence | 22 selected PostgreSQL cases passed:9 new and13 affected regressions,7 unchanged skipped. Includes actual HTTP, deterministic race barriers/PostgreSQL blocking, concurrent grants/acceptance and rollback.115 unchanged migrations as isolated setup; final no-emit passed. Owned cp-verification-8ac2d3a9f269 identity/storage verified, removed and absence checked. |
+| Reused evidence | Unchanged schema/client, onboarding cryptography/profile, logistics/finance and prior two-process Socket.IO evidence. No new Redis/provider/deployment claim. |
+| Deliberately unavailable / external gates | Real owner registration/approved intent and secure credential/token delivery/invocation remain unperformed. Financial delegation needs independent approval; driver profiles/identity and clients deferred. Legacy arbitrary IAM remains denied; historical/nullable/legacy grant, Redis/provider/S3/device/deployment/source-artifact gates and revocation timing limits remain open. |
+
+Finite correction batch complete; no new policy, permissions, API or schema.
+Stop for review. No push, production invocation, real invitations or deployment.
+Only pre-existing dist remains unrelated; blocked cleanup is untouched.
+
+# Historical checkpoint — company invitations and operational delegation (2026-10-05)
 
 Implementation `69d73bb59614886bd6531c65db06aa590080c45e`, from
 `87da9b7ae3830bd69db425b09ee7c1d264674a94`.

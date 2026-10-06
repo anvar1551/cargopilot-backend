@@ -358,3 +358,157 @@ it("authenticated acceptance preserves live refresh lineage and rejects successo
 it("recipient audit compound constraint preserves actual acceptance and rejects a different user",async()=>{const a=await admin(),b=await admin(),e=await enrolled(a),before=await graphDigest();await expect(pool.query(`INSERT INTO "CompanyDelegationAction" ("operationId","tenantId","companyId",action,fingerprint,"actorUserId","actorMembershipId","targetMembershipId","recipientUserId",reason,result) VALUES ($1,$2,$3,'accept',$4,$5,$6,$7,$8,'Synthetic invalid recipient','{}')`,[randomUUID(),a.tenantId,a.companyId,'a'.repeat(64),a.actor.id,a.companyMembershipId,e.accepted.companyMembershipId,b.actor.id])).rejects.toMatchObject({code:'23503',constraint:'CompanyDelegationAction_recipient_context_fkey'});expect(await graphDigest()).toBe(before);const row=await pool.query(`SELECT "recipientUserId" FROM "CompanyDelegationAction" WHERE "targetMembershipId"=$1 AND action='accept'`,[e.accepted.companyMembershipId]);expect(row.rows[0].recipientUserId).toBe(e.accepted.userId);});
 
 it("same recipient retains other-company sessions while foreign-company grant mutation rejects",async()=>{const a=await admin(),b=await admin(),input=inviteInput({email:b.actor.email}),inv=await createCompanyInvitation(mockDb,a.actor,input),accepted=await acceptCompanyInvitation(mockDb,{token:inv.token,operationId:randomUUID()},b.login.token);const action={operationId:randomUUID(),membershipId:accepted.companyMembershipId,action:'revoke',profileRevision:'operational-clerk.v1',warehouseIds:[],reason:'Company-bound revocation'};const foreign=await admin(),before=await graphDigest();await expect(mutateCompanyOperationalGrant(mockDb,b.actor,action)).rejects.toMatchObject({code:'DELEGATION_TARGET_REJECTED'});expect(await graphDigest()).toBe(before);await expect(mutateCompanyOperationalGrant(mockDb,foreign.actor,action)).rejects.toMatchObject({code:'DELEGATION_FOREIGN_TARGET'});expect(await graphDigest()).toBe(before);const selected=await loginUser({email:b.actor.email,password,companyMembershipId:accepted.companyMembershipId});await mutateCompanyOperationalGrant(mockDb,a.actor,{...action,operationId:randomUUID()});expect(await hasLiveAccessSession(jwt.decode(selected.token) as any)).toBe(false);expect(await hasLiveAccessSession(jwt.decode(b.login.token) as any)).toBe(true);const refreshed=await refreshUserSession({refreshToken:b.login.refreshToken});expect(refreshed.user.companyMembershipId).toBe(b.companyMembershipId);});
+
+// Test-only barriers wrap actual Prisma transactions/SQL, never replace results.
+// Every wait is bounded and released in finally; no production scheduling hooks.
+function queryBarrier(match: (sql: string) => boolean, method = "$queryRaw") {
+    let signal!: () => void, resume!: () => void, used = false;
+    const reached = new Promise<void>(resolve => { signal = resolve; });
+    const releaseGate = new Promise<void>(resolve => { resume = resolve; });
+    const db = new Proxy(mockDb, { get(target, key) {
+        if (key === "$transaction") return (work: any, options: any) => target.$transaction(async tx => {
+            const wrapped = new Proxy(tx, { get(source, field) {
+                const value = (source as any)[field];
+                if (field === method) return async (...args: any[]) => {
+                    const result = await value.apply(source, args);
+                    const sql = Array.isArray(args[0]) ? args[0].join("?") : args[0]?.sql ?? "";
+                    if (!used && match(sql)) { used = true; signal(); await bounded(releaseGate); }
+                    return result;
+                };
+                return typeof value === "function" ? value.bind(source) : value;
+            } });
+            return work(wrapped);
+        }, options);
+        const value = (target as any)[key]; return typeof value === "function" ? value.bind(target) : value;
+    } });
+    return { db, reached: () => bounded(reached), release: resume };
+}
+async function bounded<T>(work: Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { return await Promise.race([work, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(Error("Test barrier deadline exceeded")), 5000); })]); }
+    finally { clearTimeout(timer); }
+}
+function taggedTransactions(applicationName: string) {
+    return new Proxy(mockDb, { get(target, key) {
+        if (key === "$transaction") return (work: any, options: any) => target.$transaction(async tx => {
+            await tx.$queryRaw`SELECT set_config('application_name',${applicationName},true)`;
+            return work(tx);
+        }, options);
+        const value = (target as any)[key]; return typeof value === "function" ? value.bind(target) : value;
+    } });
+}
+async function waitForDatabaseBlock(applicationName: string) {
+    for (let i = 0; i < 50; i++) {
+        const result = await pool.query('SELECT pid FROM pg_stat_activity WHERE application_name=$1 AND cardinality(pg_blocking_pids(pid))>0', [applicationName]);
+        if (result.rows.length) return;
+        await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    throw Error("Expected competing transaction was not blocked in PostgreSQL");
+}
+
+it("review correction: cancellation commits between initial lookup and locked acceptance decision", async () => {
+    const a = await admin(), input = inviteInput(), inv = await createCompanyInvitation(mockDb, a.actor, input);
+    const barrier = queryBarrier(sql => sql.includes('FROM "CompanyInvitation" WHERE "tokenHash"'));
+    const acceptance = acceptCompanyInvitation(barrier.db, { token: inv.token, operationId: randomUUID(), name: "Cancelled recipient", password });
+    const outcome = acceptance.then(value => ({ value }), error => ({ error }));
+    try {
+        await barrier.reached();
+        expect(await cancelCompanyInvitation(mockDb, a.actor, { operationId: randomUUID(), invitationId: inv.invitationId, reason: "Cancel while acceptance is paused" })).toMatchObject({ state: "cancelled" });
+        const graph = await graphDigest(); barrier.release();
+        expect(await outcome).toMatchObject({ error: { code: "INVITATION_UNAVAILABLE" } });
+        expect(await graphDigest()).toBe(graph);
+        expect(await mockDb.user.count({ where: { email: input.email } })).toBe(0);
+    } finally { barrier.release(); await outcome; }
+});
+
+it("review correction: acceptance holds authority and invitation until commit; cancellation cannot succeed", async () => {
+    const a = await admin(), input = inviteInput(), inv = await createCompanyInvitation(mockDb, a.actor, input);
+    const barrier = queryBarrier(sql => sql.includes('SET state=\'accepted\''), "$executeRaw");
+    const op = randomUUID(), acceptance = acceptCompanyInvitation(barrier.db, { token: inv.token, operationId: op, name: "Accepted recipient", password });
+    const accepted = acceptance.then(value => ({ value }), error => ({ error }));
+    let cancellation: Promise<any> | undefined;
+    try {
+        await barrier.reached();
+        const tag = "cp-cancel-" + randomUUID();
+        cancellation = cancelCompanyInvitation(taggedTransactions(tag), a.actor, { operationId: randomUUID(), invitationId: inv.invitationId, reason: "Competing cancellation" })
+            .then(value => ({ value }), error => ({ error }));
+        await waitForDatabaseBlock(tag); barrier.release();
+        expect(await accepted).toHaveProperty("value");
+        expect(await cancellation).toMatchObject({ error: { code: "INVITATION_STATE_CONFLICT" } });
+        const login = await loginUser({ email: input.email, password }), before = await graphDigest();
+        expect(await acceptCompanyInvitation(mockDb, { token: inv.token, operationId: op }, login.token)).toEqual((await accepted as any).value);
+        expect(await graphDigest()).toBe(before);
+        expect((await pool.query('SELECT state FROM "CompanyInvitation" WHERE id=$1', [inv.invitationId])).rows[0].state).toBe("accepted");
+    } finally { barrier.release(); await accepted; await cancellation; }
+});
+
+it("review correction: owner revocation wins after initial lookup and acceptance leaves graph unchanged", async () => {
+    const a = await admin(), inv = await createCompanyInvitation(mockDb, a.actor, inviteInput());
+    const barrier = queryBarrier(sql => sql.includes('FROM "CompanyInvitation" WHERE "tokenHash"'));
+    const outcome = acceptCompanyInvitation(barrier.db, { token: inv.token, operationId: randomUUID(), name: "Revoked inviter", password })
+        .then(value => ({ value }), error => ({ error }));
+    try {
+        await barrier.reached(); await authorizeCompanyDelegator(mockDb, ownerRequest(a.companyMembershipId, [], "operator-revoke"));
+        const graph = await graphDigest(); barrier.release();
+        expect(await outcome).toMatchObject({ error: { code: "DELEGATION_AUTHORITY_REQUIRED" } });
+        expect(await graphDigest()).toBe(graph);
+    } finally { barrier.release(); await outcome; }
+});
+
+it("review correction: zero-row pending transition rolls back the complete enrollment graph", async () => {
+    const a = await admin(), inv = await createCompanyInvitation(mockDb, a.actor, inviteInput());
+    await pool.query(`CREATE FUNCTION cp_skip_acceptance() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.state='accepted' THEN RETURN NULL; END IF; RETURN NEW; END; $$; CREATE TRIGGER cp_skip_acceptance BEFORE UPDATE ON "CompanyInvitation" FOR EACH ROW EXECUTE FUNCTION cp_skip_acceptance();`);
+    try {
+        const before = await graphDigest();
+        await expect(acceptCompanyInvitation(mockDb, { token: inv.token, operationId: randomUUID(), name: "No transition", password })).rejects.toMatchObject({ code: "INVITATION_STATE_CONFLICT" });
+        expect(await graphDigest()).toBe(before);
+    } finally { await pool.query('DROP TRIGGER cp_skip_acceptance ON "CompanyInvitation"; DROP FUNCTION cp_skip_acceptance();'); }
+});
+
+it("review correction: confirmed acceptance retries revalidate recipient session and inviter authority", async () => {
+    const a = await admin(), input = inviteInput(), inv = await createCompanyInvitation(mockDb, a.actor, input), operationId = randomUUID();
+    const accepted = await acceptCompanyInvitation(mockDb, { token: inv.token, operationId, name: "Retry recipient", password });
+    const login = await loginUser({ email: input.email, password });
+    const retry = { token: inv.token, operationId }, before = await graphDigest();
+    expect(await acceptCompanyInvitation(mockDb, retry, login.token)).toEqual(accepted);
+    expect(await graphDigest()).toBe(before);
+    await revokeRefreshSession(login.refreshToken);
+    await unchanged(() => acceptCompanyInvitation(mockDb, retry, login.token));
+    const fresh = await loginUser({ email: input.email, password });
+    await authorizeCompanyDelegator(mockDb, ownerRequest(a.companyMembershipId, [], "operator-revoke"));
+    await unchanged(() => acceptCompanyInvitation(mockDb, retry, fresh.token));
+});
+
+async function distinctCompanyCeilings() {
+    const a = await admin(), b = await admin();
+    const invite = await createCompanyInvitation(mockDb, a.actor, inviteInput({ email: b.actor.email }));
+    const joined = await acceptCompanyInvitation(mockDb, { token: invite.token, operationId: randomUUID() }, b.login.token);
+    const warehouses = await Promise.all(["A", "B"].map(name => mockDb.warehouse.create({ data: { name: "Synthetic " + name, location: "Synthetic location", tenantId: a.tenantId } })));
+    await authorizeCompanyDelegator(mockDb, ownerRequest(a.companyMembershipId, [warehouses[0].id]));
+    await authorizeCompanyDelegator(mockDb, ownerRequest(joined.companyMembershipId, warehouses.map(w => w.id)));
+    const login = await loginUser({ email: b.actor.email, password, companyMembershipId: joined.companyMembershipId });
+    const bActor = { ...login.user, id: login.user.userId };
+    const target = await enrolled({ actor: bActor }, { profileRevision: "operational-warehouse.v1", warehouseIds: [warehouses[1].id] });
+    await loginUser({ email: target.input.email, password: target.pass }); // Include live target sessions in rejection snapshot.
+    return { a, bActor, warehouses, target };
+}
+it.each(["operational-clerk.v1", "operational-dispatcher.v1", "operational-warehouse.v1"])("review correction: A-only delegator cannot replace B-scoped target with %s", async profileRevision => {
+    const { a, warehouses, target } = await distinctCompanyCeilings();
+    const before = await graphDigest();
+    await expect(mutateCompanyOperationalGrant(mockDb, a.actor, { operationId: randomUUID(), membershipId: target.accepted.companyMembershipId, action: "grant", profileRevision,
+        warehouseIds: profileRevision === "operational-warehouse.v1" ? [warehouses[0].id] : [], reason: "Cannot remove unowned B scope" })).rejects.toMatchObject({ code: "DELEGATION_SCOPE_CEILING" });
+    expect(await graphDigest()).toBe(before);
+});
+it("review correction: ceiling covering existing and new scopes allows replacements and write-free matching receipts", async () => {
+    const { bActor, warehouses, target } = await distinctCompanyCeilings();
+    for (const profileRevision of ["operational-clerk.v1", "operational-dispatcher.v1", "operational-warehouse.v1"]) {
+        const restore = { operationId: randomUUID(), membershipId: target.accepted.companyMembershipId, action: "grant", profileRevision: "operational-warehouse.v1", warehouseIds: [warehouses[1].id], reason: "Restore approved B scope" };
+        await mutateCompanyOperationalGrant(mockDb, bActor, restore);
+        const input = { ...restore, operationId: randomUUID(), profileRevision, warehouseIds: profileRevision === "operational-warehouse.v1" ? [warehouses[0].id] : [] };
+        const result = await mutateCompanyOperationalGrant(mockDb, bActor, input), before = await graphDigest();
+        expect(await mutateCompanyOperationalGrant(mockDb, bActor, input)).toEqual(result);
+        expect(await graphDigest()).toBe(before);
+        const m = await mockDb.companyMembership.findUniqueOrThrow({ where: { id: target.accepted.companyMembershipId }, include: { scopes: true } });
+        expect(m.scopes.map(s => `${s.scopeType}:${s.scopeRefId}`)).toEqual([profileRevision === "operational-warehouse.v1" ? `warehouse:${warehouses[0].id}` : `company:${bActor.companyId}`]);
+    }
+});

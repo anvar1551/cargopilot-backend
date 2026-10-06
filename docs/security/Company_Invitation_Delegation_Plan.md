@@ -122,3 +122,25 @@ from real transport/database evidence. Final no-emit/schema checks as affected.
 Reuse unchanged logistics/finance evidence; no live invitations or existing services.
 Review exact staged scope/secrets/whitespace, checkpoint coherent milestones locally,
 update readiness/backlog and stop after this finite batch.
+
+## Focused external-review correction plan — 2026-10-06
+
+Baseline 9b7c4d4e379a38525698db03fcb22fb4ef624b05. Confirmed defects:
+acceptance uses a pre-authority invitation snapshot and ignores the conditional
+UPDATE count; replacement checks requested scopes but not removed managed scopes.
+
+Keep the preliminary lookup as a routing hint. Following existing identity locks,
+serialize acceptance/cancellation/owner revocation through inviter membership then
+accepted authority then invitation row. Reload invitation state under FOR UPDATE;
+require one pending-to-accepted row or roll back every enrollment/audit effect.
+Validate removed enabled managed scopes and proposed replacement under the same
+actor/target locks; keep unrelated-role checks and write-free authorized receipts.
+No schema, permission/profile, public API or delivery-policy expansion. Rollback
+must keep affected operations disabled rather than restore the unsafe race/ceiling.
+
+Add deterministic barriers around actual Prisma/PostgreSQL calls, cancellation
+and acceptance winners, owner revocation, zero-row rollback, distinct same-company
+warehouse ceilings and authorized replacement/receipt retries. Run only affected
+PostgreSQL cases using the existing disposable harness plus final no-emit checking;
+reuse unchanged onboarding/logistics/finance/schema/transport evidence. Review
+explicit staged scope/secrets/whitespace, update evidence and commit locally.

@@ -151,3 +151,76 @@ directory untouched. No real keys, invitations, delivery or deployment performed
 
 Final LF-normalized exercised source/schema/test digest (11 paths):
 `d30edd7ed0d59c2bb65a5a6b11da21f5d2db729f4bc72d86a02721570492c7a4`.
+
+## External-review correction — 2026-10-06
+
+Baseline `9b7c4d4e379a38525698db03fcb22fb4ef624b05`. Both findings were
+confirmed against current source, not inferred from the target architecture.
+Acceptance formerly made its state decision from the token lookup preceding the
+inviter authority lock and ignored the final pending-transition count. Replacement
+formerly checked new scopes without checking the enabled managed scopes removed.
+
+Acceptance's first lookup is now routing-only. After existing identity/lineage
+checks, acceptance locks inviter membership then accepted authority then reloads
+and locks the invitation. Cancellation uses that same membership/authority/row
+order; owner revocation explicitly locks authority before cancelling pending rows.
+A cancelled/expired/conflicting invitation cannot enroll from a stale snapshot.
+Exactly one pending-to-accepted UPDATE is required; zero affected rows abort all
+identity/membership/role/scope/session-version/audit changes. Accepted retries still
+require current recipient authentication, inviter authority/ceiling and eligible
+accepted membership; receipts grant no authorization.
+
+Replacement verifies the actual managed scope shape and the actor's ceiling over
+both the enabled existing grant and proposed new grant under target/authority
+locks, before deleting scopes/roles. A-only authority cannot remove B-only access
+by replacing it with clerk, dispatcher or A-only warehouse access. Disabled grants
+have no removed scopes. Write-free matching receipts preserve existing fresh
+context/authority/proposed-ceiling checks; they do not reapply the operation.
+Unrelated-role protection remains intact. No API, profile, schema or policy change.
+
+Focused test barriers pause actual Prisma SQL results, not fabricated results.
+Cancellation can commit after initial lookup; the acceptance-winner case also
+observes PostgreSQL blocking through pg_blocking_pids before releasing commit.
+A test-only trigger suppresses the final UPDATE to prove complete rollback on
+zero-row transition. Same-company administrators have distinct explicit warehouse
+ceilings; whole-graph digests include grants/scopes/versions/sessions/audit. No
+real tokens, credentials or private keys are persisted in test reports.
+
+Validation results and owned cleanup are recorded below after execution. Existing
+onboarding cryptography/profile, logistics/finance, schema and two-process socket
+transport evidence remains reused where unchanged. No zero-window revocation,
+production provisioning, delivery integration or historical certification claim.
+
+### Correction validation and cleanup
+
+- `node "$env:TEMP/cp-company-delegation-correction-run.cjs"` passed **22 selected
+  PostgreSQL cases: 9 new correction cases and 13 affected regressions**; 7 unchanged
+  cases skipped. Jest suite time150.099s. The existing harness applied115 unchanged
+  migrations as disposable setup, then ran the actual delegation implementation.
+  Pattern: `review correction|new enrollment/login|existing recipient|concurrent token|profile replacement|injected accepted|grant and revocation|missing context|authenticated acceptance|expired|cancelled|revoked-inviter|concurrent matching`.
+- New evidence: cancellation wins after initial lookup; acceptance wins with a
+  PostgreSQL-observed blocked cancellation; owner revocation wins; suppressed
+  conditional UPDATE rolls back all enrollment effects; matching acceptance
+  receipts recheck logged-out recipients/revoked inviters; three A-only replacement
+  denials; authorized replacements to all three approved profiles with unchanged
+  matching-retry graph. No mocked database results or external business effects.
+- Affected existing cases cover actual HTTP, existing-user credential binding,
+  concurrent acceptance/grants, expiry/cancellation/revocation, immutable retries,
+  unmanaged targets and audit-failure rollback. No new real Socket.IO run: prior
+  two-process transport evidence reused; production Redis remains unverified.
+- Final `$env:NODE_OPTIONS='--max-old-space-size=4096'; node node_modules/typescript/bin/tsc --noEmit`
+  passed with all final source/tests. Earlier no-emit also passed; the final run was
+  needed because the receipt-authorization regression was added after it started.
+  No schema/dependency changes: unchanged offline schema/client and unrelated
+  onboarding, logistics and finance evidence reused, not rerun.
+- One owned instance `cp-verification-8ac2d3a9f269`: cached PostgreSQL16 image/no pull,
+  loopback random port, synthetic credentials,1CPU/512MiB/128PID, owned268MiB tmpfs.
+  Name/run label/storage verified before removal; absence checked after removal.
+  Existing command/suite deadlines retained; test barriers5s, lock-observation
+  polling bounded to50 attempts. Public test registry removed; no private key
+  persisted. Existing dist and policy-blocked cleanup untouched.
+
+No permission/ownership policy expansion, API format change, real invitation,
+registration/provisioning, production migration or deployed verification. Existing
+revocation windows, delivery/client/driver/financial/historical release gates stay
+open. These are targeted corrections, not a new complete security certification.
