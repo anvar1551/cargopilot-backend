@@ -1,4 +1,31 @@
-# Current checkpoint — FINANCIAL-LOCK-01 correction (2026-10-06)
+# Current checkpoint — DOM-04 initial issuing-entity setup (2026-10-06)
+
+Baseline `63a08ee931a29fbe0178d20b463e36432bfb11bd`. Finite DOM-04 complete;
+see [Initial_Issuing_Entity_Setup_Contract.md](Initial_Issuing_Entity_Setup_Contract.md).
+Reviewed implementation checkpoint: `0eb404a6bb7184d9c9eec1bffb3f063acf74e5d9`.
+Authored source/schema/tests are committed; only this dashboard/readiness
+bookkeeping follows. No unfinished DOM-04 implementation or test resource remains.
+
+| Item/status | Current behavior and boundary |
+| --- | --- |
+| Authorities — implemented/tested | Explicit owner-permit issuing-entity-setup.v1 appointment/revocation, exact signed user/membership/tenant/company tuple, two narrow keys and explicit company scope. No automatic admin/settings.manage grants. Protected owner actions/session/version changes atomic; suspended removal preserves history and unrelated membership/grants. |
+| Publication — implemented/tested | Immutable proposal and different-User decision; current maker/checker authority and original maker acceptance required. Insert-only entity/audit/receipt, compound ownership, unique company/entity and proposal/decision, company/operation fences, fresh retries/conflicts, both revoke schedules and rollback. Existing/null/inactive entities not adopted; new accepted configuration protected. |
+| Currency/identity — implemented/tested | Explicit server-supported UZS/USD/CNY, extensible contract rather than tenant/schema enum; unsupported rejects. Explicit fiscal month/IANA timezone/null reporting. Existing owned company supplies issuer identity; no fabricated tax/legal/default values or statutory certification. |
+| Connected workflow — working synthetically | Onboarding/enrollment -> appointed setup -> independent entity (no entity seed) -> DOM-03 financial actors -> approved pricing/policy -> actual customer/address/normal order -> payer/exact price -> same-base-currency manual invoice. Stable retries retain originals; invoice facts held. Labels/storage/queue mocked, no provider or real provisioning claim. |
+| Caller correction — implemented/tested | Creation skips only nonexistent carrier work after bounded owned leg lookup. Existing legs still require unchanged shipment.bookCarrier; no new grant/provider bypass. |
+| Executed evidence |17 distinct new PostgreSQL cases (16 combined +1 signed tuple),119 migrations,105 distinct affected unit/mock cases, offline Prisma syntax and final no-emit passed. Actual HTTP/two-process Socket.IO revocation. All4 owned instances cleaned/absence verified; reruns not extra cases. SQL catalog/manual selected relationship review is not complete semantic equivalence. |
+| Reused evidence | Unchanged detailed price/invoice/logistics/proof/cash/journal/lineage evidence; no unrelated suite repetition, new Redis/S3/provider/device claim. |
+| Deliberately unavailable | Accounting execution, FX, entity corrections/deactivation/legacy certification, DOM-05 cash capability/checker provisioning. Setup-authority revoke preserves published entity/invoices and does not silently revoke financial grants. |
+| Release/client gates | Real registry/concrete approved company values/private credential delivery/invocation remain unperformed. Schema-first rollout, legacy settings writer remains contained; client/device work deferred. Infrastructure/RLS/historical/null/source-artifact gates preserved. |
+
+Stop after DOM-04. Next bounded policy-dependent task remains DOM-05: narrow cash
+action/preflight and accepted membership/custody capabilities, without
+shipment.view/update compensation; completion needs the separate approved
+supplemental provisioning contract and exact money/custody/retry/concurrency/
+rollback evidence. No next implementation started. Dist/blocked cleanup preserved;
+no push/deployment. Older entries below are historical.
+
+# Historical checkpoint — FINANCIAL-LOCK-01 correction (2026-10-06)
 
 Baseline `65929369b61acab8e81f1620c2747d1b199b6271`.
 This finite source-review correction is implemented/tested; no DOM-04 started.

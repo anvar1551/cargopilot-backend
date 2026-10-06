@@ -1,4 +1,24 @@
-# Current FINANCIAL-LOCK-01 readiness (2026-10-06)
+# Current DOM-04 readiness (2026-10-06)
+
+See [Initial_Issuing_Entity_Setup_Contract.md](Initial_Issuing_Entity_Setup_Contract.md)
+for exact additive contracts, rollout and evidence. Baseline63a08ee.
+Reviewed implementation: `0eb404a6bb7184d9c9eec1bffb3f063acf74e5d9` (local only).
+
+| Workflow/status | Current enforcement and evidence limit |
+| --- | --- |
+| Newly onboarded company issuing setup — working synthetically | Exact owner-appointed company-bound proposer/checker, explicit scope, separate User approval, immutable normalized proposal and atomic insert-only entity/audit/receipt. Existing organization supplies identity; no fabricated legal/tax details or general settings.manage. |
+| Supported configuration | Explicit UZS/USD/CNY server support (extensible, not database/tenant enum), explicit fiscal1..12/IANA timezone/null reporting. Tax, routes, precision/rounding, prefix/due days/state eligibility still require separate approved billing policy. |
+| Connected service workflow — working | Actual onboarding/enrollment, setup (no entity seed), DOM-03 financial provisioning, approved tariff/policy, customer/addresses/normal durable order, payer/exact110.0100UZS acceptance and same-base-currency manual invoice. Matching retries retain original business records. Label/storage/queue boundaries mocked; no real provider/device/statutory claim. |
+| Revocation/recovery — implemented/tested | Current authority required for retries; both revocation schedules, partial-effect rollback, conflicting IDs and concurrent publication covered. Suspended authority removal preserves other-company membership/history. Real HTTP and two isolated Socket.IO processes close revoked sessions within existing timing bounds. No universal immediate revocation claim. |
+| Evidence executed |17 distinct actual PostgreSQL cases,119 migrations;105 distinct affected unit/mock cases, offline Prisma syntax and final no-emit. All4 owned disposable resources cleaned. Reruns not summed. Selected SQL catalog/manual constraint review not complete semantic schema equivalence. |
+| Evidence reused | Unchanged detailed calculation/invoice, driver/warehouse/proof/cash/journal/lineage evidence. Creation caller separately tested after bounded empty-carrier-work correction; actual legs retain existing booking guard. |
+| Deliberately unavailable | Accounting execution (invoice fact held), FX, later entity correction/deactivation/certification and DOM-05 driver/warehouse cash/checker setup. No automatic financial grants from setup, no real company/key provisioning. |
+| External/client gates | Real reviewed configuration/key registry/private credential handoff/invocation, schema-first deployment, infrastructure/RLS/historical certification and deferred clients/device verification remain. Existing entities not adopted or silently certified. |
+
+Finite DOM-04 stopped; no DOM-05 implementation started. Earlier handoffs below are
+historical; only the new-company entity prerequisite has been closed here.
+
+# Historical FINANCIAL-LOCK-01 readiness (2026-10-06)
 
 Baseline `65929369b61acab8e81f1620c2747d1b199b6271`; focused correction only.
 See [Financial_Actor_Provisioning.md](Financial_Actor_Provisioning.md#focused-lock-order-correction--financial-lock-01).
