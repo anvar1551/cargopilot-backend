@@ -1,4 +1,29 @@
-# Current DOM-05 readiness (2026-10-06)
+# Current DOM-06 service-charge readiness (2026-10-06)
+
+Baseline `cb32e6f5b96d52a043ada9f8f8397cae0713fd33`.
+Reviewed implementation checkpoint: `a58068a5f14e370013c0d1105268b5f5497d99b5`. Authored implementation/schema/tests
+are committed; no unfinished work or disposable test resource remains.
+See [Exact_Service_Cash_Workflow.md](Exact_Service_Cash_Workflow.md) for contracts,
+rollout and evidence. Older handoffs below are historical.
+
+| Workflow/status | Current boundary |
+| --- | --- |
+| Service-charge basis — implemented/tested | Explicit accepted billing-operator CASH/SENDER or RECIPIENT instruction linked to immutable payer. Price acceptance/independent revision atomically publishes exact source-bound obligation, protected history and compatibility mirrors. Normal/import creation no longer seeds collectible Float rows. Zero is noncollectible. |
+| Connected restricted cash — implemented/tested | Actual onboarding/entity setup and actor provisioning to normal order/payer/pricing, restricted collection, parcel intake without money transfer, exact cash offer/acceptance, separate warehouse checker, durable proof/delivery and same-currency manual invoice. No direct obligation/custody/entity seed. Storage/labels/Redis/providers mocked or unused. |
+| Timing/revisions/retries — implemented/tested | SENDER before picked_up; RECIPIENT at scoped warehouse or accepted last-mile before delivered. Fresh capabilities, assignment/custody and current obligation ID required. Collection/payment activity (including pending/uncertain sources) or invoice freezes revisions; old sources cannot authorize new effects. Existing stable receipt contracts preserved. |
+| Executed / reused evidence | 22 distinct PostgreSQL cases (10 affected execution/HTTP + 12 new monetary-basis), 122 migrations; 143 distinct focused unit/mock/HTTP cases; final offline schema syntax and 4GiB no-emit passed. Targeted reruns not summed. Six exclusively owned instances cleaned/absence verified. Unchanged governance/socket/linehaul/proof/finance evidence reused at its original level; no real provider/storage/device claim. |
+| Client integration — backend contract changed, clients deferred | Bind explicit payment instruction before price; collect requires persisted obligationId in addition to operationId. Queue/result add source ID and collection party, exact decimal-string preflight. No automatic retry-ID/source substitution. No client/device verification claim. |
+| Merchant goods COD — unavailable, policy blocked | Verified merchant/beneficiary/source, exact goods amount/currency, accepting authority, amendments/cancellation and timing unresolved. Never substitute service price or legacy Float. |
+| Deliberately unavailable | Accounting/FX, payment allocation/refund/correction, zero-value invoices, linehaul/warehouse-to-warehouse cash, suspended cash-holder recovery. Settlement does not mark invoice paid. Invoice facts held. |
+| Production/external gates | Real owner keys/private handoff/reviewed company configuration, schema-first rollout stopping old writers, existing historical/null and NOT VALID certification, infrastructure/RLS/source-to-dist/device evidence. Local synthetic service readiness does not establish production readiness. |
+
+Finite DOM-06 service-charge batch only. Merchant COD remains a distinct missing
+capability; no next implementation starts automatically. Next justified work is
+client service-charge contract integration after external review; merchant policy
+review and existing release verification remain separate. Dist and blocked cleanup
+are preserved. No push/deployment or existing-service access.
+
+# Historical DOM-05 (2026-10-06)
 
 Reviewed implementation `09061a6e86fd4a6e0902fd2710054bc6fbb9f266`;
 baseline `5a83c48852bff9e1ea53c713b021e26929c7f6f1`.
