@@ -8,7 +8,7 @@ import { requireCustomerEntityReference } from "../../customers-core/application
 import { billingActor, billingOwner, billingAuthority, billingError, billingHash, assertBillingRetry, loadApprovedBillingPolicy } from "./billing-policy";
 import { calculateAcceptedPrice, billingRouteIdentity } from "../domain/billing-calculation";
 
-import { serviceInstruction, assertServiceBasisUntouched, publishServiceObligation } from "./service-cash-basis";
+import { serviceInstruction, assertServiceBasisUntouched, assertServiceObligationWindow, publishServiceObligation } from "./service-cash-basis";
 const request = z.object({ orderId: z.string().uuid().transform(v => v.toLowerCase()), operationId: z.string().uuid().transform(v => v.toLowerCase()),
   reason: z.string().trim().min(1).max(1000) }).strict();
 const payerRequest = request.extend({ payerCustomerEntityId: z.string().uuid().transform(v => v.toLowerCase()), evidence: z.string().trim().min(1).max(500) });
@@ -23,6 +23,7 @@ export async function bindServicePaymentInstruction(u:AppUser,raw:unknown){
     await requireCustomerEntityReference(u,billTo.payerCustomerEntityId);
     const old=(await tx.$queryRaw<any[]>`SELECT * FROM "OrderServicePaymentInstruction" WHERE "tenantId"=${u.tenantId!}::uuid AND "operationId"=${operationId}::uuid`)[0];
     if(old){assertBillingRetry(old,u,intentHash);return {id:old.id,orderId:old.orderId,method:old.method,collectionParty:old.collectionParty};}
+    assertServiceObligationWindow(input.collectionParty,o.status);
     await assertServiceBasisUntouched(tx,o.id);
     if(o.paymentType!=="CASH" || o.currentPriceApprovalId || await serviceInstruction(tx,o.id))throw billingError("CASH_INSTRUCTION_ALREADY_BOUND_OR_INELIGIBLE");
     const row=(await tx.$queryRaw<any[]>`INSERT INTO "OrderServicePaymentInstruction"

@@ -192,13 +192,13 @@ async function financeAuthority(g:any,m:any,kind:string){
  const permit={version:1,operatorId:ONBOARDING_OPERATOR,keyFingerprint,operationId:intent.operationId,intentFingerprint:fingerprint,profileRevision:"financial-delegation.v1",issuedAt:new Date(now).toISOString(),expiresAt:new Date(now+240000).toISOString()};
  await authorizeFinancialDelegator(mockDb,{intent,permit,signature:sign(null,Buffer.from(canonicalOnboardingPermit(permit)),keys.privateKey).toString("base64")});
 }
-async function pricedJourney(party="SENDER",basePrice=100){
+async function pricedJourney(party="SENDER",basePrice=100,options:{tariffPrice?:number}={}){
  const g=await cashGroup();await accept(g,g.driver);await accept(g,g.staff,"warehouse-cash.v1");await accept(g,g.clerk,"cash-settlement-checker.v1");
  await financeAuthority(g,g,"proposer");await financeAuthority(g,g.checker,"checker");
  const pricingMaker=await enrolled(g),pricingChecker=await enrolled(g);
  for(const m of [pricingMaker.accepted,pricingChecker.accepted]){const p=await proposeFinancialGrant(mockDb,g.actor,{operationId:randomUUID(),membershipId:m.companyMembershipId,legalEntityId:g.entity.id,profileRevisions:Object.keys(FINANCIAL_PROFILES),expectedAcceptanceId:null,reason:"Synthetic prerequisite pricing profiles"});await acceptFinancialGrant(mockDb,actor(g.checker),{operationId:randomUUID(),proposalId:p.proposalId,fingerprint:p.fingerprint,reason:"Independent synthetic prerequisite"});}
  const maker=actor(pricingMaker.accepted),check=actor(pricingChecker.accepted);
- const plan=await createTariffPlan(maker,{name:"Synthetic cash tariff",code:"SYN-"+randomUUID().slice(0,8),description:null,status:"active",serviceType:"DOOR_TO_DOOR",priceType:"bucket",pricingStrategy:"FIXED_LANE",coverageType:"domestic",transportMode:"ROAD",originCountryCode:null,destinationCountryCode:null,routeTemplateId:null,currency:"UZS",priority:1,isDefault:true,customerEntityId:null,rates:[{zone:1,weightFromKg:0.01,weightToKg:100,price:basePrice===0?100:basePrice}],transitLegRates:[]} as any);
+ const plan=await createTariffPlan(maker,{name:"Synthetic cash tariff",code:"SYN-"+randomUUID().slice(0,8),description:null,status:"active",serviceType:"DOOR_TO_DOOR",priceType:"bucket",pricingStrategy:"FIXED_LANE",coverageType:"domestic",transportMode:"ROAD",originCountryCode:null,destinationCountryCode:null,routeTemplateId:null,currency:"UZS",priority:1,isDefault:true,customerEntityId:null,rates:[{zone:1,weightFromKg:0.01,weightToKg:100,price:options.tariffPrice??(basePrice===0?100:basePrice)}],transitLegRates:[]} as any);
  const draft=await mockDb.tariffPlan.findUniqueOrThrow({where:{id:plan!.id}}),version=await proposeTariffVersion({user:maker,planId:plan!.id,expectedGeneration:draft.contentGeneration,operationId:randomUUID(),reason:"Synthetic tariff"});
  await decideTariffVersion({user:check,planId:plan!.id,versionId:version.id,contentSha256:version.contentSha256,operationId:randomUUID(),decision:"approved",reason:"Independent tariff"});
  const policy=await proposeBillingPolicy(maker,{operationId:randomUUID(),reason:"Explicit synthetic zero-fee zero-tax policy",content:syntheticBillingPolicy({billing:{mode:"manual",eligibleOrderStates:["pending","assigned","delivered"],dueDays:7,numberPrefix:"SYNTHETIC"},fees:[],discounts:basePrice===0?[{code:"synthetic_free",type:"percent",value:"100"}]:[],tax:{treatment:"exclusive_percent",rate:"0",authorityReference:"SYNTHETIC ZERO TAX TEST ONLY"}})});
@@ -532,4 +532,89 @@ it("DOM-06 source constraints and append-only evidence reject tampering without 
  await unchanged(()=>pool.query('INSERT INTO "OrderServiceCashObligation" ("priceApprovalId","tenantId","companyId","legalEntityId","orderId","instructionId","billToId","payerCustomerEntityId","policyVersionId",amount,currency,"collectionId") SELECT $1,"tenantId","companyId","legalEntityId","orderId","instructionId","billToId","payerCustomerEntityId","policyVersionId",amount,currency,"collectionId" FROM "OrderServiceCashObligation" WHERE "orderId"=$2',[randomUUID(),g.orderId]));
  expect((await pool.query("SELECT convalidated FROM pg_constraint WHERE conname='RestrictedCashState_service_basis_fk'")).rows[0].convalidated).toBe(false);
  expect((await acceptOrderPrice(g.maker,g.priceIntent)).id).toBe(g.price.id);
+});
+
+// DOM-06 deadline evidence uses actual provisioning/business services, not direct state writes.
+async function deadlinePolicy(g:any,fee="0",zero=false) {
+ const p=await proposeBillingPolicy(g.maker,{operationId:randomUUID(),reason:"Explicit synthetic deadline-state calculation policy",content:syntheticBillingPolicy({
+  billing:{mode:"manual",eligibleOrderStates:["pending","assigned","pickup_in_progress","picked_up","at_warehouse","in_transit","out_for_delivery","delivered"],dueDays:7,numberPrefix:"SYNTHETIC"},
+  fees:fee==="0"?[]:[{service:"synthetic_explicit_fee",amount:fee}],discounts:zero?[{code:"synthetic_free",type:"percent",value:"100"}]:[],tax:{treatment:"exclusive_percent",rate:"0",authorityReference:"SYNTHETIC TEST ONLY"}})});
+ await decideBillingPolicy(g.pricingChecker,{versionId:p.id,contentHash:p.contentHash,operationId:randomUUID(),decision:"approved",reason:"Independent synthetic deadline policy"});
+}
+async function deadlineTransition(g:any,party:string,existingProof?:any) {
+ if(party==="SENDER")return updateDriverOrderStatus({actor:actor(g.driver),orderId:g.orderId,status:"picked_up"});
+ const proof=existingProof??await deliveryProof(g);return physical(g,g.driver,"deliver",{proofSubmissionId:proof.intent.body.submissionId});
+}
+async function beforeDeadline(g:any,party:string) {
+ if(party==="SENDER"){await updateDriverOrderStatus({actor:actor(g.driver),orderId:g.orderId,status:"pickup_in_progress"});return;}
+ await warehouseOffer(g);await physical(g,g.staff,"intake",{warehouseId:g.warehouse.id});await physical(g,g.staff,"last-mile-offer",{warehouseId:g.warehouse.id,driverMembershipId:g.driver.companyMembershipId});await physical(g,g.driver,"last-mile-accept");
+}
+it.each(["SENDER","RECIPIENT"])("DOM-06 deadline zero %s rejects late positive revision; zero revisions and historical retries survive",async party=>{
+ const g=await pricedJourney(party,0);await beforeDeadline(g,party);await deadlineTransition(g,party);await deadlinePolicy(g);
+ const p=await revision(g),v=revisionIntent(g,p);
+ await unchanged(async()=>{try{await approveOrderPrice(g.pricingChecker,v);}catch(error:any){expect(error.code).toBe("CASH_COLLECTION_WINDOW_CLOSED");throw error;}});
+ expect((await mockDb.order.findUniqueOrThrow({where:{id:g.orderId}})).currentPriceApprovalId).toBe(g.price.id);
+ expect(await mockDb.orderPriceApproval.count({where:{snapshotId:p.id}})).toBe(0);
+ const before=await graphDigest();expect((await acceptOrderPrice(g.maker,g.priceIntent)).id).toBe(g.price.id);
+ expect((await bindServicePaymentInstruction(g.maker,g.instructionIntent)).id).toBe(g.instruction.id);expect(await graphDigest()).toBe(before);
+ await deadlinePolicy(g,"0",true);const zero=await revision(g),z=revisionIntent(g,zero);expect((await approveOrderPrice(g.pricingChecker,z)).total).toBe("0.0000");
+ const confirmed=await graphDigest();expect((await approveOrderPrice(g.pricingChecker,z)).id).toBe(zero.id);expect(await graphDigest()).toBe(confirmed);
+ expect(await mockDb.cashCollection.count({where:{orderId:g.orderId}})).toBe(0);
+ expect((await pool.query('SELECT count(*) FROM "OrderServiceCashObligation" WHERE "orderId"=$1 AND amount>0',[g.orderId])).rows[0].count).toBe("0");
+});
+it.each(["SENDER","RECIPIENT"])("DOM-06 deadline late initial %s binding rejects before first cash acceptance",async party=>{
+ const g=await pricedJourney(party,0,{tariffPrice:0}),made=await createOrderForActor({user:g.maker,body:{...g.body,operationId:randomUUID()}}),orderId=made.payload.order.id;
+ const o=await mockDb.order.findUniqueOrThrow({where:{id:orderId}});expect(o.serviceCharge).toBeNull();expect(await mockDb.cashCollection.count({where:{orderId}})).toBe(0);
+ await assignDriversBulk({actor:actor(g.dispatcher),orderIds:[orderId],driverId:g.driver.userId,type:"pickup",expectedStates:[{orderId,updatedAt:o.updatedAt.toISOString(),status:o.status,assignedDriverId:o.assignedDriverId,currentWarehouseId:o.currentWarehouseId}]});
+ const work={...g,orderId};await beforeDeadline(work,party);await deadlineTransition(work,party);await deadlinePolicy(g,"100");
+ const b=await bindOrderBillTo(g.maker,{orderId,operationId:randomUUID(),payerCustomerEntityId:g.body.customerEntityId,evidence:"Synthetic late payer",reason:"Synthetic late payer"});
+ const input={orderId,operationId:randomUUID(),billToId:b.id,method:"CASH",collectionParty:party,evidence:"Synthetic late instruction",reason:"Synthetic late instruction"};
+ await unchanged(async()=>{try{await bindServicePaymentInstruction(g.maker,input);}catch(error:any){expect(error.code).toBe("CASH_COLLECTION_WINDOW_CLOSED");throw error;}});
+ expect((await pool.query('SELECT count(*) FROM "OrderServicePaymentInstruction" WHERE "orderId"=$1',[orderId])).rows[0].count).toBe("0");
+ expect((await pool.query('SELECT count(*) FROM "OrderServiceCashObligation" WHERE "orderId"=$1',[orderId])).rows[0].count).toBe("0");
+ expect((await mockDb.order.findUniqueOrThrow({where:{id:orderId}})).currentPriceApprovalId).toBeNull();
+});
+
+it.each(["SENDER","RECIPIENT"])("DOM-06 deadline timely initial %s instruction requires a first accepted basis before transition",async party=>{
+ const g=await pricedJourney(party,0,{tariffPrice:0}),made=await createOrderForActor({user:g.maker,body:{...g.body,operationId:randomUUID()}}),orderId=made.payload.order.id;
+ const o=await mockDb.order.findUniqueOrThrow({where:{id:orderId}});
+ await assignDriversBulk({actor:actor(g.dispatcher),orderIds:[orderId],driverId:g.driver.userId,type:"pickup",expectedStates:[{orderId,updatedAt:o.updatedAt.toISOString(),status:o.status,assignedDriverId:o.assignedDriverId,currentWarehouseId:o.currentWarehouseId}]});
+ const b=await bindOrderBillTo(g.maker,{orderId,operationId:randomUUID(),payerCustomerEntityId:g.body.customerEntityId,evidence:"Synthetic timely payer",reason:"Synthetic timely payer"});
+ await bindServicePaymentInstruction(g.maker,{orderId,operationId:randomUUID(),billToId:b.id,method:"CASH",collectionParty:party,evidence:"Synthetic timely instruction",reason:"Synthetic timely instruction"});
+ const work={...g,orderId};await beforeDeadline(work,party);const proof=party==="RECIPIENT"?await deliveryProof(work):undefined;
+ await unchanged(async()=>{try{await deadlineTransition(work,party,proof);}catch(error:any){expect(error.code).toBe("CASH_SERVICE_OBLIGATION_REQUIRED");throw error;}});
+ await deadlinePolicy(g,"100");const input={orderId,operationId:randomUUID(),reason:"Synthetic timely first acceptance"},price=await acceptOrderPrice(g.maker,input);
+ expect(price.total).toBe("100.0000");expect((await acceptOrderPrice(g.maker,input)).id).toBe(price.id);
+ await unchanged(async()=>{try{await deadlineTransition(work,party,proof);}catch(error:any){expect(error.code).toBe("CASH_SERVICE_COLLECTION_REQUIRED");throw error;}});
+ expect((await pool.query('SELECT amount FROM "OrderServiceCashObligation" WHERE "orderId"=$1',[orderId])).rows[0].amount).toBe("100.0000");
+});
+
+it.each([["SENDER","publication"],["SENDER","transition"],["RECIPIENT","publication"],["RECIPIENT","transition"]])("DOM-06 deadline race %s %s locks first",async(party,first)=>{
+ const g=await pricedJourney(party,0);await beforeDeadline(g,party);const proof=party==="RECIPIENT"?await deliveryProof(g):undefined;
+ await deadlinePolicy(g);const p=await revision(g),v=revisionIntent(g,p),base=mockDb;
+ const auditBefore=await mockDb.financeAuditEvent.count(),trackingBefore=await mockDb.tracking.count();
+ let release!:()=>void,signal!:()=>void;const gate=new Promise<void>(r=>{release=r}),locked=new Promise<void>(r=>{signal=r});let paused=false,pid=0;
+ mockDb=new Proxy(base,{get(target,key){if(key==='$transaction')return (work:any,options:any)=>base.$transaction(async tx=>{
+  const wrapped=new Proxy(tx,{get(value,name){if(name==='$queryRaw')return async(...args:any[])=>{const result=await (value.$queryRaw as any)(...args),text=Array.isArray(args[0])?args[0].join('?'):args[0]?.sql??'';
+   if(!paused&&text.includes('FROM "Order"')&&text.includes('FOR UPDATE')){paused=true;pid=Number((await value.$queryRaw<any[]>`SELECT pg_backend_pid() AS pid`)[0].pid);signal();await gate;}return result;};const valueFn=(value as any)[name];return typeof valueFn==='function'?valueFn.bind(value):valueFn;}});return work(wrapped);
+ },options);const value=(target as any)[key];return typeof value==='function'?value.bind(target):value;}});
+ const publication=()=>approveOrderPrice(g.pricingChecker,v),transition=()=>deadlineTransition(g,party,proof);
+ const settled=(work:()=>Promise<any>)=>work().then(value=>({ok:true,value,error:null as any}),error=>({ok:false,value:null,error}));
+ const leader=settled(first==="publication"?publication:transition);let follower:Promise<any>|undefined,timer:NodeJS.Timeout|undefined;
+ try{
+  await Promise.race([locked,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error("Deadline Order lock barrier timeout")),4000);})]);clearTimeout(timer);
+  follower=settled(first==="publication"?transition:publication);let blocked=false;
+  for(let i=0;i<40;i++){blocked=(await pool.query('SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1::int=ANY(pg_blocking_pids(pid))) AS blocked',[pid])).rows[0].blocked;if(blocked)break;await new Promise(r=>setTimeout(r,15));}
+  expect(blocked).toBe(true);release();const a=await leader,b=await follower;expect(a.ok).toBe(true);expect(b.ok).toBe(false);
+  const order=await base.order.findUniqueOrThrow({where:{id:g.orderId}}),deadline=party==="SENDER"?"picked_up":"delivered",before=party==="SENDER"?"pickup_in_progress":"out_for_delivery";
+  if(first==="transition"){
+   expect(b.error.code).toBe("CASH_COLLECTION_WINDOW_CLOSED");expect(order.status).toBe(deadline);expect(order.currentPriceApprovalId).toBe(g.price.id);
+   expect(await base.orderPriceApproval.count({where:{snapshotId:p.id}})).toBe(0);expect(await base.financeAuditEvent.count()).toBe(auditBefore);expect(await base.cashCollection.count({where:{orderId:g.orderId}})).toBe(0);
+  }else{
+   expect(order.status).toBe(before);expect(order.currentPriceApprovalId).toBe(p.id);expect(await base.tracking.count()).toBe(trackingBefore);
+   expect(await base.cashCollection.count({where:{orderId:g.orderId,status:"expected"}})).toBe(1);
+   await unchanged(()=>deadlineTransition(g,party,proof)); // A fresh expected-state read still cannot bypass uncollected positive money.
+  }
+  expect((await pool.query('SELECT count(*) FROM "OrderServiceCashObligation" WHERE "orderId"=$1 AND amount>0',[g.orderId])).rows[0].count).toBe(first==="publication"?"1":"0");
+ }finally{clearTimeout(timer);release();await Promise.allSettled([leader,...(follower?[follower]:[])]);mockDb=base;}
 });

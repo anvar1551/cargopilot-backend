@@ -1,4 +1,23 @@
-# Current DOM-06 service-charge readiness (2026-10-06)
+# Current DOM-06 late-obligation correction (2026-10-07)
+
+Baseline `eeeec82d76357f38613dc416d0f1f1691e921fd0`. Finite correction only;
+see [DOM06_Late_Obligation_Correction.md](DOM06_Late_Obligation_Correction.md).
+The previous DOM-06 evidence below remains historical evidence for unchanged paths.
+
+| Item/status | Current boundary |
+| --- | --- |
+| Deadline admission — implemented/tested | New CASH instruction and positive obligation require the locked order to remain before sender pickup / recipient delivery. No exception/cancellation state reopens collection. Zero revisions remain noncollectible; freshly authorized historical receipts remain readable. |
+| Reproduced defect | Four actual-service PostgreSQL scenarios: zero sender after pickup and zero recipient after delivery allowed positive revision; both late first CASH bindings allowed initial positive acceptance. Independently approved synthetic policies explicitly included those states. |
+| Compatibility | New late instruction/publication rejects 409 CASH_COLLECTION_WINDOW_CLOSED. Existing bodies, permissions, exact-money sources, custody contracts and historical receipt IDs unchanged. No inferred cash instruction, new adjustment policy or client implementation. |
+| Focused evidence | 12 distinct PostgreSQL passes: 10 new deadline/timely/race cases plus 2 affected revision/rollback regressions; 27 intentionally skipped. Four baseline unsafe scenarios separately reproduced. 46 affected unit passes; final 4GiB no-emit EXIT 0. 122 unchanged migrations applied; all three owned instances removed/absence verified. Unchanged IAM/socket/logistics/finance/schema evidence reused at its original level. Storage/providers mocked. |
+| Still unavailable | Merchant goods COD, late monetary corrections/refunds, accounting/FX, zero-value invoices, suspended cash-holder recovery, linehaul/warehouse-to-warehouse money. No restored capability claimed for containment. |
+| Release gates retained | Real provisioning/keys/private delivery, company configuration, schema-first rollout/old writer stop, historical/null/NOT VALID certification, infrastructure/RLS, source-to-dist and device verification. No production-readiness claim. |
+
+Finite correction complete; no next implementation begins automatically. Evidence and
+scope reviewed for local checkpoint; disposable cleanup verified. Dist and blocked
+cleanup remain preserved. No schema, dependency, permission or policy expansion.
+
+# Historical DOM-06 service-charge readiness (2026-10-06)
 
 Baseline `cb32e6f5b96d52a043ada9f8f8397cae0713fd33`.
 Reviewed implementation checkpoint: `a58068a5f14e370013c0d1105268b5f5497d99b5`. Authored implementation/schema/tests

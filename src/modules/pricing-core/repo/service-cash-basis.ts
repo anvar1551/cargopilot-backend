@@ -2,6 +2,14 @@ import { Prisma } from "@prisma/client";
 import { billingError } from "./billing-policy";
 type Tx = Prisma.TransactionClient;
 
+/** New cash authority cannot reopen an elapsed collection window. Order is locked by callers. */
+export function assertServiceObligationWindow(party: string, status: string) {
+  const beforePickup = ["pending", "assigned", "pickup_in_progress"];
+  const allowed = party === "SENDER" ? beforePickup : party === "RECIPIENT"
+    ? [...beforePickup, "picked_up", "at_warehouse", "in_transit", "out_for_delivery"] : [];
+  if (!allowed.includes(status)) throw billingError("CASH_COLLECTION_WINDOW_CLOSED");
+}
+
 export async function serviceInstruction(tx: Tx, orderId: string): Promise<any | null> {
   return (await tx.$queryRaw<any[]>`SELECT * FROM "OrderServicePaymentInstruction" WHERE "orderId"=${orderId}::uuid`)[0] ?? null;
 }
@@ -36,6 +44,7 @@ export async function publishServiceObligation(tx: Tx, approval: any, order: any
   const entity=await tx.financeLegalEntity.findUnique({where:{id:approval.legalEntityId}});
   const amount=new Prisma.Decimal(approval.total);
   if(!entity?.isActive || entity.baseCurrency!==approval.currency || !amount.isFinite() || amount.isNegative())throw billingError("CASH_CURRENCY_BASIS_REQUIRED");
+  if(amount.gt(0))assertServiceObligationWindow(i.collectionParty,order.status);
   // Old Float fields are mirrors only; reject values the compatibility schema cannot preserve.
   if(!new Prisma.Decimal(String(amount.toNumber())).eq(amount))throw billingError("CASH_MIRROR_PRECISION_UNSUPPORTED");
   const previous=await currentServiceObligation(tx,order.id);

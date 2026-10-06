@@ -1,9 +1,11 @@
 jest.mock("../../src/config/prismaClient",()=>({__esModule:true,default:{}}));
 jest.mock("../../src/config/redis",()=>({getRedisClient:async()=>null}));
 import {randomUUID} from "node:crypto";
-import {assertServiceCollectionTiming,assertServiceBasisUntouched,assertExactServiceTransition,publishServiceObligation} from "../../src/modules/pricing-core/repo/service-cash-basis";
+import {assertServiceCollectionTiming,assertServiceObligationWindow,assertServiceBasisUntouched,assertExactServiceTransition,publishServiceObligation} from "../../src/modules/pricing-core/repo/service-cash-basis";
 import {servicePaymentInstructionSchema} from "../../src/modules/pricing-core/repo/order-price";
 const intent=()=>({orderId:randomUUID(),operationId:randomUUID(),billToId:randomUUID(),method:"CASH",collectionParty:"SENDER",evidence:"Synthetic instruction",reason:"Synthetic review"});
+it.each([...["pending","assigned","pickup_in_progress"].map(s=>["SENDER",s]),...["pending","assigned","pickup_in_progress","picked_up","at_warehouse","in_transit","out_for_delivery"].map(s=>["RECIPIENT",s])])("new obligation permits %s %s",(party,status)=>expect(()=>assertServiceObligationWindow(party,status)).not.toThrow());
+it.each([...["picked_up","at_warehouse","in_transit","out_for_delivery","delivered","cancelled","exception","unknown"].map(s=>["SENDER",s]),...["delivered","cancelled","exception","unknown"].map(s=>["RECIPIENT",s]),["UNKNOWN","pending"]])("new obligation denies %s %s",(party,status)=>expect(()=>assertServiceObligationWindow(party,status)).toThrow("CASH_COLLECTION_WINDOW_CLOSED"));
 it("explicit cash instruction has no implicit defaults",()=>{expect(servicePaymentInstructionSchema.parse(intent()).method).toBe("CASH");const {method,...v}=intent();expect(()=>servicePaymentInstructionSchema.parse(v)).toThrow();});
 it.each([{method:"CARD"},{collectionParty:"COMPANY"},{amount:"10.00"},{paid:true},{tenantId:randomUUID()}])("rejects unsupported authority %j",change=>expect(()=>servicePaymentInstructionSchema.parse({...intent(),...change})).toThrow());
 it.each([["SENDER","assigned","local-driver-cash.v1"],["SENDER","pickup_in_progress","local-driver-cash.v1"],["RECIPIENT","at_warehouse","warehouse-cash.v1"],["RECIPIENT","out_for_delivery","local-driver-cash.v1"]])("permits collection timing %s %s %s",(party,state,profile)=>expect(()=>assertServiceCollectionTiming(party,state,profile)).not.toThrow());

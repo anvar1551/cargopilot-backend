@@ -1,4 +1,25 @@
-# Current DOM-06 service-charge readiness (2026-10-06)
+# Current DOM-06 late-obligation correction (2026-10-07)
+
+Baseline `eeeec82d76357f38613dc416d0f1f1691e921fd0`.
+See [DOM06_Late_Obligation_Correction.md](DOM06_Late_Obligation_Correction.md)
+for focused reproduction, correction and evidence. New CASH binding and positive
+publication now require an open collection window under the existing Order lock:
+sender before picked_up, recipient before delivered. Zero-price journeys/revisions
+and fresh authorized matching historical receipts remain supported. Late new
+authority returns 409 CASH_COLLECTION_WINDOW_CLOSED; later adjustments are unavailable
+pending their separate contract. No inferred cash method or invoice/accounting change.
+
+Focused validation: 12 distinct PostgreSQL passes (10 new, 2 affected revision/rollback),
+27 intentionally skipped; 46 affected unit passes and final no-emit EXIT 0. Four baseline
+unsafe scenarios were separately reproduced, not counted as final regression passes.
+122 unchanged migrations applied, all three owned instances cleaned/absence verified.
+Both deadline/publication lock orders passed for sender and recipient. Prior unrelated
+DOM-06 evidence below is reused only where exercised source is unchanged. Merchant COD,
+corrections/refunds, accounting/FX,
+client/device/storage/provider and historical/null/infrastructure release gates remain
+unchanged. Containment is not restored functionality or production readiness.
+
+# Historical DOM-06 service-charge readiness (2026-10-06)
 
 Baseline `cb32e6f5b96d52a043ada9f8f8397cae0713fd33`.
 Reviewed implementation checkpoint: `a58068a5f14e370013c0d1105268b5f5497d99b5`. Authored implementation/schema/tests
