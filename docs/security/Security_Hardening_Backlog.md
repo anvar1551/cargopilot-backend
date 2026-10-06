@@ -1,4 +1,30 @@
-# Current checkpoint — DOM-01 restricted driver provisioning (2026-10-06)
+# Current checkpoint — DOM-02 controlled warehouse provisioning (2026-10-06)
+
+Implementation checkpoint: `394309c459f385174e707d867a170f7a54e0e9b2`.
+The approved warehouse-only DOM-02 slice is committed; this evidence/checklist
+checkpoint completes the finite batch. No next implementation area started.
+
+Baseline 4e30c1f01a74be839a69f2231c0f8b952b185099.
+[Warehouse_Provisioning.md](Warehouse_Provisioning.md) records the finite plan,
+owner contract, exact API compatibility, migration/rollout and executed evidence.
+
+| Finite milestone / status | Current behavior or exact remaining requirement |
+|---|---|
+| DOM-02-WH — implemented/tested | Separate owner-signed warehouse-provisioning.v1 authority, active selected context +warehouse.create +company scope. Warehouse tenant derives from membership; creator company is audit provenance, no exclusive ownership. Only warehouse-provisioner.v1 [warehouse.create] granted by explicit owner intent. Existing onboarding/operational ceilings unchanged. |
+| DOM-02-WH retries/audit — implemented/tested | Strict field allowlist, mandatory UUID operationId, normalized context-bound receipts/conflicts. Warehouse/action commits together. Creation/owner revocation serialize; current authority required for matching retries. Audit UPDATE/DELETE/TRUNCATE protected; schema-owner powers excluded from immutability claim. No automatic warehouse scope/access/ceiling. |
+| DOM-02-WH staff chain — implemented/tested | Actual synthetic creation -> separately owner-approved warehouse ceiling -> existing operational-warehouse.v1 invitation/acceptance/login -> scoped custody discovery/read. Creator remains unable to list/access absent explicit warehouse scope. Read-only synthetic pre-existing Order/Tracking/custody fixtures used only for staff access evidence. Actual normal connected journey also passed with controlled creation consumers; external storage/provider/network mocked. |
+| Executed evidence | 21 new PostgreSQL cases +1 affected actual connected journey =22 distinct cases. Both deterministic revocation race winners, concurrent matching creation, conflicts, rollback, compound foreign references, HTTP shape/session denial, protected audit and staff scope covered. 117 migrations,77 distinct unit/mock cases, offline schema/client and final no-emit passed. Initial fixture/catalog failures corrected without weaker guards/assertions; reruns not extra cases. All3 owned instances removed/absence verified; final cp-verification-10a2c914be7d, tmpfs only. |
+| Reused evidence | Unchanged DOM-01 driver eligibility/assignment/custody/concurrency/2-process socket revocation, logistics negative/rollback, finance, invitation-correction and dependency evidence retained. The one changed creation-consumer journey was rerun; no new Redis/S3/device/deployed transport claim. |
+| DOM-02-OPS — technically unfinished, before relevant client integration | This warehouse-only batch does not provision dispatch directory/planning or pricing/checker/manual invoice actors. Required exact capability/actor contracts remain separate; drivers.read != drivers.manage. Completion: explicit approved ceilings and provisioned operational/configuration actor tests, without auto-additions or test-only elevation presented as deployed provisioning. |
+| DOM-03/05 — contained, driver cash unavailable | Restricted driver profiles intentionally lack cash/shipment.update/finance. Separate least-privilege cash provisioning/authorization decision and member-specific cash target contract still required. Completion: approved contract and focused custody/money/retry/concurrency evidence. Existing financial-policy containment retained. |
+| Real provisioning / release — external authorization outstanding | Owner-controlled real key/profile registration, concrete reviewed permit, private invitation/credential delivery and authorized invocation. Migration/source/client rollout must stop old warehouse/IAM writers; new migration adds reserved capability metadata only, no automatic registry/system-role grants. No real provisioning performed. |
+| Clients / infrastructure — deferred or unverified | Creation clients must persist operationId/intent; frontend/native provisioning/discovery/proof and device/S3/Redis/source-artifact/production verification remain separate. Historical/nullable/RLS/provider/accounting-policy gates remain; no production-readiness claim. |
+
+Finite approved warehouse batch complete; stop for review. Remaining operational
+provisioning needs its own bounded approved contract; no next area started.
+Pre-existing dist and policy-blocked cleanup preserved. No push/deployment.
+
+# Historical checkpoint — DOM-01 restricted driver provisioning (2026-10-06)
 
 Implementation checkpoint: `8337f858c3a12b42e31b7f834dde1ff014674769`.
 Authored implementation is committed; this documentation checkpoint completes

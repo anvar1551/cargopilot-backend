@@ -1,4 +1,25 @@
-# Current DOM-01 readiness (2026-10-06)
+# Current DOM-02 warehouse provisioning readiness (2026-10-06)
+
+Implementation checkpoint: `394309c459f385174e707d867a170f7a54e0e9b2`.
+The approved warehouse-only DOM-02 slice is committed; this evidence/checklist
+checkpoint completes the finite batch. No next implementation area started.
+
+See [Warehouse_Provisioning.md](Warehouse_Provisioning.md) for exact owner/API/rollout contracts.
+
+| Step | Current enforced behavior / remaining gate |
+|---|---|
+| Owner authority | Signed exact warehouse-provisioning.v1 intent grants separate durable authority and warehouse.create-only role. No automatic onboarding/operational expansion. Real public registration/intent/invocation remain unperformed. |
+| Warehouse creation | Active selected tenant/company context, current permission/company scope and accepted authority; strict existing fields plus mandatory operationId. One atomic warehouse/audit/receipt; confirmed normalized retry returns original safe result, conflict409. Tenant ownership only; creator company is audit provenance. |
+| Warehouse access / staff | No automatic access or delegation ceiling. Separately signed operational ceiling and existing scoped staff invitation/acceptance/login are demonstrated through actual scoped custody discovery/read. No general assignment redesign or broadened management. |
+| Revocation / integrity | Owner revoke retains unrelated grants, disables authority and revokes exact sessions atomically. Creation/revocation race winners, duplicate creation, rejected writes/rollback, compound ownership and immutable audit tested. Database/schema-owner powers and existing last-check/sweep revocation windows remain outside instantaneous guarantees. |
+| Evidence | 21 new PostgreSQL cases +1 affected connected journey,77 offline/mock cases;117 migrations, offline schema/client and final no-emit passed. All owned resources cleaned. Network/storage/provider boundaries mocked; no real Redis/S3/native/deployed verification. |
+| Remaining DOM-02 / cash | Dispatch directory/planning/pricing/invoice actor provisioning requires separate approved contracts. drivers.read != drivers.manage; synthetic elevated prerequisite fixtures are not deployed provisioning. Restricted driver cash remains DOM-03/05, not enabled. |
+| Clients / rollout | Creation clients need retained operationId/intent and strict numeric/type fields. Owner real-key/profile and secure delivery/invocation, migration-before-source/stop-old-writers, legacy/source-artifact/historical/nullable/RLS and infrastructure gates remain. No real users/invitations/keys/provisioning done. |
+
+DOM-02 warehouse-only batch complete; no further area started. Earlier checkpoints
+below retain historical evidence and are superseded only within this approved scope.
+
+# Historical DOM-01 readiness (2026-10-06)
 
 Implementation checkpoint: `8337f858c3a12b42e31b7f834dde1ff014674769`.
 Authored implementation is committed; this documentation checkpoint completes
