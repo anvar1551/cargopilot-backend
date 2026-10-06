@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { lockSelectedIdentityReferences } from "./credential-lock";
 import type { RefreshTokenPayload } from "../types";
 export const MAX_REFRESH_ROTATION_DEPTH = 256;
 const transactionOptions = { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, maxWait: 2000, timeout: 10000 };
@@ -32,6 +33,12 @@ export async function revokeRecordedSuccessors(tx: Prisma.TransactionClient, cla
   if (origin.id !== claims.sid || origin.userId !== claims.id || origin.tenantId !== claims.tenantId ||
       origin.tenantMembershipId !== claims.tenantMembershipId || origin.companyMembershipId !== claims.companyMembershipId
       || origin.companyMembership?.companyId !== claims.companyId) throw invalid();
+  // Possession/context matched above. Pin its existing FK references before the
+  // lineage fence: grant revocation takes membership locks before this fence.
+  // Otherwise logout's audit FK and revocation can wait on each other.
+  if (!await lockSelectedIdentityReferences(tx, { userId: origin.userId,
+    tenantId: origin.tenantId!, companyId: origin.companyMembership!.companyId,
+    tenantMembershipId: origin.tenantMembershipId!, companyMembershipId: origin.companyMembershipId! })) throw invalid();
   await lockRefreshContext(tx, origin);
   const load = async (id: string, exactHash?: string): Promise<Node | undefined> => {
     const rows = await tx.$queryRaw<Node[]>(Prisma.sql`

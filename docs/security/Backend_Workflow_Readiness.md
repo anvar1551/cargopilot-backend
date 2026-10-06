@@ -1,4 +1,20 @@
-# Current DOM-03 financial provisioning readiness (2026-10-06)
+# Current FINANCIAL-LOCK-01 readiness (2026-10-06)
+
+Baseline `65929369b61acab8e81f1620c2747d1b199b6271`; focused correction only.
+See [Financial_Actor_Provisioning.md](Financial_Actor_Provisioning.md#focused-lock-order-correction--financial-lock-01).
+
+| Workflow | Current enforced behavior / evidence limit |
+|---|---|
+| Financial work versus managed revoke/replacement | Confirmed grant-first actor-FK cycle removed by User -> selected membership reference pins before grant SHARE. Accepted work may commit before revoke; work admitted after committed revoke and stale confirmed retries fail closed. Actual restricted ceilings and business maker/checker unchanged. |
+| Verified logout versus managed revoke | Confirmed lineage-first audit-FK cycle removed by exact stored context reference pins before lineage. Token possession still required. Both race orders preserve atomic sessions/audit; post-revoke exact logout is a no-op without duplicate audit. |
+| Rollback / validation | 11 selected distinct PostgreSQL cases,39 affected unit/mock cases and final no-emit passed;118 unchanged migrations as disposable setup, cleanup verified. Historical cycles reproduced before correction and retained with test-only pin omission; current-protocol schedules use all actual locks. Baseline/intermediate reruns not extra cases. |
+| Compatibility / release | No API/schema/permissions changed. Corrected business and logout writers must roll out together; bounded waits may reject rather than acknowledge partial success. No instant revocation/universal deadlock-freedom or new transport verification claim. |
+| Next / unavailable | DOM-04 entity setup and DOM-05 restricted cash remain separate; no newly onboarded-company invoice readiness without approved entity setup. Accounting, real provisioning/private delivery, clients and prior infrastructure/historical/RLS gates unchanged. |
+
+No next implementation started. Prior DOM-03 functional evidence remains valid
+except that affected business/logout lock sequences are superseded above.
+
+# Historical DOM-03 financial provisioning readiness (2026-10-06)
 
 Implementation `05a8af683dd0ec9b676226c6e025c6ea4117de4b`; baseline
 `af2602ddfc8a0754d4df8a4e3599353f97083c7c`.

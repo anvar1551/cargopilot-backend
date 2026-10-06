@@ -4,13 +4,13 @@ const claims: any = { id: id(1), tenantId: id(2), tenantMembershipId: id(3), com
 const node = (depth = 0, patch = {}) => ({ id: id(100 + depth), userId: claims.id, tenantId: claims.tenantId, tenantMembershipId: claims.tenantMembershipId, companyMembershipId: claims.companyMembershipId,
   rotationDepth: depth, replacementDepth: null as number | null, replacedBySessionId: null as string | null, revokedAt: null as Date | null, companyMembership:{companyId:claims.companyId}, ...patch });
 let tx: any, nodes: Map<string, any>;
-beforeEach(() => { nodes = new Map([[claims.sid, node()]]); tx = { credentialSecurityEvent:{create:jest.fn(async()=>({}))}, $executeRaw: jest.fn(), $queryRaw: jest.fn(async (sql: any) => sql.text.includes("pg_advisory") ? [] : nodes.has(sql.values[0]) ? [nodes.get(sql.values[0])] : []), userRefreshSession: { findFirst: jest.fn(async () => node()), updateMany: jest.fn(async () => ({ count: 1 })) } }; });
+beforeEach(() => { nodes = new Map([[claims.sid, node()]]); tx = { credentialSecurityEvent:{create:jest.fn(async()=>({}))}, $executeRaw: jest.fn(), $queryRaw: jest.fn(async (sql: any) => sql.text.includes('FOR KEY SHARE') ? [{id:sql.values[0]}] : sql.text.includes("pg_advisory") ? [] : nodes.has(sql.values[0]) ? [nodes.get(sql.values[0])] : []), userRefreshSession: { findFirst: jest.fn(async () => node()), updateMany: jest.fn(async () => ({ count: 1 })) } }; });
 it("complete locked recorded chain is authorized from exact possession; pointers never rewritten", async () => {
   nodes.set(claims.sid, node(0, { revokedAt: new Date(), replacementDepth: 1, replacedBySessionId: id(101) })); nodes.set(id(101), node(1, { revokedAt: new Date(), replacementDepth: 2, replacedBySessionId: id(102) })); nodes.set(id(102), node(2));
   await revokeRecordedSuccessors(tx, claims, "synthetic-hash"); expect(tx.userRefreshSession.updateMany).toHaveBeenCalledTimes(1); expect(tx.userRefreshSession.updateMany.mock.calls[0][0]).toMatchObject({ where: { id: { in: [id(100), id(101), id(102)] }, tenantId: claims.tenantId, userId: claims.id, companyMembershipId: claims.companyMembershipId, revokedAt: null }, data: { revokedAt: expect.any(Date) } });
   expect(tx.userRefreshSession.findFirst.mock.calls[0][0].where).toHaveProperty("tokenHash", "synthetic-hash");
-  for (const [sql] of tx.$queryRaw.mock.calls.slice(1)) { expect(sql.text).toContain("FOR UPDATE OF s"); expect(sql.values).toContain(claims.tenantId); expect(sql.values).toContain(claims.companyId); expect(sql.text).not.toContain("synthetic-hash"); }
-  expect(tx.$executeRaw.mock.calls.map(([sql]: any) => sql.join())).toEqual(["SET LOCAL lock_timeout = '2s'", "SET LOCAL statement_timeout = '5s'"]);
+  for (const [sql] of tx.$queryRaw.mock.calls.slice(3)) { expect(sql.text).toContain("FOR UPDATE OF s"); expect(sql.values).toContain(claims.tenantId); expect(sql.values).toContain(claims.companyId); expect(sql.text).not.toContain("synthetic-hash"); }
+  expect(tx.$executeRaw.mock.calls.map(([sql]: any) => sql.join())).toEqual(["SET LOCAL lock_timeout = '2s'", "SET LOCAL statement_timeout = '5s'", "SET LOCAL lock_timeout = '2s'", "SET LOCAL statement_timeout = '5s'"]);
 });
 it("missing/mismatched original receipt cannot obtain lineage lock or mutate", async () => { tx.userRefreshSession.findFirst.mockResolvedValueOnce(null); await revokeRecordedSuccessors(tx, claims, "hash"); expect(tx.$queryRaw).not.toHaveBeenCalled(); tx.userRefreshSession.findFirst.mockResolvedValueOnce(node(0, { tenantId: id(7) })); await expect(revokeRecordedSuccessors(tx, claims, "hash")).rejects.toThrow("unavailable"); expect(tx.userRefreshSession.updateMany).not.toHaveBeenCalled(); });
 it("root disappearing after lock produces no mutation", async () => { nodes.clear(); await revokeRecordedSuccessors(tx, claims, "hash"); expect(tx.userRefreshSession.updateMany).not.toHaveBeenCalled(); });
@@ -24,3 +24,20 @@ it("resource maximum permits exactly257nodes and denies an additional successor"
   await expect(revokeRecordedSuccessors(tx, claims, "hash")).rejects.toThrow("unavailable"); expect(tx.userRefreshSession.updateMany).not.toHaveBeenCalled();
 });
 it("lock or final-write failure propagates, never acknowledges partial success", async () => { tx.$executeRaw.mockRejectedValueOnce(new Error("Synthetic lock deadline")); await expect(revokeRecordedSuccessors(tx, claims, "hash")).rejects.toThrow("deadline"); expect(tx.userRefreshSession.updateMany).not.toHaveBeenCalled(); tx.userRefreshSession.updateMany.mockRejectedValueOnce(new Error("Synthetic final failure")); await expect(revokeRecordedSuccessors(tx, claims, "hash")).rejects.toThrow("final failure"); });
+
+it('pins exact identity then selected membership before the lineage/session fence, without reading credentials',async()=>{
+ await revokeRecordedSuccessors(tx,claims,'synthetic-hash');
+ const statements=tx.$queryRaw.mock.calls.map(([sql]:any)=>sql.text);
+ expect(statements[0]).toContain('FROM "User"');expect(statements[0]).toContain('FOR KEY SHARE');
+ expect(statements[1]).toContain('FROM "CompanyMembership"');expect(statements[1]).toContain('FOR KEY SHARE');
+ expect(statements[2]).toContain('pg_advisory');expect(statements[3]).toContain('FOR UPDATE OF s');
+ expect(statements[0]).not.toContain('password');expect(statements[1]).not.toContain('password');
+ expect(tx.$queryRaw.mock.calls[1][0].values).toEqual([claims.companyMembershipId,claims.id,claims.tenantId,claims.companyId,claims.tenantMembershipId]);
+});
+it.each([0,1])('missing exact reference at pin %s prevents lineage/session/audit mutation',async missing=>{
+ const original=tx.$queryRaw.getMockImplementation();let index=0;
+ tx.$queryRaw.mockImplementation(async(sql:any)=>sql.text.includes('FOR KEY SHARE')&&index++===missing?[]:original(sql));
+ await expect(revokeRecordedSuccessors(tx,claims,'synthetic-hash')).rejects.toThrow('unavailable');
+ expect(tx.$queryRaw.mock.calls.some(([sql]:any)=>sql.text.includes('pg_advisory'))).toBe(false);
+ expect(tx.userRefreshSession.updateMany).not.toHaveBeenCalled();expect(tx.credentialSecurityEvent.create).not.toHaveBeenCalled();
+});

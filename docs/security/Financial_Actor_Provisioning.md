@@ -4,6 +4,16 @@ Baseline af2602ddfc8a0754d4df8a4e3599353f97083c7c. Owner-approved policy, backen
 
 ## Finite implementation plan
 
+### Focused lock-order review (baseline 65929369b61acab8e81f1620c2747d1b199b6271)
+
+Plan: reproduce actual tariff publication competing with grant revocation in
+both acquisition orders, including User/CompanyMembership foreign-key locks.
+Inspect credential/refresh locks and business advisory locks before choosing a
+correction. If confirmed, pin the business actor's identity/membership before its
+grant fence, retaining fresh eligibility and atomic grant/session effects. Prove
+admitted work completes, post-revocation work denies and injected failures roll
+back. No schema/policy/API expansion; preserve old-writer rollout containment.
+
 1. Verify and close pricing.write draft-only boundaries before granting pricing-maker.v1. Authoring must not modify/delete published plans, accepted references or immutable versions; default selection cannot mutate another published plan.
 2. Add separate owner-established financial proposer/checker ceilings, immutable six-profile allowlists and company/entity-bound proposals/independent decisions. Existing onboarding, operational and driver ceilings remain unchanged. No self-targeting; checker differs from proposer and recipient by User identity. Replacement/revocation validates removed and proposed grants. Role/scope/version/session effects and protected acceptance/audit commit atomically.
 3. Enforce accepted financial ceilings at affected service/repository execution boundaries, with fresh selected context and locked acceptance. Existing customer/object checks remain. No adoption of unmanaged grants, no cash capabilities or settings.manage. Existing operational enrollment provides credential-bound identities; financial authority is a separate independently accepted supplement, not an email identity adoption.
@@ -28,7 +38,7 @@ DOM-04 requires a separate immutable initial-configuration proposal and independ
 
 Migration precedes source rollout; stop old financial/IAM writers. No legacy acceptance backfill or automatic administrator expansion. Rollback must preserve the new accepted-authority checks or disable affected operations. Protected journals do not resist database-owner/schema-administrator powers. Real keys, grants, delivery and invocation remain unperformed. Clients deferred.
 
-## Evidence / current status
+## Initial DOM-03 checkpoint evidence
 
 DOM-03 implemented and tested within this finite scope. No real provisioning or
 complete onboarding-to-invoice readiness claim.
@@ -65,7 +75,8 @@ complete onboarding-to-invoice readiness claim.
   that check. Focused manual schema/SQL review and actual compound-constraint
   tests supplement syntax validation; no complete semantic equivalence claim.
 - Final node --max-old-space-size=4096 node_modules/typescript/bin/tsc --noEmit
-  passed (exit 0). No source/test changes after the passing final checks.
+  passed (exit 0) for the initial DOM-03 checkpoint. The focused lock correction
+  below has separate affected validation.
 
 Earlier fixture failures (normalized owner-intent ordering, authoritative tariff
 generation, and TRUNCATE CASCADE needed to reach the journal trigger) were corrected
@@ -152,3 +163,88 @@ journal protection. Acceptance FKs defer until commit. Array role/profile refere
 are checked against protected accepted content and exact current role definitions by
 the application; they are not individual foreign keys. PostgreSQL schema-owner powers
 can change constraints/triggers. No absolute immutability or complete isolation claim.
+
+## Focused lock-order correction — FINANCIAL-LOCK-01
+
+Baseline source review finding confirmed in actual disposable PostgreSQL:
+tariff publication held FinancialMembershipGrant SHARE; revocation held the
+recipient CompanyMembership UPDATE; publication's compound actor FK waited on
+that membership while revocation waited for the grant. PostgreSQL detected a
+deadlock and aborted one actual transaction. A second confirmed cycle involved
+logout: lineage advisory lock -> session mutation -> membership-bound accepted
+audit, versus revocation's membership lock -> lineage advisory lock.
+
+The shared lockSelectedIdentityReferences helper pins User KEY SHARE followed by
+the exact selected CompanyMembership KEY SHARE before financial grant SHARE or
+logout's lineage fence. It selects IDs only and is not an authorization bypass.
+Financial execution still reloads accepted grant/roles/current eligibility;
+logout verifies signed exact token possession and stored selection first, then
+reloads the locked lineage. Missing references deny without mutation.
+
+| Path | Order retained/enforced |
+|---|---|
+| Financial execution | Domain advisory lock (where used), compatible entity SHARE (billing), actor User KEY SHARE, selected CompanyMembership KEY SHARE, accepted grant SHARE, fresh validation, business records/FKs. Identity/membership/grant pins last through commit. |
+| Grant proposal/replacement/revoke | Sorted credential Users UPDATE, company grant advisory lock, actor/authority membership and authority locks, compatible entity SHARE, target membership UPDATE, target grant UPDATE, protected role/grant/action writes, refresh-lineage lock and session/version effects. |
+| Verified logout | Exact signed token/stored selection, User KEY SHARE, selected membership KEY SHARE, lineage advisory lock, recorded session rows UPDATE, conditional revocation and protected actor audit. |
+| Login/refresh/password | Existing credential User UPDATE first; refresh then lineage/session writes, password then session writes/audit. Their credential lock implementation is unchanged. |
+
+Grant administration acquires no tariff/billing advisory or business-record locks.
+Its entity SHARE is compatible with the business entity SHARE; it cannot hold a
+recipient membership while waiting for a business-held grant after obtaining that
+recipient's User UPDATE behind the business's identity pin. Likewise logout
+cannot hold lineage while waiting for a grant administrator's earlier membership
+lock. Reference KEY SHARE is compatible with business FK KEY SHARE. Independent
+maker/checker and atomic version/session/audit effects remain unchanged.
+
+Admitted work may finish before revocation commits. After committed revocation,
+fresh business work and confirmed receipt retries reject. Revocation's normal
+bounded lock/transaction deadlines still apply; timeouts roll back, not partial
+success or automatic replay. This fixes the demonstrated cycles, not every
+possible database deadlock or instantaneous revocation. Read checks outside a
+business transaction and existing socket sweep/in-flight limits remain.
+
+No API, permission, schema or migration change. Roll out the corrected financial
+and logout writers together; keep unsupported old writers stopped. DOM-04,
+DOM-05, accounting, real provisioning, clients and external verification stay
+unchanged/unavailable. No infrastructure guarantee is inferred from database tests.
+
+### Executed correction evidence
+
+- Before each corresponding fix, the actual tariff/revoke and actual logout/revoke
+  paths each reproduced a PostgreSQL deadlock with controlled barriers after real
+  lock acquisition and pg_blocking_pids observations. Original reproduced source
+  had no test omission of locks. Final historical regression cases explicitly
+  omit only the new reference-pin locks to replay those old protocols; all
+  authorization, business queries and grant/lineage fences still execute. These
+  instrumented historical cases are not evidence of a current-protocol deadlock.
+- Final node "$env:TEMP/cp-financial-lock-run.cjs" passed 11 selected distinct
+  PostgreSQL cases in financial-provisioning-postgres.integration.test.ts:
+  9 new cases (2 historical cycle reproductions, business-first/revoke-first,
+  replacement, business/revocation rollback and both logout/revoke orders) plus
+  2 affected actual tariff/policy and payer/price/manual-invoice regressions.
+  18 unchanged cases skipped. Earlier baseline and intermediate passes/reruns
+  are not extra distinct cases. Barriers execute actual statements; current
+  protocol cases neither mock lock results nor omit locks. Complete graph digests
+  cover rejected billing writes and the failed revocation before admitted work
+  proceeds; successful competing work is distinguished from partial failure.
+- 118 unchanged migrations applied only as reused disposable setup. Final owned
+  cp-verification-b6cb900a546a and earlier e01aa079c887,611ebff32763,ef8e61b886eb
+  instances were identity/label/tmpfs checked, removed and absence verified. All
+  used cached PostgreSQL, --pull never, loopback-only random ports, synthetic
+  credentials, bounded CPU/memory/process/tmpfs and test deadlines; no volume/bind
+  storage or existing resources. No new schema/migration validation claim.
+- node --max-old-space-size=4096 node_modules/jest/bin/jest.js --runInBand
+  tests/security/refresh-lineage.test.ts tests/security/logout-exact-token.test.ts
+  passed 39 unit/mock cases, including 3 new ordering/missing-reference cases.
+  These were affected by the logout/helper change; unchanged full IAM suites
+  were not rerun. Mocks updated for explicit pins, not weakened possession,
+  lineage, mutation or audit assertions.
+- Final node --max-old-space-size=4096 node_modules/typescript/bin/tsc --noEmit
+  passed exit 0 after final source/test changes. Source/test code unchanged since
+  those passing final checks; later changes are documentation only.
+
+Unchanged grants/ceilings/role definitions, detailed financial calculations,
+driver/logistics, protected journals and HTTP/Socket.IO revocation evidence reused
+only where exercised behavior is unchanged. Real PostgreSQL concurrency/rollback
+is demonstrated; no new provider/storage/Redis/device/deployed transport evidence,
+no exactly-once or absolute deadlock-freedom claim. Stop after this correction.

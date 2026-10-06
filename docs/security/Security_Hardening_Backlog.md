@@ -1,4 +1,25 @@
-# Current checkpoint — DOM-03 financial actor provisioning (2026-10-06)
+# Current checkpoint — FINANCIAL-LOCK-01 correction (2026-10-06)
+
+Baseline `65929369b61acab8e81f1620c2747d1b199b6271`.
+This finite source-review correction is implemented/tested; no DOM-04 started.
+[Financial_Actor_Provisioning.md](Financial_Actor_Provisioning.md#focused-lock-order-correction--financial-lock-01)
+records the exact lock sequences, reproduced schedules, commands and evidence.
+
+| Checklist / status | Current evidence and remaining boundary |
+|---|---|
+| FINANCIAL-LOCK-01 — implemented/tested | Actual tariff publication versus grant revocation deadlocked: grant SHARE -> actor membership FK versus membership UPDATE -> grant UPDATE. Actual logout also deadlocked: lineage -> membership audit FK versus membership -> lineage. Both reproduced before their fix in disposable PostgreSQL. |
+| Consistent reference order — implemented/tested | Shared non-authorizing ID-only User KEY SHARE -> exact selected membership KEY SHARE before business grant SHARE or verified logout lineage. Grant administration retains sorted credential Users UPDATE -> membership -> grant -> lineage/session/version effects. Fresh accepted eligibility/token possession and maker/checker invariants unchanged. Domain advisory locks are not acquired by grant administration; entity SHARE locks compatible. |
+| Admission / atomicity — implemented/tested | Business admitted before revoke/replacement finishes; waiting/post-commit work or receipts without current grants deny. Both logout/revoke orders complete consistently. Injected business and revoke failures leave no partial business/grant/roles/audit/version/session effects; legitimate concurrent completion separated from rollback. Bounded waits/transactions and last-check/socket windows remain, no universal deadlock-freedom claim. |
+| Executed evidence | Final 11 distinct PostgreSQL cases (9 new including2 historical reproductions +2 affected tariff/billing consumer regressions),18 unchanged skipped;39 affected logout/lineage unit/mock cases including3 new. Final no-emit passed. 118 unchanged migrations as isolated setup only. All4 owned disposable instances cleaned/absence verified; final cp-verification-b6cb900a546a, tmpfs only. Baseline/intermediate reruns not extra cases. |
+| Reused evidence | Unchanged DOM-03 grants/ceilings, journal protections, HTTP/socket revocation, detailed money/calculation and driver/logistics evidence. Actual transport not rerun; no external/provider/Redis/storage claim. |
+| DOM-04 — deliberately unavailable, next separate policy review | Initial entity configuration remains blocked: exact setup proposer/checker eligibility and company currency/fiscal/tax values need approval. Recorded immutable proposal/independent decision contract, no settings.manage or fabricated defaults. Completion: approved narrow authority/data contract then focused acceptance/retry/rollback validation. No implementation begun. |
+| DOM-05 / release / clients — unchanged | Driver/warehouse cash capabilities and settlement checker unavailable pending narrow custody/action/read boundaries. Accounting and real provisioning not enabled. Clients deferred; stop old financial/logout writers on rollout. Real registry/private delivery/invocation, historical/nullable/RLS/source-artifact and infrastructure gates remain. |
+
+Finite correction complete; stop for review. No new permissions/API/schema,
+policy expansion, real provisioning, clients, push, deployment or existing-service
+access. Dist and blocked cleanup preserved. Older checkpoints below are historical.
+
+# Historical checkpoint — DOM-03 financial actor provisioning (2026-10-06)
 
 Implementation checkpoint: `05a8af683dd0ec9b676226c6e025c6ea4117de4b`.
 Baseline `af2602ddfc8a0754d4df8a4e3599353f97083c7c`. This finite approved

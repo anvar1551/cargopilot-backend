@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import type { AppUser } from "../../../types/app-user";
+import { lockSelectedIdentityReferences } from "./credential-lock";
 import { companyMembershipPrimitives } from "./company-delegation";
 import { FINANCIAL_ACCEPTANCE_KEYS, FINANCIAL_PROFILES, financialProfilesSchema } from "./financial-profiles";
 
@@ -10,6 +11,12 @@ export async function requireAcceptedFinancialCapability(tx: Prisma.TransactionC
   if (!FINANCIAL_ACCEPTANCE_KEYS.includes(permission)) return;
   const deny=()=>{throw Object.assign(new Error("Accepted financial capability required"),{statusCode:403,code:"FINANCIAL_ACCEPTANCE_REQUIRED"});};
   if(!actor.tenantId||!actor.companyId||!actor.tenantMembershipId||!actor.companyMembershipId||actor.membershipId!==actor.companyMembershipId)return deny();
+  // Match credential/grant administration's User -> membership -> grant order.
+  // Otherwise a later actor FK can wait behind revocation's membership UPDATE
+  // while revocation waits behind this transaction's grant SHARE. Pin only the
+  // actor's existing references; do not take credential values or mutate them.
+  if(!await lockSelectedIdentityReferences(tx,{userId:actor.id,tenantId:actor.tenantId,
+    companyId:actor.companyId,tenantMembershipId:actor.tenantMembershipId,companyMembershipId:actor.companyMembershipId}))return deny();
   const g=(await tx.$queryRaw<any[]>`SELECT g.*,a.action,a.result FROM "FinancialMembershipGrant" g
     JOIN "FinancialGrantAction" a ON a."operationId"=g."acceptedOperationId" AND a."targetMembershipId"=g."membershipId"
       AND a."tenantId"=g."tenantId" AND a."companyId"=g."companyId" AND a."legalEntityId"=g."legalEntityId"

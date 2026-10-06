@@ -3,7 +3,7 @@ jest.mock("../../src/config/prismaClient", () => ({ __esModule: true, default: n
     }) }));
 jest.mock("../../src/config/redis", () => ({ getRedisClient: async () => null, getRedisPrefix: () => "synthetic",
     withRedisTimeout: (_name: any, work: any) => work() }));
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
 import { generateKeyPairSync, createHash, randomUUID, sign } from "node:crypto";
@@ -14,7 +14,7 @@ import bcrypt from "bcryptjs";
 import { onboardTenant, canonicalOnboardingPermit, ONBOARDING_OPERATOR, ONBOARDING_PROFILE, ONBOARDING_PERMISSIONS, ONBOARDING_PROFILE_V2 } from "../../src/modules/identity-access/application/tenant-onboarding";
 import { normalizeTenantOnboardingIntent } from "../../src/modules/identity-access/application/tenant-onboarding-intent";
 import { SYSTEM_PERMISSIONS } from "../../src/modules/identity-access/permission-registry";
-import { loginUser } from "../../src/modules/identity-access/application/auth.service";
+import { loginUser, revokeRefreshSession } from "../../src/modules/identity-access/application/auth.service";
 const url = process.env.CARGOPILOT_WORKER_TEST_DATABASE_URL, run = process.env.CARGOPILOT_WORKER_RUN_ID;
 if (!url || !run || !/^[a-f0-9]{12}$/.test(run))
     throw Error("Disposable onboarding identity required");
@@ -418,4 +418,165 @@ it('actual financial HTTP proposal/accept/revoke contracts require current selec
   expect(accepted.json()).toMatchObject({companyMembershipId:g.target.accepted.companyMembershipId,legalEntityId:g.legalEntity.id,acceptanceId:operationId,profileRevisions:['pricing-maker.v1']});
   const revoked=await app.inject({method:'POST',url:'/api/auth/company-financial-grants/revoke',payload:{operationId:randomUUID(),membershipId:g.target.accepted.companyMembershipId,legalEntityId:g.legalEntity.id,expectedAcceptanceId:operationId,reason:'Immediate HTTP revocation'},headers:{authorization:'Bearer '+checker.token}});expect(revoked.statusCode).toBe(200);
  }finally{await app.close();}
+});
+
+// Lock schedule instrumentation only: executes the actual query before pausing.
+function lockSignal(){let release!:()=>void;const promise=new Promise<void>(resolve=>{release=resolve;});return {promise,release};}
+function lockText(args:any[]){const sql=args[0];return Array.isArray(sql)?sql.join('?'):sql?.strings?.join('?')??String(sql);}
+function lockDb(base:PrismaClient,hook:(sql:string,tx: any,result:any)=>Promise<void>, historicalGrantFirst=false){
+ return new Proxy(base,{get(target,key){if(key==='$transaction')return (work:any,options:any)=>target.$transaction(async tx=>{
+   const pid=Number((await tx.$queryRaw<any[]>`SELECT pg_backend_pid() AS pid`)[0].pid); await hook('BEGIN',{pid,tx},[]);
+   const wrapped=new Proxy(tx,{get(value,name){if(name==='$queryRaw')return async(...args:any[])=>{
+    // Test-only replay of the reproduced pre-correction protocol: remove ONLY
+    // the new actor reference pins, not authorization queries or grant fencing.
+    let actual=args;
+    const text=lockText(args);
+    if(historicalGrantFirst&&text.includes('FOR KEY SHARE')&&/^\s*SELECT id FROM "(User|CompanyMembership)"/.test(text)){
+      const tagged=Array.isArray(args[0]);
+      const strings=(tagged?args[0]:args[0].strings).map((s:string)=>s.replace('FOR KEY SHARE',''));
+      Object.defineProperty(strings,'raw',{value:[...strings]});
+      actual=tagged?[strings,...args.slice(1)]:[Prisma.sql(strings,...args[0].values)];
+    }
+    const result=await (value.$queryRaw as any)(...actual);await hook(lockText(args),{pid,tx:value},result);return result;
+   };const found=(value as any)[name];return typeof found==='function'?found.bind(value):found;}});
+   return work(wrapped);
+ },options);const found=(target as any)[key];return typeof found==='function'?found.bind(target):found;}}) as PrismaClient;
+}
+async function lockWaitFor(work:()=>Promise<boolean>){const end=Date.now()+1800;while(Date.now()<end){if(await work())return;await new Promise(r=>setTimeout(r,15));}throw Error('Deterministic lock observation deadline');}
+function lockErrorText(error:any):string{return [error?.code,error?.message,JSON.stringify(error?.meta)].join(' ');}
+it('financial lock historical grant-first tariff publication and revocation reproduce the FK deadlock',async()=>{
+ const g=await group();const accepted=await accept(g,proposal(g,['pricing-maker.v1']));const plan=await createTariffPlan(g.target.actor,tariffInput());
+ const current=await mockDb.tariffPlan.findUniqueOrThrow({where:{id:plan!.id}}),original=mockDb;
+ const businessHeld=lockSignal(),releaseBusiness=lockSignal(),revokeHeld=lockSignal(),releaseRevoke=lockSignal();let businessPid=0,revokePid=0;
+ const businessDb=lockDb(original,async(sql,info)=>{businessPid=info.pid;if(sql.includes('FOR SHARE OF g')){businessHeld.release();await releaseBusiness.promise;}},true);
+ const revokeDb=lockDb(original,async(sql,info,result)=>{revokePid=info.pid;if(sql.includes('SELECT id FROM "CompanyMembership"')&&sql.includes('FOR UPDATE')&&result.some((row:any)=>row.id===g.target.accepted.companyMembershipId)){revokeHeld.release();await releaseRevoke.promise;}});
+ mockDb=businessDb;
+ const business=proposeTariffVersion({user:g.target.actor,planId:current.id,expectedGeneration:current.contentGeneration,operationId:randomUUID(),reason:'Synthetic lock schedule'}).then(value=>({value}),error=>({error}));
+ let revocation:Promise<any>|undefined;
+ try{
+  await businessHeld.promise;
+  revocation=revokeFinancialGrant(revokeDb,g.checker.actor,{operationId:randomUUID(),membershipId:g.target.accepted.companyMembershipId,legalEntityId:g.legalEntity.id,expectedAcceptanceId:accepted.v.operationId,reason:'Synthetic competing revoke'}).then(value=>({value}),error=>({error}));
+  await revokeHeld.promise;releaseBusiness.release();
+  await lockWaitFor(async()=>{const r=await pool.query('SELECT $2::integer=ANY(pg_blocking_pids($1::integer)) AS blocked',[businessPid,revokePid]);return r.rows[0].blocked;});
+  releaseRevoke.release();const outcomes=await Promise.all([business,revocation]);
+  expect(outcomes.filter(o=>o.error)).toHaveLength(1);
+  expect(outcomes.some(o=>/40P01|P2034|deadlock detected/.test(lockErrorText(o.error)))).toBe(true);
+  console.log('HISTORICAL_GRANT_FIRST_DEADLOCK_CONFIRMED');
+ }finally{releaseBusiness.release();releaseRevoke.release();await business;await revocation;mockDb=original;}
+});
+async function lockFixture(){
+ const g=await group();const accepted=await accept(g,proposal(g,['pricing-maker.v1']));const plan=await createTariffPlan(g.target.actor,tariffInput());
+ const current=await mockDb.tariffPlan.findUniqueOrThrow({where:{id:plan!.id}});
+ await loginUser({email:g.target.input.email,password:g.target.pass});
+ return {g,accepted,current,business:{user:g.target.actor,planId:current.id,expectedGeneration:current.contentGeneration,operationId:randomUUID(),reason:'Synthetic ordered publication'},
+  revoke:{operationId:randomUUID(),membershipId:g.target.accepted.companyMembershipId,legalEntityId:g.legalEntity.id,expectedAcceptanceId:accepted.v.operationId,reason:'Synthetic ordered revoke'}};
+}
+async function lockBlocked(pid:number,by:number){return (await pool.query('SELECT $2::integer=ANY(pg_blocking_pids($1::integer)) AS blocked',[pid,by])).rows[0].blocked;}
+it('financial lock business-first publication finishes before waiting revocation; confirmed retry after revoke is denied',async()=>{
+ const f=await lockFixture(),original=mockDb,held=lockSignal(),release=lockSignal();let businessPid=0,revokePid=0;
+ const businessDb=lockDb(original,async(sql,info)=>{businessPid=info.pid;if(sql.includes('FOR SHARE OF g')){held.release();await release.promise;}});
+ const revokeDb=lockDb(original,async(_sql,info)=>{revokePid=info.pid;});mockDb=businessDb;
+ const business=proposeTariffVersion(f.business).then(value=>({value}),error=>({error}));let revocation:Promise<any>|undefined;
+ try{
+  await held.promise;revocation=revokeFinancialGrant(revokeDb,f.g.checker.actor,f.revoke).then(value=>({value}),error=>({error}));
+  await lockWaitFor(()=>lockBlocked(revokePid,businessPid));release.release();
+  const [b,r]=await Promise.all([business,revocation]);expect(b).toHaveProperty('value.id');expect(r).toHaveProperty('value.revokedAcceptanceId',f.accepted.v.operationId);
+  mockDb=original;expect(await original.tariffConfigurationVersion.count({where:{planId:f.current.id}})).toBe(1);
+  expect((await original.financialMembershipGrant.findUniqueOrThrow({where:{membershipId:f.g.target.accepted.companyMembershipId}})).enabled).toBe(false);
+  expect(await original.financialGrantAction.count({where:{operationId:f.revoke.operationId,action:'revoke'}})).toBe(1);
+  expect(await original.userRefreshSession.count({where:{companyMembershipId:f.g.target.accepted.companyMembershipId,revokedAt:null}})).toBe(0);
+  await unchanged(()=>proposeTariffVersion(f.business));
+ }finally{release.release();await business;await revocation;mockDb=original;}
+});
+it('financial lock revoke-first rejects waiting publication and post-commit work without business effects',async()=>{
+ const f=await lockFixture(),original=mockDb,held=lockSignal(),release=lockSignal();let businessPid=0,revokePid=0;
+ const revokeDb=lockDb(original,async(sql,info)=>{revokePid=info.pid;if(sql.includes('FOR UPDATE OF g')){held.release();await release.promise;}});
+ const businessDb=lockDb(original,async(_sql,info)=>{businessPid=info.pid;});
+ const revocation=revokeFinancialGrant(revokeDb,f.g.checker.actor,f.revoke).then(value=>({value}),error=>({error}));let business:Promise<any>|undefined;
+ try{
+  await held.promise;mockDb=businessDb;business=proposeTariffVersion(f.business).then(value=>({value}),error=>({error}));
+  await lockWaitFor(()=>lockBlocked(businessPid,revokePid));release.release();
+  const [r,b]=await Promise.all([revocation,business]);expect(r).toHaveProperty('value.revokedAcceptanceId');expect(b).toHaveProperty('error.code','FINANCIAL_ACCEPTANCE_REQUIRED');
+  mockDb=original;expect(await original.tariffConfigurationVersion.count({where:{planId:f.current.id}})).toBe(0);
+  expect(await original.tariffPlan.findUniqueOrThrow({where:{id:f.current.id}})).toEqual(f.current);
+  expect(await original.financialGrantAction.count({where:{operationId:f.revoke.operationId}})).toBe(1);
+  expect(await original.userRefreshSession.count({where:{companyMembershipId:f.g.target.accepted.companyMembershipId,revokedAt:null}})).toBe(0);
+  await unchanged(()=>proposeTariffVersion({...f.business,operationId:randomUUID()}));
+ }finally{release.release();await business;await revocation;mockDb=original;}
+});
+it('financial lock admitted tariff publication finishes before competing profile replacement; later maker work rejects',async()=>{
+ const f=await lockFixture(),original=mockDb;
+ const p=await proposeFinancialGrant(original,f.g.a.actor,proposal(f.g,['billing-operator.v1'],f.accepted.v.operationId));
+ const decision={operationId:randomUUID(),proposalId:p.proposalId,fingerprint:p.fingerprint,reason:'Synthetic narrowed replacement'};
+ const held=lockSignal(),release=lockSignal();let businessPid=0,replacementPid=0;
+ const businessDb=lockDb(original,async(sql,info)=>{businessPid=info.pid;if(sql.includes('FOR SHARE OF g')){held.release();await release.promise;}});
+ const replacementDb=lockDb(original,async(_sql,info)=>{replacementPid=info.pid;});mockDb=businessDb;
+ const business=proposeTariffVersion(f.business).then(value=>({value}),error=>({error}));let replacement:Promise<any>|undefined;
+ try{await held.promise;replacement=acceptFinancialGrant(replacementDb,f.g.checker.actor,decision).then(value=>({value}),error=>({error}));
+  await lockWaitFor(()=>lockBlocked(replacementPid,businessPid));release.release();
+  const [b,r]=await Promise.all([business,replacement]);expect(b).toHaveProperty('value.id');expect(r).toHaveProperty('value.acceptanceId',decision.operationId);
+  mockDb=original;expect(await original.tariffConfigurationVersion.count({where:{planId:f.current.id}})).toBe(1);
+  const grant=await original.financialMembershipGrant.findUniqueOrThrow({where:{membershipId:f.g.target.accepted.companyMembershipId}});expect(grant.profileRevisions).toEqual(['billing-operator.v1']);expect(grant.enabled).toBe(true);
+  await unchanged(()=>proposeTariffVersion({...f.business,operationId:randomUUID()}));
+ }finally{release.release();await business;await replacement;mockDb=original;}
+});
+it('financial lock billing failure after business insert rolls back business/audit and leaves grants/sessions untouched',async()=>{
+ const g=await group();await accept(g,proposal(g,['pricing-maker.v1']));await loginUser({email:g.target.input.email,password:g.target.pass});
+ await pool.query(`CREATE FUNCTION cp_financial_business_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action='billing.policy.proposed' THEN RAISE EXCEPTION 'Synthetic billing rollback'; END IF; RETURN NEW; END $$; CREATE TRIGGER cp_financial_business_fail BEFORE INSERT ON "FinanceAuditEvent" FOR EACH ROW EXECUTE FUNCTION cp_financial_business_fail();`);
+ try{await unchanged(()=>proposeBillingPolicy(g.target.actor,{operationId:randomUUID(),reason:'Synthetic transaction rollback',content:syntheticBillingPolicy()}));}
+ finally{await pool.query('DROP TRIGGER cp_financial_business_fail ON "FinanceAuditEvent"; DROP FUNCTION cp_financial_business_fail();');}
+ await proposeBillingPolicy(g.target.actor,{operationId:randomUUID(),reason:'Synthetic restored transaction',content:syntheticBillingPolicy()});
+});
+it('financial lock failed revocation rolls back roles/version/session/audit and waiting business can finish',async()=>{
+ const f=await lockFixture(),original=mockDb,held=lockSignal(),release=lockSignal();let businessPid=0,revokePid=0;
+ await pool.query(`CREATE FUNCTION cp_financial_revoke_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action='revoke' THEN RAISE EXCEPTION 'Synthetic revocation rollback'; END IF; RETURN NEW; END $$; CREATE TRIGGER cp_financial_revoke_fail BEFORE INSERT ON "FinancialGrantAction" FOR EACH ROW EXECUTE FUNCTION cp_financial_revoke_fail();`);
+ const before=await graphDigest();
+ const revokeDb=lockDb(original,async(sql,info)=>{revokePid=info.pid;if(sql.includes('FOR UPDATE OF g')){held.release();await release.promise;}});
+ const businessDb=lockDb(original,async(sql,info)=>{businessPid=info.pid;if(sql.includes('FOR SHARE OF g')){expect(await graphDigest()).toBe(before);}});
+ const revoke=revokeFinancialGrant(revokeDb,f.g.checker.actor,f.revoke).then(value=>({value}),error=>({error}));let business:Promise<any>|undefined;
+ try{await held.promise;mockDb=businessDb;business=proposeTariffVersion(f.business).then(value=>({value}),error=>({error}));await lockWaitFor(()=>lockBlocked(businessPid,revokePid));release.release();
+  const [r,b]=await Promise.all([revoke,business]);expect(r).toHaveProperty('error');expect(b).toHaveProperty('value.id');mockDb=original;
+  expect(await original.financialGrantAction.count({where:{operationId:f.revoke.operationId}})).toBe(0);
+  expect((await original.financialMembershipGrant.findUniqueOrThrow({where:{membershipId:f.g.target.accepted.companyMembershipId}})).enabled).toBe(true);
+  expect(await original.userRefreshSession.count({where:{companyMembershipId:f.g.target.accepted.companyMembershipId,revokedAt:null}})).toBeGreaterThan(0);
+ }finally{release.release();await revoke;await business;mockDb=original;await pool.query('DROP TRIGGER cp_financial_revoke_fail ON "FinancialGrantAction"; DROP FUNCTION cp_financial_revoke_fail();');}
+});
+it('financial lock historical lineage-first logout and grant revocation reproduce the audit FK deadlock',async()=>{
+ const f=await lockFixture(),original=mockDb,login=await loginUser({email:f.g.target.input.email,password:f.g.target.pass});
+ const held=lockSignal(),releaseLogout=lockSignal(),revokeHeld=lockSignal(),releaseRevoke=lockSignal();let logoutPid=0,revokePid=0;
+ const logoutDb=lockDb(original,async(sql,info)=>{logoutPid=info.pid;if(sql.includes('pg_advisory_xact_lock')){held.release();await releaseLogout.promise;}},true);
+ const revokeDb=lockDb(original,async(sql,info,result)=>{revokePid=info.pid;if(sql.includes('SELECT id FROM "CompanyMembership"')&&sql.includes('FOR UPDATE')&&result.some((r:any)=>r.id===f.g.target.accepted.companyMembershipId)){revokeHeld.release();await releaseRevoke.promise;}});
+ mockDb=logoutDb;const logout=revokeRefreshSession(login.refreshToken).then(()=>({value:true}),error=>({error}));let revocation:Promise<any>|undefined;
+ try{await held.promise;revocation=revokeFinancialGrant(revokeDb,f.g.checker.actor,f.revoke).then(value=>({value}),error=>({error}));await revokeHeld.promise;releaseLogout.release();
+  await lockWaitFor(()=>lockBlocked(logoutPid,revokePid));releaseRevoke.release();const outcomes=await Promise.all([logout,revocation]);
+  expect(outcomes.filter(o=>'error' in o)).toHaveLength(1);expect(outcomes.some(o=>/40P01|P2034|deadlock detected/.test(lockErrorText((o as any).error)))).toBe(true);
+  console.log('HISTORICAL_LOGOUT_REVOCATION_FK_DEADLOCK_CONFIRMED');
+ }finally{releaseLogout.release();releaseRevoke.release();await logout;await revocation;mockDb=original;}
+});
+
+it('financial lock logout-first finishes before waiting grant revoke without losing immutable logout audit',async()=>{
+ const f=await lockFixture(),original=mockDb,login=await loginUser({email:f.g.target.input.email,password:f.g.target.pass});
+ const held=lockSignal(),release=lockSignal();let logoutPid=0,revokePid=0;
+ const logoutDb=lockDb(original,async(sql,info)=>{logoutPid=info.pid;if(sql.includes('pg_advisory_xact_lock')){held.release();await release.promise;}});
+ const revokeDb=lockDb(original,async(_sql,info)=>{revokePid=info.pid;});mockDb=logoutDb;
+ const logout=revokeRefreshSession(login.refreshToken).then(()=>({value:true}),error=>({error}));let revocation:Promise<any>|undefined;
+ try{await held.promise;revocation=revokeFinancialGrant(revokeDb,f.g.checker.actor,f.revoke).then(value=>({value}),error=>({error}));await lockWaitFor(()=>lockBlocked(revokePid,logoutPid));release.release();
+  const [l,r]=await Promise.all([logout,revocation]);expect(l).toEqual({value:true});expect(r).toHaveProperty('value.revokedAcceptanceId');mockDb=original;
+  expect(await original.credentialSecurityEvent.count({where:{companyMembershipId:f.g.target.accepted.companyMembershipId,action:'LOGOUT_ACCEPTED'}})).toBe(1);
+  expect(await original.userRefreshSession.count({where:{companyMembershipId:f.g.target.accepted.companyMembershipId,revokedAt:null}})).toBe(0);
+  expect((await original.financialMembershipGrant.findUniqueOrThrow({where:{membershipId:f.g.target.accepted.companyMembershipId}})).enabled).toBe(false);
+ }finally{release.release();await logout;await revocation;mockDb=original;}
+});
+it('financial lock grant-revoke-first permits exact successor logout as a no-op without new audit or session changes',async()=>{
+ const f=await lockFixture(),original=mockDb,login=await loginUser({email:f.g.target.input.email,password:f.g.target.pass});
+ const held=lockSignal(),release=lockSignal();let logoutPid=0,revokePid=0;
+ const revokeDb=lockDb(original,async(sql,info)=>{revokePid=info.pid;if(sql.includes('FOR UPDATE OF g')){held.release();await release.promise;}});
+ const logoutDb=lockDb(original,async(_sql,info)=>{logoutPid=info.pid;});
+ const revoke=revokeFinancialGrant(revokeDb,f.g.checker.actor,f.revoke).then(value=>({value}),error=>({error}));let logout:Promise<any>|undefined;
+ try{await held.promise;mockDb=logoutDb;logout=revokeRefreshSession(login.refreshToken).then(()=>({value:true}),error=>({error}));await lockWaitFor(()=>lockBlocked(logoutPid,revokePid));release.release();
+  const [r,l]=await Promise.all([revoke,logout]);expect(r).toHaveProperty('value.revokedAcceptanceId');expect(l).toEqual({value:true});mockDb=original;
+  expect(await original.credentialSecurityEvent.count({where:{companyMembershipId:f.g.target.accepted.companyMembershipId,action:'LOGOUT_ACCEPTED'}})).toBe(0);
+  expect(await original.userRefreshSession.count({where:{companyMembershipId:f.g.target.accepted.companyMembershipId,revokedAt:null}})).toBe(0);
+  const before=await graphDigest();await revokeRefreshSession(login.refreshToken);expect(await graphDigest()).toBe(before);
+ }finally{release.release();await revoke;await logout;mockDb=original;}
 });
