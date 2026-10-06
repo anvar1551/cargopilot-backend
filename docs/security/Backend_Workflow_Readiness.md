@@ -1,4 +1,26 @@
-# Current DOM-04 readiness (2026-10-06)
+# Current DOM-05 readiness (2026-10-06)
+
+Reviewed implementation `09061a6e86fd4a6e0902fd2710054bc6fbb9f266`;
+baseline `5a83c48852bff9e1ea53c713b021e26929c7f6f1`.
+See [Restricted_Cash_Authority_Contract.md](Restricted_Cash_Authority_Contract.md).
+
+| Workflow/status | Current behavior and readiness boundary |
+| --- | --- |
+| Cash staff provisioning — working synthetically | Separate owner-approved proposer/checker, immutable single-profile supplemental acceptance and resource/entity/kind ceilings. Different checker User from maker and recipient. Replacement checks removal ceiling; revocation/version/session effects atomic. No automatic base roles/scopes or onboarding authority expansion. |
+| Restricted service collection — implemented with prerequisite | Current exact accepted price/payer, owned entity, existing matching expected obligation and eligible assigned local driver or scoped warehouse staff required. Actual tests provision synthetic compatibility obligation mirrors derived from approved price; normal order/price acceptance does not initialize them. Full onboarding-to-cash readiness remains DOM-06 unfinished. |
+| Driver -> warehouse -> local driver — working under prerequisite | Exact holder offers; exact accepted recipient commits acceptance. Parcel intake/reassignment/delivery do not move cash. Recorded driver holder retains authorized handoff after reassignment. Warehouse-to-driver requires accepted last-mile custody, not nomination alone. No linehaul or warehouse-to-warehouse cash transfer. |
+| Warehouse settlement — working under prerequisite | Accepted narrow checker, source warehouse/entity ceilings and separate User from collector/latest maker/holder. No direct driver settlement or suspended-holder recovery. Custody settlement does not imply invoice, merchant payout or accounting settlement. |
+| Reads/retries/revocation — implemented/tested | Narrow bounded context-bound queue/preflight, exact event IDs and decimal strings. Fresh authorization precedes original receipt on retry. Conflicts/stale state deny; lost acknowledgements retain original identity. Revoked participants block acceptance; legacy unproved holdings invisible. |
+| Evidence | 17 distinct actual PostgreSQL cases, 121 migrations, real Fastify and two-process local Socket.IO revocation. 38 distinct unit/mock cases: 28 affected executed, 10 unchanged profile tests reused. Final offline Prisma syntax/no-emit passed; all 8 owned instances removed/absence verified. Repeated runs not additional cases; schema syntax/manual selected review/actual SQL execution are distinct evidence. |
+| DOM-06 — missing implementation/contract | Exact service-obligation initialization/revision from accepted pricing/payer remains absent. Merchant COD provenance is separate and unavailable; no Float authority, inferred obligations or backfill. New protected cash receipts are held: no executable finance source publication or new cash accounting claim. Historical old producer tests are not acceptance evidence for this contract. |
+| API/client compatibility | POST cash/handoff now creates only an offer with recipientMembershipId/recipientWarehouseId; new handoff/accept requires offerId and expectedEventId. Same outer success envelope, minimal decimal-string result. Queue uses limit/cursor, preflight matches that minimal contract; legacy filters and numeric mixed-currency summary unavailable. Bulk remains independent partial success, no bulk acceptance. Clients not updated. |
+| External / deliberately unavailable | Real operator keys/private credential delivery/invocation, deployed infrastructure/storage/device/client verification, legacy certification/RLS/source-artifact gates remain. No accounting/FX, suspended-holder cash recovery, broad cash override, automatic recipient selection or real invitation/provisioning. Socket sweep/in-flight window remains. |
+
+Next bounded implementation is DOM-06 service-obligation authority, with separate
+merchant and finance source decisions recorded above. Stop after DOM-05; no next
+implementation started. Older readiness sections are historical.
+
+# Historical DOM-04 readiness (2026-10-06)
 
 See [Initial_Issuing_Entity_Setup_Contract.md](Initial_Issuing_Entity_Setup_Contract.md)
 for exact additive contracts, rollout and evidence. Baseline63a08ee.

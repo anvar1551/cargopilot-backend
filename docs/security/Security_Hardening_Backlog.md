@@ -1,4 +1,29 @@
-# Current checkpoint — DOM-04 initial issuing-entity setup (2026-10-06)
+# Current checkpoint — DOM-05 restricted cash authority (2026-10-06)
+
+Baseline `5a83c48852bff9e1ea53c713b021e26929c7f6f1`; reviewed implementation
+`09061a6e86fd4a6e0902fd2710054bc6fbb9f266`.
+See [Restricted_Cash_Authority_Contract.md](Restricted_Cash_Authority_Contract.md)
+for exact profiles, APIs, locks, rollout and evidence. This finite batch is complete;
+no DOM-06 implementation started. Containment is not restored financial functionality.
+
+| Item/status | Current behavior and exact boundary |
+| --- | --- |
+| DOM-05 governance — implemented/tested | Separate owner-appointed cash-delegation.v1 authorities; independent User approval of one supplemental profile, company/entity/kind/warehouse ceilings over removed and replacement grants. Protected actions, version/session effects and grant mutation atomic; base driver/warehouse roles/scopes and other-company access preserved. |
+| DOM-05 custody — implemented/tested with monetary prerequisite | Exact accepted service price and payer plus existing matching expected obligation permit restricted collection. Explicit driver-to-warehouse and warehouse-to-accepted-local-driver offer/acceptance; origin retains custody until acceptance. Recorded holder can hand off after authorized parcel reassignment/intake. Warehouse-held-only separate-human settlement; fresh retries, conflicts, event fences and atomic money/history/receipts. |
+| Narrow discovery — implemented/tested | Accepted capabilities and exact assignment/holder/warehouse scope gate bounded queue/preflight; legacy unproved holdings hidden. No broad shipment grants or implicit cash movement from parcel operations. |
+| Executed evidence | 17 distinct actual PostgreSQL cases, including actual Fastify and existing Socket.IO connections in two local processes; 121 migrations applied. 38 distinct unit/mock cases (10 unchanged profile cases reused, 28 affected boundary/adapter cases executed). Final offline Prisma syntax and 4GiB no-emit passed. Reruns are not additional cases. All 8 exclusively owned instances cleaned with ownership/absence verification. |
+| Reused evidence / limits | Unchanged DOM-01–04 logistics, pricing, entity, driver and lineage evidence retained. Historical old cash producer tests are not current DOM-05 evidence; new receipts are held and do not restore financial ingestion/posting. Redis/provider/storage/email/device boundaries mocked or unused; existing socket sweep/in-flight window remains. |
+| DOM-06 — technically unfinished, before normal end-to-end cash | Normal accepted price does not initialize exact expected service obligation/compatibility mirrors. Implement an authoritative initializer/revision contract from accepted service pricing and payer, with durable identity, conflicts, concurrency and rollback; Float mirrors cannot supply authority. No such initializer or backfill added here. |
+| DOM-06 merchant basis — unavailable awaiting contract | COD rejects CASH_MERCHANT_BASIS_UNAVAILABLE. Establish separate authoritative merchant COD provenance and approved obligation/revision rules before collection; do not substitute service pricing or Float amounts. New cash-to-finance source binding remains held until its approved basis/mappings are available. |
+| Deliberately unavailable | Linehaul/warehouse-to-warehouse transfers, direct-driver settlement, suspended-holder cash recovery, legacy inferred ownership, numeric mixed-currency summary, accounting/FX. Physical-receipt recovery grants no cash recovery. |
+| Client/release gates | Handoff is now offer-only, explicit acceptance and exact memberships required; decimal projections and cursor queue replace legacy contracts. Clients deferred. Schema-first rollout must stop old cash/IAM writers. Real keys/private handoff/provisioning/configuration, infrastructure/device/RLS/historical/null/source-artifact gates remain. |
+
+Next finite task is DOM-06 service-obligation authority; merchant COD and finance
+execution retain their separate missing contracts. No automatic continuation beyond
+this approved batch. Dist and blocked cleanup preserved; no push/deployment.
+Older handoffs below are historical and do not describe current cash readiness.
+
+# Historical checkpoint — DOM-04 initial issuing-entity setup (2026-10-06)
 
 Baseline `63a08ee931a29fbe0178d20b463e36432bfb11bd`. Finite DOM-04 complete;
 see [Initial_Issuing_Entity_Setup_Contract.md](Initial_Issuing_Entity_Setup_Contract.md).
