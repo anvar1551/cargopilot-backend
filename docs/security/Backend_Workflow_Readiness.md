@@ -1,4 +1,27 @@
-# Current DOM-02 warehouse provisioning readiness (2026-10-06)
+# Current DOM-03 financial provisioning readiness (2026-10-06)
+
+Implementation `05a8af683dd0ec9b676226c6e025c6ea4117de4b`; baseline
+`af2602ddfc8a0754d4df8a4e3599353f97083c7c`.
+See [Financial_Actor_Provisioning.md](Financial_Actor_Provisioning.md) for exact
+six immutable profiles, three API contracts and migration/rollout evidence.
+
+| Workflow | Current enforced behavior / exact remaining gate |
+|---|---|
+| Owner -> tenant financial governance | Exact financial-delegation.v1 permit establishes company/entity/profile ceilings, granting only proposer or checker capability. Onboarding/operational/driver ceilings unchanged. Real registry/intent/invocation remain unperformed. |
+| Staff -> independently accepted financial profiles | Existing credential-bound, explicit company-scoped staff; immutable proposal and separate human acceptance. No self-target/self-check/recipient check. Removed/replacement grants within both ceilings; unrelated operational roles and scopes retained. No finance-only invitation path or automatic company scope. |
+| Pricing maker/checker | Actual provisioned actors publish/independently approve tariffs and billing policy. Draft-only pricing.write guard prevents proposed/published source edits/deletes and published default mutation; immutable versions/history retained. Legacy permission-only writers require managed acceptance. |
+| Billing and manual invoice | Actual provisioned actors bind payer, accept exact standard price, independently approve a revision, issue same-currency manual invoice and reuse confirmed identities. Explicit existing synthetic entity/configuration prerequisite; no full onboard-to-invoice claim. Invoice outbox remains held and accounting/payment execution unavailable. |
+| Revocation and grant integrity | Acceptance/roles/protected audit/version/session effects atomic; suspended recipients still revocable. Fresh receipt eligibility, stale enabled-state/proposer acceptance, concurrent replacement/revocation and rollback tested. Actual HTTP and 2-process existing Socket.IO revocation; unchanged bounded sweep/last-check windows, no instantaneous claim. |
+| Driver/warehouse cash — DOM-05 unavailable | Approved supplemental design is not granted/enabled. Managed driver exact base role/permissions and zero scopes preserved and tested. Narrow cash reads/actions/settlement checker and authoritative custody checks must precede restoration; no general shipment.view/update grant. |
+| Initial entity setup — DOM-04 unavailable | Separate immutable proposal/independent approval contract recorded; eligible setup staff/concrete values need approval. settings.manage stays contained. Newly onboarded company without entity remains billing-blocked; real company currency/tax identity not invented. |
+| Validation | 20 distinct actual PostgreSQL cases,118 migrations,49 offline/unit/mock cases, offline schema/client and final no-emit passed. Owned disposable cleanup verified. Synthetic existing entity/configuration and mocked Redis are explicit prerequisites/boundaries; no provider/S3/native/deployed claims. |
+| Rollout / remaining gates | Three additive /api/auth/company-financial-grants routes need retained operationId, exact fingerprint and expectedAcceptanceId. Stop old financial/IAM writers, migrate first, explicitly establish accepted actors; no silent legacy upgrade. Clients, finance-only enrollment, real keys/private delivery/invocation, historical/nullable/RLS/source-artifact and infrastructure gates remain. |
+
+Finite DOM-03 complete within this scope; stop for review. No cash/accounting/entity
+configuration enablement or next implementation started. Historical checkpoints
+below retain earlier evidence and are superseded only by the bounded changes above.
+
+# Historical DOM-02 warehouse provisioning readiness (2026-10-06)
 
 Implementation checkpoint: `394309c459f385174e707d867a170f7a54e0e9b2`.
 The approved warehouse-only DOM-02 slice is committed; this evidence/checklist

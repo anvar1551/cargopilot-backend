@@ -1,4 +1,30 @@
-# Current checkpoint — DOM-02 controlled warehouse provisioning (2026-10-06)
+# Current checkpoint — DOM-03 financial actor provisioning (2026-10-06)
+
+Implementation checkpoint: `05a8af683dd0ec9b676226c6e025c6ea4117de4b`.
+Baseline `af2602ddfc8a0754d4df8a4e3599353f97083c7c`. This finite approved
+backend batch is complete within the scope below; stop for review, no next area
+started. [Financial_Actor_Provisioning.md](Financial_Actor_Provisioning.md)
+records the plan, exact six profiles, API, rollout and executed evidence.
+
+| Finite milestone / status | Enforced behavior, completion criterion or exact blocker |
+|---|---|
+| DOM-03-GRANTS — implemented/tested | Separate owner-signed financial-delegation.v1 proposer/checker authority, explicit selected company/entity/profile ceilings. Tenant-side independent acceptance; proposer cannot target themselves, checker differs from maker/recipient by User. Both removed/replacement grants validated; no automatic onboarding/operational authority expansion. |
+| DOM-03-RETRIES / revocation — implemented/tested | Immutable normalized proposals/actions, unique independent decision, fresh authorized retries, credential/company locks, enabled-state/proposer-acceptance stale checks. Grant/roles/audit/version/selected-session effects atomic. Either complete accepted ceiling can revoke including suspended recipients; unrelated roles/scopes/other-company sessions preserved. Pending/new decisions fail after maker authority revocation; accepted recipient access needs explicit revoke. |
+| DOM-03-EXECUTION — implemented/tested | Accepted financial evidence and exact role definitions gate pricing writes/proposals/approvals, payer/price decisions, manual invoice issuance and financial invoice/settings reads. Transactional SHARE fences grant replacement/revocation during financial mutations. pricing.write edits/deletes only unpublished plans with no version history; default maintenance leaves published plans untouched. Existing customer/object checks remain; customer masters stay tenant-owned. |
+| DOM-03 provisioned actor workflow — implemented/tested with prerequisite | Actual existing operational invitation/enrollment -> selected login -> independent financial grant -> tariff/policy publication -> payer/exact standard price/revision decision -> same-currency manual invoice. Entity/configuration is independently established synthetic prerequisite; this does not prove newly onboarded company billing readiness. No new finance-only invitation or automatic scope assignment; base operational access remains explicit and preserved. |
+| Executed evidence | 20 distinct real PostgreSQL cases, including actual HTTP and existing Socket.IO connections in 2 isolated processes; Redis mocked. Concurrent acceptance/replacement/revocation, rollback, compound references, immutable journals and managed-driver eligibility/zero scopes tested. 118 migrations; 49 distinct offline/unit/mock cases (8 profiles +19 onboarding +22 pricing). Offline schema/client and final 4GiB no-emit passed. Reruns not extra cases. All owned instances cleaned/absence verified; final cp-verification-9b82f7d9f37b, tmpfs only. |
+| Reused evidence | Unchanged detailed exact-money/calculation/concurrency, logistics/cash, driver journey, owner cryptography and earlier infrastructure evidence retained only for unchanged behavior. New financial gates exercised here; no production/provider/S3/native/Redis claim. |
+| DOM-04 — deliberately unavailable; before billing newly onboarded companies | Initial legal entity/configuration has no approved public setup. Separate immutable exact company/entity/base-currency/timezone/fiscal/tax proposal and independent human acceptance contract recorded; eligible setup proposer/checker and concrete values still need approval. finance.settings.manage stays blocked. Completion: approved narrow setup contract, authoritative constraints/atomic acceptance/retry/rollback tests, no fabricated real configuration. |
+| DOM-05 — deliberately unavailable; before driver/warehouse cash integration | Supplemental cash design approved but profiles/cash-settlement checker remain unavailable until narrow action/read/preflight and authoritative assignment/custody checks exist. No shipment.view/update compensation or driver-role/scopes changes. Completion: implement approved bounded cash capability acceptance and action boundaries, distinct restricted-actor money/retry/concurrency/rollback evidence. |
+| DOM-02-OPS / clients — still separate | Directory/planning provisioning not expanded; drivers.read is not drivers.manage. Financial frontend flows need the three additive grant endpoints, durable operation IDs/fingerprints/expectedAcceptanceId and selected identity; legacy permission-only execution actors must receive explicit acceptance. Finance-only enrollment and all client implementation remain deferred. |
+| Release / external verification — outstanding | Real owner registry/intent and secure credential/token delivery/invocation not performed. Migration-before-source and stop old IAM/financial writers; no legacy acceptance backfill. Source-artifact/nullable/historical/RLS, Redis/S3/device/provider/deployment gates persist. Schema-owner powers and last-check/sweep revocation windows remain; no complete isolation or production readiness. |
+
+Only DOM-03 completed here. DOM-04/05 require separate bounded work/decisions as
+listed; no keys, real grants, invitations, existing-service access, clients, push
+or deployment. Pre-existing dist and policy-blocked cleanup untouched. Older
+handoffs below are historical, superseded only in this approved scope.
+
+# Historical checkpoint — DOM-02 controlled warehouse provisioning (2026-10-06)
 
 Implementation checkpoint: `394309c459f385174e707d867a170f7a54e0e9b2`.
 The approved warehouse-only DOM-02 slice is committed; this evidence/checklist
