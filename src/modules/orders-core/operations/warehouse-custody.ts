@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "crypto";
 import { OrderStatus, Prisma } from "@prisma/client";
 import { z } from "zod";
 import prisma from "../../../config/prismaClient";
-import { requireCustodyActor, ownedCustodyWhere, loadCustodySource, authorizeCustodyAction, authorizeCustodyRetry, authorizeCustodyRead, observeOutgoingCustody, requireCustodyDriver as driver } from "../domain/custody-access";
+import { requireCustodyReadActor, requireCustodyActor, ownedCustodyWhere, loadCustodySource, authorizeCustodyAction, authorizeCustodyRetry, authorizeCustodyRead, observeOutgoingCustody, requireCustodyDriver as driver } from "../domain/custody-access";
 import { nextDispatchTime } from "../domain/dispatch-batch";
 import { persistDispatchNotification } from "../domain/dispatch-notification";
 import { enqueueCargoPilotDomainEventsTx } from "../../analytics-core/infrastructure/analyticsOutbox";
@@ -150,7 +150,7 @@ export async function readWarehouseCustody(actor: OrderActor, orderId: string) {
   const parsed=uuid.safeParse(orderId);
   if(!parsed.success) throw orderError("Valid order identifier required",400);
   orderId=parsed.data;
-  const a = await requireCustodyActor(actor, "shipment.view");
+  const a = await requireCustodyReadActor(actor);
   const source = await loadCustodySource(prisma, a, orderId);
   await authorizeCustodyRead(prisma, a, source);
   const parcels = await prisma.parcel.findMany({ where: { orderId }, select: { id: true }, orderBy: { id: "asc" }, take: 101 });

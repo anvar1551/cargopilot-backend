@@ -18,6 +18,7 @@ enum MembershipScopeType {
 }
 
 model Role {
+  driverGrants CompanyDriverEligibility[]
   operationalGrants CompanyOperationalGrant[]
   onboardingReceipts TenantOnboardingReceipt[]
   id   String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
@@ -71,6 +72,14 @@ model RolePermission {
 }
 
 model CompanyMembership {
+  driverAuthorities CompanyDriverDelegationAuthority[] @relation("DriverDelegatorOwner")
+  driverAuthorityBridges CompanyDriverDelegationAuthority[] @relation("DriverDelegatorBridge")
+  driverInvitations CompanyDriverInvitation[] @relation("DriverInvitationAccepted")
+  driverEligibility CompanyDriverEligibility? @relation("DriverOperationalGrantOwner")
+  driverEligibilityBridges CompanyDriverEligibility[] @relation("DriverOperationalGrantBridge")
+  driverActions CompanyDriverAction[] @relation("DriverDelegationActionActor")
+  driverTargets CompanyDriverAction[] @relation("DriverDelegationActionTarget")
+  driverRecipientTargets CompanyDriverAction[] @relation("DriverDelegationRecipientTarget")
   delegationOwners CompanyDelegationAuthority[] @relation("DelegatorOwner")
   delegationBridges CompanyDelegationAuthority[] @relation("DelegatorBridge")
   acceptedInvitations CompanyInvitation[] @relation("InvitationAccepted")
@@ -212,6 +221,7 @@ model MembershipScope {
 }
 
 model User {
+  driverInvitationAcceptances CompanyDriverAction[]
   invitationAcceptances CompanyDelegationAction[]
   onboardingReceipts TenantOnboardingReceipt[]
   id       String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid

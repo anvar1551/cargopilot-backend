@@ -1,3 +1,4 @@
+import { createCompanyDriverInvitation, acceptCompanyDriverInvitation, cancelCompanyDriverInvitation, mutateCompanyDriverEligibility } from "../application/driver-delegation";
 import { recordAuthRejection, AuthRejectionCode } from "./auth-rejection-diagnostics";
 import { ADMINISTRATIVE_CONTAINMENT } from "../application/managementAccess";
 import prisma from "../../../config/prismaClient";
@@ -340,6 +341,21 @@ const usersFastifyRoutes: FastifyPluginAsync<IdentityAccessRouteOptions> = async
     const token = header?.startsWith("Bearer ") ? header.slice(7) : undefined;
     if (header && !token) return reply.code(401).send({ error: "INVITATION_IDENTITY_REQUIRED" });
     try { return await acceptCompanyInvitation(prisma, request.body, token); } catch (e) { return delegationError(reply, e); }
+  });
+  fastify.post("/company-driver-invitations", { onRequest: privateReply, preHandler: fastifyAuth({ permission: "membership.invite" }), bodyLimit: 8192 }, async (request, reply) => {
+    try { return await createCompanyDriverInvitation(prisma, request.user!, request.body); } catch (e) { return delegationError(reply, e); }
+  });
+  fastify.post("/company-driver-invitations/cancel", { onRequest: privateReply, preHandler: fastifyAuth({ permission: "membership.invite" }), bodyLimit: 8192 }, async (request, reply) => {
+    try { return await cancelCompanyDriverInvitation(prisma, request.user!, request.body); } catch (e) { return delegationError(reply, e); }
+  });
+  fastify.post("/company-driver-grants", { onRequest: privateReply, preHandler: fastifyAuth({ permission: "membership.delegateDrivers" }), bodyLimit: 8192 }, async (request, reply) => {
+    try { return await mutateCompanyDriverEligibility(prisma, request.user!, request.body); } catch (e) { return delegationError(reply, e); }
+  });
+  fastify.post("/company-driver-invitations/accept", { onRequest: privateReply, preHandler: ipLimit("driver-invitation-accept", 10), bodyLimit: 8192 }, async (request, reply) => {
+    const header = request.headers.authorization;
+    const token = header?.startsWith("Bearer ") ? header.slice(7) : undefined;
+    if (header && !token) return reply.code(401).send({ error: "INVITATION_IDENTITY_REQUIRED" });
+    try { return await acceptCompanyDriverInvitation(prisma, request.body, token); } catch (e) { return delegationError(reply, e); }
   });
 };
 

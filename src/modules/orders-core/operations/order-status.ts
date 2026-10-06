@@ -1,3 +1,4 @@
+import { requireAcceptedDriver } from "../../identity-access/application/driver-eligibility";
 import { requireInitialPickupAuthority } from "../domain/custody-access";
 import prisma from "../../../config/prismaClient";
 import { persistDispatchNotification, withDispatchNotifications } from "../domain/dispatch-notification";
@@ -381,15 +382,9 @@ export async function assignDriversBulk(args: {
     if (args.warehouseId || actor.warehouseId) throw orderError("Assignment cannot establish warehouse custody",409);
     if (orders.some(order => FINAL_ORDER_STATUSES.includes(order.status) || !ASSIGNABLE_ORDER_STATUSES[type].includes(order.status)))
       throw orderError("Assignment is not permitted at the current stage", 409);
-    const driver = await tx.user.findUnique({where:{id:driverId},select:{id:true,driverType:true}});
-    const membership = await tx.companyMembership.findFirst({ where: {
-      userId: driverId, tenantId: actor.tenantId, companyId: actor.companyId!, status: "active", tenant: {status:"active"},
-      tenantMembership: {userId:driverId,tenantId:actor.tenantId!,status:"active"},
-      company:{id:actor.companyId!,tenantId:actor.tenantId!,isActive:true},
-    }, select:{id:true,roles:{select:{role:{select:{companyId:true,isSystem:true,rolePermissions:{select:{permission:{select:{key:true}}}}}}}}} });
-    if (!driver?.driverType || !membership || !membership.roles.some(({role}) =>
-      (role.companyId === actor.companyId || (role.companyId === null && role.isSystem)) &&
-      role.rolePermissions.some(({permission}) => permission.key === "drivers.telemetry"))) throw orderError("Driver is outside the selected company context",403);
+    const membership = await tx.companyMembership.findUnique({ where: { userId_companyId: { userId: driverId, companyId: actor.companyId! } }, select: { id: true } });
+    if (!membership) throw orderError("Driver is outside the selected company context",403);
+    await requireAcceptedDriver(tx, { tenantId: actor.tenantId!, companyId: actor.companyId! }, membership.id, "local", "shipment.changeStatus");
     if (actor.warehouseId && args.warehouseId && actor.warehouseId !== args.warehouseId) throw orderError("Conflicting warehouse selection",403);
     const warehouseId = resolveWarehouseId(actor,args.warehouseId);
     await requireWarehouseReference(actor,warehouseId,tx);
@@ -477,7 +472,7 @@ export async function updateDriverOrderStatus(args: {
   const { orderId, status, reasonCode, note, region, actor: requestedActor } = args;
   // Only existing forward pickup transitions use the exact owned assignment alternative.
   const pickup = status === OrderStatus.pickup_in_progress || status === OrderStatus.picked_up;
-  const resolve = (actor: OrderActor) => pickup ? requireInitialPickupAuthority(actor) : requireDispatchAuthority(actor, "shipment.changeStatus");
+  const resolve = (actor: OrderActor, tx: Prisma.TransactionClient = prisma) => pickup ? requireInitialPickupAuthority(actor, tx) : requireDispatchAuthority(actor, "shipment.changeStatus");
   let authority = await resolve(requestedActor);
   let { actor } = authority;
 
@@ -495,7 +490,7 @@ export async function updateDriverOrderStatus(args: {
       WHERE "id" = ${orderId}::uuid AND "tenantId" = ${actor.tenantId}::uuid
         AND ("ownerOrgId" = ${actor.companyId}::uuid OR "assignedOrgId" = ${actor.companyId}::uuid) FOR UPDATE`;
     if (locked.length !== 1) throw orderError("Order is no longer in scope", 409);
-    authority = await resolve(actor);
+    authority = await resolve(actor,tx);
     actor = authority.actor;
     const order = await tx.order.findFirst({...stateQuery,where:dispatchOrderWhere(authority,[orderId])});
     if (!order) {

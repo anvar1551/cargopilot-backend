@@ -3,7 +3,7 @@ import { database as db } from "./fixtures";
 import { observeOutgoingCustody } from "../../src/modules/orders-core/domain/custody-access";
 const actor:any={id:"receiver",tenantId:"tenant",companyId:"company"};
 const source:any={order:{id:"order"},latest:{id:"accepted-source",phase:"transport",driverUserId:"outgoing-driver",driverMembershipId:"outgoing-cm",actorUserId:"outgoing-driver",companyMembershipId:"outgoing-cm",tenantMembershipId:"outgoing-tm"}};
-const member=(status="active",tmStatus="active")=>({status,tenantMembership:{id:"outgoing-tm",userId:"outgoing-driver",tenantId:"tenant",status:tmStatus}});
+const member=(status="active",tmStatus="active")=>({status,driverEligibility:{enabled:true,driverType:"linehaul",userId:"outgoing-driver",tenantMembershipId:"outgoing-tm",tenantId:"tenant",companyId:"company"},tenantMembership:{id:"outgoing-tm",userId:"outgoing-driver",tenantId:"tenant",status:tmStatus}});
 beforeEach(()=>{jest.clearAllMocks();db.companyMembership.findFirst.mockResolvedValue(member());});
 function noEffects(){expect(db.companyMembership.update).not.toHaveBeenCalled();expect(db.order.update).not.toHaveBeenCalled();expect(db.orderCustodyAction.create).not.toHaveBeenCalled();}
 it("observes an existing active outgoing bridge without requiring outgoing role permissions",async()=>{

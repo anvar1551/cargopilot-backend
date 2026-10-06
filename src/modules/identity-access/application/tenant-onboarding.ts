@@ -6,6 +6,7 @@ import { isAbsolute } from "node:path";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { normalizeTenantOnboardingIntent } from "./tenant-onboarding-intent";
+import { DRIVER_DELEGATION_REVISION } from "./driver-profiles";
 
 export const ONBOARDING_OPERATOR = "cargopilot-bootstrap-owner";
 export const ONBOARDING_PROFILE = "initial-operational-admin.v1";
@@ -26,13 +27,13 @@ export async function prepareOnboardingCredential(password: string) {
   return { initialCredentialHash, credentialCommitment: digest(initialCredentialHash) };
 }
 const registrySchema = z.object({ version: z.literal(1), enabled: z.literal(true),
-  operatorId: z.literal(ONBOARDING_OPERATOR), profileRevision: z.enum([ONBOARDING_PROFILE, ONBOARDING_PROFILE_V2]),
+  operatorId: z.literal(ONBOARDING_OPERATOR), profileRevision: z.enum([ONBOARDING_PROFILE, ONBOARDING_PROFILE_V2, DRIVER_DELEGATION_REVISION]),
   revoked: z.literal(false), keyFingerprint: hex,
   publicKeyPem: z.string().max(4096),
 }).strict();
 const permitSchema = z.object({ version: z.literal(1), operatorId: z.literal(ONBOARDING_OPERATOR),
   keyFingerprint: hex, operationId: z.string().uuid(), intentFingerprint: hex,
-  profileRevision: z.enum([ONBOARDING_PROFILE, ONBOARDING_PROFILE_V2]), issuedAt: z.string().datetime(),
+  profileRevision: z.enum([ONBOARDING_PROFILE, ONBOARDING_PROFILE_V2, DRIVER_DELEGATION_REVISION]), issuedAt: z.string().datetime(),
   expiresAt: z.string().datetime(),
 }).strict();
 

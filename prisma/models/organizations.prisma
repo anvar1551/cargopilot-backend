@@ -21,6 +21,8 @@ enum DriverType {
 }
 
 model Organization {
+  driverInvitations CompanyDriverInvitation[] @relation("DriverInvitationCompany")
+  driverActions CompanyDriverAction[] @relation("DriverDelegationActionCompany")
   companyInvitations CompanyInvitation[] @relation("InvitationCompany")
   delegationActions CompanyDelegationAction[] @relation("DelegationActionCompany")
   onboardingReceipts TenantOnboardingReceipt[]

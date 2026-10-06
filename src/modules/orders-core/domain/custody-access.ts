@@ -3,6 +3,7 @@ import prisma from "../../../config/prismaClient";
 import { loadAccessSnapshot, buildMembershipOrderScopeWhere } from "../../identity-access/access-control";
 import { orderError, type OrderActor } from "../shared";
 import type { AppUser } from "../../../types/app-user";
+import { requireAcceptedDriver } from "../../identity-access/application/driver-eligibility";
 
 export async function requireCustodyActor(requested: OrderActor, permission: string): Promise<OrderActor> {
   if (!requested?.id || !requested.companyMembershipId || requested.membershipId !== requested.companyMembershipId ||
@@ -34,9 +35,9 @@ export function initialPickupWhere(actor: OrderActor): Prisma.OrderWhereInput {
     currentWarehouseId: null, status: { in: ["assigned", "pickup_in_progress", "picked_up"] },
     OR: [{ assignedOrgId: null }, { assignedOrgId: actor.companyId! }], custodyActions: { none: {} } };
 }
-export async function requireInitialPickupAuthority(requested: OrderActor) {
+export async function requireInitialPickupAuthority(requested: OrderActor, tx: Prisma.TransactionClient = prisma) {
   const actor = await requireCustodyActor(requested, "shipment.changeStatus");
-  await requireCustodyDriver(prisma, actor, actor.companyMembershipId!, "local", "shipment.changeStatus");
+  await requireCustodyDriver(tx, actor, actor.companyMembershipId!, "local", "shipment.changeStatus");
   return { actor, scope: initialPickupWhere(actor) };
 }
 
@@ -49,26 +50,23 @@ export async function observeOutgoingCustody(tx: Prisma.TransactionClient, actor
       prior.actorUserId !== prior.driverUserId || prior.companyMembershipId !== prior.driverMembershipId) throw orderError("Accepted outgoing custody identity required", 409);
   const member = await tx.companyMembership.findFirst({ where: { id: prior.driverMembershipId, userId: prior.driverUserId,
     tenantId: actor.tenantId!, companyId: actor.companyId!, tenantMembershipId: prior.tenantMembershipId },
-    select: { status: true, tenantMembership: { select: { id: true, userId: true, tenantId: true, status: true } } } });
+    select: { status: true, driverEligibility: true, tenantMembership: { select: { id: true, userId: true, tenantId: true, status: true } } } });
   const tm = member?.tenantMembership;
   if (!member || !tm || tm.id !== prior.tenantMembershipId || tm.userId !== prior.driverUserId || tm.tenantId !== actor.tenantId ||
       !["active", "suspended"].includes(member.status) || !["active", "suspended"].includes(tm.status)) throw orderError("Consistent recorded outgoing membership required", 409);
-  const suspended = member.status === "suspended" || tm.status === "suspended";
+  const e = member.driverEligibility;
+  if (!e || e.userId !== prior.driverUserId || e.tenantMembershipId !== tm.id || e.tenantId !== actor.tenantId ||
+      e.companyId !== actor.companyId || e.driverType !== (prior.phase === "pickup-offered" ? "local" : "linehaul")) throw orderError("Recorded outgoing driver eligibility required", 409);
+  const suspended = member.status === "suspended" || tm.status === "suspended" || !e.enabled;
   if (suspended && !reason) throw orderError("Outgoing-driver suspension receipt reason required", 400);
   return { predecessorEventId: prior.id, userId: prior.driverUserId, companyMembershipId: prior.driverMembershipId,
-    tenantMembershipId: prior.tenantMembershipId, membershipStatus: member.status, tenantMembershipStatus: tm.status, suspended, reason: reason ?? null };
+    tenantMembershipId: prior.tenantMembershipId, membershipStatus: member.status, tenantMembershipStatus: tm.status,
+    driverEligibilityEnabled: e.enabled, suspended, reason: reason ?? null };
 }
 
 export async function requireCustodyDriver(tx: Prisma.TransactionClient, actor: OrderActor, id: string, type: "local" | "linehaul", permission: string) {
-  const member = await tx.companyMembership.findFirst({ where: { id, tenantId: actor.tenantId!, companyId: actor.companyId!, status: "active",
-    company: { isActive: true, tenantId: actor.tenantId! }, tenant: { status: "active" },
-    tenantMembership: { status: "active", tenantId: actor.tenantId! }, user: { driverType: type },
-    OR: [{ branchId: null }, { branch: { isActive: true, tenantId: actor.tenantId! } }] },
-    select: { id: true, userId: true, tenantMembership: { select: { userId: true } }, roles: { select: { role: { select: {
-      companyId: true, isSystem: true, rolePermissions: { select: { permission: { select: { key: true } } } } } } } } } });
-  const keys = member?.roles.flatMap(r => r.role.companyId === actor.companyId || (!r.role.companyId && r.role.isSystem)
-    ? r.role.rolePermissions.map(p => p.permission.key) : []) ?? [];
-  if (!member || member.tenantMembership?.userId !== member.userId || !keys.includes("drivers.telemetry") || !keys.includes(permission)) throw orderError("Eligible exact driver membership required", 403);
+  const member = await requireAcceptedDriver(tx, { tenantId: actor.tenantId!, companyId: actor.companyId! }, id, type, permission);
+  if (id === actor.companyMembershipId && (member.userId !== actor.id || member.tenantMembershipId !== actor.tenantMembershipId)) throw orderError("Exact selected driver context required",403);
   return member;
 }
 
@@ -135,16 +133,32 @@ export async function authorizeCustodyRead(tx: Prisma.TransactionClient, actor: 
   if (!scope || !await tx.order.findFirst({ where: { AND: [ownedCustodyWhere(actor, source.order.id), scope] }, select: { id: true } })) throw orderError("Custody read scope required", 403);
 }
 
+/** Driver-only read gate; object relationships are still checked separately. */
+export async function requireCustodyReadActor(requested: OrderActor) {
+  try { return await requireCustodyActor(requested, "shipment.view"); }
+  catch (error) { if ((error as {statusCode?:number}).statusCode !== 403) throw error; }
+  for (const permission of ["shipment.custody.pickup-offer", "shipment.custody.transport-accept", "shipment.custody.deliver"]) {
+    let actor: OrderActor;
+    try { actor = await requireCustodyActor(requested, permission); }
+    catch (error) { if ((error as {statusCode?:number}).statusCode === 403) continue; throw error; }
+    await requireAcceptedDriver(prisma, { tenantId: actor.tenantId!, companyId: actor.companyId! }, actor.companyMembershipId!, undefined, permission);
+    return actor;
+  }
+  throw orderError("Custody read action required",403);
+}
+
 /** Specific proof preflight/submit alternative; unrelated order APIs and proof reads are unchanged. */
-export async function requireCustodyProofOrder(requested: OrderActor, orderId: string) {
-  const actor = await requireCustodyActor(requested, "shipment.update");
+export async function requireCustodyProofOrder(requested: OrderActor, orderId: string, stage?: "pickup" | "delivery") {
+  const actor = await requireCustodyReadActor(requested);
   const source = await loadCustodySource(prisma, actor, orderId);
   if (source.order.assignedDriverId !== actor.id) throw orderError("Assigned proof driver required", 403);
   if (!source.latest) {
+    if (stage === "delivery") throw orderError("Delivery proof requires accepted last-mile custody",409);
     if (!await prisma.order.findFirst({ where: { AND: [initialPickupWhere(actor), { id: orderId }] }, select: { id: true } })) throw orderError("Current initial pickup assignment required", 403);
     await requireCustodyDriver(prisma, actor, actor.companyMembershipId!, "local", "shipment.custody.pickup-offer");
   }
   else {
+    if (stage === "pickup") throw orderError("New pickup proof requires current initial assignment",409);
     if (!["last-mile", "delivered"].includes(source.latest.phase) || source.latest.driverUserId !== actor.id || source.latest.driverMembershipId !== actor.companyMembershipId) throw orderError("Accepted proof driver membership required", 403);
     await requireCustodyDriver(prisma, actor, actor.companyMembershipId!, "local", "shipment.custody.deliver");
   }

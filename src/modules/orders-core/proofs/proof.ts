@@ -206,12 +206,12 @@ async function buildProofBundlesForOrder(args: {
   return bundles;
 }
 
-export async function requireProofSubmissionContext(actor: OrderActor, orderId: string) {
+export async function requireProofSubmissionContext(actor: OrderActor, orderId: string, stage?: "pickup" | "delivery") {
   let order;
   try { order = await requireExplicitlyScopedOrder(actor, orderId, "shipment.update"); }
   catch (error) {
     if (![403, 404].includes((error as {statusCode?:number}).statusCode ?? 0)) throw error;
-    order = await requireCustodyProofOrder(actor, orderId);
+    order = await requireCustodyProofOrder(actor, orderId, stage);
   }
   if (!order.ownerOrgId || order.ownerOrgId !== actor.companyId || order.assignedDriverId !== actor.id) {
     throw orderError("You are not assigned to this order", 403);
@@ -249,6 +249,7 @@ export async function submitProofForActor(input: SubmitProofInput) {
     Object.defineProperty(retry.existing, "proofReplay", { value: true, enumerable: false });
     return retry.existing;
   }
+  await requireProofSubmissionContext(actor, orderId, stage);
   const bucket = String(process.env.AWS_S3_BUCKET ?? "").trim();
   if (!bucket) throw orderError("AWS_S3_BUCKET is not configured", 500);
   const raster = await processProofRaster(file.buffer, body.signaturePaths);

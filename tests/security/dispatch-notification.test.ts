@@ -1,3 +1,4 @@
+jest.mock("../../src/modules/identity-access/application/driver-eligibility", () => ({ requireAcceptedDriver: jest.fn(async () => ({})) }));
 import { persistDispatchNotification, withDispatchNotifications, committedDispatchNotifications } from "../../src/modules/orders-core/domain/dispatch-notification";
 const order = { id: "order-a", tenantId: "tenant-a", ownerOrgId: "company-a", assignedDriverId: "driver-a", orderNumber: "SYNTHETIC", status: "assigned" };
 const membership = () => ({ id: "member-a", userId: "driver-a", companyId: "company-a", tenantId: "tenant-a", tenantMembershipId: "tm-a", status: "active",

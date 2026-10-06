@@ -1,3 +1,7 @@
+jest.mock("../../src/modules/identity-access/application/driver-eligibility", () => ({ requireAcceptedDriver: jest.fn() }));
+jest.mock("../../src/modules/orders-core/domain/custody-access", () => ({ requireCustodyReadActor: jest.fn(async(a:any)=>a), loadCustodySource: jest.fn(), authorizeCustodyRead: jest.fn() }));
+import { requireAcceptedDriver } from "../../src/modules/identity-access/application/driver-eligibility";
+import { loadCustodySource, authorizeCustodyRead } from "../../src/modules/orders-core/domain/custody-access";
 jest.mock("../../src/config/prismaClient", () => ({ __esModule: true, default: require("./fixtures").database }));
 jest.mock("../../src/modules/identity-access/access-control", () => ({ loadAccessSnapshot: jest.fn() }));
 jest.mock("../../src/modules/orders-core/domain/order-access", () => ({ requireAuthorizedOrder: jest.fn() }));
@@ -17,7 +21,10 @@ const actor = (company = "a", tenant = "a"): any => ({ id: "00000000-0000-4000-8
 const context = (user = actor()) => ({ userId: user.id, tenantId: user.tenantId, tenantMembershipId: user.tenantMembershipId, companyId: user.companyId, companyMembershipId: user.companyMembershipId });
 const orderId = "00000000-0000-4000-8000-000000000002";
 beforeEach(() => {
-  jest.resetAllMocks();
+  jest.clearAllMocks();
+  (requireAcceptedDriver as jest.Mock).mockImplementation((_db:any,c:any)=>({userId:actor().id,tenantMembershipId:c.tenantMembershipId}));
+  (loadCustodySource as jest.Mock).mockResolvedValue({order:{ownerOrgId:"company-a",assignedDriverId:actor().id}});
+  (authorizeCustodyRead as jest.Mock).mockResolvedValue(undefined);
   (loadAccessSnapshot as jest.Mock).mockResolvedValue({ permissionCodes: ["drivers.telemetry"] });
   (requireTenantBoundOrderCompanyAuthority as jest.Mock).mockResolvedValue({ companyId: "company-a" });
   (store.readSelectedPresence as jest.Mock).mockResolvedValue({ enabled: true, updatedAt: "2026-01-01T00:00:00.000Z" });
@@ -31,7 +38,7 @@ it("authorized self location uses fresh selected context, server receipt time, a
   const result = await ingestDriverLocation({ actor: user, body: { context: context(user), lat: 53, lng: 8, orderId, recordedAt: capturedAt } });
   expect(loadAccessSnapshot).toHaveBeenCalledWith({ ...context(user), membershipId: user.membershipId, requireFresh: true });
   expect(requireTenantBoundOrderCompanyAuthority).toHaveBeenCalledWith(expect.anything(), user, "drivers.telemetry");
-  expect(requireAuthorizedOrder).toHaveBeenCalledWith(user, orderId, "shipment.view");
+  expect(authorizeCustodyRead).toHaveBeenCalled();
   expect(result).toMatchObject({ ok: true, broadcasted: false, clientCapturedAt: capturedAt, location: { warehouseId: null, orderId } });
   expect(result.location!.recordedAt).not.toBe(capturedAt);
   expect(store.writeSelectedTelemetry).toHaveBeenCalledWith(context(user), expect.objectContaining({ receivedAt: result.location!.recordedAt, clientCapturedAt: capturedAt }));
@@ -64,11 +71,11 @@ it("manager cannot act on a different driver", async () => {
   await expect(setDriverPresence({ actor: actor(), body: { context: context(), enabled: true, driverId: orderId } })).rejects.toMatchObject({ statusCode: 403 }); noStorage();
 });
 it.each([{ ownerOrgId: "company-b", assignedDriverId: actor().id }, { ownerOrgId: "company-a", assignedDriverId: "other" }])("wrong company or assigned actor rejects order telemetry before cache reads or writes", async order => {
-  (requireAuthorizedOrder as jest.Mock).mockResolvedValue(order);
+  (loadCustodySource as jest.Mock).mockResolvedValue({order});
   await expect(ingestDriverTelemetry({ actor: actor(), body: { context: context(), lat: 53, lng: 8, orderId } })).rejects.toMatchObject({ statusCode: 403 }); noStorage();
 });
 it("foreign/null/unscoped parent rejection produces no telemetry effect", async () => {
-  (requireAuthorizedOrder as jest.Mock).mockRejectedValue(Object.assign(new Error("Order not found"), { statusCode: 404 }));
+  (loadCustodySource as jest.Mock).mockRejectedValue(Object.assign(new Error("Order not found"), { statusCode: 404 }));
   await expect(ingestDriverTelemetry({ actor: actor(), body: { context: context(), lat: 53, lng: 8, orderId } })).rejects.toMatchObject({ statusCode: 404 }); noStorage();
 });
 it("each subsequent read revalidates current permission, with no stale fallback", async () => {

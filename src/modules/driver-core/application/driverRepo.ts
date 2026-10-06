@@ -27,6 +27,7 @@ export const listAllDrivers = async (context: AppUser, query: unknown = {}) => {
     tenantMembershipId: { not: null },
     tenant: { status: "active" as const }, company: { tenantId: membership.tenantId, isActive: true, type: "company" as const },
     tenantMembership: { tenantId: membership.tenantId, status: "active" as const },
+    driverEligibility: { enabled: true },
     roles: { some: { role: {
       OR: [{ companyId: membership.companyId }, { companyId: null, isSystem: true }],
       rolePermissions: { some: { permission: { key: "drivers.telemetry" } } },
@@ -38,10 +39,10 @@ export const listAllDrivers = async (context: AppUser, query: unknown = {}) => {
   const rows = await prisma.companyMembership.findMany({
     where: { AND: [where, ...(input.cursor ? [{ id: { gt: input.cursor } }] : [])] },
     take: input.limit, orderBy: { id: "asc" },
-    select: { id: true, userId: true, tenantMembership: { select: { userId: true } }, user: { select: { id: true, name: true, email: true } } },
+    select: { id: true, userId: true, driverEligibility: { select: { driverType: true } }, tenantMembership: { select: { userId: true } }, user: { select: { id: true, name: true, email: true } } },
   });
   return rows.filter(row => row.tenantMembership?.userId === row.userId && row.user.id === row.userId).map(row => ({
     id: row.user.id, companyMembershipId: row.id, name: row.user.name, email: row.user.email,
-    role: "driver", warehouseId: null, warehouseIds: [], driverType: null, isPartial: true,
+    role: "driver", warehouseId: null, warehouseIds: [], driverType: row.driverEligibility?.driverType ?? null, isPartial: false,
   }));
 };

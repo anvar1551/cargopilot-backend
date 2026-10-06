@@ -1,0 +1,77 @@
+// SQL also enforces fixed revisions, action attribution and append-only journals.
+model CompanyDriverDelegationAuthority {
+  membershipId String @id @db.Uuid
+  userId String @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  ceilingRevision String
+  profileRevisions String[]
+  enabled Boolean @default(true)
+  createdAt DateTime @default(now())
+  member CompanyMembership @relation("DriverDelegatorOwner", fields: [membershipId,userId,tenantId,companyId], references: [id,userId,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  bridge CompanyMembership @relation("DriverDelegatorBridge", fields: [membershipId,tenantMembershipId,userId,tenantId], references: [id,tenantMembershipId,userId,tenantId], onDelete: Restrict, onUpdate: Restrict)
+  invitations CompanyDriverInvitation[]
+  @@unique([membershipId,tenantId,companyId])
+}
+model CompanyDriverInvitation {
+  id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid
+  operationId String @unique @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  inviterMembershipId String @db.Uuid
+  email String
+  profileRevision String
+  fingerprint String
+  tokenHash String @unique
+  expiresAt DateTime
+  state String @default("pending")
+  acceptedMembershipId String? @db.Uuid
+  createdAt DateTime @default(now())
+  company Organization @relation("DriverInvitationCompany", fields: [tenantId,companyId], references: [tenantId,id], onDelete: Restrict, onUpdate: Restrict)
+  inviter CompanyDriverDelegationAuthority @relation(fields: [inviterMembershipId,tenantId,companyId], references: [membershipId,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  accepted CompanyMembership? @relation("DriverInvitationAccepted", fields: [acceptedMembershipId,tenantId,companyId], references: [id,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  @@index([tenantId,companyId,inviterMembershipId,state], map: "CompanyDriverInvitation_context_idx")
+}
+model CompanyDriverEligibility {
+  acceptedOperationId String @db.Uuid
+  driverType String
+  membershipId String @id @db.Uuid
+  userId String @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  profileRevision String
+  roleId String @db.Uuid
+  enabled Boolean @default(true)
+  member CompanyMembership @relation("DriverOperationalGrantOwner", fields: [membershipId,userId,tenantId,companyId], references: [id,userId,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  bridge CompanyMembership @relation("DriverOperationalGrantBridge", fields: [membershipId,tenantMembershipId,userId,tenantId], references: [id,tenantMembershipId,userId,tenantId], onDelete: Restrict, onUpdate: Restrict)
+  role Role @relation(fields: [roleId,companyId], references: [id,companyId], onDelete: Restrict, onUpdate: Restrict)
+  acceptedAction CompanyDriverAction @relation(fields: [acceptedOperationId,membershipId,tenantId,companyId], references: [operationId,targetMembershipId,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict, map: "CompanyDriverEligibility_acceptance_fkey")
+  @@unique([membershipId,userId,tenantId,companyId])
+  @@index([tenantId,companyId,enabled,driverType], map: "CompanyDriverEligibility_context_idx")
+}
+model CompanyDriverAction {
+  operationId String @id @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  action String
+  fingerprint String
+  actorUserId String? @db.Uuid
+  actorMembershipId String? @db.Uuid
+  operatorId String?
+  operatorKeyFingerprint String?
+  targetMembershipId String? @db.Uuid
+  recipientUserId String? @db.Uuid
+  reason String
+  result Json
+  createdAt DateTime @default(now())
+  company Organization @relation("DriverDelegationActionCompany", fields: [tenantId,companyId], references: [tenantId,id], onDelete: Restrict, onUpdate: Restrict)
+  actor CompanyMembership? @relation("DriverDelegationActionActor", fields: [actorMembershipId,actorUserId,tenantId,companyId], references: [id,userId,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  target CompanyMembership? @relation("DriverDelegationActionTarget", fields: [targetMembershipId,tenantId,companyId], references: [id,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  recipient User? @relation(fields: [recipientUserId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  recipientTarget CompanyMembership? @relation("DriverDelegationRecipientTarget", fields: [targetMembershipId,recipientUserId,tenantId,companyId], references: [id,userId,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict, map: "CompanyDriverAction_recipient_context_fkey")
+  eligibilities CompanyDriverEligibility[]
+  @@unique([operationId,targetMembershipId,tenantId,companyId], map: "CompanyDriverAction_acceptance_key")
+  @@index([tenantId,companyId,createdAt], map: "CompanyDriverAction_context_idx")
+}

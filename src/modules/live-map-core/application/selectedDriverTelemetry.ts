@@ -1,3 +1,5 @@
+import { requireAcceptedDriver } from "../../identity-access/application/driver-eligibility";
+import { requireCustodyReadActor, loadCustodySource, authorizeCustodyRead } from "../../orders-core/domain/custody-access";
 import { z } from "zod";
 import type { AppUser } from "../../../types/app-user";
 import prisma from "../../../config/prismaClient";
@@ -49,6 +51,8 @@ async function authorize(actor: AppUser, expected: TelemetryContext, driverId?: 
   // The general snapshot does not certify ownership of attached role definitions.
   // Reuse the authoritative company-role check; foreign company roles grant nothing.
   await requireTenantBoundOrderCompanyAuthority(prisma, actor, "drivers.telemetry");
+  const driver = await requireAcceptedDriver(prisma, context, context.companyMembershipId, undefined, "drivers.telemetry");
+  if (driver.userId !== context.userId || driver.tenantMembershipId !== context.tenantMembershipId) fail("Selected driver eligibility required");
   // Self-service permission applies only to this human's explicitly selected active membership.
   // User.driverType/warehouseId, permissions in another company and manager claims grant nothing.
   return context;
@@ -89,7 +93,10 @@ export async function ingestDriverTelemetry(args: { actor: AppUser; body: unknow
   const parsed = telemetrySchema.parse(args.body);
   const context = await authorize(args.actor, parsed.context, parsed.driverId);
   if (parsed.orderId) {
-    const order = await requireAuthorizedOrder(args.actor, parsed.orderId, "shipment.view");
+    const a = await requireCustodyReadActor(args.actor);
+    const source = await loadCustodySource(prisma, a, parsed.orderId);
+    await authorizeCustodyRead(prisma, a, source);
+    const order = source.order;
     if (order.ownerOrgId !== context.companyId || order.assignedDriverId !== context.userId) fail("Selected assigned order required");
   }
   const presence = await readSelectedPresence(context);

@@ -112,6 +112,7 @@ const tenantSessionMembershipSelect = {
   status: true,
   tenantId: true,
   tenantMembershipId: true,
+  driverEligibility: { select: { enabled: true } },
   tenant: { select: { id: true, name: true, status: true } },
   tenantMembership: { select: { id: true, tenantId: true, userId: true, status: true } },
   company: { select: { id: true, name: true, tenantId: true, isActive: true } },
@@ -129,6 +130,7 @@ function toTenantSessionContext(record: any): TenantSessionContext | null {
     || record.tenantMembership.status !== MembershipStatus.active
     || record.tenantMembership.userId !== record.userId
     || record.tenantMembership.tenantId !== record.tenantId
+    || (record.driverEligibility && !record.driverEligibility.enabled)
     || record.company?.id !== record.companyId
     || record.company.tenantId !== record.tenantId
     || !record.company.isActive
@@ -511,6 +513,7 @@ export async function listUsersForCompany(args: {
         id: true,
         branchId: true,
         createdAt: true,
+        driverEligibility: { select: { driverType: true, enabled: true } },
         user: {
           select: {
             id: true,
@@ -553,7 +556,7 @@ export async function listUsersForCompany(args: {
       email: membership.user.email,
       warehouseId: null,
       customerEntityId: null,
-      driverType: membership.user.driverType ?? null,
+      driverType: membership.driverEligibility?.enabled ? membership.driverEligibility.driverType : null,
       branchId: membership.branchId ?? null,
       createdAt: membership.createdAt.toISOString(),
       roles: membership.roles.map((entry) => ({

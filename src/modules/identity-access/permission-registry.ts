@@ -101,6 +101,7 @@ export const SYSTEM_PERMISSIONS: SeedPermission[] = [
 
   permission("membership.invite", "memberships", "create", "Invite company member"),
   permission("membership.delegateOperational", "memberships", "manage", "Manage explicitly accepted company operational delegation ceiling"),
+  permission("membership.delegateDrivers", "memberships", "manage", "Manage independently accepted selected-company driver ceiling"),
   permission("membership.suspend", "memberships", "manage", "Suspend company member"),
   permission("membership.restore", "memberships", "manage", "Restore company member"),
   permission("roles.read", "roles", "read", "Read role catalog"),

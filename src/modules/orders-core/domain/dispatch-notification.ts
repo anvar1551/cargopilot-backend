@@ -1,3 +1,4 @@
+import { requireAcceptedDriver } from "../../identity-access/application/driver-eligibility";
 import { Prisma } from "@prisma/client";
 
 /** Specific accepted dispatch source; ownership and recipient are reloaded inside the business transaction. */
@@ -26,6 +27,8 @@ export async function persistDispatchNotification(tx: Prisma.TransactionClient, 
     || (member.branch && (member.branch.tenantId !== order.tenantId || !member.branch.isActive))
     || !member.roles.some(({ role }) => (role.companyId === order.ownerOrgId || (role.companyId === null && role.isSystem))
       && role.rolePermissions.some(({ permission }) => permission.key === "drivers.telemetry"))) return null;
+  try { await requireAcceptedDriver(tx, { tenantId: order.tenantId, companyId: order.ownerOrgId }, member.id, undefined, "drivers.telemetry"); }
+  catch (error) { if ((error as {statusCode?:number}).statusCode === 403) return null; throw error; }
   const existing = await tx.userNotification.findUnique({ where: {
     dispatchTrackingId_companyMembershipId: { dispatchTrackingId: source.id, companyMembershipId: member.id },
   }, select: { id: true } });

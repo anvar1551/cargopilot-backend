@@ -8,7 +8,7 @@ import { listDriversView, updateDriverProfileById } from "../../src/modules/driv
 import { listAllDrivers } from "../../src/modules/driver-core/application/driverRepo";
 const actor: any = { id: "same-user", tenantId: "tenant-a", companyId: "company-a", tenantMembershipId: "tm-a", companyMembershipId: "cm-a", membershipId: "cm-a" };
 const membership = { companyId: actor.companyId, tenantId: actor.tenantId, scopes: [{ scopeType: "company", scopeRefId: actor.companyId }] };
-const row = { id: "00000000-0000-4000-8000-000000000001", userId: "selected-driver", tenantMembership: { userId: "selected-driver" }, user: { id: "selected-driver", name: "Synthetic driver", email: "synthetic@example.test", passwordHash: "PRIVATE-CANARY", warehouseId: "foreign", driverType: "local" } };
+const row = { id: "00000000-0000-4000-8000-000000000001", userId: "selected-driver", driverEligibility: { driverType: "linehaul" }, tenantMembership: { userId: "selected-driver" }, user: { id: "selected-driver", name: "Synthetic driver", email: "synthetic@example.test", passwordHash: "PRIVATE-CANARY", warehouseId: "foreign", driverType: "local" } };
 beforeEach(() => { jest.clearAllMocks(); (requireTenantBoundOrderCompanyAuthority as jest.Mock).mockReset().mockResolvedValue(membership); db.companyMembership.findMany.mockReset().mockResolvedValue([row]); db.companyMembership.findFirst.mockReset().mockResolvedValue({ id: row.id }); });
 afterEach(() => { expect(db.user.findMany).not.toHaveBeenCalled(); expect(db.user.findUnique).not.toHaveBeenCalled(); expect(db.user.update).not.toHaveBeenCalled(); expect(db.$transaction).not.toHaveBeenCalled(); });
 it("eligible selected membership query is bounded and retains only safe shared identity", async () => {
@@ -18,7 +18,7 @@ it("eligible selected membership query is bounded and retains only safe shared i
   const query = db.companyMembership.findMany.mock.calls[0][0];
   expect(query).toMatchObject({ take: 50, orderBy: { id: "asc" }, where: { AND: [{ tenantId: actor.tenantId, companyId: actor.companyId, status: "active", tenantMembershipId: { not: null }, tenant: { status: "active" }, company: { tenantId: actor.tenantId, isActive: true }, tenantMembership: { tenantId: actor.tenantId, status: "active" }, roles: { some: { role: { OR: [{ companyId: actor.companyId }, { companyId: null, isSystem: true }], rolePermissions: { some: { permission: { key: "drivers.telemetry" } } } } } } }] } });
   expect(query.select.user.select).toEqual({ id: true, name: true, email: true });
-  expect(result).toEqual([{ id: row.userId, companyMembershipId: row.id, name: row.user.name, email: row.user.email, role: "driver", warehouseId: null, warehouseIds: [], driverType: null, isPartial: true }]);
+  expect(result).toEqual([{ id: row.userId, companyMembershipId: row.id, name: row.user.name, email: row.user.email, role: "driver", warehouseId: null, warehouseIds: [], driverType: "linehaul", isPartial: false }]);
   expect(JSON.stringify(result)).not.toContain("PRIVATE-CANARY");
 });
 it("same user's alternate company/tenant never reuses a global driver query", async () => {

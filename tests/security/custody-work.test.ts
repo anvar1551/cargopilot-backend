@@ -1,13 +1,16 @@
+jest.mock("../../src/modules/identity-access/application/driver-eligibility", () => ({ requireAcceptedDriver: jest.fn() }));
+import { requireAcceptedDriver } from "../../src/modules/identity-access/application/driver-eligibility";
 jest.mock("../../src/config/prismaClient", () => ({ __esModule: true, default: require("./fixtures").database }));
-jest.mock("../../src/modules/orders-core/domain/custody-access", () => ({ requireCustodyActor: jest.fn(), requireCustodyDriver: jest.fn() }));
+jest.mock("../../src/modules/orders-core/domain/custody-access", () => ({ requireCustodyActor: jest.fn(), requireCustodyReadActor: jest.fn(), requireCustodyDriver: jest.fn() }));
 import { database as db } from "./fixtures";
 import { listCustodyWork } from "../../src/modules/orders-core/read/custody-work";
-import { requireCustodyActor, requireCustodyDriver } from "../../src/modules/orders-core/domain/custody-access";
+import { requireCustodyReadActor, requireCustodyActor, requireCustodyDriver } from "../../src/modules/orders-core/domain/custody-access";
 const id = (n: number) => `b0000000-0000-4000-8000-${String(n).padStart(12,"0")}`;
 const actor = { id:id(1), tenantId:id(2), tenantMembershipId:id(3), companyId:id(4), companyMembershipId:id(5), membershipId:id(5),
   permissionCodes:["shipment.view","shipment.custody.intake"], scopes:[{scopeType:"warehouse",scopeRefId:id(6)}] };
 beforeEach(() => {
-  jest.clearAllMocks(); (requireCustodyActor as jest.Mock).mockResolvedValue(actor); (requireCustodyDriver as jest.Mock).mockResolvedValue({});
+  jest.clearAllMocks(); (requireAcceptedDriver as jest.Mock).mockResolvedValue({driverType:"linehaul"});
+  (requireCustodyReadActor as jest.Mock).mockImplementation((a:any)=>(requireCustodyActor as jest.Mock)(a)); (requireCustodyActor as jest.Mock).mockResolvedValue(actor); (requireCustodyDriver as jest.Mock).mockResolvedValue({});
   db.$transaction.mockImplementation(async (fn:any)=>fn(db)); db.$executeRawUnsafe.mockResolvedValue(0);
   db.warehouse.findMany.mockResolvedValue([{id:id(6)}]); db.user.findUnique.mockResolvedValue({driverType:"linehaul"}); db.$queryRaw.mockResolvedValue([]);
 });
@@ -51,7 +54,7 @@ it("scope, permission, membership and list-kind changes invalidate an existing c
 
 it("initial pickup discovery keeps the existing fields with null journal identity and owned assignment predicates", async () => {
   (requireCustodyActor as jest.Mock).mockResolvedValue({...actor,scopes:[],permissionCodes:["shipment.view","shipment.changeStatus"]});
-  db.user.findUnique.mockResolvedValue({driverType:"local"});
+  (requireAcceptedDriver as jest.Mock).mockResolvedValue({driverType:"local"});
   db.$queryRaw.mockResolvedValue([{orderId:id(21),orderNumber:"Synthetic",status:"assigned",expectedUpdatedAt:new Date(0),expectedEventId:null,phase:"pickup-assigned",currentWarehouseId:null,destinationWarehouseId:null,legId:null}]);
   const result=await listCustodyWork(actor as any,{kind:"driver"});
   expect(result.items[0]).toMatchObject({phase:"pickup-assigned",expectedEventId:null,status:"assigned"});

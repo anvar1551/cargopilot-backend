@@ -1,3 +1,4 @@
+import { requireAcceptedDriver } from "../identity-access/application/driver-eligibility";
 import type { Server as HttpServer } from "http";
 import jwt from "jsonwebtoken";
 import { Server, Socket } from "socket.io";
@@ -253,7 +254,10 @@ async function resolveOrderRecipientContext(args: {
     tenantMembershipId: membership.tenantMembershipId,
     requireFresh: true,
   });
-  if (!snapshot || !snapshot.permissionCodes.includes("drivers.telemetry")) {
+  let eligible = false;
+  try { await requireAcceptedDriver(prisma, { tenantId: order.tenantId, companyId: order.ownerOrgId }, membership.id, undefined, "drivers.telemetry"); eligible = true; }
+  catch (error) { if ((error as {statusCode?:number}).statusCode !== 403) throw error; }
+  if (!eligible || !snapshot || !snapshot.permissionCodes.includes("drivers.telemetry")) {
     recordSuppressedDelivery(args.eventType, snapshot ? "recipient_permission_removed" : "recipient_context_ineligible");
     if (server) {
       disconnectRecipientSockets(server, {

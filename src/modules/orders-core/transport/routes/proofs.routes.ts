@@ -41,7 +41,7 @@ async function handleProofSubmit(request: any, reply: any, forcedStage?: "delive
 const proofsRoutes: FastifyPluginAsync = async (fastify) => {
   await fastify.register(fastifyMultipart, { limits: { files: 1, fields: 7, parts: 8, fieldSize: 32768, fileSize: Math.min(MAX_PROOF_BYTES, parseMaxPhotoBytes()) } });
 
-  fastify.get("/:id/proof-submission-capability", { preHandler: fastifyAuth({ permission: "shipment.update" }) }, async (request, reply) => {
+  fastify.get("/:id/proof-submission-capability", { preHandler: fastifyAuth({ anyPermission: ["shipment.update", "shipment.custody.pickup-offer", "shipment.custody.deliver"] }) }, async (request, reply) => {
     try {
       await requireProofSubmissionContext(requireOrderActor(request.user), String((request.params as any)?.id ?? "").trim());
       return reply.send({ contract: "proof-submission-v1" });
@@ -62,11 +62,11 @@ const proofsRoutes: FastifyPluginAsync = async (fastify) => {
     }
   });
 
-  fastify.post("/:id/proofs", { preHandler: fastifyAuth({ permission: "shipment.update" }) }, async (request, reply) =>
+  fastify.post("/:id/proofs", { preHandler: fastifyAuth({ anyPermission: ["shipment.update", "shipment.custody.pickup-offer", "shipment.custody.deliver"] }) }, async (request, reply) =>
     handleProofSubmit(request, reply),
   );
 
-  fastify.post("/:id/delivery-proof", { preHandler: fastifyAuth({ permission: "shipment.update" }) }, async (request, reply) =>
+  fastify.post("/:id/delivery-proof", { preHandler: fastifyAuth({ anyPermission: ["shipment.update", "shipment.custody.pickup-offer", "shipment.custody.deliver"] }) }, async (request, reply) =>
     handleProofSubmit(request, reply, "delivery"),
   );
 };

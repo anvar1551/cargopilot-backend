@@ -1,3 +1,19 @@
+import { syntheticDriverOwner } from "./driver-provisioning.fixture";
+import { authorizeCompanyDriverDelegator, createCompanyDriverInvitation, acceptCompanyDriverInvitation, mutateCompanyDriverEligibility } from "../../src/modules/identity-access/application/driver-delegation";
+import { DRIVER_PROFILES } from "../../src/modules/identity-access/application/driver-profiles";
+import { SYSTEM_PERMISSIONS } from "../../src/modules/identity-access/permission-registry";
+import { loginUser } from "../../src/modules/identity-access/application/auth.service";
+let driverOwner: ReturnType<typeof syntheticDriverOwner>;
+async function provisionDriver(name: string, type: "local" | "linehaul") {
+  const invitation = await createCompanyDriverInvitation(mockPrisma, operator, { operationId: randomUUID(), email: name+"@example.invalid", profileRevision: type+"-driver.v1", reason: "Synthetic approved driver invitation" });
+  const password = randomUUID()+"-synthetic";
+  const accepted = await acceptCompanyDriverInvitation(mockPrisma, { token: invitation.token, operationId: randomUUID(), name, password });
+  const login = await loginUser({ email: name+"@example.invalid", password, companyMembershipId: accepted.companyMembershipId });
+  expect(login.user.permissionCodes.sort()).toEqual([...DRIVER_PROFILES[(type+"-driver.v1") as keyof typeof DRIVER_PROFILES]].sort());
+  expect(login.user.scopes).toEqual([]);
+  expect((await mockPrisma.user.findUniqueOrThrow({where:{id:accepted.userId}})).driverType).toBeNull();
+  return {...login.user, id:accepted.userId};
+}
 // Only infrastructure boundaries are substituted. Business services and authorization use PostgreSQL.
 jest.mock("../../src/config/prismaClient", () => ({ __esModule: true, default: new Proxy({}, {
   get: (_t, key) => { const v = (mockPrisma as any)[key]; return typeof v === "function" ? v.bind(mockPrisma) : v; },
@@ -60,6 +76,11 @@ async function grant(user: any, keys: string[]) {
   await mockPrisma.membershipRole.create({ data: { membershipId: user.companyMembershipId, roleId: role.id } });
   await mockPrisma.membershipScope.create({ data: { membershipId: user.companyMembershipId, scopeType: "company", scopeRefId: user.companyId } });
 }
+async function blockedType(who:any, profileRevision:string) {
+ const before=await businessState(),elig=await mockPrisma.companyDriverEligibility.findUniqueOrThrow({where:{membershipId:who.companyMembershipId}}),actions=await mockPrisma.companyDriverAction.count();
+ await expect(mutateCompanyDriverEligibility(mockPrisma,operator,{operationId:randomUUID(),membershipId:who.companyMembershipId,action:"grant",profileRevision,reason:"Synthetic blocked current driver work"})).rejects.toMatchObject({code:"DELEGATION_DRIVER_ACTIVE_WORK"});
+ expect(await businessState()).toEqual(before);expect(await mockPrisma.companyDriverEligibility.findUniqueOrThrow({where:{membershipId:who.companyMembershipId}})).toEqual(elig);expect(await mockPrisma.companyDriverAction.count()).toBe(actions);
+}
 const intent = (orderId: string) => ({ orderId, operationId: randomUUID(), reason: "Synthetic connected journey" });
 async function businessState() {
   const result: Record<string, unknown> = {};
@@ -85,27 +106,17 @@ beforeAll(async () => {
     await client.query("COMMIT");
   } finally { await client.query("ROLLBACK"); client.release(); }
   mockPrisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 6, connectionTimeoutMillis: 3000, options }) });
-  const driverId = randomUUID(), tmId = randomUUID(), cmId = randomUUID();
-  await mockPrisma.user.create({ data: { id: driverId, email: "synthetic-journey-driver@example.invalid", name: "Synthetic driver",
-    password: "synthetic-invalid-login-value", driverType: "local" } });
-  await mockPrisma.tenantMembership.create({ data: { id: tmId, userId: driverId, tenantId: maker.tenantId } });
-  await mockPrisma.companyMembership.create({ data: { id: cmId, userId: driverId, tenantId: maker.tenantId,
-    tenantMembershipId: tmId, companyId: maker.companyId } });
-  driver = { id: driverId, tenantId: maker.tenantId, tenantMembershipId: tmId, companyId: maker.companyId, membershipId: cmId, companyMembershipId: cmId };
-  const transportId=randomUUID(),transportTm=randomUUID(),transportCm=randomUUID();
-  await mockPrisma.user.create({data:{id:transportId,email:"synthetic-linehaul@example.invalid",name:"Synthetic linehaul",password:"synthetic-invalid-login-value",driverType:"linehaul"}});
-  await mockPrisma.tenantMembership.create({data:{id:transportTm,userId:transportId,tenantId:maker.tenantId}});
-  await mockPrisma.companyMembership.create({data:{id:transportCm,userId:transportId,tenantMembershipId:transportTm,tenantId:maker.tenantId,companyId:maker.companyId}});
-  transport={id:transportId,tenantMembershipId:transportTm,companyMembershipId:transportCm,membershipId:transportCm,tenantId:maker.tenantId,companyId:maker.companyId};
   await grant(maker, ["pricing.write", "pricing.read", "pricing.tariffs.propose", "billing.policies.propose", "billing.payers.bind",
     "pricing.orders.accept", "finance.invoices.issue", "customers.read"]);
   await grant(checker, ["pricing.tariffs.approve", "billing.policies.approve"]);
   await grant(operator, ["warehouse.create", "shipment.update", "customers.read", "customers.write", "pricing.read", "shipment.create", "shipment.view", "shipment.bookCarrier", "shipment.assignCourier", "shipment.changeStatus",
     "shipment.custody.intake","shipment.custody.dispatch","shipment.custody.receive","shipment.custody.last-mile-offer"]);
-  await grant(driver, ["drivers.telemetry", "shipment.view", "shipment.update", "shipment.changeStatus","shipment.custody.pickup-offer","shipment.custody.last-mile-accept","shipment.custody.deliver"]);
-  await grant(transport,["drivers.telemetry","shipment.view","shipment.custody.transport-accept"]);
-  // Restricted from the start, before normal assignment or any pickup transition.
-  await mockPrisma.membershipScope.deleteMany({where:{membershipId:{in:[driver.companyMembershipId,transport.companyMembershipId]}}});
+  await mockPrisma.permission.createMany({data:SYSTEM_PERMISSIONS,skipDuplicates:true});
+  process.env.JWT_SECRET = randomUUID(); process.env.REFRESH_TOKEN_SECRET = randomUUID();
+  driverOwner = syntheticDriverOwner();
+  await authorizeCompanyDriverDelegator(mockPrisma, driverOwner.request(operator.companyMembershipId));
+  driver = await provisionDriver("synthetic-journey-driver", "local");
+  transport = await provisionDriver("synthetic-linehaul", "linehaul");
   for(const i of [1,2])await grant(actor(i),["shipment.view","shipment.custody.intake","shipment.custody.dispatch","warehouse.create"]);
   process.env.ORDER_LABEL_BLOCKING = "true";
   process.env.ORDER_LABEL_AUTO_FALLBACK = "false";
@@ -116,6 +127,7 @@ beforeAll(async () => {
   httpsSpy = jest.spyOn(https, "request").mockImplementation(() => { throw Error("HTTPS forbidden"); });
 });
 afterAll(async () => {
+  driverOwner?.cleanup();
   fetchSpy?.mockRestore(); httpSpy?.mockRestore(); httpsSpy?.mockRestore();
   for (const key of ["ORDER_LABEL_BLOCKING", "ORDER_LABEL_AUTO_FALLBACK", "ORDER_LABEL_MODE", "AWS_S3_BUCKET"]) delete process.env[key];
   await mockPrisma?.$disconnect(); await pool.end();
@@ -152,6 +164,9 @@ it("real normal creation -> pickup -> three warehouses -> accepted last mile -> 
   const acceptanceIntent = intent(orderId), price = await acceptOrderPrice(maker, acceptanceIntent);
   expect(price).toMatchObject({ state: "accepted", currency: "UZS", total: "110.0100" });
   await assignDriversBulk({ actor: operator, orderIds: [orderId], expectedStates: await expected(orderId), driverId: driver.id, type: "pickup" });
+  const driverState=await businessState();
+  await expect(mutateCompanyDriverEligibility(mockPrisma,operator,{operationId:randomUUID(),membershipId:driver.companyMembershipId,action:"grant",profileRevision:"linehaul-driver.v1",reason:"Synthetic blocked active pickup type change"})).rejects.toMatchObject({code:"DELEGATION_DRIVER_ACTIVE_WORK"});
+  expect(await businessState()).toEqual(driverState);
   await updateDriverOrderStatus({ actor: driver, orderId, status: OrderStatus.pickup_in_progress });
   await updateDriverOrderStatus({ actor: driver, orderId, status: OrderStatus.picked_up });
   // Do not fabricate an onward warehouse transition or a completed delivery.
@@ -189,6 +204,7 @@ it("real normal creation -> pickup -> three warehouses -> accepted last mile -> 
   await denied(driver,{...offer,destinationWarehouseId:foreignWarehouse.id});
   await denied(driver,{...offer,pickupTrackingId:randomUUID()});
   await accepted(driver,offer);
+  await blockedType(driver,"linehaul-driver.v1");
   await denied(driver,{...offer,destinationWarehouseId:warehouses[1].id});
   const intake=await custodyIntent("intake",{warehouseId:warehouses[0].id});
   await denied(actor(1),intake);await denied(actor(2),intake);await denied({},intake);
@@ -220,21 +236,28 @@ it("real normal creation -> pickup -> three warehouses -> accepted last mile -> 
       finally{await pool.query('DROP TRIGGER cp_custody_test_failure ON "AnalyticsDomainEventOutbox"; DROP FUNCTION cp_custody_test_failure()');}
     }
     await accepted(operator,dispatch);
+    await blockedType(transport,"local-driver.v1");
     const prior=await businessState();await expect(upsertOrderLeg(orderId,{legId:leg.id,status:"arrived"},operator)).rejects.toThrow("planning only");expect(await businessState()).toEqual(prior);
     await denied(operator,await custodyIntent("receive",{warehouseId:warehouses[i+1].id}));
     const accept=await custodyIntent("transport-accept");await denied(driver,accept);await accepted(transport,accept);
+    await blockedType(transport,"local-driver.v1");
     expect(await mockPrisma.order.findUniqueOrThrow({where:{id:orderId}})).toMatchObject({status:"in_transit",currentWarehouseId:null});
     await denied(operator,await custodyIntent("receive",{warehouseId:warehouses[i].id}));
     await accepted(operator,await custodyIntent("receive",{warehouseId:warehouses[i+1].id}));
     expect(await mockPrisma.order.findUniqueOrThrow({where:{id:orderId}})).toMatchObject({status:"at_warehouse",currentWarehouseId:warehouses[i+1].id});
   }
   await accepted(operator,await custodyIntent("last-mile-offer",{warehouseId:warehouses[2].id,driverMembershipId:driver.companyMembershipId}));
+  await blockedType(driver,"linehaul-driver.v1");
   const lastAccept=await custodyIntent("last-mile-accept");await denied(transport,lastAccept);await accepted(driver,lastAccept);
+  await blockedType(driver,"linehaul-driver.v1");
   await denied(driver,await custodyIntent("deliver",{proofSubmissionId:proofIntent.body.submissionId}));
   const deliveryProofIntent={...proofIntent,body:{...proofIntent.body,stage:"delivery",submissionId:randomUUID(),signedBy:"Synthetic recipient"}};
   const deliveryProof=await submitProofForActor(deliveryProofIntent);
   await accepted(driver,await custodyIntent("deliver",{proofSubmissionId:deliveryProofIntent.body.submissionId}));
   expect(await mockPrisma.order.findUniqueOrThrow({where:{id:orderId}})).toMatchObject({status:"delivered",currentWarehouseId:null,assignedDriverId:driver.id});
+  // Completed history must not be an eternal type replacement blocker.
+  for(const [who,profile] of [[driver,"linehaul-driver.v1"],[driver,"local-driver.v1"],[transport,"local-driver.v1"],[transport,"linehaul-driver.v1"]] as const)
+    await mutateCompanyDriverEligibility(mockPrisma,operator,{operationId:randomUUID(),membershipId:who.companyMembershipId,action:"grant",profileRevision:profile,reason:"Synthetic completed history permits explicit replacement"});
   const issuance = { user: maker, ...intent(orderId), priceApprovalId: price.id }, invoice = await issueOrderInvoiceForActor(issuance);
   expect(invoice).toMatchObject({ status: "issued", amount: "110.0100", currency: "UZS", billing: { payerCustomerEntityId: payer.id, priceApprovalId: price.id } });
   const confirmed = await businessState();
@@ -293,7 +316,8 @@ it("competing dispatch and last-mile handover serialize one intent without mixed
 });
 
 it("warehouse-only recipients and exact nominated drivers without company/assignCourier scope execute and preflight their own custody", async () => {
-  async function restricted(name: string, warehouseId?: string, type?: "linehaul") {
+  async function restricted(name: string, warehouseId?: string, type?: "linehaul" | "local") {
+    if (!warehouseId) return provisionDriver(name, type ?? "local");
     const id = randomUUID(), tm = randomUUID(), cm = randomUUID();
     await mockPrisma.user.create({ data: { id, email: `${name}@example.invalid`, name, password: "synthetic-invalid-login-value", driverType: type } });
     await mockPrisma.tenantMembership.create({ data: { id: tm, userId: id, tenantId: maker.tenantId } });
@@ -315,8 +339,7 @@ it("warehouse-only recipients and exact nominated drivers without company/assign
   expect((await readWarehouseCustody(driver,orderId)).custody).toBeNull();
   const initialState=await businessState(), initialPuts=mockStorage.mock.calls.length;
   const wrong=await restricted("synthetic-unrelated-pickup");
-  await mockPrisma.user.update({where:{id:wrong.id},data:{driverType:"local"}});
-  await grant(wrong,["shipment.changeStatus","shipment.update","shipment.custody.pickup-offer"]);
+
   await mockPrisma.membershipScope.deleteMany({where:{membershipId:wrong.companyMembershipId}});
   for(const bad of [wrong,actor(1),{...driver,companyMembershipId:actor(1).companyMembershipId,membershipId:actor(1).companyMembershipId},{}]) {
     await expect(updateDriverOrderStatus({actor:bad as any,orderId,status:"pickup_in_progress"})).rejects.toThrow();
@@ -479,4 +502,45 @@ it("warehouse-only recipients and exact nominated drivers without company/assign
   await mockPrisma.membershipScope.deleteMany({ where: { membershipId: origin.companyMembershipId } });
   await denied(origin, intake);
   expect(fetchSpy).not.toHaveBeenCalled(); expect(httpSpy).not.toHaveBeenCalled(); expect(httpsSpy).not.toHaveBeenCalled();
+});
+it.each(["assignment-first","replacement-first"])("eligibility lock serializes %s without conflicting assignment or business effects",async(first)=>{
+ const who=await provisionDriver("synthetic-race-"+first,"local"),made=await createOrderForActor({user:operator,body:{...savedBody,operationId:randomUUID()}}),orderId=made.payload.order.id;
+ const expectedStates=await expected(orderId),before=await businessState();
+ const gate=await pool.connect(); let assignment:Promise<any>|undefined,replacement:Promise<any>|undefined;
+ const reflect=(p:Promise<any>)=>p.then(value=>({ok:true,value}),error=>({ok:false,error}));
+ const assign=()=>reflect(assignDriversBulk({actor:operator,orderIds:[orderId],expectedStates,driverId:who.id,type:"pickup"}));
+ const replace=()=>reflect(mutateCompanyDriverEligibility(mockPrisma,operator,{operationId:randomUUID(),membershipId:who.companyMembershipId,action:"grant",profileRevision:"linehaul-driver.v1",reason:"Synthetic competing driver type change"}));
+ const blocked=async(n:number)=>{const deadline=Date.now()+4500;while(Date.now()<deadline){const waiters=await pool.query(`SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE '%CompanyDriverEligibility%'`);if(waiters.rows[0].n>=n)return;await new Promise(r=>setTimeout(r,20));}throw Error("Eligibility waiter deadline");};
+ try {
+ await gate.query("BEGIN");await gate.query('SELECT "membershipId" FROM "CompanyDriverEligibility" WHERE "membershipId"=$1 FOR UPDATE',[who.companyMembershipId]);
+ if(first==="assignment-first"){assignment=assign();await blocked(1);replacement=replace();}
+ else{replacement=replace();await blocked(1);assignment=assign();}
+ await blocked(2);await gate.query("COMMIT");
+ const [a,r]=await Promise.all([assignment!,replacement!]);
+ if(first==="assignment-first"){
+ expect(a.ok).toBe(true);expect(r.ok).toBe(false);expect(r.error.code).toBe("DELEGATION_DRIVER_ACTIVE_WORK");
+ expect(await mockPrisma.order.findUniqueOrThrow({where:{id:orderId}})).toMatchObject({assignedDriverId:who.id,status:"assigned"});
+ expect((await mockPrisma.companyDriverEligibility.findUniqueOrThrow({where:{membershipId:who.companyMembershipId}})).driverType).toBe("local");
+ expect(await mockPrisma.tracking.count({where:{orderId,status:"assigned"}})).toBe(1);
+ }else{
+ expect(r.ok).toBe(true);expect(a.ok).toBe(false);expect(a.error.statusCode).toBe(403);
+ expect(await businessState()).toEqual(before);
+ expect((await mockPrisma.companyDriverEligibility.findUniqueOrThrow({where:{membershipId:who.companyMembershipId}})).driverType).toBe("linehaul");
+ }
+ }finally{await gate.query("ROLLBACK");gate.release();await Promise.allSettled([...(assignment?[assignment]:[]),...(replacement?[replacement]:[])]);}
+});
+it("revocation during pickup retains history and permits reasoned receiving without reactivation",async()=>{
+ const who=await provisionDriver("synthetic-revoked-pickup","local"),made=await createOrderForActor({user:operator,body:{...savedBody,operationId:randomUUID()}}),orderId=made.payload.order.id;
+ await assignDriversBulk({actor:operator,orderIds:[orderId],expectedStates:await expected(orderId),driverId:who.id,type:"pickup"});
+ await updateDriverOrderStatus({actor:who,orderId,status:"pickup_in_progress"});await updateDriverOrderStatus({actor:who,orderId,status:"picked_up"});
+ const s=await readWarehouseCustody(who,orderId),offer={operationId:randomUUID(),action:"pickup-offer",expectedEventId:null,expectedUpdatedAt:s.updatedAt,parcelIds:s.parcelIds,pickupTrackingId:s.pickupTrackingId,destinationWarehouseId:ownedWarehouseIds[0]};
+ const accepted=await executeWarehouseCustody(who,orderId,offer);
+ await mutateCompanyDriverEligibility(mockPrisma,operator,{operationId:randomUUID(),membershipId:who.companyMembershipId,action:"revoke",profileRevision:"local-driver.v1",reason:"Synthetic active work revocation"});
+ const receipt=await readWarehouseCustody(operator,orderId),intake={operationId:randomUUID(),action:"intake",expectedEventId:receipt.custody!.id,expectedUpdatedAt:receipt.updatedAt,parcelIds:receipt.parcelIds,warehouseId:ownedWarehouseIds[0]};
+ const before=await businessState();await expect(executeWarehouseCustody(who,orderId,offer)).rejects.toThrow();await expect(executeWarehouseCustody(operator,orderId,intake)).rejects.toThrow("reason required");expect(await businessState()).toEqual(before);
+ const reasoned={...intake,outgoingDriverReason:"Synthetic physical receiving after managed driver revocation"},result:any=await executeWarehouseCustody(operator,orderId,reasoned);
+ expect(await executeWarehouseCustody(operator,orderId,reasoned)).toEqual(result);
+ const audit=await mockPrisma.orderCustodyAction.findUniqueOrThrow({where:{id:result.eventId}});expect(audit.beforeState).toMatchObject({outgoing:{predecessorEventId:(accepted as any).eventId,companyMembershipId:who.companyMembershipId,driverEligibilityEnabled:false,membershipStatus:"active",suspended:true,reason:reasoned.outgoingDriverReason}});
+ expect((await mockPrisma.companyDriverEligibility.findUniqueOrThrow({where:{membershipId:who.companyMembershipId}})).enabled).toBe(false);
+ expect((await mockPrisma.order.findUniqueOrThrow({where:{id:orderId}})).assignedDriverId).toBeNull();
 });

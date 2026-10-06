@@ -1,3 +1,4 @@
+jest.mock("../../src/modules/identity-access/application/driver-eligibility", () => ({ requireAcceptedDriver: jest.fn(async () => ({})) }));
 jest.mock("../../src/config/prismaClient", () => ({
   __esModule: true,
   default: require("./fixtures").database,

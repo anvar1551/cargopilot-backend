@@ -1,8 +1,9 @@
+import { requireAcceptedDriver } from "../../identity-access/application/driver-eligibility";
 import { createHash } from "crypto";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import prisma from "../../../config/prismaClient";
-import { requireCustodyActor, requireCustodyDriver } from "../domain/custody-access";
+import { requireCustodyActor, requireCustodyReadActor, requireCustodyDriver } from "../domain/custody-access";
 import { orderError, type OrderActor } from "../shared";
 
 const pageSchema = z.object({ kind: z.enum(["warehouse", "driver"]), limit: z.coerce.number().int().min(1).max(50).default(25),
@@ -14,7 +15,7 @@ type WorkRow = { orderId: string; orderNumber: string; status: string; expectedU
 export async function listCustodyWork(requested: OrderActor, raw: unknown) {
   const parsed = pageSchema.safeParse(raw);
   if (!parsed.success) throw orderError("Invalid custody work page", 400);
-  const page = parsed.data, actor = await requireCustodyActor(requested, "shipment.view");
+  const page = parsed.data, actor = page.kind === "warehouse" ? await requireCustodyActor(requested, "shipment.view") : await requireCustodyReadActor(requested);
   const permissions = actor.permissionCodes ?? [];
   const allowed = (action: string) => permissions.includes(`shipment.custody.${action}`);
   const warehouses = [...new Set((actor.scopes ?? []).filter(s => s.scopeType === "warehouse").map(s => s.scopeRefId))].sort();
@@ -46,7 +47,7 @@ export async function listCustodyWork(requested: OrderActor, raw: unknown) {
       if (allowed("dispatch") || allowed("last-mile-offer")) conditions.push(Prisma.sql`(c.phase='warehouse' AND ${current})`);
     } else {
       // No company/global order scope substitutes for the exact eligible driver membership.
-      const user = await tx.user.findUnique({ where: { id: actor.id }, select: { driverType: true } });
+      const user = await requireAcceptedDriver(tx, { tenantId: actor.tenantId!, companyId: actor.companyId! }, actor.companyMembershipId!);
       if (user?.driverType === "local" && permissions.includes("shipment.changeStatus")) {
         await requireCustodyDriver(tx, actor, actor.companyMembershipId!, "local", "shipment.changeStatus");
         conditions.push(Prisma.sql`(c.id IS NULL AND NOT EXISTS (SELECT 1 FROM "OrderCustodyAction" history WHERE history."orderId"=o.id) AND o.status IN ('assigned','pickup_in_progress','picked_up') AND o."currentWarehouseId" IS NULL AND o."assignedDriverId"=${actor.id}::uuid)`);

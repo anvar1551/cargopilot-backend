@@ -2,6 +2,8 @@ import { MembershipStatus, Prisma } from "@prisma/client";
 import prisma from "../../config/prismaClient";
 import { AccessSnapshot, ScopeItem } from "./types";
 import type { AppUser } from "../../types/app-user";
+import { requireAcceptedDriver } from "./application/driver-eligibility";
+import { DRIVER_PROFILES } from "./application/driver-profiles";
 
 type AuthUser = AppUser;
 
@@ -125,6 +127,7 @@ export async function loadAccessSnapshot(args: {
       status: true,
       companyId: true,
       branchId: true,
+      driverEligibility: { select: { membershipId: true } },
       tenantId: true,
       tenantMembershipId: true,
       tenant: { select: { id: true, status: true } },
@@ -191,8 +194,19 @@ export async function loadAccessSnapshot(args: {
   );
   const roleCodes = Array.from(new Set(membership.roles.map((item) => item.role.code)));
 
+  if (membership.driverEligibility) {
+    try {
+      const accepted = await requireAcceptedDriver(prisma, { tenantId: membership.tenantId, companyId: membership.companyId }, membership.id);
+      // A replacement between the two reads must not return the previous profile's
+      // permissions together with the new accepted classification.
+      if (membership.roles.length !== 1 || roleCodes[0] !== accepted.profileRevision || membership.scopes.length ||
+          JSON.stringify([...permissionCodes].sort()) !== JSON.stringify([...DRIVER_PROFILES[accepted.profileRevision]].sort())) return null;
+    }
+    catch { return null; }
+  }
+
   const scopes: ScopeItem[] =
-    membership.scopes.length > 0 || args.explicitScopesOnly
+    membership.scopes.length > 0 || args.explicitScopesOnly || !!membership.driverEligibility
       ? membership.scopes.map((item) => ({
           scopeType: item.scopeType,
           scopeRefId: item.scopeRefId,
@@ -212,8 +226,8 @@ export async function loadAccessSnapshot(args: {
     tenantId: membership.tenantId,
     tenantMembershipId: membership.tenantMembershipId,
     branchId: membership.branchId ?? null,
-    warehouseId: membership.user.warehouseId ?? null,
-    customerEntityId: membership.user.customerEntityId ?? null,
+    warehouseId: membership.driverEligibility ? null : membership.user.warehouseId ?? null,
+    customerEntityId: membership.driverEligibility ? null : membership.user.customerEntityId ?? null,
     email: membership.user.email ?? "",
     name: membership.user.name ?? "",
     roleCodes,
