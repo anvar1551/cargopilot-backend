@@ -1,4 +1,5 @@
 import prisma from "../../../config/prismaClient";
+import { requireAcceptedFinancialCapability } from "../../identity-access/application/financial-eligibility";
 import { lockTariffAuthoring } from "./tariff-versions";
 import { OrderSlaSource, OrderStatus, ServiceType } from "@prisma/client";
 import { orderError } from "../../orders-core/shared";
@@ -29,6 +30,13 @@ import {
 } from "../shared/validation";
 
 const db = prisma as any;
+// Proposals freeze source content. A published plan is not an editable draft;
+// a new commercial version must start with a new plan, preserving all history.
+const unpublishedTariff = { approvedVersionId: null, versions: { none: {} } };
+async function requireUnpublishedTariff(tx: any, tenantId: string, companyId: string, id: string) {
+  const draft = await tx.tariffPlan.findFirst({ where: { id, tenantId, companyId, ...unpublishedTariff }, select: { id: true } });
+  if (!draft) throw orderError("Only unpublished tariff drafts may be changed", 409);
+}
 const OPERATIONAL_SLA_POLICY_KEY = "global";
 
 const ACTIVE_ORDER_STATUSES_FOR_SLA_BACKFILL: OrderStatus[] = [
@@ -838,6 +846,7 @@ export async function createTariffPlan(context: PricingAccessContext, input: Cre
 
   return db.$transaction(async (tx: any) => {
     await lockTariffAuthoring(tx, access.tenantId, access.companyId);
+    await requireAcceptedFinancialCapability(tx,context,"pricing.write");
     if (input.isDefault) {
       await tx.tariffPlan.updateMany({
         where: {
@@ -850,6 +859,7 @@ export async function createTariffPlan(context: PricingAccessContext, input: Cre
           destinationCountryCode: normalizedDestinationCountryCode,
           customerEntityId: input.customerEntityId ?? null,
           isDefault: true,
+          ...unpublishedTariff,
         },
         data: { isDefault: false },
       });
@@ -937,6 +947,8 @@ export async function updateTariffPlan(
 
   return db.$transaction(async (tx: any) => {
     await lockTariffAuthoring(tx, access.tenantId, access.companyId);
+    await requireAcceptedFinancialCapability(tx,context,"pricing.write");
+    await requireUnpublishedTariff(tx, access.tenantId, access.companyId, id);
     if (input.isDefault) {
       await tx.tariffPlan.updateMany({
         where: {
@@ -950,6 +962,7 @@ export async function updateTariffPlan(
           destinationCountryCode: normalizedDestinationCountryCode,
           customerEntityId: input.customerEntityId ?? null,
           isDefault: true,
+          ...unpublishedTariff,
         },
         data: { isDefault: false },
       });
@@ -960,7 +973,7 @@ export async function updateTariffPlan(
     });
 
     const updated = await tx.tariffPlan.updateMany({
-      where: { id, tenantId: access.tenantId, companyId: access.companyId },
+      where: { id, tenantId: access.tenantId, companyId: access.companyId, ...unpublishedTariff },
       data: {
         name: input.name,
         code: normalizeTariffCode(input.code),
@@ -1024,6 +1037,8 @@ export async function deleteTariffPlan(context: PricingAccessContext, id: string
 
   return db.$transaction(async (tx: any) => {
     await lockTariffAuthoring(tx, access.tenantId, access.companyId);
+    await requireAcceptedFinancialCapability(tx,context,"pricing.write");
+    await requireUnpublishedTariff(tx, access.tenantId, access.companyId, id);
     const ratesDeleted = (
       await tx.tariffRate.deleteMany({
         where: { tariffPlanId: id, tariffPlan: { tenantId: access.tenantId, companyId: access.companyId } },
@@ -1031,7 +1046,7 @@ export async function deleteTariffPlan(context: PricingAccessContext, id: string
     ).count;
 
     const removed = await tx.tariffPlan.deleteMany({
-      where: { id, tenantId: access.tenantId, companyId: access.companyId },
+      where: { id, tenantId: access.tenantId, companyId: access.companyId, ...unpublishedTariff },
     });
     if (removed.count !== 1) throw orderError("Tariff plan not found", 404);
 

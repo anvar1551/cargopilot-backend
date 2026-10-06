@@ -72,6 +72,14 @@ model RolePermission {
 }
 
 model CompanyMembership {
+  FinancialGrantProposal_proposer FinancialGrantProposal[] @relation("FinancialGrantProposal_proposer")
+  FinancialGrantProposal_target FinancialGrantProposal[] @relation("FinancialGrantProposal_target")
+  FinancialGrantAction_target FinancialGrantAction[] @relation("FinancialGrantAction_target")
+  FinancialGrantAction_actor FinancialGrantAction[] @relation("FinancialGrantAction_actor")
+  FinancialDelegationAuthority_member FinancialDelegationAuthority[] @relation("FinancialDelegationAuthority_member")
+  FinancialDelegationAuthority_bridge FinancialDelegationAuthority[] @relation("FinancialDelegationAuthority_bridge")
+  FinancialMembershipGrant_member FinancialMembershipGrant[] @relation("FinancialMembershipGrant_member")
+  FinancialMembershipGrant_bridge FinancialMembershipGrant[] @relation("FinancialMembershipGrant_bridge")
  warehouseProvisioners WarehouseProvisioningAuthority[] @relation("WarehouseProvisioner")
  warehouseProvisionerBridges WarehouseProvisioningAuthority[] @relation("WarehouseProvisionerBridge")
  warehouseProvisioningActions WarehouseProvisioningAction[] @relation("WarehouseProvisioningActor")

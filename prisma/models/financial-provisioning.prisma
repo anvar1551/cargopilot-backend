@@ -1,0 +1,85 @@
+// DOM-03 compound ownership, immutable journals and independent-checker trigger.
+model FinancialGrantProposal {
+  operationId String @id @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  legalEntityId String @db.Uuid
+  proposerMembershipId String @db.Uuid
+  proposerUserId String @db.Uuid
+  targetMembershipId String @db.Uuid
+  recipientUserId String @db.Uuid
+  profileRevisions String[]
+  expectedAcceptanceId String? @db.Uuid
+  expectedEnabled Boolean
+  proposerAcceptanceId String @db.Uuid
+  fingerprint String
+  reason String
+  createdAt DateTime @default(now())
+  proposer CompanyMembership @relation("FinancialGrantProposal_proposer", fields: [proposerMembershipId,proposerUserId,tenantId,companyId], references: [id,userId,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  target CompanyMembership @relation("FinancialGrantProposal_target", fields: [targetMembershipId,recipientUserId,tenantId,companyId], references: [id,userId,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  entity FinanceLegalEntity @relation("FinancialGrantProposal_entity", fields: [legalEntityId,tenantId,companyId], references: [id,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  decisions FinancialGrantAction[] @relation("FinancialDecisionProposal")
+  @@unique([operationId,targetMembershipId,tenantId,companyId,legalEntityId])
+  @@index([tenantId,companyId,createdAt], map: "FinancialGrantProposal_context_idx")
+}
+model FinancialGrantAction {
+  operationId String @id @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  legalEntityId String @db.Uuid
+  action String
+  fingerprint String
+  targetMembershipId String @db.Uuid
+  actorMembershipId String? @db.Uuid
+  actorUserId String? @db.Uuid
+  operatorKeyFingerprint String?
+  operatorId String?
+  proposalId String? @unique @db.Uuid
+  reason String
+  result Json
+  createdAt DateTime @default(now())
+  target CompanyMembership @relation("FinancialGrantAction_target", fields: [targetMembershipId,tenantId,companyId], references: [id,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  actor CompanyMembership? @relation("FinancialGrantAction_actor", fields: [actorMembershipId,actorUserId,tenantId,companyId], references: [id,userId,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  entity FinanceLegalEntity @relation("FinancialGrantAction_entity", fields: [legalEntityId,tenantId,companyId], references: [id,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  proposal FinancialGrantProposal? @relation("FinancialDecisionProposal", fields: [proposalId,targetMembershipId,tenantId,companyId,legalEntityId], references: [operationId,targetMembershipId,tenantId,companyId,legalEntityId], onDelete: Restrict, onUpdate: Restrict)
+  authorities FinancialDelegationAuthority[] @relation("FinancialAuthorityAcceptance")
+  grants FinancialMembershipGrant[] @relation("FinancialGrantAcceptance")
+  @@unique([operationId,targetMembershipId,tenantId,companyId,legalEntityId,action])
+  @@index([tenantId,companyId,createdAt], map: "FinancialGrantAction_context_idx")
+}
+model FinancialDelegationAuthority {
+  membershipId String @db.Uuid
+  userId String @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  legalEntityId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  kind String
+  profileRevisions String[]
+  acceptedOperationId String @db.Uuid
+  acceptedAction String @default("operator-authorize")
+  enabled Boolean @default(true)
+  member CompanyMembership @relation("FinancialDelegationAuthority_member", fields: [membershipId,userId,tenantId,companyId], references: [id,userId,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  bridge CompanyMembership @relation("FinancialDelegationAuthority_bridge", fields: [membershipId,tenantMembershipId,userId,tenantId], references: [id,tenantMembershipId,userId,tenantId], onDelete: Restrict, onUpdate: Restrict)
+  entity FinanceLegalEntity @relation("FinancialDelegationAuthority_entity", fields: [legalEntityId,tenantId,companyId], references: [id,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  acceptance FinancialGrantAction @relation("FinancialAuthorityAcceptance", fields: [acceptedOperationId,membershipId,tenantId,companyId,legalEntityId,acceptedAction], references: [operationId,targetMembershipId,tenantId,companyId,legalEntityId,action], onDelete: Restrict, onUpdate: Restrict, map: "FinancialDelegationAuthority_acceptance_fkey")
+  @@id([membershipId,kind])
+}
+model FinancialMembershipGrant {
+  membershipId String @db.Uuid
+  userId String @db.Uuid
+  tenantId String @db.Uuid
+  companyId String @db.Uuid
+  legalEntityId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  roleIds String[] @db.Uuid
+  profileRevisions String[]
+  acceptedOperationId String @db.Uuid
+  acceptedAction String @default("accept")
+  enabled Boolean @default(true)
+  member CompanyMembership @relation("FinancialMembershipGrant_member", fields: [membershipId,userId,tenantId,companyId], references: [id,userId,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  bridge CompanyMembership @relation("FinancialMembershipGrant_bridge", fields: [membershipId,tenantMembershipId,userId,tenantId], references: [id,tenantMembershipId,userId,tenantId], onDelete: Restrict, onUpdate: Restrict)
+  entity FinanceLegalEntity @relation("FinancialMembershipGrant_entity", fields: [legalEntityId,tenantId,companyId], references: [id,tenantId,companyId], onDelete: Restrict, onUpdate: Restrict)
+  acceptance FinancialGrantAction @relation("FinancialGrantAcceptance", fields: [acceptedOperationId,membershipId,tenantId,companyId,legalEntityId,acceptedAction], references: [operationId,targetMembershipId,tenantId,companyId,legalEntityId,action], onDelete: Restrict, onUpdate: Restrict, map: "FinancialMembershipGrant_acceptance_fkey")
+  @@id([membershipId])
+}

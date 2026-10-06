@@ -6,6 +6,7 @@ import { stableDraftJson } from "../../finance-core/domain/draft-intent";
 import { requireTenantBoundOrderCompanyAuthority, hasCompanyScope } from "../../orders-core/domain/company-authority";
 import { parseBillingPolicy } from "../domain/billing-calculation";
 import { z } from "zod";
+import { requireAcceptedFinancialCapability } from "../../identity-access/application/financial-eligibility";
 
 export const billingHash = (v: unknown) => createHash("sha256").update(stableDraftJson(v)).digest("hex");
 export const billingError = (code: string, statusCode = 409) => Object.assign(new Error(code), { code, statusCode });
@@ -22,6 +23,7 @@ export async function billingAuthority(tx: Prisma.TransactionClient, u: AppUser,
   await tx.$queryRaw`SELECT id FROM "FinanceLegalEntity" WHERE "tenantId"=${u.tenantId!}::uuid AND "companyId"=${u.companyId!}::uuid FOR SHARE`;
   const entity = await tx.financeLegalEntity.findFirst({ where: { ...billingOwner(u), isActive: true } });
   if (!entity) throw billingError("BILLING_ACTIVE_ENTITY_REQUIRED");
+  await requireAcceptedFinancialCapability(tx,u,permission,entity.id);
   return entity;
 }
 export function assertBillingRetry(row: any, u: AppUser, hash: string) {

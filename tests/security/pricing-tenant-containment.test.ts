@@ -7,6 +7,9 @@ jest.mock("../../src/modules/customers-core/application/customerEntityRepo", () 
   requireCustomerEntityReference: jest.fn(),
 }));
 jest.mock("../../src/modules/orders-core/sla", () => ({ resolveOrderSlaSnapshot: jest.fn() }));
+// Accepted financial capability is exercised against PostgreSQL in DOM-03;
+// this suite isolates the existing pricing/object predicates and draft guards.
+jest.mock("../../src/modules/identity-access/application/financial-eligibility",()=>({requireAcceptedFinancialCapability:jest.fn()}));
 
 import { database } from "./fixtures";
 import { loadAccessSnapshot } from "../../src/modules/identity-access/access-control";
@@ -136,6 +139,17 @@ function configureRoute() {
 
 describe("pricing tenant containment (mocked repository evidence)", () => {
   beforeEach(resetMocks);
+  it.each(["update","delete"])("denies %s of a non-draft before rate/default mutations",async action=>{
+    database.$transaction.mockImplementation(async(run:any)=>run(database));
+    database.$queryRaw.mockResolvedValue([]);
+    database.$executeRaw.mockResolvedValue(0);
+    database.routeTemplate.findFirst.mockResolvedValue({id:ids.routeA});
+    database.tariffPlan.findFirst.mockImplementation(async({where}:any)=>where.versions?null:{id:ids.planA});
+    await expect(action==="update"?updateTariffPlan(context(),ids.planA,planInput):deleteTariffPlan(context(),ids.planA)).rejects.toMatchObject({statusCode:409});
+    expect(database.tariffPlan.updateMany).not.toHaveBeenCalled();
+    expect(database.tariffPlan.deleteMany).not.toHaveBeenCalled();
+    expect(database.tariffRate.deleteMany).not.toHaveBeenCalled();
+  });
 
   it("fails closed on missing context before pricing queries", async () => {
     await expect(quoteTariff(context({ tenantId: "" }), quoteInput)).rejects.toMatchObject({ statusCode: 403 });

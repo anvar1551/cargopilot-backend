@@ -1,4 +1,6 @@
 import type { AppUser } from "../../../types/app-user";
+import prisma from "../../../config/prismaClient";
+import { requireAcceptedFinancialCapability } from "../../identity-access/application/financial-eligibility";
 import type { Prisma } from "@prisma/client";
 import { loadAccessSnapshot, buildOrderScopeWhere } from "../../identity-access/access-control";
 
@@ -13,6 +15,7 @@ export async function authorizedInvoiceWhere(actor: AppUser, permission: string)
       snapshot.companyMembershipId !== actor.companyMembershipId || snapshot.tenantId !== actor.tenantId ||
       snapshot.tenantMembershipId !== actor.tenantMembershipId || snapshot.companyId !== actor.companyId ||
       !snapshot.permissionCodes.includes(permission)) throw deny();
+  if(permission==="finance.invoices.read")await prisma.$transaction(tx=>requireAcceptedFinancialCapability(tx,actor,permission));
   const scope = await buildOrderScopeWhere({ ...actor, ...snapshot, id: snapshot.userId }, permission);
   // The established helper uses denial sentinels inside AND for absent customer/object scopes.
   // Its current policy never mixes this sentinel with an allowed OR alternative.

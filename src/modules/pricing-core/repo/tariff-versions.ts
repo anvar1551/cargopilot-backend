@@ -1,5 +1,6 @@
 import { createHash } from "crypto";
 import type { Prisma } from "@prisma/client";
+import { requireAcceptedFinancialCapability } from "../../identity-access/application/financial-eligibility";
 import prisma from "../../../config/prismaClient";
 import type { AppUser } from "../../../types/app-user";
 import { requireTenantBoundOrderCompanyAuthority, hasCompanyScope } from "../../orders-core/domain/company-authority";
@@ -29,6 +30,7 @@ async function authority(tx: Prisma.TransactionClient, user: AppUser, permission
   // A queued authoring lock must not preserve permissions revoked while waiting.
   const current = await requireTenantBoundOrderCompanyAuthority(tx, user, permission);
   if (!hasCompanyScope(current)) throw authorityError("Explicit selected-company tariff scope required", 403);
+  await requireAcceptedFinancialCapability(tx,user,permission);
 }
 async function loadPlan(tx: Prisma.TransactionClient, user: AppUser, planId: string) {
   await tx.$queryRaw`SELECT id FROM "TariffPlan" WHERE id=${planId}::uuid AND "tenantId"=${user.tenantId!}::uuid AND "companyId"=${user.companyId!}::uuid FOR UPDATE`;

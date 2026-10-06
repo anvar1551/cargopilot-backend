@@ -1,5 +1,6 @@
 import type { AppUser } from "../../../types/app-user";
 import prisma from "../../../config/prismaClient";
+import { requireAcceptedFinancialCapability } from "../../identity-access/application/financial-eligibility";
 import { requireIdentityManagementContext } from "../../identity-access/application/managementAccess";
 import { FinanceError, financeConflict } from "../domain/finance.errors";
 
@@ -13,6 +14,7 @@ export async function requireLegalEntityContext(actor: AppUser, permission: stri
   }, select: { id: true } });
   if (!scope) throw new FinanceError("Explicit selected-company finance scope required", 403,
     "FINANCE_COMPANY_SCOPE_REQUIRED");
+  if(permission==="finance.settings.read")await prisma.$transaction(tx=>requireAcceptedFinancialCapability(tx,actor,permission));
   return context;
 }
 
