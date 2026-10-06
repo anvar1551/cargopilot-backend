@@ -1,3 +1,5 @@
+import {syntheticWarehouseOwner} from "./warehouse-provisioning.fixture";
+import {authorizeWarehouseProvisioner} from "../../src/modules/warehouse-core/application/warehouseProvisioning";
 import { syntheticDriverOwner } from "./driver-provisioning.fixture";
 import { authorizeCompanyDriverDelegator, createCompanyDriverInvitation, acceptCompanyDriverInvitation, mutateCompanyDriverEligibility } from "../../src/modules/identity-access/application/driver-delegation";
 import { DRIVER_PROFILES } from "../../src/modules/identity-access/application/driver-profiles";
@@ -113,11 +115,14 @@ beforeAll(async () => {
     "shipment.custody.intake","shipment.custody.dispatch","shipment.custody.receive","shipment.custody.last-mile-offer"]);
   await mockPrisma.permission.createMany({data:SYSTEM_PERMISSIONS,skipDuplicates:true});
   process.env.JWT_SECRET = randomUUID(); process.env.REFRESH_TOKEN_SECRET = randomUUID();
+  for(const i of [1,2])await grant(actor(i),["shipment.view","shipment.custody.intake","shipment.custody.dispatch","warehouse.create"]);
   driverOwner = syntheticDriverOwner();
+  const warehouseOwner=syntheticWarehouseOwner();
+  try { for(const who of [operator,actor(1),actor(2)]) await authorizeWarehouseProvisioner(mockPrisma,warehouseOwner.request(who.companyMembershipId)); } finally { warehouseOwner.cleanup();driverOwner.register(); }
   await authorizeCompanyDriverDelegator(mockPrisma, driverOwner.request(operator.companyMembershipId));
   driver = await provisionDriver("synthetic-journey-driver", "local");
   transport = await provisionDriver("synthetic-linehaul", "linehaul");
-  for(const i of [1,2])await grant(actor(i),["shipment.view","shipment.custody.intake","shipment.custody.dispatch","warehouse.create"]);
+
   process.env.ORDER_LABEL_BLOCKING = "true";
   process.env.ORDER_LABEL_AUTO_FALLBACK = "false";
   process.env.ORDER_LABEL_MODE = "queue";
@@ -186,7 +191,7 @@ it("real normal creation -> pickup -> three warehouses -> accepted last mile -> 
   for (const bytes of objects.values()) expect(PNG.sync.read(bytes).width).toBeGreaterThan(0);
   const warehouses=[];
   for(let i=0;i<3;i++){
-    const w=await createWarehouse(operator,{name:`Synthetic warehouse ${i}`,type:"warehouse",location:"Synthetic"});warehouses.push(w);
+    const w=await createWarehouse(operator,{operationId:randomUUID(),name:`Synthetic warehouse ${i}`,type:"warehouse",location:"Synthetic"});warehouses.push(w);
     await mockPrisma.membershipScope.create({data:{membershipId:operator.companyMembershipId,scopeType:"warehouse",scopeRefId:w.id}});
   }
   const parcelIds=created.payload.order.parcels.map((p:any)=>p.id);
@@ -200,7 +205,7 @@ it("real normal creation -> pickup -> three warehouses -> accepted last mile -> 
   async function accepted(who:any,input:any){const results=await Promise.all([executeWarehouseCustody(who,orderId,input),executeWarehouseCustody(who,orderId.toUpperCase(),JSON.parse(JSON.stringify(input)))]);expect(results[0]).toEqual(results[1]);const before=await businessState();expect(await executeWarehouseCustody(who,orderId,input)).toEqual(results[0]);expect(await businessState()).toEqual(before);return results[0];}
   const pickupSource=await mockPrisma.tracking.findFirstOrThrow({where:{orderId,status:"picked_up"},orderBy:{timestamp:"desc"}});
   const offer=await custodyIntent("pickup-offer",{pickupTrackingId:pickupSource.id,destinationWarehouseId:warehouses[0].id});
-  const foreignWarehouse=await createWarehouse(actor(2),{name:"Synthetic foreign warehouse",type:"warehouse",location:"Synthetic"});
+  const foreignWarehouse=await createWarehouse(actor(2),{operationId:randomUUID(),name:"Synthetic foreign warehouse",type:"warehouse",location:"Synthetic"});
   await denied(driver,{...offer,destinationWarehouseId:foreignWarehouse.id});
   await denied(driver,{...offer,pickupTrackingId:randomUUID()});
   await accepted(driver,offer);

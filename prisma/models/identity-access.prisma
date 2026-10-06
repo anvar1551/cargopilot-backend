@@ -72,6 +72,10 @@ model RolePermission {
 }
 
 model CompanyMembership {
+ warehouseProvisioners WarehouseProvisioningAuthority[] @relation("WarehouseProvisioner")
+ warehouseProvisionerBridges WarehouseProvisioningAuthority[] @relation("WarehouseProvisionerBridge")
+ warehouseProvisioningActions WarehouseProvisioningAction[] @relation("WarehouseProvisioningActor")
+ warehouseProvisioningActionBridges WarehouseProvisioningAction[] @relation("WarehouseProvisioningActorBridge")
   driverAuthorities CompanyDriverDelegationAuthority[] @relation("DriverDelegatorOwner")
   driverAuthorityBridges CompanyDriverDelegationAuthority[] @relation("DriverDelegatorBridge")
   driverInvitations CompanyDriverInvitation[] @relation("DriverInvitationAccepted")

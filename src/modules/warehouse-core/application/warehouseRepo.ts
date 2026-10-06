@@ -1,3 +1,4 @@
+import { createControlledWarehouse } from "./warehouseProvisioning";
 import prisma from "../../../config/prismaClient";
 import type { AppUser } from "../../../types/app-user";
 import type { WarehouseTypeValue } from "./warehouse.shared";
@@ -12,9 +13,8 @@ function data(input: WarehouseInput) {
   return { name: input.name, type: input.type, location: input.location, region: input.region ?? null,
     latitude: input.latitude ?? null, longitude: input.longitude ?? null };
 }
-export async function createWarehouse(context: AppUser, input: WarehouseInput) {
-  const { snapshot } = await requireWarehouseAccess(context, "warehouse.create");
-  return prisma.warehouse.create({ select: WAREHOUSE_SELECT, data: { ...data(input), tenantId: snapshot.tenantId } });
+export async function createWarehouse(context: AppUser, input: unknown) {
+ return createControlledWarehouse(prisma,context,input);
 }
 export async function updateWarehouse(context: AppUser, id: string, input: WarehouseInput) {
   const { where } = await requireWarehouseAccess(context, "shipment.update");

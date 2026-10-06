@@ -1,3 +1,13 @@
+# Current creation follow-up (2026-10-06)
+
+[Warehouse_Provisioning.md](Warehouse_Provisioning.md) supersedes the historical
+creation-capability gap below: creation now requires explicit accepted owner authority
+as well as warehouse.create and selected company scope, with durable operationId.
+The new migration inserts reserved permission metadata only; it remains outside
+SYSTEM_PERMISSIONS automatic grants. Creation grants no warehouse scope/ceiling.
+Read/update/assignment containment below remains enforced. Real provisioning and
+client rollout remain unperformed. The original report below is historical evidence.
+
 # Bounded warehouse management containment
 
 ## Plan, baseline and current enforcement

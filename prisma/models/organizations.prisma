@@ -90,6 +90,7 @@ model Organization {
 }
 
 model Warehouse {
+ provisioningActions WarehouseProvisioningAction[]
   custodyActions OrderCustodyAction[] @relation("CustodyWarehouse")
   custodyDestinations OrderCustodyAction[] @relation("CustodyDestination")
   financeJournalDimensions FinanceJournalLine[] @relation("JournalDimensionWarehouse")

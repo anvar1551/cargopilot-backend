@@ -39,6 +39,23 @@ describe("warehouse recursive response boundary (mocked DB, real routes/reposito
     database.warehouse.findFirst.mockResolvedValue(dirty);
     database.warehouse.create.mockResolvedValue(dirty);
     database.warehouse.update.mockResolvedValue(dirty);
+    // Synthetic accepted provisioning authority for the existing response boundary.
+    // Actual authority/transactions are exercised by the PostgreSQL suite.
+    database.$transaction.mockImplementation(async (work: any) => work(database));
+    database.$executeRaw.mockResolvedValue(1);
+    database.companyMembership.findUnique.mockResolvedValue({id:snapshot.companyMembershipId,userId:snapshot.userId,
+      tenantId:snapshot.tenantId,companyId:snapshot.companyId,tenantMembershipId:snapshot.tenantMembershipId,status:"active",
+      company:{id:snapshot.companyId,tenantId:snapshot.tenantId,type:"company",isActive:true},tenant:{id:snapshot.tenantId,status:"active"},
+      tenantMembership:{id:snapshot.tenantMembershipId,userId:snapshot.userId,tenantId:snapshot.tenantId,status:"active"},
+      roles:[{role:{companyId:snapshot.companyId,isSystem:false,rolePermissions:[{permission:{key:"warehouse.create"}}]}}],scopes:snapshot.scopes});
+    database.$queryRaw.mockImplementation(async (query:any) => {
+      const sql=Array.isArray(query)?query.join(""):query.strings?.join("")??"";
+      if(sql.includes('FROM "User"'))return [{id:snapshot.userId,password:"synthetic-lock-value"}];
+      if(sql.includes('FROM "WarehouseProvisioningAuthority"'))return [{membershipId:snapshot.companyMembershipId,userId:snapshot.userId,
+        tenantId:snapshot.tenantId,companyId:snapshot.companyId,tenantMembershipId:snapshot.tenantMembershipId,enabled:true,
+        profileRevision:"warehouse-provisioning.v1",acceptedAction:"operator-authorize",acceptedResult:{companyMembershipId:snapshot.companyMembershipId,enabled:true}}];
+      return [];
+    });
   });
   afterEach(() => { process.env = { ...originalEnv }; });
 
@@ -61,7 +78,8 @@ describe("warehouse recursive response boundary (mocked DB, real routes/reposito
     const server = await app();
     try {
       const result = await server.inject({ method, url, headers: headers(),
-        ...(method === "POST" || method === "PUT" ? { payload: { name: base.name, location: base.location } } : {}),
+        ...(method === "POST" || method === "PUT" ? { payload: { name: base.name, location: base.location,
+          ...(method==="POST"?{operationId:"70000000-0000-4000-8000-000000000001"}:{}) } } : {}),
       });
       expect(result.statusCode).toBe(status);
       expectNoSensitiveFields(result.json());
@@ -87,7 +105,8 @@ describe("warehouse recursive response boundary (mocked DB, real routes/reposito
     try {
       const result = await server.inject({ method: methods[operation as keyof typeof methods],
         url: `/api/warehouses${["findFirst", "update"].includes(operation) ? "/warehouse-a" : ""}`,
-        headers: headers(), ...(["create", "update"].includes(operation) ? { payload: { name: "A", location: "B" } } : {}),
+        headers: headers(), ...(["create", "update"].includes(operation) ? { payload: { name: "A", location: "B",
+          ...(operation==="create"?{operationId:"70000000-0000-4000-8000-000000000001"}:{}) } } : {}),
       });
       expect(result.statusCode).toBe(500);
       expectNoSensitiveFields(result.json());

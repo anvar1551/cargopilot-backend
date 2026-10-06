@@ -12,7 +12,7 @@ import { rejectWarehouseFields } from "../application/warehouseAccess";
 
 function sendWarehouseError(reply: any, error: any, fallback: string) {
   if (error?.code === "P2025") return reply.code(404).send({ error: "Warehouse not found" });
-  if ([400, 403, 404].includes(error?.statusCode)) return reply.code(error.statusCode).send({ error: error.message });
+  if ([400, 403, 404, 409].includes(error?.statusCode)) return reply.code(error.statusCode).send({ error: error.message });
   return reply.code(500).send({ error: fallback });
 }
 
@@ -30,19 +30,7 @@ const warehouseFastifyRoutes: FastifyPluginAsync = async (fastify) => {
     { preHandler: fastifyAuth({ permission: "warehouse.create" }) },
     async (request, reply) => {
       try {
-        const body = (request.body ?? {}) as Record<string, unknown>;
-        rejectWarehouseFields(body);
-        const name = String(body.name || "").trim();
-        const location = String(body.location || "").trim();
-        if (!name || !location) {
-          return reply.code(400).send({ error: "Name and location are required" });
-        }
-
-        const warehouse = await createWarehouse(request.user!, {
-          name, location, type: normalizeWarehouseType(typeof body.type === "string" ? body.type : undefined),
-          region: typeof body.region === "string" && body.region.trim() ? body.region.trim() : null,
-          latitude: parseCoordinate(body.latitude, "lat"), longitude: parseCoordinate(body.longitude, "lng"),
-        });
+        const warehouse = await createWarehouse(request.user!, request.body);
 
         return reply.code(201).send(warehouseView(warehouse));
       } catch (error) {

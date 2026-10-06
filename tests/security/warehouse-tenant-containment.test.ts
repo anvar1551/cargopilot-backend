@@ -58,9 +58,9 @@ test("authorized edit remains scoped at the write, cannot change ownership", asy
   expect(await updateWarehouse(context, "warehouse-a", input)).toMatchObject({ tenantId: "tenant-a", name: input.name });
   expect(database.warehouse.update.mock.calls[0][0].where).toEqual({ id: "warehouse-a", AND: [{ tenantId: "tenant-a", id: { in: ["warehouse-a"] } }] });
 });
-test("creation derives tenant only and grants neither ownership nor scope from body", async () => {
-  expect(await createWarehouse(context, input)).toMatchObject({ tenantId: "tenant-a" });
-  expect(database.warehouse.create.mock.calls[0][0].data).not.toHaveProperty("companyId");
+test("legacy capability/context alone cannot create without accepted provisioning authority", async () => {
+ await expect(createWarehouse(context,{...input,operationId:"10000000-0000-4000-8000-000000000001"})).rejects.toMatchObject({statusCode:403});
+ expect(database.warehouse.create).not.toHaveBeenCalled();
 });
 test.each(["tenantId", "companyId", "users", "orders", "driverAccesses", "tenant", "id"])("rejects injected %s before write", async key => {
   await expect(createWarehouse(context, { ...input, [key]: { connect: { id: "foreign" } } })).rejects.toMatchObject({ statusCode: 400 });
@@ -80,9 +80,9 @@ test.each([null, { ...snap, permissionCodes: [] }, { ...snap, companyId: "other-
 });
 test("shipment.update cannot create; creation needs new capability plus selected company scope", async () => {
   jest.mocked(loadAccessSnapshot).mockResolvedValue({ ...snap, permissionCodes: ["shipment.update"] });
-  await expect(createWarehouse(context, input)).rejects.toMatchObject({ statusCode: 403 });
+  await expect(createWarehouse(context, { ...input, operationId: "10000000-0000-4000-8000-000000000001" })).rejects.toMatchObject({ statusCode: 403 });
   jest.mocked(loadAccessSnapshot).mockResolvedValue({ ...snap, scopes: [scopes[0]] });
-  await expect(createWarehouse(context, input)).rejects.toMatchObject({ statusCode: 403 });
+  await expect(createWarehouse(context, { ...input, operationId: "10000000-0000-4000-8000-000000000001" })).rejects.toMatchObject({ statusCode: 403 });
   expect(database.warehouse.create).not.toHaveBeenCalled();
 });
 test.each([{ primaryWarehouseId: "foreign" }, { warehouseIds: ["foreign"] }, { primaryWarehouseId: null }, { warehouseIds: [] }])("driver assignment contained before reads or writes", async body => {

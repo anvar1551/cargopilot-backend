@@ -1,0 +1,36 @@
+model WarehouseProvisioningAuthority {
+ membershipId String @id @db.Uuid
+ userId String @db.Uuid
+ tenantId String @db.Uuid
+ companyId String @db.Uuid
+ tenantMembershipId String @db.Uuid
+ profileRevision String
+ acceptedOperationId String @db.Uuid
+ enabled Boolean @default(true)
+ member CompanyMembership @relation("WarehouseProvisioner", fields:[membershipId,userId,tenantId,companyId], references:[id,userId,tenantId,companyId], onUpdate:Restrict,onDelete:Restrict)
+ bridge CompanyMembership @relation("WarehouseProvisionerBridge", fields:[membershipId,tenantMembershipId,userId,tenantId],references:[id,tenantMembershipId,userId,tenantId],onUpdate:Restrict,onDelete:Restrict)
+ @@unique([membershipId,userId,tenantId,companyId],map:"WarehouseProvisioningAuthority_member_key")
+ acceptedAction WarehouseProvisioningAction @relation(fields:[acceptedOperationId,membershipId,tenantId,companyId],references:[operationId,membershipId,tenantId,companyId],onUpdate:Restrict,onDelete:Restrict,map:"WarehouseProvisioningAuthority_acceptance_fkey")
+}
+model WarehouseProvisioningAction {
+ operationId String @id @db.Uuid
+ tenantId String @db.Uuid
+ companyId String @db.Uuid
+ membershipId String @db.Uuid
+ userId String @db.Uuid
+ tenantMembershipId String @db.Uuid
+ action String
+ fingerprint String
+ operatorId String?
+ operatorKeyFingerprint String?
+ warehouseId String? @db.Uuid
+ reason String
+ result Json
+ createdAt DateTime @default(now())
+ member CompanyMembership @relation("WarehouseProvisioningActor",fields:[membershipId,userId,tenantId,companyId],references:[id,userId,tenantId,companyId],onUpdate:Restrict,onDelete:Restrict)
+ bridge CompanyMembership @relation("WarehouseProvisioningActorBridge",fields:[membershipId,tenantMembershipId,userId,tenantId],references:[id,tenantMembershipId,userId,tenantId],onUpdate:Restrict,onDelete:Restrict)
+ warehouse Warehouse? @relation(fields:[tenantId,warehouseId],references:[tenantId,id],onUpdate:Restrict,onDelete:Restrict)
+ authorities WarehouseProvisioningAuthority[]
+ @@unique([operationId,membershipId,tenantId,companyId])
+ @@index([tenantId,companyId,createdAt],map:"WarehouseProvisioningAction_context_idx")
+}
