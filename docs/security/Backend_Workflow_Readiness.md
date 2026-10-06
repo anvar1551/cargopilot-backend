@@ -1,4 +1,27 @@
-# Current company invitation/delegation readiness (2026-10-05)
+# Current DOM-01 readiness (2026-10-06)
+
+Implementation checkpoint: `8337f858c3a12b42e31b7f834dde1ff014674769`.
+Authored implementation is committed; this documentation checkpoint completes
+the finite DOM-01 batch. No further implementation started.
+
+See [Driver_Provisioning.md](Driver_Provisioning.md) for exact permission mapping,
+additive /api/auth/company-driver-* contracts and evidence.
+
+| Step | Current enforced behavior / remaining gate |
+|---|---|
+| Controlled driver delegation | Separate explicitly owner-signed driver-delegation.v1 accepted ceiling; no automatic onboarding/operational expansion. Real registry/intent/invocation and private delivery remain unperformed. |
+| Enrollment -> selected login | Synthetic new/existing authenticated identity, exact membership-specific local/linehaul profile, zero explicit/implicit scopes. Normal selected login; other-company grants/credentials/session preserved. Legacy User.driverType is not accepted eligibility; unmanaged conversion unavailable. |
+| Restricted non-cash journey | Actual PostgreSQL services complete dispatcher assignment, initial pickup/discovery/proof, warehouse custody, linehaul nomination/acceptance, receiving, local last-mile acceptance/proof/delivery with newly enrolled restricted drivers from start. Prerequisite operator/configuration/checker actors remain synthetic explicit fixtures, not a real provisioning claim. |
+| Active work / revocation | Type replacement rejects current assignment/latest nominated/accepted custody; completed/superseded history does not block forever. Concurrent assignment/replacement serialized. Managed revocation always available, leaves work/identity intact; exact staff receipt uses reasoned recovery. Actual HTTP and2-process Socket.IO revocation tested, bounded timing windows retained. |
+| Cash / generic mutation | New profiles deny actual collect/handoff/settle and generic shipment.update/view/assignCourier. DOM-03/05 contract required; no financial authority restored. |
+| Evidence | 20 distinct PostgreSQL cases, 244 offline/mock cases, 116 migrations, final schema/client and no-emit checks. One affected actual cash-denial rerun is not a new case. External storage/network/Redis mocked; not S3/native/deployed transport validation. Owned disposable cleanup verified. |
+| Required operational provisioning | DOM-02 still needs approved warehouse/dispatch/planning/pricing/invoice actor provisionability. Directory drivers.manage is not approved dispatcher drivers.read; no silent permission expansion. |
+| Client / release | Frontend/native flows deferred; real keys/private delivery/rollout/legacy conversion, Redis/S3/device/source-artifact/historical/nullable/RLS and financial/provider policy gates remain. No accounting or production-readiness claim. |
+
+Older checkpoints below describe their historical state; earlier driver deferral
+statements are superseded only for the approved DOM-01 backend scope above.
+
+# Historical company invitation/delegation readiness (2026-10-05)
 
 Implementation `69d73bb59614886bd6531c65db06aa590080c45e`;
 see [Company_Invitation_Delegation.md](Company_Invitation_Delegation.md).

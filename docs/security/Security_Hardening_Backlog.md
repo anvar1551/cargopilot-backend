@@ -1,4 +1,33 @@
-# Current checkpoint — invitation race and replacement ceiling corrections (2026-10-06)
+# Current checkpoint — DOM-01 restricted driver provisioning (2026-10-06)
+
+Implementation checkpoint: `8337f858c3a12b42e31b7f834dde1ff014674769`.
+Authored implementation is committed; this documentation checkpoint completes
+the finite DOM-01 batch. No further implementation started.
+
+Baseline eceb4b0637a61b4ecb1dadae3973d999866866f1.
+[Driver_Provisioning.md](Driver_Provisioning.md) records the approved plan,
+exact six/three-key profiles, additive API, migration, evidence and rollout.
+
+| Finite item / status | Current behavior, completion criterion or remaining gate |
+|---|---|
+| DOM-01 — implemented/tested | Separate owner-approved driver-delegation.v1 ceiling; hashed single-use driver invitations, verified existing identity binding, exact immutable local/linehaul profile and membership-specific accepted eligibility. No implicit scopes, shared User type authority, automatic operational/onboarding upgrade, cash or finance grants. Matching/conflicting retries and atomic action/version/session effects verified. |
+| DOM-01 restricted workflow — implemented/tested | Actual provision/login -> exact dispatcher assignment -> restricted initial pickup/discovery/PNG proof -> warehouse -> nominated linehaul -> warehouse -> accepted local last-mile/proof/delivery. No company/warehouse scope or assignCourier on drivers. Active-work type replacement blocked; completed history permits replacement; revocation preserves work and permits exact reasoned receiving. Generic order mutations and all three actual cash services denied without writes. |
+| Executed evidence | 20 distinct PostgreSQL cases (14 provisioning +6 actual-service journey/race/recovery); one affected case rerun after adding actual cash denials, not counted twice. 116 migrations, final schema/client compatibility check, 244 distinct affected offline/mock cases across15 suites. Actual Fastify auth and existing sockets in2 isolated loopback processes tested; storage/provider/Redis mocked. Final no-emit passed. Both final owned resources removed after identity/tmpfs checks; no volume/bind storage. |
+| DOM-02 — technically unfinished; before client integration | Controlled operational provisioning for warehouses, authorized dispatcher directory/planning and pricing/invoice prerequisite actors. Exact capability ceiling/actor contract required; drivers.read is not drivers.manage. Completion: approved server-enforced profiles/scopes and synthetic provisioned operational journey, no test-only elevated prerequisite shortcut. Existing source authorization remains active; no grants invented. |
+| DOM-03/05 — contained awaiting policy; cash-driver functionality unavailable | New driver profiles intentionally have no shipment.update or finance/cash grants. Separate cash provisioning/authorization and membership-specific cash target eligibility must be approved before restoration. Completion: explicit least-privilege cash contract plus money/custody/retry/concurrency evidence. Existing custody finance protections retained; no broad override. |
+| ONBOARD-02 / invitation delivery — external authorization outstanding; before real use | Real public registry/revision registration, concrete owner-reviewed permit, private token/credential delivery and separately authorized invocation. No real keys/invitations/provisioning performed. Completion: verified owner-controlled ceremony/delivery/ACL and authorized invocation; no raw-token receipt/log persistence. |
+| Clients/device — deferred; before release | New action-key discovery/proof and driver invitation/profile flows need frontend/driver implementation and native lifecycle/replay verification. Existing client cash/proof/context limitations remain; no client changes here. Completion: actual restricted user/client tests with restart/context suppression and PNG/device/storage verification. |
+| Production verification — outstanding | Migration/catalog/source/client rollout, stop old writers, legacy driver conversion contract, source-to-dist provenance, S3/Redis/device/provider/deployment, historical/nullable/RLS gates retained. Revocation sweeps and last-check-to-effect windows are not instantaneous; no complete isolation or production-readiness claim. |
+
+Cleanup: cp-verification-325cdc094df2 removed/absence verified after all20 cases;
+additional affected cash-denial run cp-verification-7f0c6c51ff4f removed and
+absence verified. Both used owned tmpfs only.
+Unchanged finance, invitation correction, real transport/migration concurrency,
+delivery/invoice and dependency evidence reused where exercised source unchanged.
+Finite DOM-01 batch complete; stop. No clients, real invocation, push or deployment.
+Preserve pre-existing dist and the policy-blocked cleanup directory.
+
+# Historical checkpoint — invitation race and replacement ceiling corrections (2026-10-06)
 
 Baseline `9b7c4d4e379a38525698db03fcb22fb4ef624b05`.
 [Company_Invitation_Delegation.md](Company_Invitation_Delegation.md) records the
