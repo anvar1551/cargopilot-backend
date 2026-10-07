@@ -5,7 +5,8 @@ import { proposeIssuingEntity, decideIssuingEntity, readIssuingEntityProposal } 
 import { recordAuthRejection, AuthRejectionCode } from "./auth-rejection-diagnostics";
 import { ADMINISTRATIVE_CONTAINMENT } from "../application/managementAccess";
 import prisma from "../../../config/prismaClient";
-import { createCompanyInvitation, acceptCompanyInvitation, cancelCompanyInvitation, mutateCompanyOperationalGrant } from "../application/company-delegation";
+import { createCompanyInvitation, acceptCompanyInvitation, cancelCompanyInvitation, mutateCompanyOperationalGrant,
+  readOperationalDelegation, listOperationalWarehouses, listCompanyInvitations, listOperationalGrants } from "../application/company-delegation";
 import { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
 import { fastifyAuth } from "./fastify-auth";
@@ -330,6 +331,18 @@ const usersFastifyRoutes: FastifyPluginAsync<IdentityAccessRouteOptions> = async
     return reply.code([400, 401, 403, 409].includes(e?.statusCode ?? 0) ? e.statusCode! : error instanceof z.ZodError ? 400 : 500).send({ error: code, code });
   };
   const privateReply = async (_request: unknown, reply: FastifyReply) => { reply.header("Cache-Control", "no-store"); };
+  fastify.get("/company-invitations", { onRequest: privateReply, preHandler: fastifyAuth({ permission: "membership.invite" }) }, async (request, reply) => {
+    try { return await listCompanyInvitations(prisma, request.user!, request.query); } catch(e) { return delegationError(reply,e); }
+  });
+  fastify.get("/company-operational-delegation", { onRequest: privateReply, preHandler: fastifyAuth({ permission: "membership.delegateOperational" }) }, async (request, reply) => {
+    try { return await readOperationalDelegation(prisma, request.user!); } catch(e) { return delegationError(reply,e); }
+  });
+  fastify.get("/company-operational-delegation/warehouses", { onRequest: privateReply, preHandler: fastifyAuth({ permission: "membership.delegateOperational" }) }, async (request, reply) => {
+    try { return await listOperationalWarehouses(prisma, request.user!, request.query); } catch(e) { return delegationError(reply,e); }
+  });
+  fastify.get("/company-operational-grants", { onRequest: privateReply, preHandler: fastifyAuth({ permission: "membership.delegateOperational" }) }, async (request, reply) => {
+    try { return await listOperationalGrants(prisma, request.user!, request.query); } catch(e) { return delegationError(reply,e); }
+  });
   fastify.post("/issuing-entity-setup/proposals", { onRequest: privateReply, preHandler: fastifyAuth({permission:"finance.entitySetup.propose"}), bodyLimit:4096 },async(request,reply)=>{
     try{return reply.code(201).send(await proposeIssuingEntity(prisma,request.user!,request.body));}catch(e){return delegationError(reply,e);}
   });

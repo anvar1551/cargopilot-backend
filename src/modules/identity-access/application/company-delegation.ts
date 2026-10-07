@@ -272,6 +272,92 @@ function assertManagedScopes(m: Awaited<ReturnType<typeof member>>, grant: { ena
 export const companyMembershipPrimitives = Object.freeze({ context, member, keys, agrees, operationLock, revokeContextSessions, staticRole });
 const mutationSchema = z.object({ operationId: operationIdSchema, membershipId: operationIdSchema,
   action: z.enum(["grant", "revoke"]), profileRevision: z.enum(["operational-clerk.v1", "operational-dispatcher.v1", "operational-warehouse.v1"]), warehouseIds: warehouseIdsSchema, reason: reasonSchema }).strict();
+
+const discoveryQuery = z.object({ limit: z.coerce.number().int().min(1).max(50).default(20),
+  cursor: z.string().max(512).optional(), invitationId: operationIdSchema.optional() }).strict();
+function discoveryPage(input: unknown, c: Context, kind: string) {
+  const v = discoveryQuery.parse(input);
+  let after: string | undefined;
+  if (v.cursor) {
+    try {
+      const cursor = z.object({ tenantId: operationIdSchema, companyId: operationIdSchema,
+        membershipId: operationIdSchema, kind: z.literal(kind), after: operationIdSchema }).strict()
+        .parse(JSON.parse(Buffer.from(v.cursor, "base64url").toString("utf8")));
+      if (cursor.tenantId !== c.tenantId || cursor.companyId !== c.companyId || cursor.membershipId !== c.companyMembershipId)
+        fail("DELEGATION_CURSOR_REJECTED", 400);
+      after = cursor.after;
+    } catch { fail("DELEGATION_CURSOR_REJECTED", 400); }
+  }
+  if (kind !== "invitations" && v.invitationId) fail("DELEGATION_REQUEST_REJECTED", 400);
+  const next = (id: string) => Buffer.from(JSON.stringify({ tenantId: c.tenantId, companyId: c.companyId,
+    membershipId: c.companyMembershipId, kind, after: id })).toString("base64url");
+  return { ...v, after, next };
+}
+/** Read transactions reuse the accepted mutation authority. No receipt/audit/session writes. */
+export async function readOperationalDelegation(db: PrismaClient, actor: AppUser) {
+  const c = context(actor);
+  return db.$transaction(async tx => {
+    const a = await authority(tx, c);
+    return { ceilingRevision: a.ceilingRevision, companyMembershipId: c.companyMembershipId,
+      profiles: Object.keys(OPERATIONAL_PROFILES).map(revision => ({ revision,
+        scopeKind: revision === "operational-warehouse.v1" ? "warehouse" : "company" })),
+      canInvite: keys(await member(tx, c.companyMembershipId)).includes("membership.invite") };
+  }, options);
+}
+export async function listOperationalWarehouses(db: PrismaClient, actor: AppUser, input: unknown) {
+  const c = context(actor), p = discoveryPage(input, c, "warehouses");
+  return db.$transaction(async tx => {
+    const a = await authority(tx, c);
+    const rows = await tx.warehouse.findMany({ where: { tenantId: c.tenantId,
+      id: { in: a.warehouseIds, ...(p.after ? { gt: p.after } : {}) } },
+      select: { id: true, name: true, location: true, type: true }, orderBy: { id: "asc" }, take: p.limit + 1 });
+    return { items: rows.slice(0, p.limit), nextCursor: rows.length > p.limit ? p.next(rows[p.limit - 1].id) : null };
+  }, options);
+}
+export async function listCompanyInvitations(db: PrismaClient, actor: AppUser, input: unknown) {
+  const c = context(actor), p = discoveryPage(input, c, "invitations");
+  return db.$transaction(async tx => {
+    await authority(tx, c, true);
+    const rows = await tx.companyInvitation.findMany({ where: { tenantId: c.tenantId, companyId: c.companyId,
+      inviterMembershipId: c.companyMembershipId, id: { ...(p.after ? { gt: p.after } : {}), ...(p.invitationId ? { equals: p.invitationId } : {}) } },
+      select: { id: true, operationId: true, email: true, profileRevision: true, warehouseIds: true,
+        state: true, expiresAt: true, createdAt: true, acceptedMembershipId: true }, orderBy: { id: "asc" }, take: p.limit + 1 });
+    const now = Date.now();
+    return { items: rows.slice(0, p.limit).map(r => ({ id:r.id,operationId:r.operationId,email:r.email,
+      profileRevision:r.profileRevision,warehouseIds:r.warehouseIds,expiresAt:r.expiresAt,createdAt:r.createdAt,
+      acceptedMembershipId:r.acceptedMembershipId,
+      state: r.state === "pending" && r.expiresAt.getTime() <= now ? "expired" : r.state })),
+      nextCursor: rows.length > p.limit ? p.next(rows[p.limit - 1].id) : null };
+  }, options);
+}
+export async function listOperationalGrants(db: PrismaClient, actor: AppUser, input: unknown) {
+  const c = context(actor), p = discoveryPage(input, c, "grants");
+  return db.$transaction(async tx => {
+    const a = await authority(tx, c);
+    const rows = await tx.companyOperationalGrant.findMany({ where: { tenantId: c.tenantId, companyId: c.companyId,
+      userId: { not: c.id }, ...(p.after ? { membershipId: { gt: p.after } } : {}) },
+      select: { membershipId: true, userId: true, tenantId: true, companyId: true, tenantMembershipId: true,
+        profileRevision: true, warehouseIds: true, roleId: true, enabled: true, member: { select: { user: { select: { name: true } } } } }, orderBy: { membershipId: "asc" }, take: p.limit + 1 });
+    const items = [];
+    // Scan at most one bounded candidate page. Empty pages may still have a cursor.
+    for (const g of rows.slice(0, p.limit)) {
+      try {
+        const m = await member(tx, g.membershipId);
+        if (m.userId !== g.userId || m.tenantId !== c.tenantId || m.companyId !== c.companyId ||
+          m.tenantMembershipId !== g.tenantMembershipId || m.roles.some(r => r.roleId !== g.roleId) ||
+          (await tx.companyDelegationAuthority.findUnique({ where: { membershipId: m.id }, select: { membershipId: true } }))) continue;
+        assertManagedScopes(m, g);
+        if (g.enabled) await withinCeiling(tx, a, g.profileRevision as OperationalProfile, g.warehouseIds);
+        else if (!(g.profileRevision in OPERATIONAL_PROFILES) || g.warehouseIds.some(id => !a.warehouseIds.includes(id))) continue;
+        items.push({ membershipId: m.id, name: g.member.user.name, email: m.user.email,
+          profileRevision: g.profileRevision, warehouseIds: g.warehouseIds, enabled: g.enabled, managed: true });
+      } catch (error) {
+        if ((error as {statusCode?: number}).statusCode !== 403) throw error;
+      }
+    }
+    return { items, nextCursor: rows.length > p.limit ? p.next(rows[p.limit - 1].membershipId) : null };
+  }, options);
+}
 export async function mutateCompanyOperationalGrant(db: PrismaClient, actor: AppUser, input: unknown) {
   const c = context(actor), v = mutationSchema.parse(input);
   const target = await db.companyMembership.findUnique({ where: { id: v.membershipId }, select: { userId: true } });
