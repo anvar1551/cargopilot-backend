@@ -3,8 +3,15 @@ import { FastifyPluginAsync } from "fastify";
 import { fastifyAuth } from "../../../identity-access/transport/fastify-auth";
 import { getOrderImportTemplateCsv, importOrdersFromCsv, previewOrderImport } from "../..";
 import { emitMutationInvalidation, sendError } from "../shared";
+import { readImportReceiptStatus } from "../../read/import-receipt-status";
 
 const importRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.get("/import/:operationId/status", { preHandler: fastifyAuth({ permission: "shipment.create" }) }, async (request, reply) => {
+    try {
+      reply.header("Cache-Control", "no-store");
+      return reply.send(await readImportReceiptStatus(request.user!, (request.params as { operationId: string }).operationId));
+    } catch (err) { return sendError(reply, err, "Failed to read import receipt"); }
+  });
   fastify.get("/import/template.csv", { preHandler: fastifyAuth({ permission: "shipment.create" }) }, async (_request, reply) => {
     const csv = getOrderImportTemplateCsv();
     reply.header("Content-Type", "text/csv; charset=utf-8");

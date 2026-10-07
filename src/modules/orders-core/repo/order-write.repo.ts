@@ -268,7 +268,7 @@ async function resolveIntent(tx: Prisma.TransactionClient, actor: OrderActor, re
   const existing=await tx.orderCreationIntent.findUnique({where:{tenantId_operationId:{tenantId:request.tenantId,operationId:request.operationId}}});
   if(existing){
     for(const key of ["userId","tenantId","companyId","tenantMembershipId","companyMembershipId","kind","fingerprint","normalizationVersion","rowCount"] as const)
-      if(existing[key]!==request[key]) throw authorityError("Operation identity conflict",409);
+      if(existing[key]!==request[key]) throw Object.assign(authorityError("Operation identity conflict",409), { code: "ORDER_CREATION_IDENTITY_CONFLICT" });
     return existing;
   }
   return create ? tx.orderCreationIntent.create({data:{...request}}) : null;

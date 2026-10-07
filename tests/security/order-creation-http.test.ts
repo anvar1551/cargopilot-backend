@@ -1,3 +1,4 @@
+jest.mock("../../src/modules/orders-core/read/import-receipt-status",()=>({readImportReceiptStatus:jest.fn()}));
 jest.mock("../../src/config/prismaClient",()=>({__esModule:true,default:require("./fixtures").database}));
 jest.mock("../../src/modules/identity-access",()=>({authorize:jest.fn(),buildOrderScopeWhere:jest.fn()}));
 jest.mock("../../src/modules/identity-access/transport/fastify-auth",()=>({fastifyAuth:()=>async()=>undefined}));
@@ -22,4 +23,16 @@ it.each([0,1,2])("import confirmation forwards operationId and suppresses full r
   try{const operationId="50000000-0000-4000-8000-000000000001";(importOrdersFromCsv as jest.Mock).mockResolvedValue({count:2,orders:[{id:"one"},{id:"two"}],replayedRows,downstreamRecoveryRequired:replayedRows>0});
     const response=await app.inject({method:"POST",url:"/import/confirm",payload:{csvText:"synthetic csv",operationId}});expect(response.statusCode).toBe(201);expect(response.json()).toMatchObject({success:true,count:2,replayedRows,downstreamRecoveryRequired:replayedRows>0});expect(importOrdersFromCsv).toHaveBeenCalledWith({actor:user,csvText:"synthetic csv",customerEntityId:null,operationId});expect(emitMutationInvalidation).toHaveBeenCalledTimes(replayedRows===2?0:1);
   }finally{await app.close();}
+});
+
+it.each([true,false])("only explicit receipt identity conflict is returned as a conflict code (identity=%s)", async identity => {
+ const app=await appFor(importRoutes);
+ try { (importOrdersFromCsv as jest.Mock).mockRejectedValue(Object.assign(new Error(identity ? "Operation identity conflict" : "Operational state rejected"),{statusCode:409,...(identity ? {code:"ORDER_CREATION_IDENTITY_CONFLICT"}: {})}));
+ const response=await app.inject({method:"POST",url:"/import/confirm",payload:{csvText:"synthetic",operationId:"50000000-0000-4000-8000-000000000001"}});
+ expect(response.statusCode).toBe(409); expect(response.json().code).toBe(identity ? "ORDER_CREATION_IDENTITY_CONFLICT" : undefined); expect(emitMutationInvalidation).not.toHaveBeenCalled();
+ } finally {await app.close();}
+});
+it("receipt status HTTP read uses the authenticated actor and performs no mutation invalidation", async()=>{
+ const read=require("../../src/modules/orders-core/read/import-receipt-status").readImportReceiptStatus;read.mockResolvedValue({rows:[]});const app=await appFor(importRoutes);
+ try {const operationId="50000000-0000-4000-8000-000000000001";const response=await app.inject({url:"/import/"+operationId+"/status"});expect(response.statusCode).toBe(200);expect(response.headers["cache-control"]).toBe("no-store");expect(read).toHaveBeenCalledWith(user,operationId);expect(importOrdersFromCsv).not.toHaveBeenCalled();expect(emitMutationInvalidation).not.toHaveBeenCalled();}finally{await app.close();}
 });

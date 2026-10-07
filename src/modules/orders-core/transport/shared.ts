@@ -63,7 +63,8 @@ export function sendError(reply: any, err: any, fallback = "Failed") {
   if (statusCode >= 500) {
     console.error("ORDER_REQUEST_FAILED", { statusCode });
   }
-  return reply.code(statusCode).send({ error: statusCode >= 500 ? fallback : err?.message ?? fallback });
+  return reply.code(statusCode).send({ error: statusCode >= 500 ? fallback : err?.message ?? fallback,
+    ...(statusCode === 409 && err?.code === "ORDER_CREATION_IDENTITY_CONFLICT" ? { code: err.code } : {}) });
 }
 
 export async function ensureOrderInScope(request: any, orderId: string) {
