@@ -56,3 +56,42 @@ the pricing repository. Tariff plans do not yet carry tenant ownership, so that
 reference cannot be represented as safely tenant-scoped by this customer CRUD
 slice. It remains a blocking follow-up for the pricing tenant cutover; callers
 must not treat UUID existence as customer authorization.
+
+## Frontend integration compatibility correction (2026-10-07)
+
+Baseline f363ee54dc68d6d73d6b385b7cc43a4fc47a7417. Actual browser API setup
+reproduced a route-import failure: installed Zod 4 rejects `.partial()` on
+the refined customer creation schema. Compose the strict base object's
+partial/extension first, then apply the same company-field refinement to
+both creation and update. No ownership, permission, persistence or field
+authority change; no schema/dependency change.
+
+Executed: `node node_modules/jest/bin/jest.js --runInBand
+tests/security/customer-route-schema.test.ts
+tests/security/customer-address-tenant-containment.test.ts` — 2 suites,
+16 cases passed (4 new actual Fastify schema cases with mocked authorization/
+repositories; 12 affected service containment regressions). Final
+`node --max-old-space-size=6144 node_modules/typescript/bin/tsc --noEmit`
+exited 0; the initial default-heap attempt exhausted memory, not a type error.
+
+Browser acceptance used the actual customer/address Fastify routes, fresh
+authorization, actual credential/session services and PostgreSQL in an owned
+loopback-only disposable instance after 122 existing migrations. Synthetic
+controlled onboarding provisioned only prerequisites with an in-memory test
+key. Customer creation/edit, address creation/edit/default selection and
+authoritative reload worked together; DB read-back found exactly one customer,
+one address and one consistent default reference before deletion checks.
+Clearing the default and deleting the address/customer through the UI left
+zero customer/address rows. All three owned test containers were removed;
+no persistent volumes or binds were created. Local test servers stopped.
+Automatic approval review rejected cleanup of the owned frontend source copy
+and two public-test-key registry directories; they remain for manual cleanup,
+as recorded in frontend `docs/Workflow_Coverage.md`.
+Production login admission/full application boot, Redis, AWS, providers and
+real deployment were not exercised. Existing database negative ownership/
+constraint evidence remains at its previously reported level.
+
+Customer/address mutations still have no durable server retry receipts.
+The new frontend persists context-bound intent before sending and suppresses
+automatic replay; uncertain outcomes remain reconciliation-required. This
+does not prove server duplicate protection or add a recovery contract.

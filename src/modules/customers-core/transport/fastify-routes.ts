@@ -10,7 +10,7 @@ import {
   updateCustomerEntity,
 } from "../application/customerEntityRepo";
 
-const createCustomerSchema = z
+const customerFieldsSchema = z
   .object({
     type: z.enum(["PERSON", "COMPANY"]),
     name: z.string().min(2),
@@ -20,8 +20,9 @@ const createCustomerSchema = z
     altPhone2: z.string().optional().nullable(),
     companyName: z.string().optional().nullable(),
     taxId: z.string().optional().nullable(),
-  })
-  .superRefine((value, ctx) => {
+  }).strict();
+
+function validateCompanyFields(value: {type?: "PERSON" | "COMPANY"; companyName?: string | null; taxId?: string | null}, ctx: z.RefinementCtx) {
     if (value.type === "COMPANY") {
       if (!value.companyName) {
         ctx.addIssue({
@@ -38,11 +39,15 @@ const createCustomerSchema = z
         });
       }
     }
-  }).strict();
+}
 
-const updateCustomerSchema = createCustomerSchema.partial().extend({
+// Compose object operations before refinement: Zod 4 rejects partial() on a
+// refined object. Creation and partial updates retain the same company checks.
+const createCustomerSchema = customerFieldsSchema.superRefine(validateCompanyFields);
+
+const updateCustomerSchema = customerFieldsSchema.partial().extend({
   defaultAddressId: z.string().uuid().optional().nullable(),
-}).strict();
+}).strict().superRefine(validateCompanyFields);
 
 function sendError(reply: any, err: any, fallback: string) {
   if (err instanceof ZodError) {
