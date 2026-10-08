@@ -1,4 +1,18 @@
-# Current financial-access workspace readiness (2026-10-08)
+# Current initial issuing-entity setup UI readiness (2026-10-08)
+
+Implemented: independent setup proposer/checker workspace with blank explicit currency/month/timezone inputs, null reporting currency, exact immutable proposal/hash/proposer inspection, independent approve/reject reasons and read-only published entity. No general settings.manage or authority inferred from administrator/financial delegation status. Existing owner appointment and selected-company scope remain prerequisites.
+
+Additive GET /api/auth/issuing-entity-setup (authority/proposals views, explicit kind, limit 1..50 and context-bound cursor) supplies no-store minimal snapshots without configuration writes. Existing mutation contracts unchanged; demonstrated setup not-found 404 mapping corrected. Persist/read-back and browser locks precede sends; immutable context-bound IDs/content survive explicit retry/reload, stale responses suppressed, no automatic replay or unconfirmed abandon.
+
+Evidence: 12 distinct client adapter cases and 12 actual HTTP-injection/PostgreSQL cases; separate synthetic identities, actual onboarding/enrollment/setup appointment, proposal -> independent approval -> published entity read, no direct entity seed. Foreign/self/conflict/existing/revoked authority and no-write checks passed. Reused unchanged DOM-04 concurrency/rollback/session/socket and other business evidence. See Issuing_Entity_Setup_UI.md for exact checks, reruns and cleanup.
+
+Visual status: pending; no screenshots or rendered desktop/tablet/mobile/zoom acceptance. The user explicitly permits source-level implementation while the browser channel is unavailable; visual access is not a gate for this batch. Shared corrected responsive rules reused; no Computer Use retries or installation.
+
+Unavailable: setup correction/deactivation, unconfirmed-intent reconciliation, browser owner signing/key registration, automatic appointments, accounting/FX. Real reviewed company values, owner registry/credential handoff and production validation remain external prerequisites. Financial business-action and cash supplemental administration UI remain later batches.
+
+Next finite task, not started: cash supplemental administration discovery/UI under existing independently appointed cash authority and approval contracts, preserving base driver/warehouse eligibility and narrow scopes. Older handoffs below are historical.
+
+# Historical financial-access workspace readiness (2026-10-08)
 
 Implemented: exact six-profile accepted financial ceilings, bounded no-store recipient/entity/proposal/managed-grant discovery; selected-context proposer/checker workspace, independently accepted replacements/revocation, immutable persisted intents and matching explicit retries. Operational/driver authority alone is insufficient; unrelated grants preserved. Backend read rollout precedes frontend. No mutation policy/schema changes.
 

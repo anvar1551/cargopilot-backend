@@ -156,6 +156,42 @@ export async function readIssuingEntityProposal(db: PrismaClient, actor: AppUser
     return {proposalId:p.operationId,configuration:p.content,contentHash:p.contentHash,reason:p.reason,createdAt:p.createdAt,decision:d??null};
   },options);
 }
+/** Bounded setup snapshots; existing accepted setup authority is required even
+ * when an entity does not yet exist. Reads cannot appoint authority or publish. */
+export async function readIssuingEntitySetup(db: PrismaClient, actor: AppUser, input: unknown) {
+  const c=context(actor), v=z.object({view:z.enum(["authority","proposals"]),kind:kindSchema,
+    limit:z.coerce.number().int().min(1).max(50).default(20),cursor:z.string().max(768).optional()}).strict().parse(input);
+  return db.$transaction(async tx=>{
+    await referenceLocks(tx,[{id:c.companyMembershipId,userId:c.id}]);await serialize(tx,c.companyId);
+    await authority(tx,c,v.kind);
+    const binding={tenantId:c.tenantId,companyId:c.companyId,membershipId:c.companyMembershipId,kind:v.kind};
+    if(v.view==="authority"){
+      if(v.cursor)fail("ENTITY_SETUP_CURSOR_REJECTED",400);
+      const entity=await tx.financeLegalEntity.findUnique({where:{companyId:c.companyId},select:{id:true,tenantId:true,companyId:true,baseCurrency:true,fiscalYearStartMonth:true,timezone:true,reportingCurrency:true,isActive:true}});
+      if(entity&&(entity.tenantId!==c.tenantId||entity.companyId!==c.companyId))fail("ENTITY_SETUP_PUBLICATION_UNAVAILABLE");
+      const company=await tx.organization.findUniqueOrThrow({where:{id:c.companyId},select:{name:true}});
+      return {revision:ENTITY_SETUP_REVISION,kind:v.kind,companyName:company.name,supportedCurrencies:[...SUPPORTED_FINANCE_CURRENCIES],reportingCurrency:null,
+        entity:entity?{id:entity.id,baseCurrency:entity.baseCurrency,fiscalYearStartMonth:entity.fiscalYearStartMonth,timezone:entity.timezone,reportingCurrency:entity.reportingCurrency,isActive:entity.isActive}:null};
+    }
+    let after:string|null=null;
+    if(v.cursor){try{
+      const cursor=z.object({tenantId:operationIdSchema,companyId:operationIdSchema,membershipId:operationIdSchema,kind:kindSchema,after:operationIdSchema}).strict().parse(JSON.parse(Buffer.from(v.cursor,"base64url").toString("utf8")));
+      for(const [k,value] of Object.entries(binding))if(cursor[k as keyof typeof cursor]!==value)throw Error("Foreign cursor");after=cursor.after;
+    }catch{fail("ENTITY_SETUP_CURSOR_REJECTED",400);}}
+    const rows=await tx.$queryRaw<any[]>`SELECT p."operationId",p.content,p."contentHash",p.reason,p."createdAt",p."userId",u.name AS "proposerName",
+      d.action AS "decisionAction",d.reason AS "decisionReason",d."createdAt" AS "decidedAt",d."legalEntityId"
+      FROM "IssuingEntitySetupProposal" p JOIN "User" u ON u.id=p."userId"
+      LEFT JOIN "IssuingEntitySetupAction" d ON d."proposalId"=p."operationId" AND d."tenantId"=p."tenantId" AND d."companyId"=p."companyId" AND d.action IN ('approved','rejected')
+      WHERE p."tenantId"=${c.tenantId}::uuid AND p."companyId"=${c.companyId}::uuid
+        AND (${v.kind}='checker' OR p."membershipId"=${c.companyMembershipId}::uuid)
+        AND (${after}::uuid IS NULL OR p."operationId">${after}::uuid)
+      ORDER BY p."operationId" ASC LIMIT ${v.limit+1}`;
+    const items=rows.slice(0,v.limit).map(p=>({proposalId:p.operationId,configuration:initialEntityConfigurationSchema.parse(p.content),contentHash:p.contentHash,reason:p.reason,createdAt:p.createdAt,
+      proposer:{userId:p.userId,name:p.proposerName},independent:p.userId!==c.id,
+      decision:p.decisionAction?{action:p.decisionAction,reason:p.decisionReason,createdAt:p.decidedAt,legalEntityId:p.legalEntityId}:null}));
+    return {items,nextCursor:rows.length>v.limit?Buffer.from(JSON.stringify({...binding,after:rows[v.limit-1].operationId})).toString("base64url"):null};
+  },options);
+}
 export async function decideIssuingEntity(db: PrismaClient, actor: AppUser, raw: unknown) {
   const c=context(actor),v=entityDecisionSchema.parse(raw),{operationId,...intent}=v,hash=fingerprint({c,...intent});
   const hint=(await db.$queryRaw<any[]>`SELECT "membershipId","userId" FROM "IssuingEntitySetupProposal" WHERE "operationId"=${v.proposalId}::uuid AND "tenantId"=${c.tenantId}::uuid AND "companyId"=${c.companyId}::uuid`)[0];
