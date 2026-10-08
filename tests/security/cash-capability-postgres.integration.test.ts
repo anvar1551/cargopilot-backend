@@ -14,7 +14,7 @@ import { Prisma, PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
 import { generateKeyPairSync, createHash, randomUUID, sign } from "node:crypto";
-import { mkdtempSync, writeFileSync, unlinkSync, rmdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, unlinkSync, rmdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import bcrypt from "bcryptjs";
@@ -81,7 +81,7 @@ afterAll(async () => {
     await uiApp?.close();
     await mockDb?.$disconnect();
     await pool.end();
-    unlinkSync(registryPath);
+    if(existsSync(registryPath))unlinkSync(registryPath);
     rmdirSync(directory); // Exact run-owned public-key files only.
     delete process.env.CARGOPILOT_ONBOARDING_REGISTRY_PATH;
 });
@@ -216,7 +216,7 @@ async function pricedJourney(party="SENDER",basePrice=100,options:{tariffPrice?:
  const dispatcher=await enrolled(g,{profileRevision:"operational-dispatcher.v1"});
  const o=await mockDb.order.findUniqueOrThrow({where:{id:orderId}});await assignDriversBulk({actor:actor(dispatcher.accepted),orderIds:[orderId],driverId:g.driver.userId,type:"pickup",expectedStates:[{orderId,updatedAt:o.updatedAt.toISOString(),status:o.status,assignedDriverId:o.assignedDriverId,currentWarehouseId:o.currentWarehouseId}]});
  expect(await mockDb.membershipScope.count({where:{membershipId:g.driver.companyMembershipId}})).toBe(0);
- return {...g,orderId,maker,pricingChecker:check,dispatcher:dispatcher.accepted,body,billTo,instruction,instructionIntent,price,priceIntent};
+ return {...g,orderId,maker,pricingChecker:check,pricingMakerPassword:pricingMaker.pass,pricingCheckerPassword:pricingChecker.pass,dispatcher:dispatcher.accepted,body,billTo,instruction,instructionIntent,price,priceIntent};
 }
 const cashIntent=(g:any,extra:any={})=>({orderId:g.orderId,operationId:randomUUID(),kind:"service_charge",...(!extra.expectedEventId?{obligationId:g.price.id}:{}),...extra});
 async function physical(g:any,who:any,action:string,extra:any={}){const s=await readWarehouseCustody(actor(who),g.orderId);return executeWarehouseCustody(actor(who),g.orderId,{operationId:randomUUID(),action,expectedEventId:s.custody?.id??null,expectedUpdatedAt:s.updatedAt,parcelIds:s.parcelIds,...extra});}
@@ -625,6 +625,8 @@ it.each([["SENDER","publication"],["SENDER","transition"],["RECIPIENT","publicat
 // real owner key, network listener or browser. Existing fixture entrypoints
 // provision synthetic prerequisites; roles/scopes are compared after every change.
 import identityRoutes from "../../src/modules/identity-access/transport/fastify-routes";
+import pricingRoutes from "../../src/modules/pricing-core/transport/fastify-routes";
+import { loadAccessSnapshot } from "../../src/modules/identity-access/access-control";
 let ui:any,uiApp:ReturnType<typeof Fastify>,uiMakerToken:string,uiCheckerToken:string;
 const cashRead=(view:string,kind="proposer",extra="")=>`/api/auth/company-cash-capabilities?view=${view}&kind=${kind}${extra}`;
 async function cashHttp(url:string,token?:string,body?:any){const r=await uiApp.inject({method:body?"POST":"GET",url,headers:token?{authorization:`Bearer ${token}`}:{},...(body?{payload:body}:{})});return {status:r.statusCode,data:r.json(),cache:r.headers["cache-control"]};}
@@ -670,4 +672,86 @@ it("cash UI HTTP: warehouse and settlement supplements, independently accepted r
 });
 it("cash UI HTTP: revoked accepted authority invalidates session and fresh reads/retries deny",async()=>{
  await cashOwner(ui,ui.maker,"proposer",[ui.warehouse.id,ui.second.id],undefined,"operator-revoke");await cashReadUnchanged(cashRead("ceiling"),uiMakerToken,401);uiMakerToken=await uiLogin(ui.maker,ui.makerPassword);await cashReadUnchanged(cashRead("ceiling"),uiMakerToken,403);await cashDenied(cashPost,uiMakerToken,uiProposal.input,403);await uiApp.close();
+});
+
+// Pricing UI: actual HTTP + PostgreSQL; existing controlled provisioning helper
+// uses test-only owner keys and independently accepted financial profiles.
+let pricingUi:any,pricingMakerToken:string,pricingCheckerToken:string,pricingOrder:string,pricingPayer:any,pricingBasis:any,pricingApproval:any,pricingPolicy:any;
+const workflow=(view:string,permission="pricing.read",extra="")=>`/api/pricing/workflow?view=${view}&permission=${permission}${extra}`;
+it("pricing UI HTTP: controlled actors publish tariff/policy and create normal order before payer and exact CASH basis",async()=>{
+ pricingUi=await pricedJourney();
+ uiApp=Fastify({logger:false});await uiApp.register(identityRoutes,{prefix:"/api/auth",rateLimiter:{consume:async({limit,windowMs}:any)=>({allowed:true,count:1,remaining:limit-1,limit,resetAfterMs:windowMs,backend:"local"})}} as any);await uiApp.register(pricingRoutes,{prefix:"/api/pricing"});await uiApp.ready();
+ pricingMakerToken=await uiLogin({userId:pricingUi.maker.id,companyMembershipId:pricingUi.maker.companyMembershipId},pricingUi.pricingMakerPassword);
+ pricingCheckerToken=await uiLogin({userId:pricingUi.pricingChecker.id,companyMembershipId:pricingUi.pricingChecker.companyMembershipId},pricingUi.pricingCheckerPassword);
+ const draft={name:"Synthetic UI tariff",code:"UI-"+randomUUID().slice(0,8),description:"Explicit synthetic only",status:"draft",serviceType:"DOOR_TO_DOOR",priceType:"bucket",pricingStrategy:"FIXED_LANE",coverageType:"domestic",transportMode:"ROAD",originCountryCode:null,destinationCountryCode:null,routeTemplateId:null,currency:"UZS",priority:2,isDefault:true,customerEntityId:null,rates:[{zone:1,weightFromKg:0.01,weightToKg:100,price:150}],transitLegRates:[]};
+ const created=await cashHttp("/api/pricing/tariff-plans",pricingMakerToken,draft);expect(created.status).toBe(201);const plan=created.data;
+ const proposed={operationId:randomUUID(),expectedGeneration:plan.contentGeneration,reason:"Synthetic immutable tariff"},v=await cashHttp(`/api/pricing/tariff-plans/${plan.id}/versions`,pricingMakerToken,proposed);expect(v.status).toBe(201);
+ expect((await cashHttp(`/api/pricing/tariff-plans/${plan.id}/versions`,pricingMakerToken,proposed)).data).toEqual(v.data);
+ await cashDenied(`/api/pricing/tariff-plans/${plan.id}/versions/${v.data.id}/decision`,pricingMakerToken,{operationId:randomUUID(),contentSha256:v.data.contentSha256,decision:"approved",reason:"Forbidden self approval"},403);
+ const d={operationId:randomUUID(),contentSha256:v.data.contentSha256,decision:"approved",reason:"Independent synthetic tariff"};expect((await cashHttp(`/api/pricing/tariff-plans/${plan.id}/versions/${v.data.id}/decision`,pricingCheckerToken,d)).status).toBe(201);
+ const p={operationId:randomUUID(),reason:"Explicit synthetic zero tax policy",content:syntheticBillingPolicy({fees:[],discounts:[],tax:{treatment:"not_applicable",authorityReference:"SYNTHETIC ONLY"},billing:{mode:"manual",eligibleOrderStates:["pending","assigned","delivered"],dueDays:7,numberPrefix:"SYNTHETIC"}})};
+ const policy=await cashHttp("/api/pricing/billing-policies",pricingMakerToken,p);expect(policy.status).toBe(201);pricingPolicy=policy.data;expect((await cashHttp("/api/pricing/billing-policies",pricingMakerToken,p)).data).toEqual(policy.data);
+ await cashDenied("/api/pricing/billing-policies/decision",pricingMakerToken,{operationId:randomUUID(),versionId:policy.data.id,contentHash:policy.data.contentHash,decision:"approved",reason:"Forbidden self"},403);
+ expect((await cashHttp("/api/pricing/billing-policies/decision",pricingCheckerToken,{operationId:randomUUID(),versionId:policy.data.id,contentHash:policy.data.contentHash,decision:"approved",reason:"Independent synthetic policy"})).status).toBe(201);
+ const made=await createOrderForActor({user:pricingUi.maker,body:{...pricingUi.body,operationId:randomUUID()}});pricingOrder=made.payload.order.id;
+ pricingPayer={operationId:randomUUID(),payerCustomerEntityId:pricingUi.body.customerEntityId,evidence:"Synthetic bill-to consent",reason:"Explicit payer"};const bill=await cashHttp(`/api/pricing/orders/${pricingOrder}/bill-to`,pricingMakerToken,pricingPayer);expect(bill.status).toBe(201);
+ const instruction={operationId:randomUUID(),billToId:bill.data.id,method:"CASH",collectionParty:"SENDER",evidence:"Synthetic CASH consent",reason:"Explicit sender timing"};expect((await cashHttp(`/api/pricing/orders/${pricingOrder}/service-payment-instruction`,pricingMakerToken,instruction)).status).toBe(201);
+ pricingBasis={operationId:randomUUID(),reason:"Exact approved standard"};const price=await cashHttp(`/api/pricing/orders/${pricingOrder}/price-acceptance`,pricingMakerToken,pricingBasis);expect(price.status).toBe(201);expect(price.data).toMatchObject({total:"150.0000",state:"accepted"});pricingApproval=price.data;
+ const state=await cashReadUnchanged(workflow("order","billing.payers.bind","&id="+pricingOrder),pricingMakerToken);expect(state.obligation).toMatchObject({amount:"150.0000",currency:"UZS",priceApprovalId:price.data.id});expect(state.order.currentPriceApprovalId).toBe(price.data.id);
+});
+it("pricing UI HTTP: bounded owned version/policy/template/order reads are no-store and make no writes",async()=>{
+ const plans=(await cashHttp("/api/pricing/tariff-plans?limit=20",pricingMakerToken)).data.data;const plan=plans.find((p:any)=>p.name==="Synthetic UI tariff");
+ const v=await cashReadUnchanged(workflow("tariffs","pricing.read","&id="+plan.id),pricingMakerToken);expect(v.items[0]).toMatchObject({contentSha256:expect.any(String),independent:false,decision:{decision:"approved"}});expect(v.plan.approvedVersionId).toBe(v.items[0].id);
+ const p=await cashReadUnchanged(workflow("policies","pricing.read","&limit=1"),pricingMakerToken);expect(p.nextCursor).toBeTruthy();await cashReadUnchanged(workflow("policies","pricing.read","&limit=1&cursor="+encodeURIComponent(p.nextCursor)),pricingMakerToken);
+ await cashReadUnchanged(workflow("templates"),pricingMakerToken);expect((await cashReadUnchanged(workflow("orders","billing.payers.bind"),pricingMakerToken)).items.some((r:any)=>r.id===pricingOrder)).toBe(true);
+ await cashReadUnchanged(workflow("policies","pricing.read","&cursor="+encodeURIComponent(p.nextCursor)),pricingCheckerToken,400);
+ await cashReadUnchanged(workflow("policies","pricing.read","&limit=21"),pricingMakerToken,400);await cashReadUnchanged(workflow("orders","pricing.read"),pricingMakerToken,400);await cashReadUnchanged(workflow("orders","billing.payers.bind","&tenantId="+pricingUi.tenantId),pricingMakerToken,400);
+});
+it("pricing UI HTTP: matching receipts/conflicts and published draft mutation remain protected",async()=>{
+ const before=await graphDigest();expect((await cashHttp(`/api/pricing/orders/${pricingOrder}/bill-to`,pricingMakerToken,pricingPayer)).status).toBe(201);expect((await cashHttp(`/api/pricing/orders/${pricingOrder}/price-acceptance`,pricingMakerToken,pricingBasis)).data).toEqual(pricingApproval);expect(await graphDigest()).toBe(before);
+ await cashDenied(`/api/pricing/orders/${pricingOrder}/price-acceptance`,pricingMakerToken,{...pricingBasis,reason:"Changed original intent"},409);
+ await cashDenied(`/api/pricing/orders/${pricingOrder}/bill-to`,pricingMakerToken,{...pricingPayer,paid:true},400);
+ const foreign=await pricedJourney();const token=await uiLogin({userId:foreign.maker.id,companyMembershipId:foreign.maker.companyMembershipId},foreign.pricingMakerPassword);await cashReadUnchanged(workflow("order","billing.payers.bind","&id="+pricingOrder),token,404);
+ expect((await cashReadUnchanged(workflow("orders","billing.payers.bind"),token)).items.some((o:any)=>o.id===pricingOrder)).toBe(false);
+ await cashDenied(`/api/pricing/orders/${pricingOrder}/bill-to`,token,{...pricingPayer,operationId:randomUUID()},404);
+ await cashDenied(`/api/pricing/orders/${pricingOrder}/bill-to`,pricingMakerToken,{...pricingPayer,payerCustomerEntityId:foreign.body.customerEntityId,operationId:randomUUID()},404);
+ const foreignPlan=await mockDb.tariffPlan.findFirstOrThrow({where:{tenantId:foreign.tenantId}});await cashReadUnchanged(workflow("tariffs","pricing.read","&id="+foreignPlan.id),pricingMakerToken,404);
+ await cashReadUnchanged(workflow("order","billing.payers.bind","&id="+pricingOrder),undefined,401);
+});
+
+it("pricing UI HTTP: draft create/update/delete, immutable publication and bounded shared reference reads",async()=>{
+ const source=await mockDb.tariffPlan.findFirstOrThrow({where:{tenantId:pricingUi.tenantId,name:"Synthetic UI tariff"},include:{rates:true}});
+ const body={name:"Synthetic editable UI draft",code:null,description:null,status:"draft",serviceType:source.serviceType,priceType:"bucket",pricingStrategy:"FIXED_LANE",coverageType:"domestic",transportMode:"ROAD",originCountryCode:null,destinationCountryCode:null,routeTemplateId:null,currency:"UZS",priority:0,isDefault:false,customerEntityId:null,rates:[{zone:0,weightFromKg:0,weightToKg:10,price:20}],transitLegRates:[]};
+ const created=await cashHttp("/api/pricing/tariff-plans",pricingMakerToken,body);expect(created.status).toBe(201);
+ const update=await uiApp.inject({method:"PUT",url:"/api/pricing/tariff-plans/"+created.data.id,headers:{authorization:"Bearer "+pricingMakerToken},payload:{...body,name:"Updated synthetic UI draft"}});expect(update.statusCode).toBe(200);
+ const before=await graphDigest(),denied=await uiApp.inject({method:"PUT",url:"/api/pricing/tariff-plans/"+source.id,headers:{authorization:"Bearer "+pricingMakerToken},payload:body});expect(denied.statusCode).toBe(409);expect(await graphDigest()).toBe(before);
+ const removed=await uiApp.inject({method:"DELETE",url:"/api/pricing/tariff-plans/"+created.data.id,headers:{authorization:"Bearer "+pricingMakerToken}});expect(removed.statusCode).toBe(200);expect(removed.json()).toMatchObject({deleted:true,id:created.data.id});expect(await mockDb.tariffPlan.findUnique({where:{id:created.data.id}})).toBeNull();
+ for(const view of ["regions","zones","sla"])await cashReadUnchanged(workflow(view),pricingMakerToken);
+});
+
+it("pricing UI HTTP: a separately accepted billing-only operator discovers and prepares without shipment.view",async()=>{
+ // Explicit synthetic pre-existing eligible identity/company scope. There is no
+ // finance-only invitation contract; the UI never provisions this prerequisite.
+ const identity=await mockDb.user.create({data:{email:randomUUID()+"@example.invalid",name:"Synthetic billing-only prerequisite",password:credentialHash}});
+ const tenant=await mockDb.tenantMembership.create({data:{tenantId:pricingUi.tenantId,userId:identity.id,status:"active"}});
+ const membership=await mockDb.companyMembership.create({data:{tenantId:pricingUi.tenantId,companyId:pricingUi.companyId,userId:identity.id,tenantMembershipId:tenant.id,status:"active",scopes:{create:{scopeType:"company",scopeRefId:pricingUi.companyId}}}});
+ const operator={accepted:{userId:identity.id,companyMembershipId:membership.id,tenantMembershipId:tenant.id,tenantId:pricingUi.tenantId,companyId:pricingUi.companyId},pass:password},p=await proposeFinancialGrant(mockDb,pricingUi.actor,{operationId:randomUUID(),membershipId:membership.id,legalEntityId:pricingUi.entity.id,profileRevisions:["billing-operator.v1"],expectedAcceptanceId:null,reason:"Synthetic narrow operator"});await acceptFinancialGrant(mockDb,actor(pricingUi.checker),{operationId:randomUUID(),proposalId:p.proposalId,fingerprint:p.fingerprint,reason:"Independent narrow operator"});
+ const token=await uiLogin(operator.accepted,operator.pass);const snapshot=await loadAccessSnapshot({userId:operator.accepted.userId,membershipId:operator.accepted.companyMembershipId,companyMembershipId:operator.accepted.companyMembershipId,tenantMembershipId:operator.accepted.tenantMembershipId,tenantId:operator.accepted.tenantId,companyId:operator.accepted.companyId,requireFresh:true});
+ expect(snapshot?.permissionCodes).not.toContain("shipment.view");const before=await graphDigest(),o=await createOrderForActor({user:pricingUi.maker,body:{...pricingUi.body,operationId:randomUUID()}});expect(before).not.toBe(await graphDigest());
+ const id=o.payload.order.id;expect((await cashReadUnchanged(workflow("orders","billing.payers.bind"),token)).items.some((r:any)=>r.id===id)).toBe(true);await cashReadUnchanged(workflow("order","billing.payers.bind","&id="+id),token);
+ const b=await cashHttp(`/api/pricing/orders/${id}/bill-to`,token,{...pricingPayer,operationId:randomUUID()});expect(b.status).toBe(201);const i=await cashHttp(`/api/pricing/orders/${id}/service-payment-instruction`,token,{operationId:randomUUID(),billToId:b.data.id,method:"CASH",collectionParty:"RECIPIENT",evidence:"Synthetic recipient consent",reason:"Explicit recipient timing"});expect(i.status).toBe(201);
+ const price=await cashHttp(`/api/pricing/orders/${id}/price-acceptance`,token,{operationId:randomUUID(),reason:"Narrow operator standard price"});expect(price.status).toBe(201);expect(price.data.state).toBe("accepted");
+ await cashReadUnchanged(workflow("policies"),token,403);
+});
+it("pricing UI HTTP: independently approved discount exception/revision and frozen/late changes",async()=>{
+ const p=await cashHttp("/api/pricing/billing-policies",pricingMakerToken,{operationId:randomUUID(),reason:"Explicit synthetic discount",content:syntheticBillingPolicy({fees:[],discounts:[{code:"synthetic",type:"flat",value:"1"}],tax:{treatment:"not_applicable",authorityReference:"SYNTHETIC ONLY"},billing:{mode:"manual",eligibleOrderStates:["pending","assigned","picked_up","delivered"],dueDays:7,numberPrefix:"SYNTHETIC"}})});expect(p.status).toBe(201);
+ expect((await cashHttp("/api/pricing/billing-policies/decision",pricingCheckerToken,{operationId:randomUUID(),versionId:p.data.id,contentHash:p.data.contentHash,decision:"approved",reason:"Independent discount policy"})).status).toBe(201);
+ const v=await cashHttp(`/api/pricing/orders/${pricingOrder}/price-acceptance`,pricingMakerToken,{operationId:randomUUID(),reason:"Recomputed revision"});expect(v.status).toBe(201);expect(v.data.state).toBe("approval_required");
+ const a={operationId:randomUUID(),snapshotId:v.data.id,contentHash:v.data.contentHash,reason:"Independent exact revision"};await cashDenied(`/api/pricing/orders/${pricingOrder}/price-approval`,pricingMakerToken,a,403);const approved=await cashHttp(`/api/pricing/orders/${pricingOrder}/price-approval`,pricingCheckerToken,a);expect(approved.status).toBe(201);expect(approved.data.total).toBe("149.0000");expect((await cashHttp(`/api/pricing/orders/${pricingOrder}/price-approval`,pricingCheckerToken,a)).data).toEqual(approved.data);
+ const o=await mockDb.order.findUniqueOrThrow({where:{id:pricingOrder}});const provider=await mockDb.paymentProviderConfig.create({data:{companyId:pricingUi.companyId,provider:"CLICK",environment:"TEST",secretEncrypted:"synthetic-unusable",secretMasked:"synthetic",callbackPath:"/synthetic",isEnabled:false}});
+ await mockDb.paymentIntent.create({data:{companyId:pricingUi.companyId,orderId:o.id,providerConfigId:provider.id,provider:"CLICK",environment:"TEST",amountMinor:14900n,currency:"UZS",status:"PENDING",idempotencyKey:randomUUID()}});
+ const pending=await cashHttp(`/api/pricing/orders/${pricingOrder}/price-acceptance`,pricingMakerToken,{operationId:randomUUID(),reason:"Frozen revision"});expect(pending.status).toBe(201);const frozen=await cashDenied(`/api/pricing/orders/${pricingOrder}/price-approval`,pricingCheckerToken,{operationId:randomUUID(),snapshotId:pending.data.id,contentHash:pending.data.contentHash,reason:"Must freeze"},409);expect(frozen.code).toBe("CASH_BASIS_FROZEN");
+ const late=await createOrderForActor({user:pricingUi.maker,body:{...pricingUi.body,operationId:randomUUID()}});await mockDb.order.update({where:{id:late.payload.order.id},data:{status:"picked_up"}});const bill=await cashHttp(`/api/pricing/orders/${late.payload.order.id}/bill-to`,pricingMakerToken,{...pricingPayer,operationId:randomUUID()});expect(bill.status).toBe(201);
+ const denied=await cashDenied(`/api/pricing/orders/${late.payload.order.id}/service-payment-instruction`,pricingMakerToken,{operationId:randomUUID(),billToId:bill.data.id,method:"CASH",collectionParty:"SENDER",evidence:"Too late",reason:"No reopen"},409);expect(denied.code).toBe("CASH_COLLECTION_WINDOW_CLOSED");
+ const h=await cashReadUnchanged(workflow("order","pricing.orders.approve","&id="+pricingOrder+"&limit=1"),pricingCheckerToken);expect(h.prices.nextCursor).toBeTruthy();const next=await cashReadUnchanged(workflow("order","pricing.orders.approve","&id="+pricingOrder+"&limit=1&cursor="+encodeURIComponent(h.prices.nextCursor)),pricingCheckerToken);expect(next.order.id).toBe(pricingOrder);expect(next.prices.items[0].id).not.toBe(h.prices.items[0].id);expect(next.prices.items[0].policy.content).toHaveProperty("rounding");
 });

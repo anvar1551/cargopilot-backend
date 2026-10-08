@@ -64,7 +64,7 @@ function content(plan: Awaited<ReturnType<typeof loadPlan>>) {
 function matches(row: any, user: AppUser, sha256: string) {
   if (row.intentSha256 !== sha256 || row.actorUserId !== user.id || row.companyMembershipId !== user.companyMembershipId || row.tenantMembershipId !== user.tenantMembershipId || row.companyId !== user.companyId) conflict();
 }
-async function historicalScope(tx: Prisma.TransactionClient, user: AppUser, snapshot: any) {
+export async function historicalScope(tx: Prisma.TransactionClient, user: AppUser, snapshot: any) {
   if (snapshot.tenantId !== user.tenantId || snapshot.companyId !== user.companyId) conflict();
   if (snapshot.customerEntityId) await requireCustomerEntityReference(user, snapshot.customerEntityId);
   if (snapshot.routeTemplateId && !await tx.routeTemplate.findFirst({ where: { id: snapshot.routeTemplateId, companyId: user.companyId, company: { tenantId: user.tenantId } }, select: { id: true } })) conflict();

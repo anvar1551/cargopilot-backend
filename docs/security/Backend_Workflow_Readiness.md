@@ -1,3 +1,13 @@
+# Current approved pricing and order billing preparation (2026-10-08)
+
+Implemented with focused client and actual HTTP/PostgreSQL evidence: supported tariff drafts; immutable tariff/calculation-policy proposals and independent decisions; exact owned history/current publication; named templates/customers; explicit payer and CASH sender/recipient instruction; server exact acceptance; exception/revision inspection and independent approval; exact components/policy rounding/current service-charge identity. New bounded no-store discovery uses existing fresh accepted authority and object scopes. No permissions, schema, accounting or cash execution changes.
+
+Evidence: 16 distinct client adapter cases, 6 distinct HTTP/PostgreSQL cases (normal order, no general shipment.view billing actor, exact 150.0000 acceptance and 149.0000 independent revision, foreign/conflict/frozen/late rejection), final no-emit and focused lint. Exact commands, failed development attempts and verified disposable cleanup are recorded in Pricing_Billing_UI.md. Existing concurrency/rollback/calculation/DOM-06/socket evidence reused, not repeated.
+
+Partially integrated: existing service-charge cash actions and manual same-currency invoice backend workflows still need their separate client screens. Deliberately unavailable: linear/transit publication (drafts preserved), shared reference mutations, draft uncertain-write replay without receipts, merchant COD, FX/accounting, late correction/refund, owner signing and automatic prerequisites. Awaiting external verification: rendered user visual review, real storage/device/provider/production release gates. No screenshots/browser success claimed. Customer-specific tariffs require additional already-approved customer visibility, not an implicit pricing-maker grant.
+
+Next separate batches, not started: restricted service-charge cash action UI; same-base-currency manual invoice UI; user visual acceptance. This finite batch is complete. Earlier handoffs below are historical.
+
 # Current cash supplemental administration readiness (2026-10-08)
 
 Implemented with focused evidence: proposer/checker cash-access workspace, exact three approved supplements, current owner-accepted cash-delegation.v1/entity/resource ceilings, named eligible membership/warehouse selectors, immutable proposal inspection, independent acceptance/replacement and controlled revocation. Base driver/warehouse roles/scopes and other grants are preserved. No authority follows from administrator or ordinary delegation status.

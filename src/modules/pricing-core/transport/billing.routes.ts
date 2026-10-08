@@ -3,12 +3,17 @@ import { ZodError } from "zod";
 import { fastifyAuth } from "../../identity-access/transport/fastify-auth";
 import { proposeBillingPolicy, decideBillingPolicy, readBillingPolicy } from "../repo/billing-policy";
 import { bindOrderBillTo, bindServicePaymentInstruction, acceptOrderPrice, approveOrderPrice } from "../repo/order-price";
+import { readPricingWorkflow } from "../repo/workflow-reads";
 export function billingRouteError(reply: any, error: unknown) {
   const e = error as { statusCode?: number; message?: string; code?: string };
   const status = error instanceof ZodError ? 400 : [400,403,404,409].includes(e.statusCode ?? 0) ? e.statusCode! : 500;
   return reply.code(status).send({ error: status === 500 ? "Billing operation failed" : error instanceof ZodError ? "Invalid billing request" : e.message, ...(e.code && status !== 500 ? { code: e.code } : {}) });
 }
 export function registerBillingPolicyRoutes(fastify: FastifyInstance) {
+  fastify.get("/workflow", {preHandler:fastifyAuth()},async(req,reply)=>{
+    reply.header("Cache-Control","no-store");
+    try{return reply.send(await readPricingWorkflow(req.user!,req.query));}catch(e){return billingRouteError(reply,e);}
+  });
   for(const [path,permission,handler] of [
     ["bill-to","billing.payers.bind",bindOrderBillTo],
     ["service-payment-instruction","billing.payers.bind",bindServicePaymentInstruction],

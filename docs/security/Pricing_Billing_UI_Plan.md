@@ -1,0 +1,10 @@
+# Finite pricing and order preparation UI batch
+
+Baselines: backend 9e47ce12b380f2d7abdd1fb3a850e49d95acf1e0; frontend 1653d1342c85444987b760c451fe2b275016e8d1.
+
+1. Configuration milestone: replace the incompatible legacy pricing submission screen with scoped draft management, immutable tariff/policy inventory and exact inspection, independent decisions and publication history. Preserve supported draft fields (including transit drafts); publication remains FIXED_LANE/bucket only. Shared region/zone/SLA mutations remain contained. Draft CRUD has no server receipt: persist before sending, do not replay uncertain writes. Proposal/decision retries use existing receipts.
+2. Order preparation milestone: bounded discovery under accepted billing capabilities, existing order/customer scopes and selected entity; payer binding, explicit CASH timing/evidence, exact acceptance, pending exception/revision inspection and independent approval. Historical receipts are separate from current price pointers and obligations. No amount entry, promo discount, FX, COD, invoices or cash actions.
+3. Add only necessary no-store discovery; no schema/mutation policy changes. Context-bound keyset cursors, explicit projections, bounded records/content, no reads with business effects. Backend rollout precedes UI; rollback to the old unsafe submission screen is not supported.
+4. Focused client intent tests, actual owned disposable PostgreSQL/HTTP synthetic maker/checker/operator journey, final no-emit and focused lint. Existing calculation, locks, concurrency, cash and socket evidence reused where unchanged. Browser channel remains unavailable; visual verification pending, not a reason to bypass its rejection.
+
+Before implementation coverage: tariff draft list/detail/create/update/delete exists but incompatible legacy UI; version inventory missing; policy inventory missing; order billing discovery/current/history missing; all mutations above already exist. Customer/reference selectors must use current scoped APIs. No permissions, profiles, entity prerequisites or manual-ID alternatives will be added.

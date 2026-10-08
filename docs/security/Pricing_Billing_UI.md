@@ -1,0 +1,50 @@
+# Approved pricing and order billing preparation UI
+
+## Scope and current behavior
+
+Baselines: backend `9e47ce12b380f2d7abdd1fb3a850e49d95acf1e0`; frontend `1653d1342c85444987b760c451fe2b275016e8d1`. This batch adds discovery and client integration, not financial policy, permissions, schema or execution authority.
+
+The pricing workspace replaces the incompatible legacy submission screen. It supports existing tariff draft fields (including linear/transit draft inputs), owned template/customer selection, immutable tariff proposals and generation checks, exact content/history, independent approve/reject and current publication. Explicit billing policy inputs include supported currency/precision, rounding, country-qualified route/zone mappings (including zone zero), service buckets, fees, discounts, tax evidence and manual billing states/numbering. No financial defaults are inferred. Shared region/zone/SLA reference reads remain available; their previously contained mutation actions are not restored.
+
+The order billing workspace discovers orders through the selected accepted billing action and existing object scope, without requiring a billing operator to acquire `shipment.view`. It supports authoritative customer/payer selection, bill-to evidence/reason, explicit CASH/SENDER or CASH/RECIPIENT instructions, standard exact acceptance, exception/revision inspection and independent approval. It shows exact components, currency, policy/rounding evidence, current versus historical price identities, and the current service-charge instruction/obligation/source references. Pending prices do not authorize collection. Quotes and informational promo text do not represent accepted prices or discounts.
+
+## API and rollout
+
+New read: `GET /api/pricing/workflow`, authenticated and `Cache-Control: no-store`. Strict query: `view=tariffs|templates|regions|zones|sla|policies|orders|order`, explicit `permission=pricing.read|billing.payers.bind|pricing.orders.accept|pricing.orders.approve`, optional UUID `id`, `limit=1..20`, context/filter-bound cursor and bounded search. Tariff history and order detail require an ID selected through authorized inventories. Configuration views require pricing.read; order views require an accepted billing capability. Reads reload selected membership/entity authority, preserve customer/template/object checks and perform no business writes. Shared reference data is explicitly read-only, not newly tenant-owned.
+
+Existing mutations are unchanged:
+
+| Action | Contract |
+| --- | --- |
+| Tariff draft CRUD | POST/PUT/DELETE `/api/pricing/tariff-plans[/id]`; existing field allowlist; no durable retry receipt. Published/versioned plans remain protected. |
+| Tariff proposal/decision | POST `/tariff-plans/:id/versions` and `/:versionId/decision`; operationId, expectedGeneration or exact contentSha256, reason and explicit decision. |
+| Policy proposal/decision | POST `/billing-policies` and `/billing-policies/decision`; operationId, explicit content or immutable versionId/contentHash/decision/reason. |
+| Payer | POST `/orders/:id/bill-to`; operationId, payerCustomerEntityId, evidence, reason. |
+| CASH instruction | POST `/orders/:id/service-payment-instruction`; operationId, billToId, method CASH, explicit collectionParty, evidence, reason. |
+| Price acceptance/approval | POST `/orders/:id/price-acceptance` or `/price-approval`; operationId/reason, approval additionally snapshotId/contentHash. No client amount authority. |
+
+Paths above are beneath `/api/pricing`. Deploy discovery before its clients. No migration, profile expansion, grants, entity prerequisite creation or owner signing. Existing fresh authority/locking/receipts remain authoritative. Rolling back must not restore the unsafe legacy pricing submission path.
+
+Client requests persist normalized context/API-origin-bound identity/content and read it back before sending under an exclusive browser lock. Matching retries are explicit; no automatic replay, pending-content replacement, uncertain abandonment or confirmation after identity/context changes. Draft writes have no backend receipts and therefore cannot be replayed, even with a client ID. Confirmed receipts are historical results, not current publication/price/obligation authority. Current-state guards do not suppress an otherwise authorized historical retry. A generic 409 is not treated as a proven identity conflict.
+
+## Executed evidence
+
+- 16 distinct client adapter cases passed: `node --test tests/pricing-workflow.test.cjs` in the frontend. Persistence/readback failure, restart/stable content, conflicts, context/late responses, exclusive submission, lost acknowledgement, exact result validation, actual request contracts, draft no-replay and full explicit policy coverage. Repeated runs are not additional cases.
+- 6 distinct new actual Fastify HTTP-injection/PostgreSQL cases passed in `tests/security/cash-capability-postgres.integration.test.ts`, filtered `--testNamePattern="pricing UI HTTP:"`, `--runInBand --testTimeout=60000`. Actual onboarding/entity setup, operational enrollment and independently accepted financial actors precede tariff/policy publication, normal order creation, payer/instruction and exact accepted `150.0000` obligation. Separate checker approves `149.0000` revision. Covers no-store/no-write bounded discovery and context cursors, foreign fully authorized context/customer/plan rejection, matching/conflicting receipts, draft CRUD/published protection, shared reference projections, one billing-only actor with no shipment.view, pending payment-intent freeze, late instruction rejection and price-history pagination. Exact price assertions remain intact.
+- The billing-only actor starts as a synthetic existing identity/membership with no business roles; its billing-operator grant is proposed/independently accepted through actual services. This labels the prerequisite accurately: there is no new finance-only invitation workflow. The deadline fixture establishes picked_up directly solely to test rejection; it is not new transport journey evidence.
+- Final frontend `node node_modules/typescript/bin/tsc --noEmit --incremental false` and backend `node --max-old-space-size=6144 node_modules/typescript/bin/tsc --noEmit --incremental false` passed. The backend default 2 GiB heap attempt exhausted memory (not a type-error result); the completed larger-heap check used unchanged source and assertions. Focused frontend ESLint passed over both pages, all five new workspace components, the adapter/test and affected sidebar. No emitting build or application client generation.
+- External wrapper `cp-pricing-ui-disposable.cjs` reused the existing isolated test runner. Final run `08d16c49bc35`: 122 migrations applied as fixture preparation, six cases passed, 46 unrelated cases skipped, owned container/tmpfs cleanup verified. No existing services, providers or AWS accessed; Redis/storage/label/network boundaries mocked. This is HTTP/DB evidence, not browser or provider transport evidence.
+
+Development runs are disclosed separately: `572085482b75` passed the then-four cases; `5bb10edf7445` had four passes/one failure; `797b398bd57f` had five passes/one failure because the intended narrow actor still inherited the clerk shipment.view grant. The fixture was corrected to a roleless prerequisite and the no-shipment.view assertion retained. `afba31ad3a7b` failed the initial disposable DB connection before application cases ran; failed-beforeAll display is not counted as executed cases. No assertions/timeouts were relaxed. Each container/tmpfs cleanup was verified. An afterAll absent-file cleanup guard was corrected. Automatic approval rejected non-recursive removal of the empty run-owned directory `C:\Users\Anvar\AppData\Local\Temp\cp-onboarding-pg-wPu1hp`; it remains untouched for manual cleanup, alongside previously blocked directories.
+
+## Reused evidence and limitations
+
+Unchanged approved calculation, exact-money, receipt concurrency/rollback, pricing ownership, DOM-03/04/06, cash execution, order/import, revocation and Socket.IO evidence is reused from existing reports, not rerun or re-certified. This batch adds no new concurrency algorithm. The 122-migration setup does not recertify all historical constraints.
+
+Visual verification pending: no browser run, screenshots, desktop/mobile/zoom or keyboard visual inspection is claimed. Source uses min-width shrinking, wrapping, adaptive columns and bounded scroll panels; user visual review is still required. No retry of blocked browser/cleanup channels or dependency installation.
+
+Publication remains approved FIXED_LANE/bucket policy only; linear/transit draft management does not imply supported publication. Customer-specific tariff authoring needs independently granted customers.read and existing customer scope, which pricing-maker alone lacks. Free-text order creation is preserved elsewhere, but exact price acceptance requires owned customer/structured addresses, recorded positive kg and an approved matching route. Tariff draft writes with uncertain outcomes lack recovery receipts and remain held for reconciliation. Invalid server-rejected intent is retained conservatively; the client does not infer no business effects from an arbitrary error.
+
+Sender collection must precede picked_up, recipient collection precede delivered. Collected cash, any payment activity/reservation (including pending/uncertain) or invoice freezes the basis. Historical retries do not move current pointers. Late correction/refund, merchant goods COD, FX, accounting, invoice issuance UI and cash action UI are not delivered. Real company setup, registry/credentials, native/storage/provider verification and other release gates remain open.
+
+Next separate batches, not started: (1) restricted service-charge cash action UI under current DOM-05/06 contracts; (2) same-base-currency manual invoice UI under accepted issuer authority; (3) user visual acceptance of completed administration/pricing screens. No new policy or provisioning is implied.
