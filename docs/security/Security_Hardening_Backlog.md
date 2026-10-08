@@ -1,4 +1,16 @@
-# Current warehouse workspace readiness (2026-10-08)
+# Current financial-access workspace readiness (2026-10-08)
+
+Implemented: exact six-profile accepted financial ceilings, bounded no-store recipient/entity/proposal/managed-grant discovery; selected-context proposer/checker workspace, independently accepted replacements/revocation, immutable persisted intents and matching explicit retries. Operational/driver authority alone is insufficient; unrelated grants preserved. Backend read rollout precedes frontend. No mutation policy/schema changes.
+
+Executed: 10 client cases, 10 mocked read cases, 12 distinct actual HTTP/PostgreSQL cases and one connected browser proposal/reload/retry -> separate checker acceptance -> recipient fresh login/entity read -> replacement/acceptance/revocation journey. Desktop/mobile inspected; frontend no-emit/focused lint passed; final backend no-emit passed (exit 0). Existing DOM-03 lock/concurrency/rollback and session/socket evidence reused unchanged; no new transport claim. See [Financial_Access_UI.md](Financial_Access_UI.md).
+
+Prerequisites: independently appointed accepted finance authorities, explicit owned active entity and eligible existing company memberships/scopes. No automatic setup or grants. Deliberately unavailable: unconfirmed-intent abandonment/reconciliation, finance-only invitations, owner signing/appointment, entity setup/cash/financial business-action UI in this batch; accounting/FX remain contained. Existing legacy finance adapter gaps and auth-layout warnings remain visible in the report.
+
+Cleanup: owned PostgreSQL/tmpfs removed, listeners stopped; frontend temp cleanup policy-blocked at cp-frontend-financial-access-ui-owned-XscTqy and left for manual cleanup. Prior blocked paths/dist preserved.
+
+Next finite milestone after review: independently approved initial issuing-entity setup UI, existing contracts only; not started. Older handoffs below are historical.
+
+# Historical warehouse workspace readiness (2026-10-08)
 
 Implemented: scoped list/search/detail, all six supported create/edit fields,
 accepted provisioning-authority display, durable context-bound creation retries
