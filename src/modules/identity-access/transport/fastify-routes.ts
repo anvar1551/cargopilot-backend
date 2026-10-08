@@ -1,4 +1,4 @@
-import { proposeCashCapabilityGrant, acceptCashCapabilityGrant, revokeCashCapabilityGrant } from "../application/cash-capability-delegation";
+import { proposeCashCapabilityGrant, acceptCashCapabilityGrant, revokeCashCapabilityGrant, readCashCapabilityAdministration } from "../application/cash-capability-delegation";
 import { createCompanyDriverInvitation, acceptCompanyDriverInvitation, cancelCompanyDriverInvitation, mutateCompanyDriverEligibility, readDriverDelegation, listDriverInvitations, listDriverEligibility } from "../application/driver-delegation";
 import { readFinancialAccess } from "../application/financial-discovery";
 import { proposeFinancialGrant, acceptFinancialGrant, revokeFinancialGrant } from "../application/financial-delegation";
@@ -328,7 +328,7 @@ const usersFastifyRoutes: FastifyPluginAsync<IdentityAccessRouteOptions> = async
 
   const delegationError = (reply: FastifyReply, error: unknown) => {
     const e = error as { statusCode?: number; code?: string };
-    const code = typeof e?.code === "string" && /^(DELEGATION_|INVITATION_|FINANCIAL_|ENTITY_SETUP_)[A-Z_]+$/.test(e.code) ? e.code : "DELEGATION_REQUEST_REJECTED";
+    const code = typeof e?.code === "string" && /^(DELEGATION_|INVITATION_|FINANCIAL_|ENTITY_SETUP_|CASH_CAPABILITY_)[A-Z_]+$/.test(e.code) ? e.code : "DELEGATION_REQUEST_REJECTED";
     if (e?.statusCode === 404 && code === "ENTITY_SETUP_PROPOSAL_NOT_FOUND") return reply.code(404).send({ error: code, code });
     return reply.code([400, 401, 403, 409].includes(e?.statusCode ?? 0) ? e.statusCode! : error instanceof z.ZodError ? 400 : 500).send({ error: code, code });
   };
@@ -356,6 +356,9 @@ const usersFastifyRoutes: FastifyPluginAsync<IdentityAccessRouteOptions> = async
   });
   fastify.post("/issuing-entity-setup/decisions", { onRequest: privateReply, preHandler: fastifyAuth({permission:"finance.entitySetup.approve"}), bodyLimit:4096 },async(request,reply)=>{
     try{return reply.code(201).send(await decideIssuingEntity(prisma,request.user!,request.body));}catch(e){return delegationError(reply,e);}
+  });
+  fastify.get("/company-cash-capabilities",{onRequest:privateReply,preHandler:fastifyAuth()},async(req,reply)=>{
+    try{return reply.send(await readCashCapabilityAdministration(prisma,req.user!,req.query));}catch(e){return delegationError(reply,e);}
   });
   fastify.post("/company-cash-capabilities/proposals",{onRequest:privateReply,preHandler:fastifyAuth({permission:"membership.proposeCashCapability"}),bodyLimit:8192},async(req,reply)=>{
     try{return reply.code(201).send(await proposeCashCapabilityGrant(prisma,req.user!,req.body));}catch(e){return delegationError(reply,e);}

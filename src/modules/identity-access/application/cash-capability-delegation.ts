@@ -31,17 +31,21 @@ async function authority(tx: Tx, c: Context, kind: "proposer"|"checker", entityI
     JOIN "CashCapabilityGrantAction" j ON j."operationId"=d."acceptedOperationId" AND j."targetMembershipId"=d."membershipId"
       AND j."tenantId"=d."tenantId" AND j."companyId"=d."companyId" AND j."legalEntityId"=d."legalEntityId"
     WHERE d."membershipId"=${m.id}::uuid AND d.kind=${kind} FOR UPDATE OF d`)[0];
+  validateAuthority(a,m,c,kind,entityId,profiles);
+  await entity(tx,c,entityId);
+  if(warehouseIds.some(id=>!a.warehouseIds.includes(id))||kinds.some(k=>!a.kinds.includes(k)))fail("CASH_CAPABILITY_RESOURCE_CEILING");
+  const owned=await tx.warehouse.findMany({where:{id:{in:warehouseIds},tenantId:c.tenantId},select:{id:true}});
+  if(owned.length!==warehouseIds.length)fail("CASH_CAPABILITY_FOREIGN_WAREHOUSE");
+  return a;
+}
+// Shared pure predicate: discovery does not take the mutation's write locks.
+function validateAuthority(a:any,m:Awaited<ReturnType<typeof member>>,c:Context,kind:string,entityId:string,profiles:string[]) {
   if (!a?.enabled || a.legalEntityId !== entityId || a.tenantId !== c.tenantId || a.companyId !== c.companyId || a.userId !== c.id ||
     a.tenantMembershipId !== c.tenantMembershipId || !keys(m).includes(authorityKey(kind)) ||
     a.action!=="operator-authorize"||a.result?.companyMembershipId!==m.id||a.result?.kind!==kind||a.result?.legalEntityId!==entityId||
     JSON.stringify(a.result?.profileRevisions)!==JSON.stringify(a.profileRevisions)||
     JSON.stringify(a.result?.warehouseIds)!==JSON.stringify(a.warehouseIds)||JSON.stringify(a.result?.kinds)!==JSON.stringify(a.kinds)||
     !m.scopes.some(s=>s.scopeType==="company" && s.scopeRefId===c.companyId) || profiles.some(p=>!a.profileRevisions.includes(p))) fail("CASH_CAPABILITY_CEILING_REQUIRED");
-  await entity(tx,c,entityId);
-  if(warehouseIds.some(id=>!a.warehouseIds.includes(id))||kinds.some(k=>!a.kinds.includes(k)))fail("CASH_CAPABILITY_RESOURCE_CEILING");
-  const owned=await tx.warehouse.findMany({where:{id:{in:warehouseIds},tenantId:c.tenantId},select:{id:true}});
-  if(owned.length!==warehouseIds.length)fail("CASH_CAPABILITY_FOREIGN_WAREHOUSE");
-  return a;
 }
 async function receipt(tx: Tx, operationId: string, fingerprint: string, c: {tenantId:string; companyId:string}) {
   const a = (await tx.$queryRaw<any[]>`SELECT * FROM "CashCapabilityGrantAction" WHERE "operationId"=${operationId}::uuid`)[0];
@@ -103,15 +107,20 @@ async function grant(tx:Tx,id:string) {
     JOIN "CashCapabilityGrantAction" a ON a."operationId"=g."acceptedOperationId" AND a."targetMembershipId"=g."membershipId"
       AND a."tenantId"=g."tenantId" AND a."companyId"=g."companyId" AND a."legalEntityId"=g."legalEntityId"
     WHERE g."membershipId"=${id}::uuid FOR UPDATE OF g`)[0];
+  validateGrant(g);return g;
+}
+function validateGrant(g:any) {
   if(g&&(g.action!=="accept"||g.result?.acceptanceId!==g.acceptedOperationId||
     g.result?.legalEntityId!==g.legalEntityId||JSON.stringify(g.result?.warehouseIds)!==JSON.stringify(g.warehouseIds)||JSON.stringify(g.result?.kinds)!==JSON.stringify(g.kinds)||
     JSON.stringify(g.result?.profileRevisions)!==JSON.stringify(g.profileRevisions)))fail("CASH_CAPABILITY_GRANT_INCONSISTENT");
-  return g;
 }
 async function eligibleTarget(tx:Tx,c:Context,id:string) {
   const m=await member(tx,id,true);
-  if(m.userId===c.id || m.tenantId!==c.tenantId || m.companyId!==c.companyId || m.roles.some(r=>r.role.isSystem||r.role.isOwnerRole||r.role.companyId!==c.companyId))fail("CASH_CAPABILITY_TARGET_REJECTED");
+  validateTarget(m,c);
   return m;
+}
+function validateTarget(m:Awaited<ReturnType<typeof member>>,c:Context){
+  if(m.userId===c.id || m.tenantId!==c.tenantId || m.companyId!==c.companyId || m.roles.some(r=>r.role.isSystem||r.role.isOwnerRole||r.role.companyId!==c.companyId))fail("CASH_CAPABILITY_TARGET_REJECTED");
 }
 /** Revocation-only ownership reader. A suspended recipient must not prevent
  * removal of its accepted grant; this confers no business execution authority. */
@@ -222,4 +231,79 @@ export async function validateCashBase(tx:Tx,m:Awaited<ReturnType<typeof member>
       JSON.stringify(role.rolePermissions.map(p=>p.permission.key).sort())!==JSON.stringify([...OPERATIONAL_PROFILES["operational-warehouse.v1"]].sort())||
       warehouseIds.some(id=>!g.warehouseIds.includes(id)||!m.scopes.some(s=>s.scopeType==="warehouse"&&s.scopeRefId===id)))fail("CASH_CAPABILITY_WAREHOUSE_BASE_REQUIRED");
   }
+}
+
+/** Read-only bounded snapshots. Only driver eligibility SHARE pins are reused;
+ * no membership/authority/grant write locks, claims, receipts or business writes. */
+export async function readCashCapabilityAdministration(db:PrismaClient,actor:AppUser,input:unknown){
+  const c=context(actor),v=z.object({view:z.enum(["ceiling","recipients","proposals","grants"]),kind:z.enum(["proposer","checker"]),
+    limit:z.coerce.number().int().min(1).max(50).default(20),cursor:z.string().max(768).optional()}).strict().parse(input);
+  return db.$transaction(async tx=>{
+    const m=await member(tx,c.companyMembershipId);agrees(m,c);
+    const a=(await tx.$queryRaw<any[]>`SELECT d.*,j.result,j.action FROM "CashCapabilityDelegationAuthority" d
+      JOIN "CashCapabilityGrantAction" j ON j."operationId"=d."acceptedOperationId" AND j."targetMembershipId"=d."membershipId"
+      AND j."tenantId"=d."tenantId" AND j."companyId"=d."companyId" AND j."legalEntityId"=d."legalEntityId"
+      WHERE d."membershipId"=${c.companyMembershipId}::uuid AND d.kind=${v.kind}`)[0];
+    validateAuthority(a,m,c,v.kind,a?.legalEntityId,[]);
+    const approved=z.array(cashCapabilityProfileSchema).min(1).max(3).parse(a.profileRevisions);
+    const kinds=cashKindsSchema.parse(a.kinds),ids=resources.warehouseIds.parse(a.warehouseIds);
+    const legalEntity=await tx.financeLegalEntity.findFirst({where:{id:a.legalEntityId,tenantId:c.tenantId,companyId:c.companyId,isActive:true},select:{id:true,baseCurrency:true,company:{select:{name:true}}}});
+    if(!legalEntity)fail("CASH_CAPABILITY_ENTITY_UNAVAILABLE");
+    const warehouses=await tx.warehouse.findMany({where:{id:{in:ids},tenantId:c.tenantId},select:{id:true,name:true},orderBy:{id:"asc"}});
+    if(warehouses.length!==ids.length)fail("CASH_CAPABILITY_FOREIGN_WAREHOUSE");
+    if(v.view==="ceiling"){
+      if(v.cursor)fail("CASH_CAPABILITY_CURSOR_REJECTED",400);
+      return {revision:CASH_CAPABILITY_DELEGATION_REVISION,kind:v.kind,legalEntity:{id:legalEntity.id,name:legalEntity.company.name,baseCurrency:legalEntity.baseCurrency},
+        profiles:approved.map(revision=>({revision,permissions:[...CASH_CAPABILITY_PROFILES[revision]]})),kinds,warehouses};
+    }
+    const binding={tenantId:c.tenantId,companyId:c.companyId,membershipId:c.companyMembershipId,legalEntityId:legalEntity.id,kind:v.kind,view:v.view};
+    let after:string|null=null;
+    if(v.cursor){try{
+      const cursor=z.object({tenantId:operationIdSchema,companyId:operationIdSchema,membershipId:operationIdSchema,legalEntityId:operationIdSchema,kind:z.enum(["proposer","checker"]),view:z.enum(["recipients","proposals","grants"]),after:operationIdSchema}).strict().parse(JSON.parse(Buffer.from(v.cursor,"base64url").toString("utf8")));
+      for(const [k,value] of Object.entries(binding))if(cursor[k as keyof typeof cursor]!==value)throw Error("Foreign cursor");after=cursor.after;
+    }catch{fail("CASH_CAPABILITY_CURSOR_REJECTED",400);}}
+    const next=(id:string)=>Buffer.from(JSON.stringify({...binding,after:id})).toString("base64url");
+    async function current(id:string){const g=(await tx.$queryRaw<any[]>`SELECT g.*,a.action,a.result FROM "CashCapabilityMembershipGrant" g
+      JOIN "CashCapabilityGrantAction" a ON a."operationId"=g."acceptedOperationId" AND a."targetMembershipId"=g."membershipId"
+      AND a."tenantId"=g."tenantId" AND a."companyId"=g."companyId" AND a."legalEntityId"=g."legalEntityId"
+      WHERE g."membershipId"=${id}::uuid AND g."tenantId"=${c.tenantId}::uuid AND g."companyId"=${c.companyId}::uuid`)[0];validateGrant(g);withinRemoved(a,g);return g;}
+    const items:any[]=[];
+    if(v.view==="recipients"||v.view==="grants"){
+      if(v.view==="recipients"&&v.kind!=="proposer")fail("CASH_CAPABILITY_CEILING_REQUIRED");
+      const rows=await tx.companyMembership.findMany({where:{tenantId:c.tenantId,companyId:c.companyId,userId:{not:c.id},...(after?{id:{gt:after}}:{})},select:{id:true,userId:true,tenantMembershipId:true,tenantMembership:{select:{id:true,userId:true,tenantId:true}},user:{select:{name:true}}},orderBy:{id:"asc"},take:v.limit+1});
+      for(const row of rows.slice(0,v.limit)){
+        try{
+          const g=await current(row.id);
+          if(g&&(g.legalEntityId!==legalEntity.id||g.userId!==row.userId||g.tenantMembershipId!==row.tenantMembershipId||row.tenantMembership?.userId!==row.userId||row.tenantMembership?.tenantId!==c.tenantId))continue;
+          if(v.view==="grants"){
+            if(!g||g.profileRevisions.some((p:string)=>!approved.includes(p as any))||g.warehouseIds.some((id:string)=>!ids.includes(id))||g.kinds.some((k:string)=>!kinds.includes(k as any)))continue;
+            items.push({membershipId:row.id,name:row.user.name,legalEntityId:g.legalEntityId,profileRevisions:g.profileRevisions,warehouseIds:g.warehouseIds,kinds:g.kinds,acceptanceId:g.acceptedOperationId,enabled:g.enabled,managed:true});continue;
+          }
+          const target=await member(tx,row.id);validateTarget(target,c);const eligible=[];
+          for(const revision of approved){
+            const base=revision==="warehouse-cash.v1"?await tx.companyOperationalGrant.findUnique({where:{membershipId:target.id}}):null;
+            const allowed=revision==="warehouse-cash.v1"?ids.filter(id=>base?.warehouseIds.includes(id)&&target.scopes.some(s=>s.scopeType==="warehouse"&&s.scopeRefId===id)):ids;
+            if(!allowed.length)continue;
+            try{await validateCashBase(tx,target,revision,allowed);eligible.push({revision,warehouseIds:allowed});}catch(e){if((e as any).statusCode!==403)throw e;}
+          }
+          if(eligible.length)items.push({membershipId:row.id,name:row.user.name,profiles:eligible,expectedAcceptanceId:g?.acceptedOperationId??null,currentEnabled:g?.enabled??false});
+        }catch(e){if((e as any).statusCode!==403)throw e;}
+      }
+      return {items,nextCursor:rows.length>v.limit?next(rows[v.limit-1].id):null};
+    }
+    const rows=await tx.$queryRaw<any[]>`SELECT p.*,u.name AS "recipientName",maker.name AS "proposerName",
+      (SELECT x."operationId" FROM "CashCapabilityGrantAction" x WHERE x."proposalId"=p."operationId" AND x.action='accept') AS "acceptanceId"
+      FROM "CashCapabilityGrantProposal" p JOIN "CompanyMembership" m ON m.id=p."targetMembershipId" AND m."userId"=p."recipientUserId" AND m."tenantId"=p."tenantId" AND m."companyId"=p."companyId"
+      JOIN "User" u ON u.id=m."userId" JOIN "User" maker ON maker.id=p."proposerUserId"
+      WHERE p."tenantId"=${c.tenantId}::uuid AND p."companyId"=${c.companyId}::uuid AND p."legalEntityId"=${legalEntity.id}::uuid
+        AND p."profileRevisions" <@ ${approved}::text[] AND p."warehouseIds" <@ ${ids}::uuid[] AND p.kinds <@ ${kinds}::text[]
+        AND (${v.kind}='checker' OR p."proposerMembershipId"=${c.companyMembershipId}::uuid)
+        AND (${after}::uuid IS NULL OR p."operationId">${after}::uuid)
+      ORDER BY p."operationId" ASC LIMIT ${v.limit+1}`;
+    for(const p of rows.slice(0,v.limit)){try{const g=await current(p.targetMembershipId);
+      items.push({proposalId:p.operationId,membershipId:p.targetMembershipId,recipientName:p.recipientName,proposerName:p.proposerName,legalEntityId:p.legalEntityId,profileRevisions:p.profileRevisions,warehouseIds:p.warehouseIds,kinds:p.kinds,expectedAcceptanceId:p.expectedAcceptanceId,expectedEnabled:p.expectedEnabled,fingerprint:p.fingerprint,reason:p.reason,createdAt:p.createdAt,
+        acceptanceId:p.acceptanceId,state:p.acceptanceId?"accepted":"pending",independent:c.id!==p.proposerUserId&&c.id!==p.recipientUserId,stale:(g?.acceptedOperationId??null)!==p.expectedAcceptanceId||(g?.enabled??false)!==p.expectedEnabled});
+    }catch(e){if((e as any).statusCode!==403)throw e;}}
+    return {items,nextCursor:rows.length>v.limit?next(rows[v.limit-1].operationId):null};
+  },options);
 }

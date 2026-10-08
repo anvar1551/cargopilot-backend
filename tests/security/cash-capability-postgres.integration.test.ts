@@ -78,6 +78,7 @@ beforeAll(async () => {
 }, 30000);
 beforeEach(() => writeFileSync(registryPath, JSON.stringify(registry)));
 afterAll(async () => {
+    await uiApp?.close();
     await mockDb?.$disconnect();
     await pool.end();
     unlinkSync(registryPath);
@@ -138,7 +139,7 @@ async function cashGroup(){
  const entity=await initialEntity(a,checker.accepted);
  const driverOwner=syntheticDriverOwner();let driver:any;
  try{await authorizeCompanyDriverDelegator(mockDb,driverOwner.request(a.companyMembershipId,["local-driver.v1"]));const invitation=await createCompanyDriverInvitation(mockDb,a.actor,{operationId:randomUUID(),email:randomUUID()+"@example.invalid",profileRevision:"local-driver.v1",reason:"Synthetic driver"});driver=await acceptCompanyDriverInvitation(mockDb,{operationId:randomUUID(),token:invitation.token,name:"Synthetic cash driver",password});}finally{driverOwner.cleanup();}
- const result={...a,warehouse,second,entity,maker:maker.accepted,checker:checker.accepted,staff:staff.accepted,clerk:clerk.accepted,driver};
+ const result={...a,warehouse,second,entity,maker:maker.accepted,checker:checker.accepted,staff:staff.accepted,clerk:clerk.accepted,driver,makerPassword:maker.pass,checkerPassword:checker.pass};
  await cashOwner(result,result.maker,"proposer",[warehouse.id,second.id]);await cashOwner(result,result.checker,"checker",[warehouse.id,second.id]);return result;
 }
 const actor=(m:any)=>({...m,id:m.userId,membershipId:m.companyMembershipId});
@@ -617,4 +618,56 @@ it.each([["SENDER","publication"],["SENDER","transition"],["RECIPIENT","publicat
   }
   expect((await pool.query('SELECT count(*) FROM "OrderServiceCashObligation" WHERE "orderId"=$1 AND amount>0',[g.orderId])).rows[0].count).toBe(first==="publication"?"1":"0");
  }finally{clearTimeout(timer);release();await Promise.allSettled([leader,...(follower?[follower]:[])]);mockDb=base;}
+});
+
+
+// Administration-only actual HTTP injection + PostgreSQL. No cash execution,
+// real owner key, network listener or browser. Existing fixture entrypoints
+// provision synthetic prerequisites; roles/scopes are compared after every change.
+import identityRoutes from "../../src/modules/identity-access/transport/fastify-routes";
+let ui:any,uiApp:ReturnType<typeof Fastify>,uiMakerToken:string,uiCheckerToken:string;
+const cashRead=(view:string,kind="proposer",extra="")=>`/api/auth/company-cash-capabilities?view=${view}&kind=${kind}${extra}`;
+async function cashHttp(url:string,token?:string,body?:any){const r=await uiApp.inject({method:body?"POST":"GET",url,headers:token?{authorization:`Bearer ${token}`}:{},...(body?{payload:body}:{})});return {status:r.statusCode,data:r.json(),cache:r.headers["cache-control"]};}
+async function cashReadUnchanged(url:string,token?:string,status=200){const before=await graphDigest(),r=await cashHttp(url,token);expect(r.status).toBe(status);expect(await graphDigest()).toBe(before);if(status===200)expect(r.cache).toBe("no-store");expect(JSON.stringify(r.data)).not.toMatch(/passwordHash|tokenHash|operatorKeyFingerprint|publicKeyPem|"token"/);return r.data;}
+async function cashDenied(url:string,token:string,body:any,status:number){const before=await graphDigest(),r=await cashHttp(url,token,body);expect(r.status).toBe(status);expect(await graphDigest()).toBe(before);return r.data;}
+const cashPost="/api/auth/company-cash-capabilities/proposals",cashAccept="/api/auth/company-cash-capabilities/accept",cashRevoke="/api/auth/company-cash-capabilities/revoke";
+async function uiLogin(m:any,pass:string){const u=await mockDb.user.findUniqueOrThrow({where:{id:m.userId}}),r=await cashHttp("/api/auth/login",undefined,{email:u.email,password:pass,companyMembershipId:m.companyMembershipId});expect(r.status).toBe(200);return r.data.token;}
+let uiProposal:any,uiAcceptance:any,uiBase:any;
+it("cash UI HTTP: accepted ceiling, named resources, eligible profiles and no read writes",async()=>{
+ ui=await cashGroup();await cashOwner(ui,ui.maker,"checker",[ui.warehouse.id,ui.second.id]);uiApp=Fastify({logger:false});await uiApp.register(identityRoutes,{prefix:"/api/auth",rateLimiter:{consume:async({limit,windowMs}:any)=>({allowed:true,count:1,remaining:limit-1,limit,resetAfterMs:windowMs,backend:"local"})}} as any);await uiApp.ready();
+ uiMakerToken=await uiLogin(ui.maker,ui.makerPassword);uiCheckerToken=await uiLogin(ui.checker,ui.checkerPassword);
+ const c=await cashReadUnchanged(cashRead("ceiling"),uiMakerToken);expect(c.revision).toBe("cash-delegation.v1");expect(c.legalEntity.id).toBe(ui.entity.id);expect(c.warehouses.map((x:any)=>x.name)).toContain(ui.warehouse.name);expect(c.profiles).toHaveLength(3);
+ const r=await cashReadUnchanged(cashRead("recipients"),uiMakerToken),driver=r.items.find((x:any)=>x.membershipId===ui.driver.companyMembershipId),staff=r.items.find((x:any)=>x.membershipId===ui.staff.companyMembershipId);
+ expect(driver.profiles.map((x:any)=>x.revision)).toEqual(["local-driver-cash.v1"]);expect(staff.profiles.find((x:any)=>x.revision==="warehouse-cash.v1").warehouseIds).toEqual([ui.warehouse.id]);expect(r.items.some((x:any)=>x.membershipId===ui.maker.companyMembershipId)).toBe(false);
+ uiBase={roles:await mockDb.membershipRole.findMany({orderBy:[{membershipId:"asc"},{roleId:"asc"}]}),scopes:await mockDb.membershipScope.findMany({orderBy:{id:"asc"}})};
+},30000);
+it("cash UI HTTP: ordinary authority, foreign cursor, unknown fields and bounded pagination deny",async()=>{
+ const root=await uiLogin(ui,password);await cashReadUnchanged(cashRead("ceiling"),root,403);await cashReadUnchanged(cashRead("ceiling"),undefined,401);await cashReadUnchanged(cashRead("ceiling")+"&companyId="+ui.companyId,uiMakerToken,400);await cashReadUnchanged(cashRead("recipients")+"&limit=51",uiMakerToken,400);
+ const p=await cashReadUnchanged(cashRead("recipients")+"&limit=1",uiMakerToken);expect(p.nextCursor).toBeTruthy();await cashReadUnchanged(cashRead("recipients")+"&cursor="+encodeURIComponent(p.nextCursor),uiCheckerToken,403);await cashReadUnchanged(cashRead("grants","checker")+"&cursor="+encodeURIComponent(p.nextCursor),uiCheckerToken,400);
+ const foreign=await cashGroup(),foreignToken=await uiLogin(foreign.maker,foreign.makerPassword);expect((await cashReadUnchanged(cashRead("proposals"),foreignToken)).items).toHaveLength(0);await cashReadUnchanged(cashRead("recipients")+"&cursor="+encodeURIComponent(p.nextCursor),foreignToken,400);
+ // Additional prerequisites do not form part of the original base comparison.
+ uiBase={roles:await mockDb.membershipRole.findMany({orderBy:[{membershipId:"asc"},{roleId:"asc"}]}),scopes:await mockDb.membershipScope.findMany({orderBy:{id:"asc"}})};
+ ui.foreign=foreign;
+},30000);
+it("cash UI HTTP: foreign resources, wrong base and rejected proposal leave complete graph unchanged",async()=>{
+ await cashDenied(cashPost,uiMakerToken,proposal(ui,ui.foreign.driver),403);await cashDenied(cashPost,uiMakerToken,proposal(ui,ui.driver,"local-driver-cash.v1",{legalEntityId:ui.foreign.entity.id}),403);await cashDenied(cashPost,uiMakerToken,proposal(ui,ui.driver,"local-driver-cash.v1",{warehouseIds:[ui.foreign.warehouse.id]}),403);await cashDenied(cashPost,uiMakerToken,proposal(ui,ui.staff),403);await cashDenied(cashPost,uiMakerToken,proposal(ui,ui.driver,"warehouse-cash.v1"),403);await cashDenied(cashPost,uiMakerToken,proposal(ui,ui.driver,"local-driver-cash.v1",{kinds:["cod"]}),403);
+});
+it("cash UI HTTP: exact proposal, matching/conflicting retry and independent inspection",async()=>{
+ const v=proposal(ui,ui.driver),r=await cashHttp(cashPost,uiMakerToken,v);expect(r.status).toBe(201);uiProposal={...r.data,input:v};const before=await graphDigest();expect((await cashHttp(cashPost,uiMakerToken,v)).data).toEqual(r.data);expect(await graphDigest()).toBe(before);expect((await cashDenied(cashPost,uiMakerToken,{...v,reason:"Conflicting content"},409)).code).toBe("CASH_CAPABILITY_INTENT_CONFLICT");
+ const queue=await cashReadUnchanged(cashRead("proposals","checker"),uiCheckerToken),p=queue.items.find((x:any)=>x.proposalId===r.data.proposalId);expect(p.independent).toBe(true);expect(p.profileRevisions).toEqual(v.profileRevisions);expect(p.warehouseIds).toEqual(v.warehouseIds);expect(p.kinds).toEqual(v.kinds);expect(p.fingerprint).toBe(r.data.fingerprint);expect(p.expectedAcceptanceId).toBeNull();expect(p.state).toBe("pending");
+});
+it("cash UI HTTP: self approval denied, independent acceptance and managed read preserve base",async()=>{
+ const v={operationId:randomUUID(),proposalId:uiProposal.proposalId,fingerprint:uiProposal.fingerprint,reason:"Independent synthetic decision"};expect((await cashDenied(cashAccept,uiMakerToken,v,403)).code).toBe("CASH_CAPABILITY_INDEPENDENT_CHECKER_REQUIRED");const r=await cashHttp(cashAccept,uiCheckerToken,v);expect(r.status).toBe(201);uiAcceptance=r.data;const before=await graphDigest();expect((await cashHttp(cashAccept,uiCheckerToken,v)).data).toEqual(r.data);expect(await graphDigest()).toBe(before);await cashDenied(cashAccept,uiCheckerToken,{...v,reason:"Different retry"},409);
+ expect((await cashReadUnchanged(cashRead("grants"),uiMakerToken)).items.find((x:any)=>x.membershipId===ui.driver.companyMembershipId)).toMatchObject({acceptanceId:v.operationId,enabled:true});expect(await requireAcceptedDriver(mockDb,ui,ui.driver.companyMembershipId,"local")).toMatchObject({userId:ui.driver.userId});
+ expect(await mockDb.membershipRole.findMany({orderBy:[{membershipId:"asc"},{roleId:"asc"}]})).toEqual(uiBase.roles);expect(await mockDb.membershipScope.findMany({orderBy:{id:"asc"}})).toEqual(uiBase.scopes);
+});
+it("cash UI HTTP: warehouse and settlement supplements, independently accepted replacement and revocation",async()=>{
+ for(const [target,profile] of [[ui.staff,"warehouse-cash.v1"],[ui.clerk,"cash-settlement-checker.v1"]]){const p=await cashHttp(cashPost,uiMakerToken,proposal(ui,target,profile as string));expect(p.status).toBe(201);expect((await cashHttp(cashAccept,uiCheckerToken,{operationId:randomUUID(),...p.data,reason:"Independent supplement"})).status).toBe(201);}
+ const p=await cashHttp(cashPost,uiMakerToken,proposal(ui,ui.driver,"local-driver-cash.v1",{warehouseIds:[ui.second.id],expectedAcceptanceId:uiAcceptance.acceptanceId}));expect(p.status).toBe(201);expect((await cashReadUnchanged(cashRead("grants"),uiMakerToken)).items.find((x:any)=>x.membershipId===ui.driver.companyMembershipId).acceptanceId).toBe(uiAcceptance.acceptanceId);
+ const replaced=await cashHttp(cashAccept,uiCheckerToken,{operationId:randomUUID(),...p.data,reason:"Independent replacement"});expect(replaced.status).toBe(201);
+ const v={operationId:randomUUID(),membershipId:ui.driver.companyMembershipId,legalEntityId:ui.entity.id,expectedAcceptanceId:replaced.data.acceptanceId,reason:"Immediate controlled revoke"};expect((await cashHttp(cashRevoke,uiMakerToken,v)).status).toBe(200);const before=await graphDigest();expect((await cashHttp(cashRevoke,uiMakerToken,v)).status).toBe(200);expect(await graphDigest()).toBe(before);
+ expect((await cashReadUnchanged(cashRead("grants"),uiMakerToken)).items.find((x:any)=>x.membershipId===ui.driver.companyMembershipId).enabled).toBe(false);expect(await mockDb.membershipRole.findMany({orderBy:[{membershipId:"asc"},{roleId:"asc"}]})).toEqual(uiBase.roles);expect(await mockDb.membershipScope.findMany({orderBy:{id:"asc"}})).toEqual(uiBase.scopes);
+});
+it("cash UI HTTP: revoked accepted authority invalidates session and fresh reads/retries deny",async()=>{
+ await cashOwner(ui,ui.maker,"proposer",[ui.warehouse.id,ui.second.id],undefined,"operator-revoke");await cashReadUnchanged(cashRead("ceiling"),uiMakerToken,401);uiMakerToken=await uiLogin(ui.maker,ui.makerPassword);await cashReadUnchanged(cashRead("ceiling"),uiMakerToken,403);await cashDenied(cashPost,uiMakerToken,uiProposal.input,403);await uiApp.close();
 });

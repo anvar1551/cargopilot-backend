@@ -1,4 +1,16 @@
-# Current initial issuing-entity setup UI readiness (2026-10-08)
+# Current cash supplemental administration readiness (2026-10-08)
+
+Implemented with focused evidence: proposer/checker cash-access workspace, exact three approved supplements, current owner-accepted cash-delegation.v1/entity/resource ceilings, named eligible membership/warehouse selectors, immutable proposal inspection, independent acceptance/replacement and controlled revocation. Base driver/warehouse roles/scopes and other grants are preserved. No authority follows from administrator or ordinary delegation status.
+
+Additive GET /api/auth/company-cash-capabilities views ceiling/recipients/proposals/grants, explicit kind, bounded context-bound pagination, minimal no-store/no-write snapshots. Existing mutations and locks remain intact; sanitized CASH_CAPABILITY_ codes now survive the error mapper. Client intents persist/read-back under exclusive browser locks; matching explicit retries retain original IDs/content, selectors cannot replace pending intent, and late auth-context results are suppressed. Backend discovery rollout precedes UI; no migration.
+
+Evidence: 11 distinct client cases; 7 new actual HTTP/PostgreSQL cases plus 2 affected concurrency/rollback cases, 9 distinct total across focused runs. Final both no-emit checks and focused frontend lint passed. Exact failures, reruns, commands and all five disposable cleanup results: [Cash_Supplemental_UI.md](Cash_Supplemental_UI.md). Unchanged cash execution/DOM-06/socket evidence reused, not re-certified. Actual API/DB administration flow is separate from browser operation.
+
+Partially integrated: service-charge collection/transfer/warehouse settlement backend contracts work under DOM-05/06 evidence; their client action screens are not part of this administration milestone. Deliberately unavailable: merchant COD monetary basis, accounting, FX, suspended-holder cash recovery, browser owner signing, automatic prerequisites/grants and unconfirmed-intent abandonment. Awaiting external verification: this UI's rendered desktop/tablet/mobile/zoom/accessibility review, real-device/storage/provider and production configuration gates. Visual verification pending; no screenshots/browser claims and no retry of rejected Computer Use.
+
+Next proposed finite client batch, not started: approved pricing/payer/CASH instruction action integration using the existing accepted financial profiles, followed by separate restricted service-charge cash screens. No new policy or authority is implied. Older handoffs below are historical.
+
+# Historical initial issuing-entity setup UI readiness (2026-10-08)
 
 Implemented: independent setup proposer/checker workspace with blank explicit currency/month/timezone inputs, null reporting currency, exact immutable proposal/hash/proposer inspection, independent approve/reject reasons and read-only published entity. No general settings.manage or authority inferred from administrator/financial delegation status. Existing owner appointment and selected-company scope remain prerequisites.
 
