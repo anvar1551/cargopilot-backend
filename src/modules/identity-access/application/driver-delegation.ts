@@ -227,6 +227,70 @@ async function assertNoActiveDriverWork(tx: Tx, m: Awaited<ReturnType<typeof mem
 }
 const mutationSchema = z.object({ operationId: operationIdSchema, membershipId: operationIdSchema,
   action: z.enum(["grant", "revoke"]), profileRevision: driverProfileSchema, reason: reasonSchema }).strict();
+const discoverySchema = z.object({ limit: z.coerce.number().int().min(1).max(50).default(20), cursor: z.string().max(512).optional() }).strict();
+function discovery(input: unknown, c: Context, kind: string) {
+  const p = discoverySchema.parse(input); let after: string | undefined;
+  if (p.cursor) {
+    try {
+      const v = z.object({ tenantId: operationIdSchema, companyId: operationIdSchema, membershipId: operationIdSchema,
+        kind: z.literal(kind), after: operationIdSchema }).strict().parse(JSON.parse(Buffer.from(p.cursor,"base64url").toString("utf8")));
+      if (v.tenantId !== c.tenantId || v.companyId !== c.companyId || v.membershipId !== c.companyMembershipId) fail("DELEGATION_CURSOR_REJECTED",400);
+      after = v.after;
+    } catch { fail("DELEGATION_CURSOR_REJECTED",400); }
+  }
+  return { ...p, after, next: (id: string) => Buffer.from(JSON.stringify({ tenantId:c.tenantId,companyId:c.companyId,membershipId:c.companyMembershipId,kind,after:id })).toString("base64url") };
+}
+export async function readDriverDelegation(db: PrismaClient, actor: AppUser) {
+  const c=context(actor);
+  return db.$transaction(async tx => {
+    const a=await authority(tx,c);
+    return { ceilingRevision:a.ceilingRevision,companyMembershipId:c.companyMembershipId,
+      profiles:driverCeilingSchema.parse(a.profileRevisions).map(revision=>({revision,driverType:profileDriverType(revision)})),
+      canInvite:keys(await member(tx,c.companyMembershipId)).includes("membership.invite") };
+  },options);
+}
+export async function listDriverInvitations(db: PrismaClient, actor: AppUser, input: unknown) {
+  const c=context(actor),p=discovery(input,c,"driver-invitations");
+  return db.$transaction(async tx=>{
+    await authority(tx,c,true);
+    const rows=await tx.companyDriverInvitation.findMany({where:{tenantId:c.tenantId,companyId:c.companyId,inviterMembershipId:c.companyMembershipId,
+      ...(p.after?{id:{gt:p.after}}:{})},select:{id:true,operationId:true,email:true,profileRevision:true,state:true,expiresAt:true,createdAt:true,acceptedMembershipId:true},orderBy:{id:"asc"},take:p.limit+1});
+    return {items:rows.slice(0,p.limit).map(r=>({id:r.id,operationId:r.operationId,email:r.email,profileRevision:r.profileRevision,
+      state:r.state==="pending"&&r.expiresAt.getTime()<=Date.now()?"expired":r.state,expiresAt:r.expiresAt,createdAt:r.createdAt,acceptedMembershipId:r.acceptedMembershipId})),
+      nextCursor:rows.length>p.limit?p.next(rows[p.limit-1].id):null};
+  },options);
+}
+export async function listDriverEligibility(db: PrismaClient, actor: AppUser, input: unknown) {
+  const c=context(actor),p=discovery(input,c,"driver-grants");
+  return db.$transaction(async tx=>{
+    const a=await authority(tx,c);
+    const rows=await tx.companyDriverEligibility.findMany({where:{tenantId:c.tenantId,companyId:c.companyId,userId:{not:c.id},...(p.after?{membershipId:{gt:p.after}}:{})},
+      select:{membershipId:true,userId:true,tenantMembershipId:true,profileRevision:true,driverType:true,roleId:true,enabled:true,
+        member:{select:{user:{select:{name:true}}}},acceptedAction:{select:{action:true,result:true}}},orderBy:{membershipId:"asc"},take:p.limit+1});
+    const items=[];
+    for(const e of rows.slice(0,p.limit)) {
+      try {
+        const m=await member(tx,e.membershipId);
+        await withinCeiling(tx,a,driverProfileSchema.parse(e.profileRevision));
+        const accepted=e.acceptedAction.result as {companyMembershipId?:string;profileRevision?:string};
+        if(m.userId!==e.userId||m.tenantId!==c.tenantId||m.companyId!==c.companyId||m.tenantMembershipId!==e.tenantMembershipId||m.scopes.length||
+          m.roles.some(r=>r.roleId!==e.roleId)||!['accept','grant'].includes(e.acceptedAction.action)||accepted?.companyMembershipId!==m.id||accepted.profileRevision!==e.profileRevision||
+          e.driverType!==profileDriverType(e.profileRevision as OperationalProfile)||
+          await tx.companyDriverDelegationAuthority.findUnique({where:{membershipId:m.id},select:{membershipId:true}})||
+          await tx.companyDelegationAuthority.findUnique({where:{membershipId:m.id},select:{membershipId:true}})) continue;
+        const expected=[...OPERATIONAL_PROFILES[e.profileRevision as OperationalProfile]].sort();
+        const role=m.roles[0]?.role;
+        if(e.enabled ? m.roles.length!==1||role?.code!==e.profileRevision||role.isSystem||role.isOwnerRole||role.companyId!==c.companyId||JSON.stringify([...keys(m)].sort())!==JSON.stringify(expected) : m.roles.length!==0) continue;
+        let activeWork=false;
+        try {await assertNoActiveDriverWork(tx,m);} catch(error) {if((error as {code?:string}).code!=="DELEGATION_DRIVER_ACTIVE_WORK")throw error;activeWork=true;}
+        // Nonlocking metadata reads never take eligibility SHARE after authority:
+        // mutations acquire eligibility before credentials/membership/authority.
+        items.push({membershipId:m.id,name:e.member.user.name,email:m.user.email,profileRevision:e.profileRevision,driverType:e.driverType,enabled:e.enabled,managed:true,activeWork});
+      } catch(error) {if((error as {statusCode?:number}).statusCode!==403)throw error;}
+    }
+    return {items,nextCursor:rows.length>p.limit?p.next(rows[p.limit-1].membershipId):null};
+  },options);
+}
 export async function mutateCompanyDriverEligibility(db: PrismaClient, actor: AppUser, input: unknown) {
   const c = context(actor), v = mutationSchema.parse(input);
   const target = await db.companyMembership.findUnique({ where: { id: v.membershipId }, select: { userId: true } });

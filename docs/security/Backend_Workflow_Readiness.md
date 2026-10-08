@@ -1,3 +1,24 @@
+# Current driver administration readiness (2026-10-08)
+
+Selected-context driver administration is implemented: accepted driver ceiling,
+original-inviter invitation/status inventory, and manageable membership-specific
+eligibility reads; frontend invitation/acceptance/selectors/replacement/revocation
+use the existing locked mutations and immutable intents. No profile, permission,
+scope, User.driverType, financial or native-app expansion. Additive backend reads
+must precede frontend rollout.
+
+Evidence: 7 focused mocked backend, 20 client intent/acceptance, 5 client discovery
+and 12 distinct actual HTTP/PostgreSQL cases; one browser enrollment/login/managed
+replacement/retry/revocation journey; desktop/mobile inspection; final no-emit and
+focused lint. Existing concurrency/rollback/logistics/socket evidence reused.
+No new real-device, Redis, email, provider/storage or production-scale validation.
+Owned PostgreSQL/tmpfs cleaned; servers stopped; new frontend temporary directory
+cleanup policy-rejected and left for manual cleanup.
+
+Exact contracts/limitations: [Driver_Administration_UI.md](Driver_Administration_UI.md).
+Next UI milestone is controlled warehouse provisioning after review; not started.
+Earlier readiness/handoff sections below are historical.
+
 # Current DOM-06 late-obligation correction (2026-10-07)
 
 Baseline `eeeec82d76357f38613dc416d0f1f1691e921fd0`.
