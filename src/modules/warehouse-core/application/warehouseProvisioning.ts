@@ -82,3 +82,18 @@ export async function createControlledWarehouse(db: PrismaClient, actor: AppUser
     await record(tx, c, operationId, "create", fingerprint, warehouse, "Controlled warehouse creation", warehouse.id); return warehouse;
   }, options);
 }
+
+/** Advisory metadata only; creation independently reloads/locks authority. */
+export async function readWarehouseProvisioningAuthority(db: PrismaClient, actor: AppUser) {
+  const c = context(actor);
+  await requireWarehouseAccess(actor, "warehouse.create");
+  return db.$transaction(async tx => {
+    const m = await member(tx, c.companyMembershipId); agrees(m, c);
+    const a = (await tx.$queryRaw<any[]>`SELECT a.*,j.action AS "acceptedAction",j.result AS "acceptedResult" FROM "WarehouseProvisioningAuthority" a
+      JOIN "WarehouseProvisioningAction" j ON j."operationId"=a."acceptedOperationId" AND j."membershipId"=a."membershipId" AND j."tenantId"=a."tenantId" AND j."companyId"=a."companyId"
+      WHERE a."membershipId"=${m.id}::uuid`)[0];
+    if (!a?.enabled || a.profileRevision !== WAREHOUSE_PROVISIONING_REVISION || a.userId !== c.id || a.tenantId !== c.tenantId || a.companyId !== c.companyId || a.tenantMembershipId !== c.tenantMembershipId || a.acceptedAction !== "operator-authorize" || a.acceptedResult?.companyMembershipId !== m.id || a.acceptedResult?.enabled !== true ||
+      !keys(m).includes("warehouse.create") || !m.scopes.some(s => s.scopeType === "company" && s.scopeRefId === c.companyId)) throw warehouseAccessError("Accepted warehouse provisioning authority required");
+    return { profileRevision: WAREHOUSE_PROVISIONING_REVISION, companyMembershipId: c.companyMembershipId, companyId: c.companyId, tenantId: c.tenantId, accepted: true };
+  }, options);
+}

@@ -9,6 +9,8 @@ import {
 import { normalizeWarehouseType } from "../application/warehouse.shared";
 import { warehouseView, warehouseDetailView } from "../application/warehouseProjection";
 import { rejectWarehouseFields } from "../application/warehouseAccess";
+import prisma from "../../../config/prismaClient";
+import { readWarehouseProvisioningAuthority } from "../application/warehouseProvisioning";
 
 function sendWarehouseError(reply: any, error: any, fallback: string) {
   if (error?.code === "P2025") return reply.code(404).send({ error: "Warehouse not found" });
@@ -25,6 +27,10 @@ function parseCoordinate(value: unknown, axis: "lat" | "lng") {
 }
 
 const warehouseFastifyRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.get("/provisioning-authority", { onRequest: async (_request, reply) => { reply.header("Cache-Control", "no-store"); }, preHandler: fastifyAuth({ permission: "warehouse.create" }) }, async (request, reply) => {
+    try { return await readWarehouseProvisioningAuthority(prisma, request.user!); }
+    catch (error) { return sendWarehouseError(reply, error, "Failed to read warehouse provisioning authority"); }
+  });
   fastify.post(
     "/",
     { preHandler: fastifyAuth({ permission: "warehouse.create" }) },

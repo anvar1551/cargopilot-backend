@@ -1,4 +1,33 @@
-# Current driver administration readiness (2026-10-08)
+# Current warehouse workspace readiness (2026-10-08)
+
+Implemented: scoped list/search/detail, all six supported create/edit fields,
+accepted provisioning-authority display, durable context-bound creation retries
+and separate approved staff-resource link/selector. Creation grants no access.
+Additive GET /api/warehouses/provisioning-authority is no-store and read-only;
+existing writes independently revalidate authority. Backend-first rollout.
+
+Executed: 12 client cases, 8 mocked backend reads, 8 distinct HTTP/PostgreSQL
+cases and one actual browser create/reload/retry/detail/edit/staff-selector journey.
+Final no-emit checks and focused lint passed. Existing DOM-02 concurrency,
+delegation, custody and socket evidence reused unchanged; no new transport claim.
+Explicit synthetic pre-existing editor role/scope and separate owner-approved
+ceiling were prerequisites. No automatic permission or policy expansion.
+
+Deliberately unavailable: uncertain update replay/reconciliation, delete,
+assignment management and browser owner signing. Updates lack server receipts
+and version fencing. Real keys/provisioning/delivery, production-scale behavior,
+native-device and live storage/provider verification remain unverified.
+Existing login-layout hydration warnings remain a client follow-up.
+
+Cleanup: owned PostgreSQL/tmpfs and API removed; test listeners stopped.
+New cp-frontend-warehouse-ui-owned-loZwml cleanup rejected by policy; preserved
+for manual cleanup without bypass. Prior blocked directories and dist preserved.
+Exact contracts/evidence: [Warehouse_Provisioning_UI.md](Warehouse_Provisioning_UI.md).
+
+Next finite task after review: financial-actor administration discovery/UI under
+existing independent accepted ceilings; not started. Older handoffs below are historical.
+
+# Historical driver administration readiness (2026-10-08)
 
 Selected-context driver administration is implemented: accepted driver ceiling,
 original-inviter invitation/status inventory, and manageable membership-specific
