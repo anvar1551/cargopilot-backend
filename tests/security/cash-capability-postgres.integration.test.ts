@@ -139,7 +139,7 @@ async function cashGroup(){
  const entity=await initialEntity(a,checker.accepted);
  const driverOwner=syntheticDriverOwner();let driver:any;
  try{await authorizeCompanyDriverDelegator(mockDb,driverOwner.request(a.companyMembershipId,["local-driver.v1"]));const invitation=await createCompanyDriverInvitation(mockDb,a.actor,{operationId:randomUUID(),email:randomUUID()+"@example.invalid",profileRevision:"local-driver.v1",reason:"Synthetic driver"});driver=await acceptCompanyDriverInvitation(mockDb,{operationId:randomUUID(),token:invitation.token,name:"Synthetic cash driver",password});}finally{driverOwner.cleanup();}
- const result={...a,warehouse,second,entity,maker:maker.accepted,checker:checker.accepted,staff:staff.accepted,clerk:clerk.accepted,driver,makerPassword:maker.pass,checkerPassword:checker.pass};
+ const result={...a,warehouse,second,entity,maker:maker.accepted,checker:checker.accepted,staff:staff.accepted,clerk:clerk.accepted,driver,makerPassword:maker.pass,checkerPassword:checker.pass,staffPassword:staff.pass,clerkPassword:clerk.pass};
  await cashOwner(result,result.maker,"proposer",[warehouse.id,second.id]);await cashOwner(result,result.checker,"checker",[warehouse.id,second.id]);return result;
 }
 const actor=(m:any)=>({...m,id:m.userId,membershipId:m.companyMembershipId});
@@ -754,4 +754,59 @@ it("pricing UI HTTP: independently approved discount exception/revision and froz
  const late=await createOrderForActor({user:pricingUi.maker,body:{...pricingUi.body,operationId:randomUUID()}});await mockDb.order.update({where:{id:late.payload.order.id},data:{status:"picked_up"}});const bill=await cashHttp(`/api/pricing/orders/${late.payload.order.id}/bill-to`,pricingMakerToken,{...pricingPayer,operationId:randomUUID()});expect(bill.status).toBe(201);
  const denied=await cashDenied(`/api/pricing/orders/${late.payload.order.id}/service-payment-instruction`,pricingMakerToken,{operationId:randomUUID(),billToId:bill.data.id,method:"CASH",collectionParty:"SENDER",evidence:"Too late",reason:"No reopen"},409);expect(denied.code).toBe("CASH_COLLECTION_WINDOW_CLOSED");
  const h=await cashReadUnchanged(workflow("order","pricing.orders.approve","&id="+pricingOrder+"&limit=1"),pricingCheckerToken);expect(h.prices.nextCursor).toBeTruthy();const next=await cashReadUnchanged(workflow("order","pricing.orders.approve","&id="+pricingOrder+"&limit=1&cursor="+encodeURIComponent(h.prices.nextCursor)),pricingCheckerToken);expect(next.order.id).toBe(pricingOrder);expect(next.prices.items[0].id).not.toBe(h.prices.items[0].id);expect(next.prices.items[0].policy.content).toHaveProperty("rounding");
+});
+
+import cashActionRoutes from "../../src/modules/orders-core/transport/routes/cash.routes";
+let actionsUi:any,actionsDriverToken:string,actionsStaffToken:string,actionsCheckerToken:string,actionsCollect:any,actionsOffer:any,actionsAccept:any;
+const cashActionUrl=(suffix:string)=>`/api/orders/${actionsUi.orderId}/cash/${suffix}`;
+it("cash actions UI HTTP: accepted supplement, bounded scoped discovery, named projections and no read effects",async()=>{
+ actionsUi=await pricedJourney();
+ uiApp=Fastify({logger:false});await uiApp.register(identityRoutes,{prefix:"/api/auth",rateLimiter:{consume:async({limit,windowMs}:any)=>({allowed:true,count:1,remaining:limit-1,limit,resetAfterMs:windowMs,backend:"local"})}} as any);await uiApp.register(cashActionRoutes,{prefix:"/api/orders"});await uiApp.ready();
+ actionsDriverToken=await uiLogin(actionsUi.driver,password);actionsStaffToken=await uiLogin(actionsUi.staff,actionsUi.staffPassword);actionsCheckerToken=await uiLogin(actionsUi.clerk,actionsUi.clerkPassword);
+ const access=await cashReadUnchanged("/api/orders/cash/access",actionsDriverToken);expect(access).toMatchObject({membershipId:actionsUi.driver.companyMembershipId,profileRevision:"local-driver-cash.v1",permissions:["cash.custody.read","cash.collect","cash.handoff"]});expect(access.warehouses).toEqual([{id:actionsUi.warehouse.id,name:"Synthetic cash warehouse"}]);
+ const queue=await cashReadUnchanged("/api/orders/cash/queue?limit=1",actionsDriverToken);expect(queue.items).toHaveLength(1);expect(queue.items[0]).toMatchObject({orderId:actionsUi.orderId,obligationId:actionsUi.price.id,amount:"100.0000",collectionParty:"SENDER",holderMembershipId:null,offerId:null});
+ await cashReadUnchanged(cashActionUrl("preflight"),actionsDriverToken);expect(await mockDb.membershipScope.count({where:{membershipId:actionsUi.driver.companyMembershipId}})).toBe(0);
+});
+it("cash actions UI HTTP: anonymous, ordinary and foreign actors denied; malformed pages and monetary fields have no effects",async()=>{
+ await cashReadUnchanged("/api/orders/cash/access",undefined,401);const ordinary=await uiLogin(actionsUi.maker,actionsUi.pricingMakerPassword);await cashReadUnchanged("/api/orders/cash/access",ordinary,403);
+ await cashDenied(cashActionUrl("collect"),ordinary,{operationId:randomUUID(),kind:"service_charge",obligationId:actionsUi.price.id},403);
+ const before=await graphDigest();const bad=await cashHttp(cashActionUrl("collect"),actionsDriverToken,{operationId:randomUUID(),kind:"service_charge",obligationId:actionsUi.price.id,amount:1});expect(bad.status).toBe(400);expect(bad.data.error).toBe("CASH_INPUT_INVALID");expect(await graphDigest()).toBe(before);
+ const foreign=await pricedJourney(),token=await uiLogin(foreign.driver,password);await cashReadUnchanged(cashActionUrl("preflight"),token,404);await cashReadUnchanged(cashActionUrl("recipients")+`?warehouseId=${actionsUi.warehouse.id}`,token,404);
+ await cashDenied(cashActionUrl("collect"),token,{operationId:randomUUID(),kind:"service_charge",obligationId:actionsUi.price.id},403);
+});
+it("cash actions UI HTTP: collection and immutable matching/conflicting receipts preserve exact authority",async()=>{
+ actionsCollect={operationId:randomUUID(),kind:"service_charge",obligationId:actionsUi.price.id,note:"Synthetic physical collection"};const r=await cashHttp(cashActionUrl("collect"),actionsDriverToken,actionsCollect);expect(r.status).toBe(200);expect(r.data.order).toMatchObject({amount:"100",currency:"UZS",state:"held",holderMembershipId:actionsUi.driver.companyMembershipId});actionsCollect.result=r.data.order;
+ const before=await graphDigest();expect((await cashHttp(cashActionUrl("collect"),actionsDriverToken,Object.fromEntries(Object.entries(actionsCollect).filter(([k])=>k!=="result")))).data).toEqual(r.data);expect(await graphDigest()).toBe(before);
+ await cashDenied(cashActionUrl("collect"),actionsDriverToken,{...Object.fromEntries(Object.entries(actionsCollect).filter(([k])=>k!=="result")),note:"Changed intent"},409);
+ const rows=(await cashReadUnchanged(cashActionUrl("preflight"),actionsDriverToken)).items;expect(rows[0]).toMatchObject({holderName:"Synthetic cash driver",holderMembershipId:actionsUi.driver.companyMembershipId});
+});
+it("cash actions UI HTTP: authoritative destination selectors reject fabricated handover; parcel intake retains cash holder",async()=>{
+ const empty=await cashReadUnchanged(cashActionUrl("recipients")+`?warehouseId=${actionsUi.warehouse.id}`,actionsDriverToken);expect(empty.items).toEqual([]);
+ await warehouseOffer(actionsUi);await physical(actionsUi,actionsUi.staff,"intake",{warehouseId:actionsUi.warehouse.id});expect((await mockDb.order.findUniqueOrThrow({where:{id:actionsUi.orderId}})).assignedDriverId).toBeNull();
+ const r=await cashReadUnchanged(cashActionUrl("recipients")+`?warehouseId=${actionsUi.warehouse.id}&limit=1`,actionsDriverToken);let items=r.items,next=r.meta.nextCursor;let pages=0;
+ while(next){if(++pages>10)throw Error("Unbounded candidates");const p=await cashReadUnchanged(cashActionUrl("recipients")+`?warehouseId=${actionsUi.warehouse.id}&limit=1&cursor=${next}`,actionsDriverToken);items.push(...p.items);next=p.meta.nextCursor;}
+ expect(items).toEqual([{membershipId:actionsUi.staff.companyMembershipId,name:"Synthetic recipient",profileRevision:"warehouse-cash.v1",warehouseId:actionsUi.warehouse.id}]);
+ if(r.meta.nextCursor)await cashReadUnchanged(cashActionUrl("recipients")+`?warehouseId=${actionsUi.warehouse.id}&limit=2&cursor=${r.meta.nextCursor}`,actionsDriverToken,400);
+ const state=await cashReadUnchanged(cashActionUrl("preflight"),actionsDriverToken);expect(state.items[0].holderMembershipId).toBe(actionsUi.driver.companyMembershipId);
+});
+it("cash actions UI HTTP: handoff offer retains holder; exact recipient accepts and retries do not duplicate custody",async()=>{
+ actionsOffer={operationId:randomUUID(),kind:"service_charge",expectedEventId:actionsCollect.result.expectedEventId,recipientMembershipId:actionsUi.staff.companyMembershipId,recipientWarehouseId:actionsUi.warehouse.id};
+ const offered=await cashHttp(cashActionUrl("handoff"),actionsDriverToken,actionsOffer);expect(offered.status).toBe(200);expect(offered.data.order).toMatchObject({state:"offered",holderMembershipId:actionsUi.driver.companyMembershipId});
+ const before=await graphDigest();expect((await cashHttp(cashActionUrl("handoff"),actionsDriverToken,actionsOffer)).data).toEqual(offered.data);expect(await graphDigest()).toBe(before);
+ const duplicateBefore=await graphDigest();const second=await cashHttp(cashActionUrl("handoff"),actionsDriverToken,{...actionsOffer,operationId:randomUUID()});expect(second.status).not.toBe(200);expect(await graphDigest()).toBe(duplicateBefore);
+ const snapshot=await cashReadUnchanged(cashActionUrl("preflight"),actionsStaffToken);expect(snapshot.items.find((x:any)=>x.offerId===offered.data.order.offerId)).toMatchObject({recipientName:"Synthetic recipient",recipientWarehouseName:"Synthetic cash warehouse",holderName:"Synthetic cash driver",offerId:offered.data.order.offerId});
+ actionsAccept={operationId:randomUUID(),kind:"service_charge",expectedEventId:actionsCollect.result.expectedEventId,offerId:offered.data.order.offerId};
+ await cashDenied(cashActionUrl("handoff/accept"),actionsDriverToken,actionsAccept,403);
+ const accepted=await cashHttp(cashActionUrl("handoff/accept"),actionsStaffToken,actionsAccept);expect(accepted.status).toBe(200);expect(accepted.data.order).toMatchObject({state:"held",holderMembershipId:actionsUi.staff.companyMembershipId,holderWarehouseId:actionsUi.warehouse.id});actionsAccept.result=accepted.data.order;
+ const graph=await graphDigest();expect((await cashHttp(cashActionUrl("handoff/accept"),actionsStaffToken,Object.fromEntries(Object.entries(actionsAccept).filter(([k])=>k!=="result")))).data).toEqual(accepted.data);expect(await graphDigest()).toBe(graph);
+});
+it("cash actions UI HTTP: separate checker settles warehouse-held cash; matching retry leaves no duplicate or accounting/invoice effect",async()=>{
+ const intent={operationId:randomUUID(),kind:"service_charge",expectedEventId:actionsAccept.result.expectedEventId};await cashDenied(cashActionUrl("settle"),actionsStaffToken,intent,403);
+ const r=await cashHttp(cashActionUrl("settle"),actionsCheckerToken,intent);expect(r.status).toBe(200);expect(r.data.order).toMatchObject({amount:"100",currency:"UZS",state:"settled",holderMembershipId:null});
+ const before=await graphDigest();expect((await cashHttp(cashActionUrl("settle"),actionsCheckerToken,intent)).data).toEqual(r.data);expect(await graphDigest()).toBe(before);
+ const collection=await mockDb.cashCollection.findUniqueOrThrow({where:{orderId_kind:{orderId:actionsUi.orderId,kind:"service_charge"}},include:{events:true}});expect(collection).toMatchObject({status:"settled",currentHolderType:"finance",collectedAmount:100});expect(collection.events).toHaveLength(4);expect(await mockDb.cashCustodyOperation.count({where:{orderId:actionsUi.orderId}})).toBe(3);expect(await mockDb.financeSourceEvent.count()).toBe(0);expect(await mockDb.invoice.count({where:{orderId:actionsUi.orderId}})).toBe(0);
+});
+it("cash actions UI HTTP: revoked supplement invalidates session and fresh authority; base driver eligibility remains",async()=>{
+ await revokeCashCapabilityGrant(mockDb,actor(actionsUi.checker),{operationId:randomUUID(),membershipId:actionsUi.driver.companyMembershipId,legalEntityId:actionsUi.entity.id,expectedAcceptanceId:(await acceptedCashCapability(mockDb,actor(actionsUi.driver))).acceptedOperationId,reason:"Synthetic immediate revocation"});
+ await cashReadUnchanged("/api/orders/cash/access",actionsDriverToken,401);const token=await uiLogin(actionsUi.driver,password);await cashReadUnchanged("/api/orders/cash/access",token,403);expect(await requireAcceptedDriver(mockDb,actionsUi,actionsUi.driver.companyMembershipId,"local")).toMatchObject({userId:actionsUi.driver.userId});await uiApp.close();
 });

@@ -1,3 +1,13 @@
+# Current restricted service-charge cash UI (2026-10-08)
+
+Implemented: common selected-context cash workspace, exact queue/preflight, named accepted capability/warehouse/recipient selectors, collection tied to persisted obligationId, offer retaining holder, exact recipient acceptance and separate warehouse checker settlement. Immutable requests persist before send/read-back under exclusive locks; only original explicit retries are supported. Legacy holder-ID cash submission paths are contained and records retained.
+
+Evidence: 19 distinct client cases (16 adapter/affordance + 3 actual static workspace markup), 7 distinct actual Fastify HTTP/PostgreSQL cases, final both no-emit and focused lint. All 122 unchanged migrations applied only to new disposable test databases; three ownership-verified cleanups. Existing concurrency/rollback/timing/Socket.IO evidence reused. No browser/device or real storage/provider claim. Visual verification pending. Details: Restricted_Service_Cash_UI.md.
+
+Backend additive no-store reads: /api/orders/cash/access and /api/orders/:id/cash/recipients; minimal names added to queue/preflight. No schema, permission, base-role/scope or cash execution-policy changes. Native driver unchanged; backend reads must precede UI rollout. Cash administration and cash execution remain distinct authority contracts.
+
+Unavailable: legacy cash reconciliation, merchant COD, suspended-holder cash recovery, refunds/late corrections, offer replacement/cancellation, accounting/FX and invoice-paid automation. Separate invoice issuance UI remains unimplemented. Production/device/visual release gates remain open. Next finite UI task: same-base-currency manual invoice screen using existing authorized source/receipt contracts; not started. Older handoffs below are historical.
+
 # Current approved pricing and order billing preparation (2026-10-08)
 
 Implemented with focused client and actual HTTP/PostgreSQL evidence: supported tariff drafts; immutable tariff/calculation-policy proposals and independent decisions; exact owned history/current publication; named templates/customers; explicit payer and CASH sender/recipient instruction; server exact acceptance; exception/revision inspection and independent approval; exact components/policy rounding/current service-charge identity. New bounded no-store discovery uses existing fresh accepted authority and object scopes. No permissions, schema, accounting or cash execution changes.

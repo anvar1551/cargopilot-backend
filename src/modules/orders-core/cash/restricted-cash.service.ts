@@ -32,8 +32,8 @@ async function pin(tx:Tx,ids:string[],context:{tenantId:string;companyId:string}
  }
  return members;
 }
-async function held(tx:Tx,c:Cap,order:any,kind:string){
- const state=(await tx.$queryRaw<any[]>`SELECT * FROM "RestrictedCashState" WHERE "orderId"=${order.id}::uuid AND kind=${kind} AND "tenantId"=${c.tenantId}::uuid AND "companyId"=${c.companyId}::uuid FOR UPDATE`)[0];
+async function held(tx:Tx,c:Cap,order:any,kind:string,lock=true){
+ const state=(await tx.$queryRaw<any[]>(Prisma.sql`SELECT * FROM "RestrictedCashState" WHERE "orderId"=${order.id}::uuid AND kind=${kind} AND "tenantId"=${c.tenantId}::uuid AND "companyId"=${c.companyId}::uuid ${lock?Prisma.sql`FOR UPDATE`:Prisma.empty}`))[0];
  const basis=await currentServiceObligation(tx,order.id);
  if(!basis || !state || basis.priceApprovalId!==state.priceApprovalId || basis.collectionId!==state.collectionId || !decimal(basis.amount).eq(state.amount) || basis.currency!==state.currency)return cashDenied("CASH_EXACT_OWNERSHIP_UNPROVEN",409);
  if(!state||state.legalEntityId!==c.legalEntityId)return cashDenied("CASH_EXACT_OWNERSHIP_UNPROVEN",409);
@@ -207,10 +207,60 @@ export async function readRestrictedCash(actor:AppUser,input:unknown){
    AND (${after}::uuid IS NULL OR o.id>${after}::uuid) AND (${page.orderId??null}::uuid IS NULL OR o.id=${page.orderId??null}::uuid)
    AND (s."collectionId" IS NOT NULL OR (price."snapshotId" IS NOT NULL AND NOT EXISTS(SELECT 1 FROM "CashCollection" legacy WHERE legacy."orderId"=o.id AND legacy.kind='service_charge' AND legacy.status<>'expected')))
    ORDER BY o.id LIMIT ${page.limit+1}`);
-  const items=rows.slice(0,page.limit).map(r=>({id:r.orderId,orderId:r.orderId,orderNumber:r.orderNumber,orderStatus:r.orderStatus,obligationId:r.obligationId,collectionParty:r.collectionParty,kind:"service_charge",expectedEventId:r.expectedEventId??null,
+  const visible=rows.slice(0,page.limit);
+  const names=await cashNames(tx,cap,visible);
+  const items=visible.map(r=>({id:r.orderId,orderId:r.orderId,orderNumber:r.orderNumber,orderStatus:r.orderStatus,obligationId:r.obligationId,collectionParty:r.collectionParty,kind:"service_charge",expectedEventId:r.expectedEventId??null,
    amount:r.amount??null,currency:r.currency??null,state:r.cashStatus??"preflight-required",offerId:r.offerId??null,recipientMembershipId:r.recipientMembershipId??null,recipientWarehouseId:r.recipientWarehouseId??null,
-   holderMembershipId:r.cashStatus==="settled"?null:r.holderMembershipId??null,holderWarehouseId:r.cashStatus==="settled"?null:r.holderWarehouseId??null,acceptedServicePrice:r.acceptedServicePrice??null,acceptedCurrency:r.acceptedCurrency??null}));
+   holderMembershipId:r.cashStatus==="settled"?null:r.holderMembershipId??null,holderWarehouseId:r.cashStatus==="settled"?null:r.holderWarehouseId??null,acceptedServicePrice:r.acceptedServicePrice??null,acceptedCurrency:r.acceptedCurrency??null,
+   holderName:r.cashStatus==="settled"?null:names.members.get(r.holderMembershipId)??null,holderWarehouseName:r.cashStatus==="settled"?null:names.warehouses.get(r.holderWarehouseId)??null,
+   recipientName:names.members.get(r.recipientMembershipId)??null,recipientWarehouseName:names.warehouses.get(r.recipientWarehouseId)??null}));
   if(page.orderId&&!items.length)return cashDenied("CASH_WORK_NOT_FOUND",404);
   return {items,meta:{limit:page.limit,hasNext:rows.length>page.limit,nextCursor:rows.length>page.limit?Buffer.from(JSON.stringify({v:1,context:binding,after:items[items.length-1].orderId})).toString("base64url"):null}};
+ },{maxWait:3000,timeout:10000});
+}
+
+async function cashNames(tx:Tx,cap:Cap,rows:any[]){
+ const membershipIds=[...new Set(rows.flatMap(r=>[r.holderMembershipId,r.recipientMembershipId]).filter(Boolean))] as string[];
+ const warehouseIds=[...new Set(rows.flatMap(r=>[r.holderWarehouseId,r.recipientWarehouseId]).filter(Boolean))] as string[];
+ const members=await tx.companyMembership.findMany({where:{id:{in:membershipIds},tenantId:cap.tenantId,companyId:cap.companyId},select:{id:true,user:{select:{name:true}}}});
+ const warehouses=await tx.warehouse.findMany({where:{id:{in:warehouseIds},tenantId:cap.tenantId},select:{id:true,name:true}});
+ return {members:new Map(members.map(m=>[m.id,m.user.name])),warehouses:new Map(warehouses.map(w=>[w.id,w.name]))};
+}
+/** Accepted supplement, not token role/permission visibility. No grants or writes. */
+export async function readRestrictedCashAccess(actor:AppUser){
+ return prisma.$transaction(async tx=>{
+  const cap=await acceptedCashCapability(tx,actor,"cash.custody.read",true);
+  const ids=cap.profileRevision==="warehouse-cash.v1"?cap.warehouseIds.filter((x:string)=>cap.member.scopes.some((s:any)=>s.scopeType==="warehouse"&&s.scopeRefId===x)):cap.warehouseIds;
+  const warehouses=await tx.warehouse.findMany({where:{id:{in:ids},tenantId:cap.tenantId},select:{id:true,name:true},orderBy:{id:"asc"}});
+  return {membershipId:cap.membershipId,profileRevision:cap.profileRevision,acceptanceId:cap.acceptedOperationId,legalEntityId:cap.legalEntityId,permissions:cap.permissions,kinds:cap.kinds,warehouses};
+ },{maxWait:3000,timeout:10000});
+}
+const recipientPage=z.object({orderId:id,warehouseId:id.optional(),limit:z.coerce.number().int().min(1).max(25).default(10),cursor:z.string().max(1024).optional()}).strict();
+/** Bounded candidates, each checked using the actual offer policy. No mutation/preflight side effects. */
+export async function readRestrictedCashRecipients(actor:AppUser,input:unknown){
+ const p=recipientPage.parse(input),requested=companyMembershipPrimitives.context(actor);
+ return prisma.$transaction(async tx=>{
+  await tx.$executeRaw`SET LOCAL statement_timeout='5000ms'`;
+  const cap=await acceptedCashCapability(tx,actor,"cash.handoff",true);
+  const order=await tx.order.findFirst({where:{id:p.orderId,tenantId:cap.tenantId,ownerOrgId:cap.companyId,OR:[{assignedOrgId:null},{assignedOrgId:cap.companyId}]}});
+  if(!order)return cashDenied("CASH_WORK_NOT_FOUND",404);
+  const {state}=await held(tx,cap,order,"service_charge",false);
+  if(state.holderMembershipId!==cap.membershipId)return cashDenied("CASH_CURRENT_HOLDER_REQUIRED");
+  await sourceCap(tx,cap,state);
+  const destination=p.warehouseId??null;
+  if(state.holderWarehouseId?destination!==null:!destination||!cap.warehouseIds.includes(destination))return cashDenied("CASH_TRANSFER_FORM_UNSUPPORTED");
+  const binding=createHash("sha256").update(JSON.stringify({requested,acceptance:cap.acceptedOperationId,orderId:order.id,eventId:state.eventId,destination,limit:p.limit})).digest("hex");
+  let after:string|null=null;
+  if(p.cursor){try{const v=z.object({v:z.literal(1),context:z.literal(binding),after:id}).strict().parse(JSON.parse(Buffer.from(p.cursor,"base64url").toString()));if(Buffer.from(JSON.stringify(v)).toString("base64url")!==p.cursor)throw Error();after=v.after;}catch{return cashDenied("CASH_CURSOR_CONTEXT_REQUIRED",400);}}
+  const candidates=await tx.$queryRaw<any[]>`SELECT g."membershipId" FROM "CashCapabilityMembershipGrant" g WHERE g.enabled AND g."tenantId"=${cap.tenantId}::uuid AND g."companyId"=${cap.companyId}::uuid AND g."legalEntityId"=${cap.legalEntityId}::uuid AND g."membershipId"<>${cap.membershipId}::uuid AND (${after}::uuid IS NULL OR g."membershipId">${after}::uuid) ORDER BY g."membershipId" LIMIT ${p.limit+1}`;
+  const items=[];
+  for(const row of candidates.slice(0,p.limit)){
+   try{
+    const to=await target(tx,cap,order,state,row.membershipId,destination);
+    const m=await tx.companyMembership.findFirst({where:{id:to.membershipId,tenantId:cap.tenantId,companyId:cap.companyId},select:{user:{select:{name:true}}}});
+    if(m)items.push({membershipId:to.membershipId,name:m.user.name,profileRevision:to.profileRevision,warehouseId:destination});
+   }catch(e){if(![403,409].includes((e as {statusCode?:number}).statusCode??0))throw e;}
+  }
+  return {items,expectedEventId:state.eventId,meta:{limit:p.limit,hasNext:candidates.length>p.limit,nextCursor:candidates.length>p.limit?Buffer.from(JSON.stringify({v:1,context:binding,after:candidates[p.limit-1].membershipId})).toString("base64url"):null}};
  },{maxWait:3000,timeout:10000});
 }
