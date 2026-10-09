@@ -1,3 +1,13 @@
+# Current manual invoice workspace (2026-10-09)
+
+Implemented: canonical /dashboard/manager/invoices (Sales invoices), owned invoice register/detail and named order preflight, same-base-currency manual issuance from current accepted price/payer, immutable original-context receipt-backed retries and late-response suppression. No displayed UUIDs or technical JSON in this workspace. Order/billing links are consolidated; existing PDF signing remains separately authorized and absent files are explicit. No standalone legacy sales-invoice screen existed to remove; receivables/supplier bills are preserved.
+
+Backend adds only bounded authenticated no-store /api/invoices/workspace views under existing accepted invoice/company/entity/customer/object authorization. No schema, permission, base-profile, calculation or mutation-policy expansion. Roll out reads before client.
+
+Evidence: 17 distinct client cases (including 3 actual React static markup), 8 affected existing navigation regressions, 5 distinct actual HTTP/PostgreSQL cases. Final both no-emit and focused lint; two retained legacy image warnings. Two new exclusively owned loopback PostgreSQL instances/temporary storage removed with ownership verification. Calculations/concurrency/rollback/DOM-06/socket evidence reused. Visual/browser/mobile verification pending; no screenshots or real PDF/storage/provider claim. See Manual_Invoice_UI.md for exact commands, APIs, cleanup and evidence levels.
+
+Unavailable: no generated PDF from issuance alone, no automatic document-signing grant to issuer; FX/accounting/payment updates/corrections/consolidation/merchant COD remain contained. No UUID-free/public-identifier API redesign. Existing manual demo/data, dirty dist and blocked cleanup preserved. Next finite task: user visual/manual invoice acceptance; no next feature batch started. Older handoffs below are historical, including earlier statements that invoice UI remained unimplemented.
+
 # Current restricted service-charge cash UI (2026-10-08)
 
 Implemented: common selected-context cash workspace, exact queue/preflight, named accepted capability/warehouse/recipient selectors, collection tied to persisted obligationId, offer retaining holder, exact recipient acceptance and separate warehouse checker settlement. Immutable requests persist before send/read-back under exclusive locks; only original explicit retries are supported. Legacy holder-ID cash submission paths are contained and records retained.

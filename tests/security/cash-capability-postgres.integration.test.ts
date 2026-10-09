@@ -757,6 +757,47 @@ it("pricing UI HTTP: independently approved discount exception/revision and froz
 });
 
 import cashActionRoutes from "../../src/modules/orders-core/transport/routes/cash.routes";
+import invoiceWorkspaceRoutes from "../../src/modules/invoice-core/transport/fastify-routes";
+let invoiceUi:any,invoiceToken:string,invoiceDriverToken:string,invoiceInput:any,invoiceConfirmed:any;
+const invoiceRead=(view:string,extra="")=>`/api/invoices/workspace?view=${view}${extra}`;
+it("invoice UI HTTP: actual owned named discovery/preflight is bounded no-store and read-only",async()=>{
+ invoiceUi=await pricedJourney();uiApp=Fastify({logger:false});await uiApp.register(identityRoutes,{prefix:"/api/auth",rateLimiter:{consume:async({limit,windowMs}:any)=>({allowed:true,count:1,remaining:limit-1,limit,resetAfterMs:windowMs,backend:"local"})}} as any);await uiApp.register(invoiceWorkspaceRoutes,{prefix:"/api/invoices"});await uiApp.ready();
+ invoiceToken=await uiLogin({userId:invoiceUi.maker.id,companyMembershipId:invoiceUi.maker.companyMembershipId},invoiceUi.pricingMakerPassword);invoiceDriverToken=await uiLogin(invoiceUi.driver,password);
+ const page=await cashReadUnchanged(invoiceRead("orders"),invoiceToken);expect(page.items.map((o:any)=>o.id)).toContain(invoiceUi.orderId);
+ const state=await cashReadUnchanged(invoiceRead("order","&id="+invoiceUi.orderId),invoiceToken);expect(state).toMatchObject({eligible:true,companyName:"Synthetic company",price:{id:invoiceUi.price.id,total:"100.0000",currency:"UZS"},payer:{name:"Synthetic cash payer"}});expect(state.reasons).toEqual([]);expect(JSON.stringify(state)).not.toMatch(/invoiceKey|paymentUrl|password|tokenHash/);
+ await cashReadUnchanged(invoiceRead("orders","&limit=21"),invoiceToken,400);await cashReadUnchanged(invoiceRead("orders","&tenantId="+invoiceUi.tenantId),invoiceToken,400);
+});
+it("invoice UI HTTP: anonymous, nonissuer and foreign context are denied without business effects",async()=>{
+ await cashReadUnchanged(invoiceRead("orders"),undefined,401);await cashReadUnchanged(invoiceRead("order","&id="+invoiceUi.orderId),invoiceDriverToken,403);
+ const foreign=await pricedJourney(),token=await uiLogin({userId:foreign.maker.id,companyMembershipId:foreign.maker.companyMembershipId},foreign.pricingMakerPassword);
+ await cashReadUnchanged(invoiceRead("order","&id="+invoiceUi.orderId),token,404);expect((await cashReadUnchanged(invoiceRead("orders"),token)).items.some((o:any)=>o.id===invoiceUi.orderId)).toBe(false);
+ invoiceInput={operationId:randomUUID(),priceApprovalId:invoiceUi.price.id,reason:"Synthetic explicit manual invoice"};await cashDenied(`/api/invoices/orders/${invoiceUi.orderId}/issue`,invoiceDriverToken,invoiceInput,403);await cashDenied(`/api/invoices/orders/${invoiceUi.orderId}/issue`,token,invoiceInput,404);
+});
+it("invoice UI HTTP: current accepted source issues one same-currency invoice with held accounting fact",async()=>{
+ const result=await cashHttp(`/api/invoices/orders/${invoiceUi.orderId}/issue`,invoiceToken,invoiceInput);expect(result.status).toBe(201);invoiceConfirmed=result.data;expect(result.data).toMatchObject({orderId:invoiceUi.orderId,amount:"100.0000",currency:"UZS",status:"issued",billing:{priceApprovalId:invoiceUi.price.id}});
+ expect(await mockDb.invoice.count({where:{orderId:invoiceUi.orderId}})).toBe(1);expect(await mockDb.invoiceIssuanceReceipt.count({where:{orderId:invoiceUi.orderId}})).toBe(1);expect(await mockDb.billingInvoiceOutbox.findFirst({where:{orderId:invoiceUi.orderId}})).toMatchObject({state:"held_no_accounting_authority"});expect(await mockDb.financeSourceEvent.count()).toBe(0);
+ const page=await cashReadUnchanged(invoiceRead("invoices"),invoiceToken);expect(page.items).toHaveLength(1);expect(page.items[0]).toMatchObject({invoiceNumber:result.data.invoiceNumber,orderNumber:expect.any(String),issuerName:expect.any(String),payer:{name:"Synthetic cash payer"},hasFile:false});expect(JSON.stringify(page)).not.toMatch(/invoiceKey|paymentUrl|password|tokenHash/);
+ const detail=await cashReadUnchanged(invoiceRead("invoice","&id="+result.data.id),invoiceToken);expect(detail.invoiceNumber).toBe(result.data.invoiceNumber);
+});
+it("invoice UI HTTP: fresh matching retry deduplicates; conflicting intent and document authority stay contained",async()=>{
+ const before=await graphDigest(),retry=await cashHttp(`/api/invoices/orders/${invoiceUi.orderId}/issue`,invoiceToken,invoiceInput);expect(retry.status).toBe(201);expect(retry.data).toEqual(invoiceConfirmed);expect(await graphDigest()).toBe(before);
+ await cashDenied(`/api/invoices/orders/${invoiceUi.orderId}/issue`,invoiceToken,{...invoiceInput,reason:"Conflicting original reason"},409);await cashDenied(`/api/invoices/orders/${invoiceUi.orderId}/issue`,invoiceToken,{...invoiceInput,paid:true},400);
+ const state=await cashReadUnchanged(invoiceRead("order","&id="+invoiceUi.orderId),invoiceToken);expect(state.eligible).toBe(false);expect(state.existing.invoiceNumber).toBe(invoiceConfirmed.invoiceNumber);
+ await cashReadUnchanged(`/api/invoices/orders/${invoiceUi.orderId}/url`,invoiceDriverToken,403);expect(mockCashStorage).not.toHaveBeenCalled();
+});
+it("invoice UI HTTP: issuer-only selected membership needs no shipment access; pagination and cursors retain authority",async()=>{
+ // Explicit synthetic identity/company-scope prerequisite, not an invitation or
+ // automatic grant. The business profile is independently accepted below.
+ const identity=await mockDb.user.create({data:{email:randomUUID()+"@example.invalid",name:"Synthetic narrow invoice issuer",password:credentialHash}});
+ const tenant=await mockDb.tenantMembership.create({data:{tenantId:invoiceUi.tenantId,userId:identity.id,status:"active"}});
+ const member=await mockDb.companyMembership.create({data:{tenantId:invoiceUi.tenantId,companyId:invoiceUi.companyId,userId:identity.id,tenantMembershipId:tenant.id,status:"active",scopes:{create:{scopeType:"company",scopeRefId:invoiceUi.companyId}}}});
+ const p=await proposeFinancialGrant(mockDb,invoiceUi.actor,{operationId:randomUUID(),membershipId:member.id,legalEntityId:invoiceUi.entity.id,profileRevisions:["manual-invoice-issuer.v1"],expectedAcceptanceId:null,reason:"Synthetic narrow invoice issuer"});await acceptFinancialGrant(mockDb,actor(invoiceUi.checker),{operationId:randomUUID(),proposalId:p.proposalId,fingerprint:p.fingerprint,reason:"Independent narrow invoice issuer"});
+ const token=await uiLogin({userId:identity.id,companyMembershipId:member.id},password),snapshot=await loadAccessSnapshot({userId:identity.id,membershipId:member.id,companyMembershipId:member.id,tenantMembershipId:tenant.id,tenantId:invoiceUi.tenantId,companyId:invoiceUi.companyId,requireFresh:true});expect(snapshot?.permissionCodes.sort()).toEqual(["customers.read","finance.invoices.issue","finance.invoices.read"].sort());
+ await cashReadUnchanged(invoiceRead("invoice","&id="+invoiceConfirmed.id),token);await cashReadUnchanged(`/api/invoices/orders/${invoiceUi.orderId}/url`,token,403);
+ const made=await createOrderForActor({user:invoiceUi.maker,body:{...invoiceUi.body,operationId:randomUUID()}}),page=await cashReadUnchanged(invoiceRead("orders","&limit=1"),token);expect(page.items).toHaveLength(1);expect(page.nextCursor).toBeTruthy();
+ const next=await cashReadUnchanged(invoiceRead("orders","&limit=1&cursor="+encodeURIComponent(page.nextCursor)),token);expect(next.items).toHaveLength(1);expect(next.items[0].id).not.toBe(page.items[0].id);await cashReadUnchanged(invoiceRead("orders","&limit=1&cursor="+encodeURIComponent(page.nextCursor)),invoiceToken,400);
+ const state=await cashReadUnchanged(invoiceRead("order","&id="+made.payload.order.id),token);expect(state.eligible).toBe(false);expect(state.reasons).toContain("A current accepted price is required.");
+});
 let actionsUi:any,actionsDriverToken:string,actionsStaffToken:string,actionsCheckerToken:string,actionsCollect:any,actionsOffer:any,actionsAccept:any;
 const cashActionUrl=(suffix:string)=>`/api/orders/${actionsUi.orderId}/cash/${suffix}`;
 it("cash actions UI HTTP: accepted supplement, bounded scoped discovery, named projections and no read effects",async()=>{

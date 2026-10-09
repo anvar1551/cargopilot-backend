@@ -1,5 +1,6 @@
 import { FastifyPluginAsync } from "fastify";
 import { ZodError } from "zod";
+import { readInvoiceWorkspace } from "../application/invoice-workspace";
 
 import { presignGetObject } from "../../../utils/s3Presign";
 import { fastifyAuth } from "../../../modules/identity-access/transport/fastify-auth";
@@ -25,6 +26,11 @@ function sendError(reply: any, error: unknown, fallback: string) {
 }
 
 const invoiceFastifyRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.get("/workspace", { preHandler: fastifyAuth() }, async (request, reply) => {
+    reply.header("Cache-Control", "no-store");
+    try { return reply.send(await readInvoiceWorkspace(request.user!, request.query)); }
+    catch (error) { return sendError(reply, error, "Invoice workspace unavailable"); }
+  });
   fastify.get(
     "/",
     { preHandler: fastifyAuth({ permission: "finance.invoices.read" }) },
