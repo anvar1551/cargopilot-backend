@@ -155,13 +155,20 @@ export async function readWarehouseCustody(actor: OrderActor, orderId: string) {
   const a = await requireCustodyReadActor(actor);
   const source = await loadCustodySource(prisma, a, orderId);
   await authorizeCustodyRead(prisma, a, source);
-  const parcels = await prisma.parcel.findMany({ where: { orderId }, select: { id: true }, orderBy: { id: "asc" }, take: 101 });
+  const parcels = await prisma.parcel.findMany({ where: { orderId }, select: { id: true, parcelCode:true, pieceNo:true, pieceTotal:true }, orderBy: { id: "asc" }, take: 101 });
   if (parcels.length > 100) throw orderError("Custody parcel limit exceeded", 409);
   const latest = source.latest;
   const custody = latest ? { id: latest.id, phase: latest.phase, warehouseId: latest.warehouseId,
     destinationWarehouseId: latest.destinationWarehouseId, driverUserId: latest.driverUserId, legId: latest.legId, createdAt: latest.createdAt } : null;
   const pickup = !latest && source.order.status === "picked_up" ? await prisma.tracking.findFirst({ where: { orderId, status: { not: null } },
     orderBy: [{ timestamp: "desc" }, { id: "desc" }], select: { id: true, status: true, actorId: true } }) : null;
-  return { orderId, updatedAt: source.order.updatedAt.toISOString(), custody, parcelIds: parcels.map(p => p.id),
+  const warehouses=await prisma.warehouse.findMany({where:{tenantId:a.tenantId!,id:{in:[source.order.currentWarehouseId,latest?.warehouseId,latest?.destinationWarehouseId].filter((v):v is string=>!!v)}},select:{id:true,name:true},take:3});
+  const actions:string[]=[];
+  for(const action of ["intake","receive","dispatch","last-mile-offer"]){
+    const valid=action==="intake"?source.order.status==="picked_up":action==="receive"?source.order.status==="in_transit":source.order.status==="at_warehouse";
+    if(!valid)continue;
+    try{await authorizeCustodyAction(prisma,a,source,action);actions.push(action);}catch(error){if((error as {statusCode?:number}).statusCode!==403)throw error;}
+  }
+  return { orderId, orderNumber:source.order.orderNumber,status:source.order.status,actions,warehouses,parcels,updatedAt: source.order.updatedAt.toISOString(), custody, parcelIds: parcels.map(p => p.id),
     pickupTrackingId: pickup?.status === "picked_up" && pickup.actorId === a.id ? pickup.id : null };
 }

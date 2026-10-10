@@ -60,3 +60,11 @@ it("snapshot reads use the same verified context and cause no delivery",async()=
   expect(readWarehouseCustody).toHaveBeenCalledWith(expect.objectContaining({companyMembershipId:"synthetic-member"}),"owned-order");
   expect(prisma.userNotification.findFirst).not.toHaveBeenCalled();expect(emitPersistedDriverNotification).not.toHaveBeenCalled();
 }finally{await a.close();}});
+jest.mock("../../src/modules/orders-core/read/custody-options",()=>({readCustodyOptions:jest.fn()}));
+import {readCustodyOptions} from "../../src/modules/orders-core/read/custody-options";
+it("authenticates options before execution, forwards exact selected context and returns no-store without effects",async()=>{const a=await app();try{
+ expect((await a.inject({method:"GET",url:"/api/orders/owned-order/custody-options?kind=drivers&action=dispatch"})).statusCode).toBe(401);expect(readCustodyOptions).not.toHaveBeenCalled();
+ (readCustodyOptions as jest.Mock).mockResolvedValue({items:[],nextCursor:null});const r=await a.inject({method:"GET",url:"/api/orders/owned-order/custody-options?kind=drivers&action=dispatch&limit=2",headers});expect(r.statusCode).toBe(200);expect(r.headers["cache-control"]).toBe("no-store");expect(readCustodyOptions).toHaveBeenCalledWith(expect.objectContaining({companyMembershipId:"synthetic-member"}),"owned-order",{kind:"drivers",action:"dispatch",limit:"2"});
+ (readCustodyOptions as jest.Mock).mockRejectedValue(Object.assign(Error("Denied"),{statusCode:403}));expect((await a.inject({method:"GET",url:"/api/orders/owned-order/custody-options?kind=drivers&action=dispatch",headers})).statusCode).toBe(403);
+ expect(executeWarehouseCustody).not.toHaveBeenCalled();expect(prisma.userNotification.findFirst).not.toHaveBeenCalled();expect(emitPersistedDriverNotification).not.toHaveBeenCalled();expect(emitMutationInvalidation).not.toHaveBeenCalled();
+}finally{await a.close();}});

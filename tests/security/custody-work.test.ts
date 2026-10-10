@@ -64,3 +64,12 @@ it("initial pickup discovery keeps the existing fields with null journal identit
   const sql=query[0].join("?")+query.slice(1).filter((v:any)=>v && typeof v === "object" && typeof v.sql === "string").map((v:any)=>v.sql).join("?");
   expect(sql).toContain("LEFT JOIN LATERAL");expect(sql).toContain('o."assignedDriverId"');expect(sql).toContain('o."ownerOrgId"');expect(sql).toContain("NOT EXISTS");
 });
+it("warehouse search/filter stays within explicit scopes and never runs a foreign warehouse query",async()=>{
+ await expect(listCustodyWork(actor as any,{kind:"warehouse",warehouseId:id(99),search:"SYN-PARCEL"})).rejects.toThrow("warehouse scope");expect(db.$queryRaw).not.toHaveBeenCalled();
+ await listCustodyWork(actor as any,{kind:"warehouse",warehouseId:id(6),search:"SYN-PARCEL"});const call=db.$queryRaw.mock.calls[0];const sql=call[0].join("?")+call.slice(1).filter((v:any)=>v && typeof v.sql==="string").map((v:any)=>v.sql).join("?");expect(sql).toContain('"Parcel"');expect(sql).toContain('o."ownerOrgId"');
+});
+it("search and warehouse selection are bound into pagination identity",async()=>{
+ db.$queryRaw.mockResolvedValue([1,2].map(n=>({orderId:id(20+n),orderNumber:"Synthetic",status:"picked_up",expectedUpdatedAt:new Date(0),expectedEventId:id(30+n),phase:"pickup-offered",currentWarehouseId:null,destinationWarehouseId:id(6),legId:null})));
+ const p=await listCustodyWork(actor as any,{kind:"warehouse",limit:1});db.$queryRaw.mockClear();
+ for(const change of [{search:"SYN-PARCEL"},{warehouseId:id(6)}])await expect(listCustodyWork(actor as any,{kind:"warehouse",limit:1,cursor:p.nextCursor,...change})).rejects.toThrow("cursor");expect(db.$queryRaw).not.toHaveBeenCalled();
+});

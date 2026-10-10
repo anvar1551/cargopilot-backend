@@ -22,7 +22,7 @@ export const ownedCustodyWhere = (actor: OrderActor, orderId: string): Prisma.Or
 
 export async function loadCustodySource(tx: Prisma.TransactionClient, actor: OrderActor, orderId: string) {
   const order = await tx.order.findFirst({ where: ownedCustodyWhere(actor, orderId), select: {
-    id: true, tenantId: true, ownerOrgId: true, assignedDriverId: true, currentWarehouseId: true, status: true, updatedAt: true,
+    id: true, orderNumber: true, tenantId: true, ownerOrgId: true, assignedDriverId: true, currentWarehouseId: true, status: true, updatedAt: true,
   } });
   if (!order) throw orderError("Selected owning operating company required", 403);
   const latest = await tx.orderCustodyAction.findFirst({ where: { orderId, tenantId: actor.tenantId!, companyId: actor.companyId! }, orderBy: { sequence: "desc" } });

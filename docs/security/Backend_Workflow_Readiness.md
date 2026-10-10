@@ -1,3 +1,13 @@
+# Current warehouse operations workspace (2026-10-10)
+
+One canonical /dashboard/warehouse now integrates scoped durable custody discovery, scanning/preflight, whole-parcel intake/receive and explicit linehaul/last-mile nominations. Pending offers remain warehouse-held until exact acceptance. Cash, Sales Invoices and location administration remain canonical separate workflows. Invoice ?order= no longer mounts a competing generic modal.
+
+Evidence: 18 new client cases + 8 affected navigation regressions; 24 distinct affected backend mocked cases; 6 actual HTTP/PostgreSQL cases with restricted origin/destination warehouse staff and accepted zero-scope typed drivers. Final no-emit/lint and verified exclusively owned disposable cleanup. Source contracts, executed/reused distinctions, deployment ordering and limitations: [Warehouse_Operations_UI.md](Warehouse_Operations_UI.md). No policy, permissions, schema or financial execution expansion. Visual/browser/mobile/print verification remains pending. Manual demo/dist/blocked cleanup preserved.
+
+Unavailable: warehouse self-pickup delivery, exception/return overrides and nomination cancellation/recovery; transport planning still needs its separately authorized existing contract. No automatic cash custody transfer. Customer self-service remains distinct, with legacy compatibility work deferred. Next: external review; stop after this finite batch.
+
+Older sections below are historical and do not supersede this current state.
+
 # Current manual invoice workspace (2026-10-09)
 
 Implemented: canonical /dashboard/manager/invoices (Sales invoices), owned invoice register/detail and named order preflight, same-base-currency manual issuance from current accepted price/payer, immutable original-context receipt-backed retries and late-response suppression. No displayed UUIDs or technical JSON in this workspace. Order/billing links are consolidated; existing PDF signing remains separately authorized and absent files are explicit. No standalone legacy sales-invoice screen existed to remove; receivables/supplier bills are preserved.

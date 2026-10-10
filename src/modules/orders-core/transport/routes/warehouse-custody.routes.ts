@@ -5,13 +5,20 @@ import { sendError, emitMutationInvalidation } from "../shared";
 import prisma from "../../../../config/prismaClient";
 import { emitPersistedDriverNotification } from "../../../realtime-core/realtimeHub";
 import { listCustodyWork } from "../../read/custody-work";
+import { readCustodyOptions } from "../../read/custody-options";
 
 const routes: FastifyPluginAsync = async fastify => {
   fastify.get("/custody-work", { preHandler: fastifyAuth() }, async (request, reply) => {
+    reply.header("Cache-Control","no-store");
     try { return await listCustodyWork(request.user!, request.query); } catch (error) { return sendError(reply, error); }
   });
   fastify.get<{Params:{id:string}}>("/:id/custody", {preHandler:fastifyAuth()}, async (request,reply) => {
+    reply.header("Cache-Control","no-store");
     try{return await readWarehouseCustody(request.user!,request.params.id);}catch(error){return sendError(reply,error);}
+  });
+  fastify.get<{Params:{id:string}}>("/:id/custody-options", {preHandler:fastifyAuth()}, async (request,reply) => {
+    reply.header("Cache-Control","no-store");
+    try{return await readCustodyOptions(request.user!,request.params.id,request.query);}catch(error){return sendError(reply,error);}
   });
   fastify.post<{Params:{id:string}}>("/:id/custody", {preHandler:fastifyAuth()}, async (request,reply) => {
     try{

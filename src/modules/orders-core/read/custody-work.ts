@@ -7,7 +7,7 @@ import { requireCustodyActor, requireCustodyReadActor, requireCustodyDriver } fr
 import { orderError, type OrderActor } from "../shared";
 
 const pageSchema = z.object({ kind: z.enum(["warehouse", "driver"]), limit: z.coerce.number().int().min(1).max(50).default(25),
-  cursor: z.string().min(1).max(1024).optional() }).strict();
+  cursor: z.string().min(1).max(1024).optional(), search: z.string().trim().min(1).max(120).optional(), warehouseId: z.string().uuid().optional() }).strict();
 const cursorSchema = z.object({ v: z.literal(1), context: z.string().regex(/^[a-f0-9]{64}$/), after: z.string().uuid() }).strict();
 type WorkRow = { orderId: string; orderNumber: string; status: string; expectedUpdatedAt: Date; expectedEventId: string | null;
   phase: string; currentWarehouseId: string | null; destinationWarehouseId: string | null; legId: string | null };
@@ -22,7 +22,7 @@ export async function listCustodyWork(requested: OrderActor, raw: unknown) {
   if (warehouses.length > 100) throw orderError("Custody warehouse scope limit exceeded", 409);
   const context = createHash("sha256").update(JSON.stringify({ user: actor.id, tenant: actor.tenantId, tm: actor.tenantMembershipId,
     company: actor.companyId, cm: actor.companyMembershipId, kind: page.kind, limit: page.limit,
-    warehouses, permissions: [...permissions].sort() })).digest("hex");
+    warehouses, permissions: [...permissions].sort(), ...(page.search ? {search:page.search}:{}), ...(page.warehouseId ? {warehouseId:page.warehouseId}:{}) })).digest("hex");
   let after: string | null = null;
   if (page.cursor) {
     try {
@@ -37,15 +37,17 @@ export async function listCustodyWork(requested: OrderActor, raw: unknown) {
     const conditions: Prisma.Sql[] = [];
     if (page.kind === "warehouse") {
       if (!warehouses.length) throw orderError("Explicit custody warehouse scope required", 403);
+      if (page.warehouseId && !warehouses.includes(page.warehouseId)) throw orderError("Exact custody warehouse scope required",403);
       const owned = await tx.warehouse.findMany({ where: { tenantId: actor.tenantId!, id: { in: warehouses } }, select: { id: true }, take: 101 });
-      const ids = owned.map(w => Prisma.sql`${w.id}::uuid`);
+      const ids = owned.filter(w=>!page.warehouseId || w.id===page.warehouseId).map(w => Prisma.sql`${w.id}::uuid`);
       if (!ids.length) throw orderError("Owned custody warehouse scope required", 403);
       const destination = Prisma.sql`c."destinationWarehouseId" IN (${Prisma.join(ids)})`;
       const current = Prisma.sql`c."warehouseId" IN (${Prisma.join(ids)}) AND o."currentWarehouseId"=c."warehouseId" AND o.status='at_warehouse'`;
       if (allowed("intake")) conditions.push(Prisma.sql`(c.phase='pickup-offered' AND o.status='picked_up' AND o."currentWarehouseId" IS NULL AND o."assignedDriverId"=c."driverUserId" AND ${destination})`);
       if (allowed("receive")) conditions.push(Prisma.sql`(c.phase='transport' AND o.status='in_transit' AND o."currentWarehouseId" IS NULL AND ${destination})`);
-      if (allowed("dispatch") || allowed("last-mile-offer")) conditions.push(Prisma.sql`(c.phase='warehouse' AND ${current})`);
+      if (allowed("dispatch") || allowed("last-mile-offer")) conditions.push(Prisma.sql`(c.phase IN ('warehouse','transport-offered','last-mile-offered') AND ${current})`);
     } else {
+      if(page.warehouseId) throw orderError("Warehouse filter is for warehouse work only",400);
       // No company/global order scope substitutes for the exact eligible driver membership.
       const user = await requireAcceptedDriver(tx, { tenantId: actor.tenantId!, companyId: actor.companyId! }, actor.companyMembershipId!);
       if (user?.driverType === "local" && permissions.includes("shipment.changeStatus")) {
@@ -70,6 +72,7 @@ export async function listCustodyWork(requested: OrderActor, raw: unknown) {
       WHERE o."tenantId"=${actor.tenantId}::uuid AND o."ownerOrgId"=${actor.companyId}::uuid
         AND (o."assignedOrgId" IS NULL OR o."assignedOrgId"=${actor.companyId}::uuid)
         AND (${after}::uuid IS NULL OR o.id>${after}::uuid)
+        AND ${page.search ? Prisma.sql`(o."orderNumber"=${page.search} OR EXISTS (SELECT 1 FROM "Parcel" p WHERE p."orderId"=o.id AND p."parcelCode"=${page.search}))` : Prisma.sql`true`}
         AND (${Prisma.join(conditions, " OR ")})
         AND (c.id IS NULL OR c.phase NOT IN ('pickup-offered','transport') OR (c."actorUserId"=c."driverUserId" AND c."companyMembershipId"=c."driverMembershipId"))
         AND (c.id IS NULL OR c.phase NOT IN ('transport-offered','transport') OR EXISTS (SELECT 1 FROM "OrderLeg" l WHERE l.id=c."legId" AND l."orderId"=o.id

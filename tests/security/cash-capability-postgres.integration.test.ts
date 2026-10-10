@@ -851,3 +851,66 @@ it("cash actions UI HTTP: revoked supplement invalidates session and fresh autho
  await revokeCashCapabilityGrant(mockDb,actor(actionsUi.checker),{operationId:randomUUID(),membershipId:actionsUi.driver.companyMembershipId,legalEntityId:actionsUi.entity.id,expectedAcceptanceId:(await acceptedCashCapability(mockDb,actor(actionsUi.driver))).acceptedOperationId,reason:"Synthetic immediate revocation"});
  await cashReadUnchanged("/api/orders/cash/access",actionsDriverToken,401);const token=await uiLogin(actionsUi.driver,password);await cashReadUnchanged("/api/orders/cash/access",token,403);expect(await requireAcceptedDriver(mockDb,actionsUi,actionsUi.driver.companyMembershipId,"local")).toMatchObject({userId:actionsUi.driver.userId});await uiApp.close();
 });
+import warehouseCustodyRoutes from "../../src/modules/orders-core/transport/routes/warehouse-custody.routes";
+import warehouseUiRoutes from "../../src/modules/warehouse-core/transport/fastify-routes";
+let warehouseUi:any,warehouseUiToken:string,warehouseUiDriverToken:string,warehouseUiIntake:any,warehouseUiResult:any,warehouseUiLinehaul:any,warehouseUiLeg:any;
+const warehouseUiPath=(suffix="custody")=>`/api/orders/${warehouseUi.orderId}/${suffix}`;
+it("warehouse UI HTTP: restricted incoming discovery, exact scan/filter and named whole-parcel preflight are read-only",async()=>{
+ warehouseUi=await pricedJourney("SENDER",0);await warehouseOffer(warehouseUi);
+ uiApp=Fastify({logger:false});await uiApp.register(identityRoutes,{prefix:"/api/auth",rateLimiter:{consume:async({limit,windowMs}:any)=>({allowed:true,count:1,remaining:limit-1,limit,resetAfterMs:windowMs,backend:"local"})}} as any);await uiApp.register(warehouseCustodyRoutes,{prefix:"/api/orders"});await uiApp.register(warehouseUiRoutes,{prefix:"/api/warehouses"});await uiApp.ready();
+ warehouseUiToken=await uiLogin(warehouseUi.staff,warehouseUi.staffPassword);warehouseUiDriverToken=await uiLogin(warehouseUi.driver,password);
+ const scopes=await mockDb.membershipScope.findMany({where:{membershipId:warehouseUi.staff.companyMembershipId}});expect(scopes.map(s=>s.scopeType)).toEqual(["warehouse"]);
+ const list=await cashReadUnchanged("/api/orders/custody-work?kind=warehouse&limit=1",warehouseUiToken);expect(list.items.map((r:any)=>r.orderId)).toEqual([warehouseUi.orderId]);
+ const p=await cashReadUnchanged(warehouseUiPath(),warehouseUiToken);expect(p.actions).toEqual(["intake"]);expect(p.warehouses).toContainEqual({id:warehouseUi.warehouse.id,name:"Synthetic cash warehouse"});expect(p.parcels).toHaveLength(1);expect(p.parcels[0]).toMatchObject({pieceNo:1,pieceTotal:1,parcelCode:expect.any(String)});
+ for(const search of [p.orderNumber,p.parcels[0].parcelCode])expect((await cashReadUnchanged(`/api/orders/custody-work?kind=warehouse&warehouseId=${warehouseUi.warehouse.id}&search=${encodeURIComponent(search)}`,warehouseUiToken)).items.map((r:any)=>r.orderId)).toEqual([warehouseUi.orderId]);
+ expect((await cashReadUnchanged("/api/orders/custody-work?kind=warehouse&search=NO-SUCH-SYNTHETIC",warehouseUiToken)).items).toEqual([]);
+ warehouseUiIntake={operationId:randomUUID(),action:"intake",expectedEventId:p.custody.id,expectedUpdatedAt:p.updatedAt,parcelIds:p.parcelIds,warehouseId:warehouseUi.warehouse.id};
+});
+it("warehouse UI HTTP: missing, foreign and wrong warehouse contexts cannot discover or preflight protected work",async()=>{
+ await cashReadUnchanged(warehouseUiPath(),undefined,401);await cashReadUnchanged("/api/orders/custody-work?kind=warehouse",warehouseUiDriverToken,403);
+ const other=await enrolled(warehouseUi,{profileRevision:"operational-warehouse.v1",warehouseIds:[warehouseUi.second.id]}),token=await uiLogin(other.accepted,other.pass);
+ expect((await cashReadUnchanged("/api/orders/custody-work?kind=warehouse",token)).items).toEqual([]);await cashReadUnchanged(warehouseUiPath(),token,403);await cashReadUnchanged(`/api/orders/custody-work?kind=warehouse&warehouseId=${warehouseUi.warehouse.id}`,token,403);
+ const foreign=await pricedJourney("SENDER",0),foreignToken=await uiLogin(foreign.staff,foreign.staffPassword);await cashReadUnchanged(warehouseUiPath(),foreignToken,403);expect((await cashReadUnchanged("/api/orders/custody-work?kind=warehouse",foreignToken)).items).toEqual([]);
+ for(const q of ["limit=51","tenantId="+warehouseUi.tenantId,"cursor=invalid"])await cashReadUnchanged("/api/orders/custody-work?kind=warehouse&"+q,warehouseUiToken,400);
+ await cashReadUnchanged(warehouseUiPath("custody-options")+"?kind=drivers&action=dispatch",token,403);
+});
+it("warehouse UI HTTP: intake enforces complete parcels and original expected state; matching retry creates one receipt",async()=>{
+ await cashDenied(warehouseUiPath(),warehouseUiToken,{...warehouseUiIntake,parcelIds:[randomUUID()]},409);await cashDenied(warehouseUiPath(),warehouseUiDriverToken,warehouseUiIntake,403);
+ const r=await cashHttp(warehouseUiPath(),warehouseUiToken,warehouseUiIntake);expect(r.status).toBe(200);warehouseUiResult=r.data;expect(r.data).toMatchObject({phase:"warehouse",status:"at_warehouse",currentWarehouseId:warehouseUi.warehouse.id});
+ const before=await graphDigest();expect((await cashHttp(warehouseUiPath(),warehouseUiToken,warehouseUiIntake)).data).toEqual(r.data);expect(await graphDigest()).toBe(before);expect(await mockDb.orderCustodyAction.count({where:{orderId:warehouseUi.orderId,action:"intake"}})).toBe(1);
+ await cashDenied(warehouseUiPath(),warehouseUiToken,{...warehouseUiIntake,operationId:randomUUID()},403);await cashDenied(warehouseUiPath(),warehouseUiToken,{...warehouseUiIntake,outgoingDriverReason:"Changed original content"},409);
+});
+it("warehouse UI HTTP: bounded selectors require exact action authority, accepted typed drivers and owned internal legs",async()=>{
+ const owner=syntheticDriverOwner();try{await authorizeCompanyDriverDelegator(mockDb,owner.request(warehouseUi.companyMembershipId));for(const type of ["local-driver.v1","linehaul-driver.v1"]){const i=await createCompanyDriverInvitation(mockDb,warehouseUi.actor,{operationId:randomUUID(),email:randomUUID()+"@example.invalid",profileRevision:type,reason:"Synthetic selector prerequisite"});const accepted=await acceptCompanyDriverInvitation(mockDb,{operationId:randomUUID(),token:i.token,name:type==="local-driver.v1"?"Second local driver":"Synthetic linehaul driver",password});if(type==="linehaul-driver.v1")warehouseUiLinehaul=accepted;}}finally{owner.cleanup();}
+ // Synthetic planned internal route prerequisite, not evidence of a restored planning UI or new permission grant.
+ const leg=await mockDb.orderLeg.create({data:{orderId:warehouseUi.orderId,sequence:1,fromWarehouseId:warehouseUi.warehouse.id,toWarehouseId:warehouseUi.second.id}});warehouseUiLeg=leg;
+ const url=warehouseUiPath("custody-options"),page=await cashReadUnchanged(url+"?kind=drivers&action=last-mile-offer&limit=1",warehouseUiToken);expect(page.items).toHaveLength(1);expect(page.nextCursor).toBeTruthy();
+ const next=await cashReadUnchanged(url+"?kind=drivers&action=last-mile-offer&limit=1&cursor="+encodeURIComponent(page.nextCursor),warehouseUiToken);expect(next.items).toHaveLength(1);expect(next.items[0].id).not.toBe(page.items[0].id);
+ await cashReadUnchanged(url+"?kind=drivers&action=dispatch&limit=1&cursor="+encodeURIComponent(page.nextCursor),warehouseUiToken,400);
+ const drivers=await cashReadUnchanged(url+"?kind=drivers&action=dispatch",warehouseUiToken);expect(drivers.items.map((r:any)=>r.name)).toEqual(["Synthetic linehaul driver"]);
+ const legs=await cashReadUnchanged(url+"?kind=legs&action=dispatch",warehouseUiToken);expect(legs.items).toEqual([{id:leg.id,name:"Leg 1 → Synthetic other warehouse",destinationWarehouseId:warehouseUi.second.id}]);expect(JSON.stringify(legs)).not.toMatch(/metadata|carrierRef|bookingError/);
+ await cashReadUnchanged(url+"?kind=legs&action=last-mile-offer",warehouseUiToken,400);await cashReadUnchanged(url+"?kind=drivers&action=dispatch&limit=21",warehouseUiToken,400);
+});
+it("warehouse UI HTTP: authoritative linehaul offer/acceptance/receipt and local nomination preserve custody and matching receipts",async()=>{
+ const origin=await cashReadUnchanged(warehouseUiPath(),warehouseUiToken);expect(origin.actions).toEqual(["dispatch","last-mile-offer"]);
+ const dispatch={operationId:randomUUID(),action:"dispatch",expectedEventId:origin.custody.id,expectedUpdatedAt:origin.updatedAt,parcelIds:origin.parcelIds,warehouseId:warehouseUi.warehouse.id,destinationWarehouseId:warehouseUi.second.id,driverMembershipId:warehouseUiLinehaul.companyMembershipId,legId:warehouseUiLeg.id};
+ await cashDenied(warehouseUiPath(),warehouseUiToken,{...dispatch,driverMembershipId:warehouseUi.driver.companyMembershipId},403);
+ const offered=await cashHttp(warehouseUiPath(),warehouseUiToken,dispatch);expect(offered.status).toBe(200);expect(offered.data).toMatchObject({phase:"transport-offered",status:"at_warehouse",currentWarehouseId:warehouseUi.warehouse.id});
+ const before=await graphDigest();expect((await cashHttp(warehouseUiPath(),warehouseUiToken,dispatch)).data).toEqual(offered.data);expect(await graphDigest()).toBe(before);
+ expect((await cashReadUnchanged(warehouseUiPath(),warehouseUiToken)).actions).toEqual([]);
+ await physical(warehouseUi,warehouseUiLinehaul,"transport-accept");await cashReadUnchanged(warehouseUiPath(),warehouseUiToken,403);
+ const dest=await enrolled(warehouseUi,{profileRevision:"operational-warehouse.v1",warehouseIds:[warehouseUi.second.id]}),token=await uiLogin(dest.accepted,dest.pass),incoming=await cashReadUnchanged(warehouseUiPath(),token);expect(incoming.actions).toEqual(["receive"]);
+ const receive={operationId:randomUUID(),action:"receive",expectedEventId:incoming.custody.id,expectedUpdatedAt:incoming.updatedAt,parcelIds:incoming.parcelIds,warehouseId:warehouseUi.second.id};
+ await cashDenied(warehouseUiPath(),warehouseUiToken,receive,403);const received=await cashHttp(warehouseUiPath(),token,receive);expect(received.status).toBe(200);expect(received.data).toMatchObject({phase:"warehouse",status:"at_warehouse",currentWarehouseId:warehouseUi.second.id});
+ const unchangedReceipt=await graphDigest();expect((await cashHttp(warehouseUiPath(),token,receive)).data).toEqual(received.data);expect(await graphDigest()).toBe(unchangedReceipt);
+ const p=await cashReadUnchanged(warehouseUiPath(),token),intent={operationId:randomUUID(),action:"last-mile-offer",expectedEventId:p.custody.id,expectedUpdatedAt:p.updatedAt,parcelIds:p.parcelIds,warehouseId:warehouseUi.second.id,driverMembershipId:warehouseUi.driver.companyMembershipId};
+ await cashDenied(warehouseUiPath(),token,{...intent,driverMembershipId:randomUUID()},403);
+ const result=await cashHttp(warehouseUiPath(),token,intent);expect(result.status).toBe(200);expect(result.data).toMatchObject({phase:"last-mile-offered",status:"at_warehouse",currentWarehouseId:warehouseUi.second.id});
+ const digest=await graphDigest();expect((await cashHttp(warehouseUiPath(),token,intent)).data).toEqual(result.data);expect(await graphDigest()).toBe(digest);expect((await cashReadUnchanged("/api/orders/custody-work?kind=warehouse",token)).items).toMatchObject([{orderId:warehouseUi.orderId,phase:"last-mile-offered"}]);expect((await cashReadUnchanged(warehouseUiPath(),token)).actions).toEqual([]);
+ await cashReadUnchanged(warehouseUiPath("custody-options")+"?kind=drivers&action=last-mile-offer",token,403);
+ await physical(warehouseUi,warehouseUi.driver,"last-mile-accept");expect((await mockDb.order.findUniqueOrThrow({where:{id:warehouseUi.orderId}}))).toMatchObject({status:"out_for_delivery",currentWarehouseId:null});
+});
+it("warehouse UI HTTP: revoked staff cannot use original receipt or read selectors; rejects cause no business or external effects",async()=>{
+ await mutateCompanyOperationalGrant(mockDb,warehouseUi.actor,{action:"revoke",profileRevision:"operational-warehouse.v1",warehouseIds:[warehouseUi.warehouse.id],operationId:randomUUID(),membershipId:warehouseUi.staff.companyMembershipId,reason:"Synthetic staff revocation"});
+ await cashReadUnchanged(warehouseUiPath(),warehouseUiToken,401);await cashDenied(warehouseUiPath(),warehouseUiToken,warehouseUiIntake,401);expect(mockCashStorage).not.toHaveBeenCalled();
+});
