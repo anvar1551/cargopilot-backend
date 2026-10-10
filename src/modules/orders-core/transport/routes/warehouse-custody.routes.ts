@@ -6,8 +6,17 @@ import prisma from "../../../../config/prismaClient";
 import { emitPersistedDriverNotification } from "../../../realtime-core/realtimeHub";
 import { listCustodyWork } from "../../read/custody-work";
 import { readCustodyOptions } from "../../read/custody-options";
+import { readDriverWork, readPickupDestinations } from "../../read/driver-work";
 
 const routes: FastifyPluginAsync = async fastify => {
+  fastify.get<{Params:{id:string}}>("/:id/driver-work", {preHandler:fastifyAuth()}, async (request,reply) => {
+    reply.header("Cache-Control","no-store");
+    try{return await readDriverWork(request.user!,request.params.id);}catch(error){return sendError(reply,error);}
+  });
+  fastify.get<{Params:{id:string}}>("/:id/pickup-destinations", {preHandler:fastifyAuth()}, async (request,reply) => {
+    reply.header("Cache-Control","no-store");
+    try{return await readPickupDestinations(request.user!,request.params.id,request.query);}catch(error){return sendError(reply,error);}
+  });
   fastify.get("/custody-work", { preHandler: fastifyAuth() }, async (request, reply) => {
     reply.header("Cache-Control","no-store");
     try { return await listCustodyWork(request.user!, request.query); } catch (error) { return sendError(reply, error); }

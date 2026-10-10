@@ -129,8 +129,10 @@ export async function authorizeCustodyRead(tx: Prisma.TransactionClient, actor: 
     catch (error) { if ((error as { statusCode?: number }).statusCode !== 403) throw error; }
   }
   // Existing scoped readers retain their existing visibility. This is not a company/global fallback.
+  if (!actor.permissionCodes?.includes("shipment.view")) throw orderError("Custody read scope required", 403);
   const scope = await buildMembershipOrderScopeWhere(actor as AppUser, "shipment.view");
-  if (!scope || !await tx.order.findFirst({ where: { AND: [ownedCustodyWhere(actor, source.order.id), scope] }, select: { id: true } })) throw orderError("Custody read scope required", 403);
+  if (!scope || scope.id === "__no_access__" || (Array.isArray(scope.AND) && scope.AND.some(s => s.id === "__no_access__")) ||
+      !await tx.order.findFirst({ where: { AND: [ownedCustodyWhere(actor, source.order.id), scope] }, select: { id: true } })) throw orderError("Custody read scope required", 403);
 }
 
 /** Driver-only read gate; object relationships are still checked separately. */

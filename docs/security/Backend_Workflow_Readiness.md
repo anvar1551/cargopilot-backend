@@ -1,3 +1,11 @@
+# Current native driver My work integration (2026-10-10)
+
+Implemented: canonical restricted initial assignments/custody nominations → current preflight → pickup/PNG proof → named warehouse offer → exact linehaul acceptance → local last-mile acceptance/proof/delivery. Existing membership-specific eligibility, zero scopes and cash separation remain. Two additive authenticated no-store reads; no schema/permission/mutation-policy expansion. A demonstrated unrelated-driver denial-path 500 is corrected to 403.
+
+Evidence: 22 new client cases + 47 affected session/proof regressions; 24 affected mocked backend cases; 7 actual HTTP/PostgreSQL connected cases. Storage boundary mocked; native/device/visual and actual mobile network verification remain pending. Final checks, exact API contracts, exclusively owned disposable cleanup and reused evidence: [Driver_My_Work_Integration.md](Driver_My_Work_Integration.md).
+
+Unavailable: ambiguous receipt-less pickup replay, native Service Cash actions, unsupported exception/return/history and new recovery policy. Existing cash intents and quarantined legacy proofs retained. Web dashboard, manual demo/data, dist and blocked cleanup preserved. Next: native/device acceptance in an owned local environment; no automatic next implementation batch. Older handoffs below are historical.
+
 # Current warehouse operations workspace (2026-10-10)
 
 One canonical /dashboard/warehouse now integrates scoped durable custody discovery, scanning/preflight, whole-parcel intake/receive and explicit linehaul/last-mile nominations. Pending offers remain warehouse-held until exact acceptance. Cash, Sales Invoices and location administration remain canonical separate workflows. Invoice ?order= no longer mounts a competing generic modal.

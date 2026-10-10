@@ -914,3 +914,87 @@ it("warehouse UI HTTP: revoked staff cannot use original receipt or read selecto
  await mutateCompanyOperationalGrant(mockDb,warehouseUi.actor,{action:"revoke",profileRevision:"operational-warehouse.v1",warehouseIds:[warehouseUi.warehouse.id],operationId:randomUUID(),membershipId:warehouseUi.staff.companyMembershipId,reason:"Synthetic staff revocation"});
  await cashReadUnchanged(warehouseUiPath(),warehouseUiToken,401);await cashDenied(warehouseUiPath(),warehouseUiToken,warehouseUiIntake,401);expect(mockCashStorage).not.toHaveBeenCalled();
 });
+
+// Bounded native-driver integration evidence. All identities/configuration are synthetic;
+// storage is the existing immutable mock, not S3 or native device evidence.
+import driverOrdersRoutes from "../../src/modules/orders-core/transport/routes/orders.routes";
+import driverProofRoutes from "../../src/modules/orders-core/transport/routes/proofs.routes";
+import { validatorCompiler, serializerCompiler } from "@fastify/type-provider-zod";
+import { mutateCompanyDriverEligibility } from "../../src/modules/identity-access/application/driver-delegation";
+let driverUi:any,driverUiToken:string,driverUiOther:any,driverUiLinehaul:any,driverUiLinehaulToken:string,driverUiOffer:any,driverUiDelivered:any,driverUiProof:any;
+const driverPath=(suffix="driver-work")=>`/api/orders/${driverUi.orderId}/${suffix}`;
+async function driverProofHttp(token:string,stage:string,submissionId=randomUUID()) {
+ const boundary="cp-synthetic-proof",{PNG}=require("pngjs"),buffer=PNG.sync.write({width:2,height:2,data:Buffer.alloc(16,255)});
+ const fields={submissionId,stage,signedBy:"Synthetic consignee",clientCapturedAt:"2026-10-01T12:00:00.000Z",signaturePaths:JSON.stringify(["1,2;3,4"])};
+ const parts=Object.entries(fields).map(([name,value])=>Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`));
+ parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="photo"; filename="proof.png"\r\nContent-Type: image/png\r\n\r\n`),buffer,Buffer.from(`\r\n--${boundary}--\r\n`));
+ const r=await uiApp.inject({method:"POST",url:driverPath("proofs"),headers:{authorization:"Bearer "+token,"content-type":`multipart/form-data; boundary=${boundary}`},payload:Buffer.concat(parts)});
+ return {status:r.statusCode,data:r.json()};
+}
+it("driver work UI HTTP: restricted initial discovery/preflight is read-only and exposes only business operational fields",async()=>{
+ driverUi=await pricedJourney("SENDER",0);
+ // Replace the fixture cash-enabled driver through normal invitation/assignment services: the journey actor has no supplemental cash authority.
+ const owner=syntheticDriverOwner();try{await authorizeCompanyDriverDelegator(mockDb,owner.request(driverUi.companyMembershipId));const i=await createCompanyDriverInvitation(mockDb,driverUi.actor,{operationId:randomUUID(),email:randomUUID()+"@example.invalid",profileRevision:"local-driver.v1",reason:"Synthetic restricted non-cash journey"});driverUi.driver=await acceptCompanyDriverInvitation(mockDb,{operationId:randomUUID(),token:i.token,name:"Restricted pickup and delivery driver",password});}finally{owner.cleanup();}
+ const initial=await mockDb.order.findUniqueOrThrow({where:{id:driverUi.orderId}});await assignDriversBulk({actor:actor(driverUi.dispatcher),orderIds:[driverUi.orderId],driverId:driverUi.driver.userId,type:"pickup",expectedStates:[{orderId:driverUi.orderId,updatedAt:initial.updatedAt.toISOString(),status:initial.status,assignedDriverId:initial.assignedDriverId,currentWarehouseId:initial.currentWarehouseId}]});
+ uiApp=Fastify({logger:false});uiApp.setValidatorCompiler(validatorCompiler);uiApp.setSerializerCompiler(serializerCompiler);
+ await uiApp.register(identityRoutes,{prefix:"/api/auth",rateLimiter:{consume:async({limit,windowMs}:any)=>({allowed:true,count:1,remaining:limit-1,limit,resetAfterMs:windowMs,backend:"local"})}} as any);
+ await uiApp.register(warehouseCustodyRoutes,{prefix:"/api/orders"});await uiApp.register(driverOrdersRoutes,{prefix:"/api/orders"});await uiApp.register(driverProofRoutes,{prefix:"/api/orders"});await uiApp.register(cashActionRoutes,{prefix:"/api/orders"});await uiApp.ready();
+ driverUiToken=await uiLogin(driverUi.driver,password);
+ const member=await mockDb.companyMembership.findUniqueOrThrow({where:{id:driverUi.driver.companyMembershipId},include:{scopes:true,roles:{include:{role:{include:{rolePermissions:{include:{permission:true}}}}}}}});
+ expect(member.scopes).toEqual([]);const permissions=member.roles.flatMap(r=>r.role.rolePermissions.map(p=>p.permission.key));expect(permissions).not.toEqual(expect.arrayContaining(["shipment.view"]));for(const key of ["shipment.view","shipment.update","shipment.assignCourier"])expect(permissions).not.toContain(key);
+ const list=await cashReadUnchanged("/api/orders/custody-work?kind=driver&limit=1",driverUiToken);expect(list.items).toMatchObject([{orderId:driverUi.orderId,phase:"pickup-assigned"}]);
+ const p=await cashReadUnchanged(driverPath(),driverUiToken);expect(p.driverActions).toEqual(["pickup_in_progress"]);expect(p.proofStages).toEqual(["pickup"]);expect(p.parcels).toHaveLength(1);expect(p.operational).toMatchObject({pickupAddress:expect.any(String),dropoffAddress:expect.any(String)});expect(JSON.stringify(p)).not.toMatch(/password|token|metadata|billTo|amount/i);
+ await cashReadUnchanged(driverPath("pickup-destinations"),driverUiToken,403);
+});
+it("driver work UI HTTP: unrelated driver, foreign selected context, absent context and broad mutations fail without effects",async()=>{
+ const owner=syntheticDriverOwner();try{await authorizeCompanyDriverDelegator(mockDb,owner.request(driverUi.companyMembershipId));for(const profile of ["local-driver.v1","linehaul-driver.v1"]){const i=await createCompanyDriverInvitation(mockDb,driverUi.actor,{operationId:randomUUID(),email:randomUUID()+"@example.invalid",profileRevision:profile,reason:"Synthetic driver UI prerequisite"});const a=await acceptCompanyDriverInvitation(mockDb,{operationId:randomUUID(),token:i.token,name:profile==="local-driver.v1"?"Unrelated local driver":"Nominated linehaul",password});if(profile==="local-driver.v1")driverUiOther=a;else driverUiLinehaul=a;}}finally{owner.cleanup();}
+ const unrelated=await uiLogin(driverUiOther,password);driverUiLinehaulToken=await uiLogin(driverUiLinehaul,password);
+ expect((await cashReadUnchanged("/api/orders/custody-work?kind=driver",unrelated)).items).toEqual([]);for(const token of [unrelated,driverUiLinehaulToken]){await cashReadUnchanged(driverPath(),token,403);await cashReadUnchanged(driverPath("pickup-destinations"),token,403);}
+ const foreign=await admin(),foreignToken=await uiLogin({userId:foreign.actor.id,companyMembershipId:foreign.companyMembershipId},password);await cashReadUnchanged(driverPath(),foreignToken,403);await cashReadUnchanged(driverPath(),undefined,401);
+ const current=await mockDb.order.findUniqueOrThrow({where:{id:driverUi.orderId}});
+ await cashDenied("/api/orders/status-bulk",driverUiToken,{status:"delivered",orderIds:[driverUi.orderId],expectedStates:[{orderId:driverUi.orderId,updatedAt:current.updatedAt.toISOString(),status:current.status,assignedDriverId:current.assignedDriverId,currentWarehouseId:current.currentWarehouseId}]},403);
+ await cashDenied(`/api/orders/${driverUi.orderId}/cash/collect`,driverUiToken,{operationId:randomUUID(),kind:"service_charge",obligationId:randomUUID()},403);
+});
+it("driver work UI HTTP: actual permitted pickup transitions and durable PNG pickup proof work without company scopes",async()=>{
+ for(const status of ["pickup_in_progress","picked_up"]){const r=await cashHttp("/api/orders/driver-status",driverUiToken,{orderId:driverUi.orderId,status});expect(r.status).toBe(200);expect(r.data).toMatchObject({success:true,order:{id:driverUi.orderId,status}});}
+ const p=await cashReadUnchanged(driverPath(),driverUiToken);expect(p.driverActions).toEqual(["pickup-offer"]);expect(p.pickupTrackingId).toBeTruthy();
+ const proof=await driverProofHttp(driverUiToken,"pickup");expect(proof.status).toBe(200);expect(proof.data).toMatchObject({success:true,proof:{stage:"pickup"}});
+ const before=await graphDigest(),again=await driverProofHttp(driverUiToken,"pickup",proof.data.proof.submissionId);expect(again.data).toEqual(proof.data);expect(await graphDigest()).toBe(before);
+ expect(await mockDb.proofSubmission.count({where:{orderId:driverUi.orderId,stage:"pickup",state:"confirmed"}})).toBe(1);
+});
+it("driver work UI HTTP: named bounded pickup destinations, original offer retry and conflicting intent are safe",async()=>{
+ const p=await cashReadUnchanged(driverPath(),driverUiToken),page=await cashReadUnchanged(driverPath("pickup-destinations")+"?limit=1",driverUiToken);expect(page.items).toHaveLength(1);expect(page.items[0]).toEqual({id:expect.any(String),name:expect.any(String),location:expect.any(String)});expect(page.nextCursor).toBeTruthy();
+ const next=await cashReadUnchanged(driverPath("pickup-destinations")+"?limit=1&cursor="+encodeURIComponent(page.nextCursor),driverUiToken);expect(next.items[0].id).not.toBe(page.items[0].id);await cashReadUnchanged(driverPath("pickup-destinations")+"?limit=21",driverUiToken,400);await cashReadUnchanged(driverPath("pickup-destinations")+"?limit=2&cursor="+encodeURIComponent(page.nextCursor),driverUiToken,400);
+ driverUiOffer={operationId:randomUUID(),action:"pickup-offer",expectedEventId:null,expectedUpdatedAt:p.updatedAt,parcelIds:p.parcelIds,pickupTrackingId:p.pickupTrackingId,destinationWarehouseId:driverUi.warehouse.id};
+ await cashDenied(driverPath("custody"),await uiLogin(driverUiOther,password),driverUiOffer,403);
+ const result=await cashHttp(driverPath("custody"),driverUiToken,driverUiOffer);expect(result.status).toBe(200);const before=await graphDigest();expect((await cashHttp(driverPath("custody"),driverUiToken,driverUiOffer)).data).toEqual(result.data);expect(await graphDigest()).toBe(before);
+ await cashDenied(driverPath("custody"),driverUiToken,{...driverUiOffer,destinationWarehouseId:driverUi.second.id},409);
+ expect((await cashReadUnchanged(driverPath(),driverUiToken)).driverActions).toEqual([]);
+ await physical(driverUi,driverUi.staff,"intake",{warehouseId:driverUi.warehouse.id});await cashReadUnchanged(driverPath(),driverUiToken,403);
+});
+it("driver work UI HTTP: exact linehaul nomination accepts; wrong typed driver cannot, and destination staff receives",async()=>{
+ // Existing synthetic planned internal leg prerequisite, not a new route-planning/provisioning workflow.
+ const leg=await mockDb.orderLeg.create({data:{orderId:driverUi.orderId,sequence:1,fromWarehouseId:driverUi.warehouse.id,toWarehouseId:driverUi.second.id}});
+ await physical(driverUi,driverUi.staff,"dispatch",{warehouseId:driverUi.warehouse.id,destinationWarehouseId:driverUi.second.id,driverMembershipId:driverUiLinehaul.companyMembershipId,legId:leg.id});
+ const p=await cashReadUnchanged(driverPath(),driverUiLinehaulToken);expect(p.driverActions).toEqual(["transport-accept"]);expect(p.proofStages).toEqual([]);expect((await cashReadUnchanged("/api/orders/custody-work?kind=driver",driverUiLinehaulToken)).items).toMatchObject([{orderId:driverUi.orderId}]);
+ const intent={operationId:randomUUID(),action:"transport-accept",expectedEventId:p.custody.id,expectedUpdatedAt:p.updatedAt,parcelIds:p.parcelIds};await cashDenied(driverPath("custody"),driverUiToken,intent,403);
+ const result=await cashHttp(driverPath("custody"),driverUiLinehaulToken,intent);expect(result.status).toBe(200);expect(result.data).toMatchObject({phase:"transport",status:"in_transit"});const before=await graphDigest();expect((await cashHttp(driverPath("custody"),driverUiLinehaulToken,intent)).data).toEqual(result.data);expect(await graphDigest()).toBe(before);
+ const dest=await enrolled(driverUi,{profileRevision:"operational-warehouse.v1",warehouseIds:[driverUi.second.id]});driverUi.dest=dest.accepted;await physical(driverUi,dest.accepted,"receive",{warehouseId:driverUi.second.id});await cashReadUnchanged(driverPath(),driverUiLinehaulToken,403);
+});
+it("driver work UI HTTP: exact local last-mile acceptance and confirmed immutable delivery proof permit delivery and original retry",async()=>{
+ await physical(driverUi,driverUi.dest,"last-mile-offer",{warehouseId:driverUi.second.id,driverMembershipId:driverUi.driver.companyMembershipId});
+ let p=await cashReadUnchanged(driverPath(),driverUiToken);expect(p.driverActions).toEqual(["last-mile-accept"]);expect(p.proofStages).toEqual([]);
+ const accept={operationId:randomUUID(),action:"last-mile-accept",expectedEventId:p.custody.id,expectedUpdatedAt:p.updatedAt,parcelIds:p.parcelIds};expect((await cashHttp(driverPath("custody"),driverUiToken,accept)).status).toBe(200);
+ p=await cashReadUnchanged(driverPath(),driverUiToken);expect(p.driverActions).toEqual(["deliver"]);expect(p.proofStages).toEqual(["delivery"]);
+ driverUiDelivered={operationId:randomUUID(),action:"deliver",expectedEventId:p.custody.id,expectedUpdatedAt:p.updatedAt,parcelIds:p.parcelIds,proofSubmissionId:randomUUID()};await cashDenied(driverPath("custody"),driverUiToken,driverUiDelivered,409);
+ driverUiProof=await driverProofHttp(driverUiToken,"delivery");expect(driverUiProof.status).toBe(200);driverUiDelivered.proofSubmissionId=driverUiProof.data.proof.submissionId;
+ const result=await cashHttp(driverPath("custody"),driverUiToken,driverUiDelivered);expect(result.status).toBe(200);expect(result.data).toMatchObject({phase:"delivered",status:"delivered"});const before=await graphDigest();expect((await cashHttp(driverPath("custody"),driverUiToken,driverUiDelivered)).data).toEqual(result.data);expect((await driverProofHttp(driverUiToken,"delivery",driverUiProof.data.proof.submissionId)).data).toEqual(driverUiProof.data);expect(await graphDigest()).toBe(before);
+ expect(await mockDb.orderCustodyAction.count({where:{orderId:driverUi.orderId,action:"deliver"}})).toBe(1);expect(await mockDb.proofSubmission.count({where:{orderId:driverUi.orderId,stage:"delivery"}})).toBe(1);expect(await mockDb.cashCollection.count({where:{orderId:driverUi.orderId}})).toBe(0);
+});
+it("driver work UI HTTP: driver revocation rejects old access, fresh context, historical retries and proof without effects",async()=>{
+ await mutateCompanyDriverEligibility(mockDb,driverUi.actor,{operationId:randomUUID(),action:"revoke",membershipId:driverUi.driver.companyMembershipId,profileRevision:"local-driver.v1",reason:"Synthetic driver work revocation"});
+ await cashReadUnchanged(driverPath(),driverUiToken,401);await cashDenied(driverPath("custody"),driverUiToken,driverUiDelivered,401);
+ const user=await mockDb.user.findUniqueOrThrow({where:{id:driverUi.driver.userId}});expect((await cashHttp("/api/auth/login",undefined,{email:user.email,password,companyMembershipId:driverUi.driver.companyMembershipId})).status).toBe(403);
+ await unchanged(()=>executeWarehouseCustody(actor(driverUi.driver),driverUi.orderId,driverUiOffer));
+ const before=await graphDigest(),calls=mockCashStorage.mock.calls.length;expect((await driverProofHttp(driverUiToken,"delivery",driverUiProof.data.proof.submissionId)).status).toBe(401);expect(await graphDigest()).toBe(before);expect(mockCashStorage.mock.calls.length).toBe(calls);
+});
