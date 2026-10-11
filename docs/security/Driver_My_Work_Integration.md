@@ -1,3 +1,7 @@
+# Reliability correction supersedes pickup/storage limitations
+
+See [Driver_Pickup_Reliability.md](Driver_Pickup_Reliability.md) for durable initial pickup receipts, v2 native retries, verified archival and current evidence. Original integration evidence below is historical; its receipt-less limitation applies only to legacy intents.
+
 # Driver My work integration — 2026-10-10
 
 ## Current result and API compatibility

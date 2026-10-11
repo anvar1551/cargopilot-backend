@@ -73,6 +73,7 @@ const statusBulkBodySchema = z.object({
 });
 
 const driverStatusBodySchema = z.object({
+  operationId: z.uuid().optional(),
   orderId: z.string().trim().min(1),
   status: enumSchema(OrderStatus),
   reasonCode: enumSchema(ReasonCode).nullable().optional(),

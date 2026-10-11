@@ -57,7 +57,7 @@ function request(input = intent()) {
 }
 const mockCashObjects=new Map<string,Buffer>();
 const mockCashStorage=jest.fn(async(command:any)=>{const {Key,Body}=command.input;if(mockCashObjects.has(Key))throw Error("Immutable synthetic object exists");mockCashObjects.set(Key,Buffer.from(Body));return {};});
-const tables = ["CashCapabilityGrantProposal","CashCapabilityGrantAction","CashCapabilityDelegationAuthority","CashCapabilityMembershipGrant","CashCapabilityActionWarehouse","Order", "OrderBillTo", "BillingPolicyVersion", "BillingPolicyDecision", "OrderPriceSnapshot", "OrderPriceApproval", "Invoice", "InvoiceIssuanceReceipt", "BillingInvoiceOutbox", "FinanceAuditEvent", "FinanceDomainEventOutbox", "FinanceJournalEntry", "FinancialDelegationAuthority", "FinancialGrantProposal", "FinancialMembershipGrant", "FinancialGrantAction", "FinanceLegalEntity", "TariffPlan", "TariffRate", "TariffConfigurationVersion", "TariffPublicationDecision", "Tenant", "Organization", "User", "TenantMembership", "CompanyMembership", "Role", "RolePermission", "MembershipRole", "MembershipScope", "TenantOnboardingReceipt", "CompanyDelegationAuthority", "CompanyInvitation", "CompanyOperationalGrant", "CompanyDelegationAction", "UserRefreshSession", "CredentialSecurityEvent"];
+const tables = ["OrderPickupReceipt","CashCapabilityGrantProposal","CashCapabilityGrantAction","CashCapabilityDelegationAuthority","CashCapabilityMembershipGrant","CashCapabilityActionWarehouse","Order", "OrderBillTo", "BillingPolicyVersion", "BillingPolicyDecision", "OrderPriceSnapshot", "OrderPriceApproval", "Invoice", "InvoiceIssuanceReceipt", "BillingInvoiceOutbox", "FinanceAuditEvent", "FinanceDomainEventOutbox", "FinanceJournalEntry", "FinancialDelegationAuthority", "FinancialGrantProposal", "FinancialMembershipGrant", "FinancialGrantAction", "FinanceLegalEntity", "TariffPlan", "TariffRate", "TariffConfigurationVersion", "TariffPublicationDecision", "Tenant", "Organization", "User", "TenantMembership", "CompanyMembership", "Role", "RolePermission", "MembershipRole", "MembershipScope", "TenantOnboardingReceipt", "CompanyDelegationAuthority", "CompanyInvitation", "CompanyOperationalGrant", "CompanyDelegationAction", "UserRefreshSession", "CredentialSecurityEvent"];
 tables.push("IssuingEntitySetupAuthority","IssuingEntitySetupProposal","IssuingEntitySetupAction","OrderCreationIntent","OrderCreationReceipt","Parcel","Tracking","PricingComponent","OrderLabelJob","IntegrationOutbox","SupportTicket","Address","CustomerEntity");
 tables.push("OrderAttachment","ProofSubmission","OrderServicePaymentInstruction","OrderServiceCashObligation","WarehouseProvisioningAction","WarehouseProvisioningAuthority","PaymentIntent","PaymentAttempt");
 tables.push("RestrictedCashState","RestrictedCashTransferOffer","RestrictedCashReceipt","CashCollection","CashCollectionEvent","CashCustodyOperation","OrderCustodyAction","AnalyticsDomainEventOutbox","UserNotification");
@@ -220,7 +220,7 @@ async function pricedJourney(party="SENDER",basePrice=100,options:{tariffPrice?:
 }
 const cashIntent=(g:any,extra:any={})=>({orderId:g.orderId,operationId:randomUUID(),kind:"service_charge",...(!extra.expectedEventId?{obligationId:g.price.id}:{}),...extra});
 async function physical(g:any,who:any,action:string,extra:any={}){const s=await readWarehouseCustody(actor(who),g.orderId);return executeWarehouseCustody(actor(who),g.orderId,{operationId:randomUUID(),action,expectedEventId:s.custody?.id??null,expectedUpdatedAt:s.updatedAt,parcelIds:s.parcelIds,...extra});}
-async function warehouseOffer(g:any){await updateDriverOrderStatus({actor:actor(g.driver),orderId:g.orderId,status:"pickup_in_progress"});await updateDriverOrderStatus({actor:actor(g.driver),orderId:g.orderId,status:"picked_up"});const s=await readWarehouseCustody(actor(g.driver),g.orderId);await physical(g,g.driver,"pickup-offer",{pickupTrackingId:s.pickupTrackingId,destinationWarehouseId:g.warehouse.id});}
+async function warehouseOffer(g:any){await updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(), actor:actor(g.driver),orderId:g.orderId,status:"pickup_in_progress"});await updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(), actor:actor(g.driver),orderId:g.orderId,status:"picked_up"});const s=await readWarehouseCustody(actor(g.driver),g.orderId);await physical(g,g.driver,"pickup-offer",{pickupTrackingId:s.pickupTrackingId,destinationWarehouseId:g.warehouse.id});}
 it("restricted collection, retained holder after parcel intake, explicit transfer and independent warehouse settlement; matching retries",async()=>{
  const g=await pricedJourney(),intent=cashIntent(g),rows=await Promise.all([executeRestrictedCash(actor(g.driver),"collect",intent),executeRestrictedCash(actor(g.driver),"collect",intent)]);expect(rows[0]).toEqual(rows[1]);expect(rows[0]).toMatchObject({amount:"100",state:"held",holderMembershipId:g.driver.companyMembershipId});
  await unchanged(()=>executeRestrictedCash(actor(g.driver),"collect",{...intent,note:"Changed"}));await unchanged(()=>executeRestrictedCash(actor(g.driver),"settle",cashIntent(g,{expectedEventId:rows[0].expectedEventId})));
@@ -438,7 +438,7 @@ it("parcel reassignment does not strand the original recorded cash holder or sil
  const g=await pricedJourney(),collected=await executeRestrictedCash(actor(g.driver),'collect',cashIntent(g));
  const invitation=await createCompanyDriverInvitation(mockDb,g.actor,{operationId:randomUUID(),email:randomUUID()+'@example.invalid',profileRevision:'local-driver.v1',reason:'Synthetic reassignment actor'}),replacement=await acceptCompanyDriverInvitation(mockDb,{operationId:randomUUID(),token:invitation.token,name:'Synthetic replacement driver',password});
  const o=await mockDb.order.findUniqueOrThrow({where:{id:g.orderId}});await assignDriversBulk({actor:actor(g.dispatcher),orderIds:[g.orderId],driverId:replacement.userId,type:'pickup',expectedStates:[{orderId:g.orderId,updatedAt:o.updatedAt.toISOString(),status:o.status,assignedDriverId:o.assignedDriverId,currentWarehouseId:o.currentWarehouseId}]});
- for(const status of ['pickup_in_progress','picked_up'])await updateDriverOrderStatus({actor:actor(replacement),orderId:g.orderId,status:status as any});
+ for(const status of ['pickup_in_progress','picked_up'])await updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(), actor:actor(replacement),orderId:g.orderId,status:status as any});
  const s=await readWarehouseCustody(actor(replacement),g.orderId);await physical(g,replacement,'pickup-offer',{pickupTrackingId:s.pickupTrackingId,destinationWarehouseId:g.warehouse.id});
  expect((await mockDb.cashCollection.findUniqueOrThrow({where:{orderId_kind:{orderId:g.orderId,kind:'service_charge'}}})).currentHolderUserId).toBe(g.driver.userId);
  const offer=await executeRestrictedCash(actor(g.driver),'offer',cashIntent(g,{expectedEventId:collected.expectedEventId,recipientMembershipId:g.staff.companyMembershipId,recipientWarehouseId:g.warehouse.id}));
@@ -508,7 +508,7 @@ it("DOM-06 normal import preserves row receipts without Float cash seeds or dupl
  const accepted=await acceptOrderPrice(g.maker,{orderId:id,operationId:randomUUID(),reason:"Synthetic imported price"});expect(accepted.total).toBe("100.0000");expect(await mockDb.cashCollection.count({where:{orderId:id}})).toBe(1);
 });
 it("DOM-06 sender pickup requires exact collection; legacy unproved obligations are not adopted",async()=>{
- const g=await pricedJourney();await updateDriverOrderStatus({actor:actor(g.driver),orderId:g.orderId,status:"pickup_in_progress"});await unchanged(()=>updateDriverOrderStatus({actor:actor(g.driver),orderId:g.orderId,status:"picked_up"}));
+ const g=await pricedJourney();await updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(), actor:actor(g.driver),orderId:g.orderId,status:"pickup_in_progress"});await unchanged(()=>updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(), actor:actor(g.driver),orderId:g.orderId,status:"picked_up"}));
  const untouched=await createOrderForActor({user:g.maker,body:{...g.body,operationId:randomUUID()}}),id=untouched.payload.order.id;
  const b=await bindOrderBillTo(g.maker,{orderId:id,operationId:randomUUID(),payerCustomerEntityId:g.body.customerEntityId,evidence:"Synthetic legacy comparison",reason:"Synthetic legacy comparison"});
  await bindServicePaymentInstruction(g.maker,{orderId:id,operationId:randomUUID(),billToId:b.id,method:"CASH",collectionParty:"SENDER",evidence:"Synthetic cash",reason:"Synthetic cash"});
@@ -543,11 +543,11 @@ async function deadlinePolicy(g:any,fee="0",zero=false) {
  await decideBillingPolicy(g.pricingChecker,{versionId:p.id,contentHash:p.contentHash,operationId:randomUUID(),decision:"approved",reason:"Independent synthetic deadline policy"});
 }
 async function deadlineTransition(g:any,party:string,existingProof?:any) {
- if(party==="SENDER")return updateDriverOrderStatus({actor:actor(g.driver),orderId:g.orderId,status:"picked_up"});
+ if(party==="SENDER")return updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(), actor:actor(g.driver),orderId:g.orderId,status:"picked_up"});
  const proof=existingProof??await deliveryProof(g);return physical(g,g.driver,"deliver",{proofSubmissionId:proof.intent.body.submissionId});
 }
 async function beforeDeadline(g:any,party:string) {
- if(party==="SENDER"){await updateDriverOrderStatus({actor:actor(g.driver),orderId:g.orderId,status:"pickup_in_progress"});return;}
+ if(party==="SENDER"){await updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(), actor:actor(g.driver),orderId:g.orderId,status:"pickup_in_progress"});return;}
  await warehouseOffer(g);await physical(g,g.staff,"intake",{warehouseId:g.warehouse.id});await physical(g,g.staff,"last-mile-offer",{warehouseId:g.warehouse.id,driverMembershipId:g.driver.companyMembershipId});await physical(g,g.driver,"last-mile-accept");
 }
 it.each(["SENDER","RECIPIENT"])("DOM-06 deadline zero %s rejects late positive revision; zero revisions and historical retries survive",async party=>{
@@ -956,7 +956,7 @@ it("driver work UI HTTP: unrelated driver, foreign selected context, absent cont
  await cashDenied(`/api/orders/${driverUi.orderId}/cash/collect`,driverUiToken,{operationId:randomUUID(),kind:"service_charge",obligationId:randomUUID()},403);
 });
 it("driver work UI HTTP: actual permitted pickup transitions and durable PNG pickup proof work without company scopes",async()=>{
- for(const status of ["pickup_in_progress","picked_up"]){const r=await cashHttp("/api/orders/driver-status",driverUiToken,{orderId:driverUi.orderId,status});expect(r.status).toBe(200);expect(r.data).toMatchObject({success:true,order:{id:driverUi.orderId,status}});}
+ for(const status of ["pickup_in_progress","picked_up"]){const r=await cashHttp("/api/orders/driver-status",driverUiToken,{operationId:randomUUID(),orderId:driverUi.orderId,status});expect(r.status).toBe(200);expect(r.data).toMatchObject({success:true,order:{id:driverUi.orderId,status}});}
  const p=await cashReadUnchanged(driverPath(),driverUiToken);expect(p.driverActions).toEqual(["pickup-offer"]);expect(p.pickupTrackingId).toBeTruthy();
  const proof=await driverProofHttp(driverUiToken,"pickup");expect(proof.status).toBe(200);expect(proof.data).toMatchObject({success:true,proof:{stage:"pickup"}});
  const before=await graphDigest(),again=await driverProofHttp(driverUiToken,"pickup",proof.data.proof.submissionId);expect(again.data).toEqual(proof.data);expect(await graphDigest()).toBe(before);
@@ -997,4 +997,56 @@ it("driver work UI HTTP: driver revocation rejects old access, fresh context, hi
  const user=await mockDb.user.findUniqueOrThrow({where:{id:driverUi.driver.userId}});expect((await cashHttp("/api/auth/login",undefined,{email:user.email,password,companyMembershipId:driverUi.driver.companyMembershipId})).status).toBe(403);
  await unchanged(()=>executeWarehouseCustody(actor(driverUi.driver),driverUi.orderId,driverUiOffer));
  const before=await graphDigest(),calls=mockCashStorage.mock.calls.length;expect((await driverProofHttp(driverUiToken,"delivery",driverUiProof.data.proof.submissionId)).status).toBe(401);expect(await graphDigest()).toBe(before);expect(mockCashStorage.mock.calls.length).toBe(calls);
+});
+
+// New receipt behavior; fixture is created by the restricted-driver UI setup case above.
+let pickupStartIntent:any,pickupStartResult:any,pickupFinishIntent:any;
+it("driver pickup reliability: missing identity, unrelated and foreign actors reject without facts",async()=>{
+ const owner=syntheticDriverOwner();try{const i=await createCompanyDriverInvitation(mockDb,driverUi.actor,{operationId:randomUUID(),email:randomUUID()+"@example.invalid",profileRevision:"local-driver.v1",reason:"Synthetic unrelated pickup actor"});driverUiOther=await acceptCompanyDriverInvitation(mockDb,{operationId:randomUUID(),token:i.token,name:"Unrelated pickup actor",password});}finally{owner.cleanup();}
+ await cashDenied("/api/orders/driver-status",driverUiToken,{orderId:driverUi.orderId,status:"pickup_in_progress"},400);
+ await cashDenied("/api/orders/driver-status",await uiLogin(driverUiOther,password),{operationId:randomUUID(),orderId:driverUi.orderId,status:"pickup_in_progress"},404);
+ const foreign=await pricedJourney("SENDER",0);await cashDenied("/api/orders/driver-status",await uiLogin(foreign.driver,password),{operationId:randomUUID(),orderId:driverUi.orderId,status:"pickup_in_progress"},404);
+});
+it("driver pickup reliability: concurrent matching requests and lost acknowledgement produce one atomic result",async()=>{
+ pickupStartIntent={operationId:randomUUID(),orderId:driverUi.orderId,status:"pickup_in_progress"};
+ const before=await counts(),results=await Promise.all([cashHttp("/api/orders/driver-status",driverUiToken,pickupStartIntent),cashHttp("/api/orders/driver-status",driverUiToken,pickupStartIntent)]);
+ expect(results.map(r=>r.status)).toEqual([200,200]);expect(results[0].data).toEqual(results[1].data);pickupStartResult=results[0].data;
+ const after=await counts();expect(after.OrderPickupReceipt-before.OrderPickupReceipt).toBe(1);expect(after.Tracking-before.Tracking).toBe(1);expect(after.AnalyticsDomainEventOutbox-before.AnalyticsDomainEventOutbox).toBe(1);expect(after.UserNotification-before.UserNotification).toBe(1);
+ expect(pickupStartResult.order).toMatchObject({operationId:pickupStartIntent.operationId,orderId:driverUi.orderId,eventId:expect.any(String),status:"pickup_in_progress"});
+ // Treat the successful first response as lost; retry only the original identity/content.
+ const digest=await graphDigest();expect((await cashHttp("/api/orders/driver-status",driverUiToken,pickupStartIntent)).data).toEqual(pickupStartResult);expect(await graphDigest()).toBe(digest);
+});
+it("driver pickup reliability: normalized optional nulls match but conflicting target or content do not",async()=>{
+ const before=await graphDigest();expect((await cashHttp("/api/orders/driver-status",driverUiToken,{...pickupStartIntent,note:null,region:null,reasonCode:null})).data).toEqual(pickupStartResult);expect(await graphDigest()).toBe(before);
+ for(const patch of [{note:"Changed intent"},{status:"picked_up"},{orderId:randomUUID()}])await cashDenied("/api/orders/driver-status",driverUiToken,{...pickupStartIntent,...patch},409);
+});
+it("driver pickup reliability: receipt failure rolls back order tracking notification analytics and audit receipt",async()=>{
+ pickupFinishIntent={operationId:randomUUID(),orderId:driverUi.orderId,status:"picked_up"};
+ await pool.query(`CREATE FUNCTION cp_pickup_test_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'Synthetic pickup receipt rollback'; END $$; CREATE TRIGGER cp_pickup_test_fail BEFORE INSERT ON "OrderPickupReceipt" FOR EACH ROW EXECUTE FUNCTION cp_pickup_test_fail()`);
+ try{await cashDenied("/api/orders/driver-status",driverUiToken,pickupFinishIntent,500);}finally{await pool.query('DROP TRIGGER cp_pickup_test_fail ON "OrderPickupReceipt"; DROP FUNCTION cp_pickup_test_fail()');}
+ expect((await mockDb.order.findUniqueOrThrow({where:{id:driverUi.orderId}})).status).toBe("pickup_in_progress");expect(await mockDb.orderPickupReceipt.count({where:{operationId:pickupFinishIntent.operationId}})).toBe(0);
+});
+it("driver pickup reliability: competing distinct identities admit one legal transition and preserve historical retries",async()=>{
+ const requests=[pickupFinishIntent,{...pickupFinishIntent,operationId:randomUUID()}],before=await counts();
+ const results=await Promise.all(requests.map(body=>cashHttp("/api/orders/driver-status",driverUiToken,body)));expect(results.filter(r=>r.status===200)).toHaveLength(1);expect(results.filter(r=>r.status===400)).toHaveLength(1);
+ const after=await counts();for(const table of ["OrderPickupReceipt","Tracking","AnalyticsDomainEventOutbox","UserNotification"])expect(after[table]-before[table]).toBe(1);
+ const digest=await graphDigest();expect((await cashHttp("/api/orders/driver-status",driverUiToken,pickupStartIntent)).data).toEqual(pickupStartResult);expect(await graphDigest()).toBe(digest);
+ expect((await mockDb.order.findUniqueOrThrow({where:{id:driverUi.orderId}})).status).toBe("picked_up");
+});
+it("driver pickup reliability: current exact sender cash deadline remains enforced without a receipt on rejection",async()=>{
+ const g=await pricedJourney("SENDER",100);await updateDriverOrderStatus({operationId:randomUUID(),actor:actor(g.driver),orderId:g.orderId,status:"pickup_in_progress"});
+ const op=randomUUID();await unchanged(()=>updateDriverOrderStatus({operationId:op,actor:actor(g.driver),orderId:g.orderId,status:"picked_up"}));expect(await mockDb.orderPickupReceipt.count({where:{operationId:op}})).toBe(0);expect((await mockDb.order.findUniqueOrThrow({where:{id:g.orderId}})).status).toBe("pickup_in_progress");
+});
+it("driver pickup reliability: pickup proof preflight and actual PNG submission remain supported",async()=>{
+ const p=await cashReadUnchanged(driverPath(),driverUiToken);expect(p.proofStages).toContain("pickup");const proof=await driverProofHttp(driverUiToken,"pickup");expect(proof.status).toBe(200);expect(proof.data.proof.stage).toBe("pickup");
+});
+it("driver pickup reliability: append-only protection rejects update delete and truncate",async()=>{
+ for(const sql of ["UPDATE \"OrderPickupReceipt\" SET \"intentHash\"=repeat('0',64)",'DELETE FROM "OrderPickupReceipt"','TRUNCATE "OrderPickupReceipt"']){const before=await graphDigest();await expect(pool.query(sql)).rejects.toThrow("append-only");expect(await graphDigest()).toBe(before);}
+});
+it("driver pickup reliability: reassignment and revoked eligibility deny even original confirmed receipt",async()=>{
+ await mockDb.order.update({where:{id:driverUi.orderId},data:{assignedDriverId:driverUiOther.userId}});
+ await cashDenied("/api/orders/driver-status",driverUiToken,pickupStartIntent,403);
+ await mockDb.order.update({where:{id:driverUi.orderId},data:{assignedDriverId:driverUi.driver.userId}});
+ await mutateCompanyDriverEligibility(mockDb,driverUi.actor,{operationId:randomUUID(),action:"revoke",membershipId:driverUi.driver.companyMembershipId,profileRevision:"local-driver.v1",reason:"Synthetic receipt revocation"});
+ await cashDenied("/api/orders/driver-status",driverUiToken,pickupStartIntent,401);await unchanged(()=>updateDriverOrderStatus({...pickupStartIntent,actor:actor(driverUi.driver)}));await uiApp.close();
 });

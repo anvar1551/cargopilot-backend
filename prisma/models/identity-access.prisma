@@ -122,6 +122,8 @@ model CompanyMembership {
   delegationRecipientTargets CompanyDelegationAction[] @relation("DelegationRecipientTarget")
   onboardingBridges TenantOnboardingReceipt[] @relation("OnboardingBridge")
   onboardingOwners TenantOnboardingReceipt[] @relation("OnboardingOwner")
+  pickupReceipts OrderPickupReceipt[] @relation("PickupActor")
+  pickupBridges OrderPickupReceipt[] @relation("PickupBridge")
   custodyActions OrderCustodyAction[] @relation("CustodyActor")
   custodyBridges OrderCustodyAction[] @relation("CustodyBridge")
   custodyDrivers OrderCustodyAction[] @relation("CustodyDriver")

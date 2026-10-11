@@ -130,6 +130,7 @@ enum RecipientUnavailableAction {
 model Order {
   RestrictedCashReceipt_r0 RestrictedCashReceipt[] @relation("RestrictedCashReceipt_r0")
   RestrictedCashState_r0 RestrictedCashState[] @relation("RestrictedCashState_r0")
+  pickupReceipts OrderPickupReceipt[]
   custodyActions OrderCustodyAction[]
   InvoiceIssuanceReceipt_order InvoiceIssuanceReceipt[] @relation("InvoiceIssuanceReceipt_order")
   currentPriceApprovalId String? @db.Uuid
@@ -311,6 +312,7 @@ model Order {
 }
 
 model Tracking {
+  pickupReceipts OrderPickupReceipt[]
   custodyActions OrderCustodyAction[]
   dispatchNotifications UserNotification[] @relation("DispatchNotificationSource")
   id String @id @default(dbgenerated("public.uuid_generate_v7()")) @db.Uuid

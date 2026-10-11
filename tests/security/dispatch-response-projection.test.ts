@@ -16,6 +16,8 @@ const summarySelect = { id: true, orderNumber: true, status: true, assignedDrive
 beforeEach(() => {
   jest.clearAllMocks();
   db.orderCustodyAction.count.mockResolvedValue(0);
+  db.orderPickupReceipt.findUnique.mockResolvedValue(null);
+  db.orderPickupReceipt.create.mockResolvedValue({});
   db.$executeRawUnsafe.mockResolvedValue(0);
   db.$queryRaw.mockImplementation(async(q:any)=>String(q.sql??q.join?.("")??q).includes("OrderServicePaymentInstruction")?[]:[{id:"synthetic-order"}]);
   db.$executeRaw.mockResolvedValue(0);
@@ -49,7 +51,7 @@ it("driver mutation retains its authorized summary contract", async () => {
   const driverActor = { ...actor, id: summary.assignedDriverId };
   (loadAccessSnapshot as jest.Mock).mockResolvedValue({...driverActor,userId:driverActor.id,permissionCodes:["shipment.changeStatus"],roleCodes:[],warehouseId:null});
   db.order.findFirst.mockResolvedValueOnce({ ...summary, cashCollections: [], codAmount: null, serviceCharge: null }).mockResolvedValueOnce({ ...summary, cashCollections: [], codAmount: null, serviceCharge: null }).mockImplementation(async (query: any) => { expect(insideTransaction).toBe(true); assertResponseQuery(query); return summary; });
-  expect(await updateDriverOrderStatus({ orderId: summary.id, status: "pickup_in_progress", actor: driverActor })).toEqual(summary);
+  expect(await updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(),  orderId: summary.id, status: "pickup_in_progress", actor: driverActor })).toEqual({...summary,operationId:expect.any(String),orderId:summary.id,eventId:"tracking-a"});
 });
 it("out-of-scope mutation never reads a response or writes business events", async () => {
   db.order.findMany.mockResolvedValue([]);
@@ -63,13 +65,13 @@ it.each([
 ])("driver rechecks $name after the lock before any write",async({state,status,message})=>{
   (loadAccessSnapshot as jest.Mock).mockResolvedValue({...actor,userId:summary.assignedDriverId,permissionCodes:["shipment.changeStatus"],roleCodes:[],warehouseId:null});
   db.order.findFirst.mockResolvedValueOnce(summary).mockResolvedValueOnce(state);
-  await expect(updateDriverOrderStatus({actor:{...actor,id:summary.assignedDriverId},orderId:summary.id,status:status as any})).rejects.toThrow(message);
-  expect(db.$queryRaw).toHaveBeenCalledTimes(status==="picked_up"?2:1);expect(db.order.updateMany).not.toHaveBeenCalled();expect(db.tracking.create).not.toHaveBeenCalled();expect(enqueueCargoPilotDomainEventsTx).not.toHaveBeenCalled();
+  await expect(updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(), actor:{...actor,id:summary.assignedDriverId},orderId:summary.id,status:status as any})).rejects.toThrow(message);
+  expect(db.$queryRaw).toHaveBeenCalledTimes(status==="picked_up"?3:2);expect(db.order.updateMany).not.toHaveBeenCalled();expect(db.tracking.create).not.toHaveBeenCalled();expect(enqueueCargoPilotDomainEventsTx).not.toHaveBeenCalled();
   expect(db.$transaction.mock.calls[0][1]).toEqual({isolationLevel:"ReadCommitted",maxWait:2000,timeout:10000});
 });
 it("missing lock target rejects without writes or a protected response",async()=>{
   (loadAccessSnapshot as jest.Mock).mockResolvedValue({...actor,userId:summary.assignedDriverId,permissionCodes:["shipment.changeStatus"],roleCodes:[],warehouseId:null});
-  db.order.findFirst.mockResolvedValue(summary);db.$queryRaw.mockResolvedValueOnce([]);
-  await expect(updateDriverOrderStatus({actor:{...actor,id:summary.assignedDriverId},orderId:summary.id,status:"pickup_in_progress"})).rejects.toMatchObject({statusCode:409});
+  db.order.findFirst.mockResolvedValue(summary);db.$queryRaw.mockResolvedValueOnce([{held:true}]).mockResolvedValueOnce([]);
+  await expect(updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(), actor:{...actor,id:summary.assignedDriverId},orderId:summary.id,status:"pickup_in_progress"})).rejects.toMatchObject({statusCode:409});
   expect(db.order.findFirst).toHaveBeenCalledTimes(1);expect(db.order.updateMany).not.toHaveBeenCalled();expect(db.tracking.create).not.toHaveBeenCalled();expect(enqueueCargoPilotDomainEventsTx).not.toHaveBeenCalled();
 });

@@ -11,6 +11,7 @@ jest.mock("../../src/utils/s3Cleanup", () => ({
 }));
 
 import { database } from "./fixtures";
+import { DRIVER_PROFILES } from "../../src/modules/identity-access/application/driver-profiles";
 import {
   buildOrderScopeWhere,
   clearIdentityAccessCacheForUser,
@@ -96,6 +97,8 @@ function accessRecord(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
   jest.clearAllMocks();
   database.$executeRawUnsafe.mockResolvedValue(0);
+  database.orderCustodyAction.count.mockResolvedValue(0);
+  database.orderPickupReceipt.findUnique.mockResolvedValue(null);
   database.$queryRaw.mockResolvedValue([{id:"synthetic-order"}]);
   clearIdentityAccessCacheForUser(ids.user);
   database.companyMembership.findFirst.mockResolvedValue(accessRecord());
@@ -151,8 +154,10 @@ it("rejects client-selected order ownership fields before any database work", ()
 });
 
 it("rejects a foreign or legacy-unowned driver update without changing records", async () => {
+ const roleId="synthetic-local-role",profileRevision="local-driver.v1";
+ database.companyMembership.findFirst.mockResolvedValue(accessRecord({scopes:[],roles:[{role:{id:roleId,code:profileRevision,companyId:ids.company,isSystem:false,isOwnerRole:false,rolePermissions:DRIVER_PROFILES[profileRevision].map(key=>({permission:{key}}))}}],driverEligibility:{enabled:true,userId:ids.user,tenantMembershipId:ids.tenantMembership,tenantId:ids.tenant,companyId:ids.company,roleId,profileRevision,driverType:"local",acceptedAction:{action:"grant",result:{companyMembershipId:ids.membership,profileRevision}}}}));
   database.order.findFirst.mockResolvedValue(null);
-  await expect(updateDriverOrderStatus({
+  await expect(updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(),
     orderId: ids.order,
     status: "pickup_in_progress" as any,
     actor,
@@ -211,10 +216,11 @@ it("rejects an unscoped warehouse reference without changing the order", async (
 });
 
 it("rejects a driver without an active membership in the selected company", async () => {
+  database.companyMembership.findUnique.mockResolvedValue(null);
   database.$queryRaw.mockResolvedValue([{id:ids.order}]);
   database.order.findMany.mockResolvedValue([{id:ids.order,status:"pending",assignedDriverId:null,currentWarehouseId:null,updatedAt:new Date("2026-10-03T00:00:00.000Z")}]);
   database.user.findUnique.mockResolvedValue({ id: "driver-b", driverType: "local" });
-  database.companyMembership.findFirst.mockResolvedValueOnce(accessRecord()).mockResolvedValueOnce(accessRecord()).mockResolvedValueOnce(accessRecord()).mockResolvedValueOnce(accessRecord()).mockResolvedValueOnce(null);
+  database.companyMembership.findFirst.mockImplementation(async (query:any) => query.where.id === "driver-b" ? null : accessRecord());
 
   await expect(assignDriversBulk({
     orderIds: [ids.order], expectedStates:[{orderId:ids.order,updatedAt:"2026-10-03T00:00:00.000Z",status:"pending",assignedDriverId:null,currentWarehouseId:null}],

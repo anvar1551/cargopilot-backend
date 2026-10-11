@@ -1,0 +1,20 @@
+model OrderPickupReceipt {
+  tenantId String @db.Uuid
+  operationId String @db.Uuid
+  companyId String @db.Uuid
+  userId String @db.Uuid
+  companyMembershipId String @db.Uuid
+  tenantMembershipId String @db.Uuid
+  orderId String @db.Uuid
+  trackingId String @unique @db.Uuid
+  intentHash String @db.Char(64)
+  intent Json
+  result Json
+  createdAt DateTime @default(now())
+  order Order @relation(fields: [tenantId, orderId, companyId], references: [tenantId, id, ownerOrgId], onDelete: Restrict, onUpdate: Restrict)
+  actor CompanyMembership @relation("PickupActor", fields: [companyMembershipId, userId, tenantId, companyId], references: [id, userId, tenantId, companyId], onDelete: Restrict, onUpdate: Restrict)
+  bridge CompanyMembership @relation("PickupBridge", fields: [companyMembershipId, tenantMembershipId, userId, tenantId], references: [id, tenantMembershipId, userId, tenantId], onDelete: Restrict, onUpdate: Restrict)
+  tracking Tracking @relation(fields: [trackingId, orderId], references: [id, orderId], onDelete: Restrict, onUpdate: Restrict)
+  @@id([tenantId, operationId])
+  @@index([tenantId, companyId, orderId, createdAt])
+}

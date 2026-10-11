@@ -1,3 +1,11 @@
+# Current driver reliability correction (2026-10-11)
+
+Initial pickup has context-bound immutable receipts and explicit unchanged native retries. Legacy receipt-less pickup records remain quarantined. Local terminal history is verified into context/operation archives before pruning; no lifetime 100-action ceiling and no pruning of unresolved work.
+
+Evidence: 9 new PostgreSQL HTTP/service cases plus 1 setup regression; 67 affected mocked backend cases; 27 focused client cases; schema/client, final no-emit and focused lint. Counts exclude reruns. Native/device/visual verification remains pending. Exact contracts, cleanup and rollout: [Driver_Pickup_Reliability.md](Driver_Pickup_Reliability.md).
+
+Unavailable: legacy ambiguous pickup reconciliation, native Service Cash and existing contained exception/return/recovery paths. Next: explicitly owned native/device acceptance; no automatic next feature batch. Earlier handoffs below are historical.
+
 # Current native driver My work integration (2026-10-10)
 
 Implemented: canonical restricted initial assignments/custody nominations → current preflight → pickup/PNG proof → named warehouse offer → exact linehaul acceptance → local last-mile acceptance/proof/delivery. Existing membership-specific eligibility, zero scopes and cash separation remain. Two additive authenticated no-store reads; no schema/permission/mutation-policy expansion. A demonstrated unrelated-driver denial-path 500 is corrected to 403.

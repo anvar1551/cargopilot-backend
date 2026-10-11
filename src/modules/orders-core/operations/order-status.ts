@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { requireAcceptedDriver } from "../../identity-access/application/driver-eligibility";
 import { requireInitialPickupAuthority } from "../domain/custody-access";
 import { assertExactServiceTransition } from "../../pricing-core/repo/service-cash-basis";
@@ -464,6 +465,7 @@ export async function updateOrdersStatusBulk(args: {
 }
 
 export async function updateDriverOrderStatus(args: {
+  operationId?: string;
   orderId: string;
   status: OrderStatus;
   reasonCode?: ReasonCode | null;
@@ -482,9 +484,27 @@ export async function updateDriverOrderStatus(args: {
     throw orderError("orderId is required", 400);
   }
 
+  const operationId = args.operationId?.trim().toLowerCase();
+  if (pickup && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(operationId ?? "")) throw orderError("Pickup operationId is required",400);
+  const intent = { version: 1, orderId, status, reasonCode: reasonCode ?? null, note: note ?? null, region: region ?? null,
+    userId: actor.id, tenantId: actor.tenantId, companyId: actor.companyId, companyMembershipId: actor.companyMembershipId ?? actor.membershipId, tenantMembershipId: actor.tenantMembershipId };
+  const intentHash = createHash("sha256").update(JSON.stringify(intent)).digest("hex");
   return prisma.$transaction(async (tx) => {
     await tx.$executeRawUnsafe("SET LOCAL lock_timeout = '2s'");
     await tx.$executeRawUnsafe("SET LOCAL statement_timeout = '5s'");
+    if (pickup) {
+      // Serialize one context-bound operation across orders before taking an order lock.
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`pickup:${actor.tenantId}:${operationId}`}, 0))::text`;
+      authority = await resolve(requestedActor, tx); actor = authority.actor;
+      const receipt = await tx.orderPickupReceipt.findUnique({where:{tenantId_operationId:{tenantId:actor.tenantId!,operationId:operationId!}}});
+      if (receipt) {
+        if (receipt.intentHash !== intentHash) throw orderError("Pickup operation identity conflict",409);
+        // Receipts prove history, never confer current assignment/eligibility or object access.
+        const owned = await tx.$queryRaw<Array<{id:string}>>`SELECT "id" FROM "Order" WHERE "id"=${orderId}::uuid AND "tenantId"=${actor.tenantId}::uuid AND "ownerOrgId"=${actor.companyId}::uuid AND "assignedDriverId"=${actor.id}::uuid AND ("assignedOrgId" IS NULL OR "assignedOrgId"=${actor.companyId}::uuid) FOR UPDATE`;
+        if (owned.length !== 1) throw orderError("Pickup receipt is no longer authorized",403);
+        return Object.defineProperty({...receipt.result as any, updatedAt:new Date((receipt.result as any).updatedAt)}, "pickupReceiptReplay", {value:true});
+      }
+    }
     const stateQuery = {where:dispatchOrderWhere(authority,[orderId]),select:dispatchStateSelect} as const;
     const initial = await tx.order.findFirst(stateQuery);
     if (!initial) throw orderError("Order not found", 404);
@@ -559,6 +579,10 @@ export async function updateDriverOrderStatus(args: {
     },
   });
     if (!response) throw orderError("Order response unavailable",409);
-    return withDispatchNotifications(response, notificationId ? [notificationId] : []);
+    const result = pickup ? {...response, operationId, orderId, eventId:tracking.id} : response;
+    if (pickup) await tx.orderPickupReceipt.create({data:{tenantId:actor.tenantId!,companyId:actor.companyId!,userId:actor.id,
+      companyMembershipId:(actor.companyMembershipId ?? actor.membershipId)!,tenantMembershipId:actor.tenantMembershipId!,operationId:operationId!,orderId,trackingId:tracking.id,intentHash,
+      intent: intent as Prisma.InputJsonValue, result: JSON.parse(JSON.stringify(result))}});
+    return withDispatchNotifications(result, notificationId ? [notificationId] : []);
   }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, maxWait: 2000, timeout: 10000 });
 }

@@ -44,6 +44,7 @@ type UpdateStatusBulkInput = {
 type UpdateDriverStatusInput = {
   actor: OrderActor;
   body: {
+    operationId?: string;
     orderId?: string;
     status?: OrderStatus;
     reasonCode?: ReasonCode;
@@ -168,6 +169,7 @@ export async function updateDriverStatusForActor(input: UpdateDriverStatusInput)
   }
 
   const order = await updateDriverOrderStatus({
+    operationId: body.operationId,
     orderId: requestOrderId,
     status,
     reasonCode: reasonCode ?? null,
@@ -181,7 +183,7 @@ export async function updateDriverStatusForActor(input: UpdateDriverStatusInput)
   const eventOrderId = String(order.id).trim();
   const orderNumber = String(order.orderNumber ?? "").trim();
   const nextStatus = String(order.status);
-  if (assignedDriverId) {
+  if (assignedDriverId && !(order as any).pickupReceiptReplay) {
     void emitDriverOrderUpdate(assignedDriverId, {
       orderId: eventOrderId,
       orderNumber: orderNumber || null,

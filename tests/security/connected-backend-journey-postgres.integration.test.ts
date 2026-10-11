@@ -172,13 +172,13 @@ it("real normal creation -> pickup -> three warehouses -> accepted last mile -> 
   const driverState=await businessState();
   await expect(mutateCompanyDriverEligibility(mockPrisma,operator,{operationId:randomUUID(),membershipId:driver.companyMembershipId,action:"grant",profileRevision:"linehaul-driver.v1",reason:"Synthetic blocked active pickup type change"})).rejects.toMatchObject({code:"DELEGATION_DRIVER_ACTIVE_WORK"});
   expect(await businessState()).toEqual(driverState);
-  await updateDriverOrderStatus({ actor: driver, orderId, status: OrderStatus.pickup_in_progress });
-  await updateDriverOrderStatus({ actor: driver, orderId, status: OrderStatus.picked_up });
+  await updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(),  actor: driver, orderId, status: OrderStatus.pickup_in_progress });
+  await updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(),  actor: driver, orderId, status: OrderStatus.picked_up });
   // Do not fabricate an onward warehouse transition or a completed delivery.
   const atPickup = await businessState();
-  await expect(updateDriverOrderStatus({ actor: driver, orderId, status: OrderStatus.out_for_delivery })).rejects.toMatchObject({statusCode:403});
+  await expect(updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(),  actor: driver, orderId, status: OrderStatus.out_for_delivery })).rejects.toMatchObject({statusCode:403});
   // Broad dispatch actor still reaches the existing explicit delivery containment guard.
-  await expect(updateDriverOrderStatus({ actor: operator, orderId, status: OrderStatus.out_for_delivery })).rejects.toThrow("Durable warehouse custody endpoint required");
+  await expect(updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(),  actor: operator, orderId, status: OrderStatus.out_for_delivery })).rejects.toThrow("Durable warehouse custody endpoint required");
   await expect(updateOrdersStatusBulk({ actor: operator, orderIds: [orderId], expectedStates: await expected(orderId), status: OrderStatus.at_warehouse })).rejects.toThrow("manual transition policy is unavailable");
   expect(await businessState()).toEqual(atPickup);
   const { PNG } = require("pngjs"), buffer = PNG.sync.write({ width: 2, height: 2, data: Buffer.alloc(16, 255) });
@@ -295,7 +295,7 @@ it("competing dispatch and last-mile handover serialize one intent without mixed
   const parcelIds=made.payload.order.parcels.map((p:any)=>p.id);
   const next=async(action:string,extra:any={})=>{const o=await mockPrisma.order.findUniqueOrThrow({where:{id:orderId}}),e=await mockPrisma.orderCustodyAction.findFirst({where:{orderId},orderBy:{sequence:"desc"}});return {action,operationId:randomUUID(),expectedUpdatedAt:o.updatedAt.toISOString(),expectedEventId:e?.id??null,parcelIds,...extra};};
   await assignDriversBulk({actor:operator,orderIds:[orderId],expectedStates:await expected(orderId),driverId:driver.id,type:"pickup"});
-  await updateDriverOrderStatus({actor:driver,orderId,status:"pickup_in_progress"});await updateDriverOrderStatus({actor:driver,orderId,status:"picked_up"});
+  await updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(), actor:driver,orderId,status:"pickup_in_progress"});await updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(), actor:driver,orderId,status:"picked_up"});
   const tracking=await mockPrisma.tracking.findFirstOrThrow({where:{orderId,status:"picked_up"}});
   await executeWarehouseCustody(driver,orderId,await next("pickup-offer",{destinationWarehouseId:ownedWarehouseIds[0],pickupTrackingId:tracking.id}));
   await executeWarehouseCustody(operator,orderId,await next("intake",{warehouseId:ownedWarehouseIds[0]}));
@@ -347,13 +347,13 @@ it("warehouse-only recipients and exact nominated drivers without company/assign
 
   await mockPrisma.membershipScope.deleteMany({where:{membershipId:wrong.companyMembershipId}});
   for(const bad of [wrong,actor(1),{...driver,companyMembershipId:actor(1).companyMembershipId,membershipId:actor(1).companyMembershipId},{}]) {
-    await expect(updateDriverOrderStatus({actor:bad as any,orderId,status:"pickup_in_progress"})).rejects.toThrow();
+    await expect(updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(), actor:bad as any,orderId,status:"pickup_in_progress"})).rejects.toThrow();
     await expect(readWarehouseCustody(bad as any,orderId)).rejects.toThrow();
     await expect(requireProofSubmissionContext(bad as any,orderId)).rejects.toThrow();
   }
   expect((await listCustodyWork(wrong,{kind:"driver"})).items.some(x=>x.orderId===orderId)).toBe(false);
   await mockPrisma.companyMembership.update({where:{id:driver.companyMembershipId},data:{status:"suspended"}});
-  await expect(updateDriverOrderStatus({actor:driver,orderId,status:"pickup_in_progress"})).rejects.toThrow();
+  await expect(updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(), actor:driver,orderId,status:"pickup_in_progress"})).rejects.toThrow();
   await expect(listCustodyWork(driver,{kind:"driver"})).rejects.toThrow();
   await mockPrisma.companyMembership.update({where:{id:driver.companyMembershipId},data:{status:"active"}});
   // Existing initial pickup proof is available through the exact assignment, without implicit company scope.
@@ -363,30 +363,30 @@ it("warehouse-only recipients and exact nominated drivers without company/assign
   const stale=await businessState();
   expect((await listCustodyWork(driver,{kind:"driver"})).items.some(x=>x.orderId===orderId)).toBe(false);
   await expect(readWarehouseCustody(driver,orderId)).rejects.toThrow();
-  await expect(updateDriverOrderStatus({actor:driver,orderId,status:"pickup_in_progress"})).rejects.toThrow();
+  await expect(updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(), actor:driver,orderId,status:"pickup_in_progress"})).rejects.toThrow();
   expect(await businessState()).toEqual(stale);
   await assignDriversBulk({actor:operator,orderIds:[orderId],expectedStates:await expected(orderId),driverId:driver.id,type:"pickup"});
-  const competing=await Promise.allSettled([1,2].map(()=>updateDriverOrderStatus({actor:driver,orderId,status:"pickup_in_progress"})));
+  const competing=await Promise.allSettled([1,2].map(()=>updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(), actor:driver,orderId,status:"pickup_in_progress"})));
   expect(competing.filter(x=>x.status==="fulfilled")).toHaveLength(1);
   expect(competing.filter(x=>x.status==="rejected")).toHaveLength(1);
   expect(await mockPrisma.tracking.count({where:{orderId,status:"pickup_in_progress"}})).toBe(1);
   await mockPrisma.order.update({where:{id:orderId},data:{serviceCharge:5,serviceChargePaidStatus:"NOT_PAID",deliveryChargePaidBy:"SENDER"}});
   const cashBefore=await businessState();
-  await expect(updateDriverOrderStatus({actor:driver,orderId,status:"picked_up"})).rejects.toThrow("Collect cash first");
+  await expect(updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(), actor:driver,orderId,status:"picked_up"})).rejects.toThrow("Collect cash first");
   expect(await businessState()).toEqual(cashBefore);
   await mockPrisma.order.update({where:{id:orderId},data:{serviceCharge:0,serviceChargePaidStatus:"NOT_PAID",deliveryChargePaidBy:"COMPANY"}});
   await pool.query(`CREATE FUNCTION reject_pickup_event() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic pickup rollback'; END $$`);
   await pool.query('CREATE TRIGGER reject_pickup_event BEFORE INSERT ON "AnalyticsDomainEventOutbox" FOR EACH ROW EXECUTE FUNCTION reject_pickup_event()');
   const rollback=await businessState();
-  await expect(updateDriverOrderStatus({actor:driver,orderId,status:"picked_up"})).rejects.toThrow();
+  await expect(updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(), actor:driver,orderId,status:"picked_up"})).rejects.toThrow();
   expect(await businessState()).toEqual(rollback);
   await pool.query('DROP TRIGGER reject_pickup_event ON "AnalyticsDomainEventOutbox"');await pool.query('DROP FUNCTION reject_pickup_event()');
-  await updateDriverOrderStatus({actor:driver,orderId,status:"picked_up"});
+  await updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(), actor:driver,orderId,status:"picked_up"});
   expect(await requireProofSubmissionContext(driver,orderId)).toMatchObject({id:orderId});
   const sibling = await createOrderForActor({user:operator,body:{...savedBody,operationId:randomUUID()}}), siblingId=sibling.payload.order.id;
   await assignDriversBulk({actor:operator,orderIds:[siblingId],expectedStates:await expected(siblingId),driverId:driver.id,type:"pickup"});
-  await updateDriverOrderStatus({actor:driver,orderId:siblingId,status:"pickup_in_progress"});
-  await updateDriverOrderStatus({actor:driver,orderId:siblingId,status:"picked_up"});
+  await updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(), actor:driver,orderId:siblingId,status:"pickup_in_progress"});
+  await updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(), actor:driver,orderId:siblingId,status:"picked_up"});
   await mockPrisma.membershipScope.deleteMany({ where: { membershipId: { in: [driver.companyMembershipId, transport.companyMembershipId] } } });
   for (const who of [origin, destination, driver, transport]) {
     expect(await mockPrisma.membershipScope.count({ where: { membershipId: who.companyMembershipId, scopeType: "company" } })).toBe(0);
@@ -537,7 +537,7 @@ it.each(["assignment-first","replacement-first"])("eligibility lock serializes %
 it("revocation during pickup retains history and permits reasoned receiving without reactivation",async()=>{
  const who=await provisionDriver("synthetic-revoked-pickup","local"),made=await createOrderForActor({user:operator,body:{...savedBody,operationId:randomUUID()}}),orderId=made.payload.order.id;
  await assignDriversBulk({actor:operator,orderIds:[orderId],expectedStates:await expected(orderId),driverId:who.id,type:"pickup"});
- await updateDriverOrderStatus({actor:who,orderId,status:"pickup_in_progress"});await updateDriverOrderStatus({actor:who,orderId,status:"picked_up"});
+ await updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(), actor:who,orderId,status:"pickup_in_progress"});await updateDriverOrderStatus({operationId: require("node:crypto").randomUUID(), actor:who,orderId,status:"picked_up"});
  const s=await readWarehouseCustody(who,orderId),offer={operationId:randomUUID(),action:"pickup-offer",expectedEventId:null,expectedUpdatedAt:s.updatedAt,parcelIds:s.parcelIds,pickupTrackingId:s.pickupTrackingId,destinationWarehouseId:ownedWarehouseIds[0]};
  const accepted=await executeWarehouseCustody(who,orderId,offer);
  await mutateCompanyDriverEligibility(mockPrisma,operator,{operationId:randomUUID(),membershipId:who.companyMembershipId,action:"revoke",profileRevision:"local-driver.v1",reason:"Synthetic active work revocation"});
